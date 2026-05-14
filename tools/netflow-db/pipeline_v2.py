@@ -55,7 +55,7 @@ from maad_v2 import (
     insert_maad_v2_rows,
     run_maad_json,
 )
-from nfdump_stats_v2 import build_nfcapd_bucket_payload
+from nfdump_stats_v2 import build_nfcapd_bucket_payload, is_nfcapd_bucket_filename
 from normalized_rows_v2 import NormalizedRow, build_nfdump_csv_command, normalize_nfdump_csv_values
 from normalized_rows_v2 import infer_ip_version
 from processed_inputs_v2 import (
@@ -389,6 +389,8 @@ def discover_nfcapd_tree_specs(
         if not day_dir.is_dir():
             continue
         for path in sorted(day_dir.glob('nfcapd.*')):
+            if not is_nfcapd_bucket_filename(path.name):
+                continue
             specs.append(
                 {
                     'input_kind': 'nfcapd',

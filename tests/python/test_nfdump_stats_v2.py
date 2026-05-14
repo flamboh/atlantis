@@ -1,6 +1,8 @@
 import importlib
 import subprocess
 
+import pytest
+
 
 def load_module():
     nfdump_stats_v2 = importlib.import_module('nfdump_stats_v2')
@@ -125,6 +127,13 @@ def test_parse_nfcapd_bucket_start_uses_first_fold_for_ambiguous_fall_back(monke
         module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115')
         == 1762071300
     )
+
+
+def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
+    module = load_module()
+
+    with pytest.raises(ValueError, match='Invalid nfcapd filename'):
+        module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115.tmp')
 
 
 def test_read_protocol_counters_skips_sparse_nfdump_rows(monkeypatch, caplog) -> None:

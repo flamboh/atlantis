@@ -728,7 +728,8 @@ def test_discover_nfcapd_tree_specs_uses_canonical_layout(tmp_path: Path) -> Non
         root / 'oh_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000',
     ]
     ignored = root / 'oh_ir1_gw' / '2025' / '02' / '02' / 'nfcapd.202502020000'
-    for path in [*valid, ignored]:
+    tmp_file = root / 'oh_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010005.tmp'
+    for path in [*valid, ignored, tmp_file]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('', encoding='utf-8')
 

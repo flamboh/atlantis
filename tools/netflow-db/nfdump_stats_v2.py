@@ -11,6 +11,7 @@ import csv
 import ipaddress
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from stats_v2 import protocol_metric_keys
 NFDUMP_TIMEOUT_SECONDS = 300
 PIPELINE_TIMEZONE = ZoneInfo(os.environ.get('NETFLOW_TIMEZONE', 'America/Los_Angeles'))
 LOGGER = logging.getLogger(__name__)
+NFCAPD_FILENAME_RE = re.compile(r'^nfcapd\.(\d{12})$')
 
 
 def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
@@ -78,6 +80,11 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
             'netflow_rows': [strip_internal_keys(netflow_ipv4), strip_internal_keys(netflow_ipv6)],
         },
     }
+
+
+def is_nfcapd_bucket_filename(name: str) -> bool:
+    """Return true for canonical nfcapd bucket filenames."""
+    return NFCAPD_FILENAME_RE.fullmatch(name) is not None
 
 
 def read_protocol_netflow_row(
@@ -270,9 +277,10 @@ def family_filter(ip_version: int) -> list[str]:
 def parse_nfcapd_bucket_start(path: str) -> int:
     """Parse the local-time 5m bucket from an nfcapd filename."""
     name = Path(path).name
-    if not name.startswith('nfcapd.'):
+    match = NFCAPD_FILENAME_RE.fullmatch(name)
+    if match is None:
         raise ValueError(f'Invalid nfcapd filename: {name}')
-    timestamp = name.split('.', 1)[1]
+    timestamp = match.group(1)
     local_time = datetime.strptime(timestamp, '%Y%m%d%H%M')
     # Ambiguous fall-back labels cannot distinguish both folds. Canonical nfcapd
     # paths contain one file per local 5m label, so use the first fold.
