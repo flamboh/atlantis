@@ -2,7 +2,7 @@
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { createEventDispatcher, onDestroy, tick } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { Chart } from 'chart.js/auto';
+	import { Chart } from './chart-registry';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
@@ -30,7 +30,6 @@
 		endRangeDrag,
 		buildMirroredSelectionStyle
 	} from './chart-utils';
-	import { verticalCrosshairPlugin } from './crosshair-plugin';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
 	import { theme } from '$lib/stores/theme.svelte';
@@ -40,12 +39,9 @@
 		readCachedWindow,
 		type TimeRange
 	} from '$lib/utils/window-cache';
-	import { SvelteMap } from 'svelte/reactivity';
 
 	const CHART_ID = 'ip';
 
-	// Register the crosshair plugin once
-	Chart.register(verticalCrosshairPlugin);
 	import {
 		dateStringToEpochPST,
 		epochToPSTComponents,
@@ -485,7 +481,7 @@
 		).sort((a, b) => a - b);
 		const routers = Array.from(new Set(selectedBuckets.map((bucket) => bucket.router))).sort();
 
-		const labelSamples = new SvelteMap<number, IpStatsBucket>();
+		const labelSamples = new Map<number, IpStatsBucket>();
 		selectedBuckets.forEach((bucket) => {
 			if (!labelSamples.has(bucket.bucketStart)) {
 				labelSamples.set(bucket.bucketStart, bucket);
@@ -497,7 +493,7 @@
 			return bucket ? formatBucketLabel(bucket, currentGranularity) : '';
 		});
 
-		const bucketMap = new SvelteMap<string, IpStatsBucket>();
+		const bucketMap = new Map<string, IpStatsBucket>();
 		selectedBuckets.forEach((bucket) => {
 			bucketMap.set(`${bucket.router}-${bucket.bucketStart}`, bucket);
 		});
@@ -541,6 +537,7 @@
 					onClick: handleChartClick,
 					responsive: true,
 					maintainAspectRatio: false,
+					animation: false,
 					interaction: { mode: 'index', intersect: false },
 					plugins: {
 						legend: { position: 'top', labels: { color: textColor } },
@@ -581,6 +578,7 @@
 								autoSkip: false,
 								maxRotation: 45,
 								minRotation: 45,
+								sampleSize: 12,
 								callback: (_value, idx) =>
 									formatTickLabel(
 										bucketStarts[idx as number] ?? 0,
@@ -630,6 +628,7 @@
 						autoSkip: false,
 						maxRotation: 45,
 						minRotation: 45,
+						sampleSize: 12,
 						callback: (_value, idx) =>
 							formatTickLabel(bucketStarts[idx as number] ?? 0, currentGranularity, idx as number)
 					},
@@ -684,7 +683,7 @@
 					}
 				}
 			} as Record<string, unknown>;
-			chart.update();
+			chart.update('none');
 		}
 	}
 

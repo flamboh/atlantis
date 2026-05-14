@@ -2,7 +2,7 @@
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { createEventDispatcher, onDestroy, tick } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { Chart } from 'chart.js/auto';
+	import { Chart } from './chart-registry';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
 	import type { GroupByOption } from '$lib/components/netflow/types.ts';
@@ -42,7 +42,6 @@
 		readCachedWindow,
 		type TimeRange
 	} from '$lib/utils/window-cache';
-	import { SvelteMap } from 'svelte/reactivity';
 
 	const CHART_ID = 'spectrum';
 
@@ -580,7 +579,7 @@
 		maxAlpha: number;
 	} {
 		// Create a map for quick lookup: bucketStart -> spectrum points
-		const bucketMap = new SvelteMap<number, SpectrumPoint[]>();
+		const bucketMap = new Map<number, SpectrumPoint[]>();
 		selectedBuckets.forEach((bucket) => {
 			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
 			if (points.length > 0) {
@@ -724,6 +723,7 @@
 								autoSkip: false,
 								maxRotation: 45,
 								minRotation: 45,
+								sampleSize: 12,
 								callback: (value: unknown) => {
 									const bucketStart = getBucketStartForTickValue(value);
 									if (bucketStart === null) return '';
@@ -785,6 +785,7 @@
 						autoSkip: false,
 						maxRotation: 45,
 						minRotation: 45,
+						sampleSize: 12,
 						callback: (value: unknown) => {
 							const bucketStart = getBucketStartForTickValue(value);
 							if (bucketStart === null) return '';

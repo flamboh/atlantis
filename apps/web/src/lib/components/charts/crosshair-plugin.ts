@@ -1,4 +1,5 @@
 import type { Chart, ChartArea, Plugin, ChartEvent } from 'chart.js';
+import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
 
 interface CrosshairState {
 	mouseX: number | null;
@@ -6,6 +7,7 @@ interface CrosshairState {
 	showTooltip: boolean;
 	tooltipTimeout: NodeJS.Timeout | null;
 	hoveredDate: string | null;
+	drawFrame: number | null;
 }
 
 interface CrosshairOptions {
@@ -38,7 +40,6 @@ interface CrosshairOptions {
 
 // Store mouse state for each chart instance
 const chartStates = new WeakMap<Chart, CrosshairState>();
-
 // Helper function to calculate the hovered date from mouse position
 function calculateHoveredDate(chart: Chart, mouseX: number): string | null {
 	try {
@@ -134,6 +135,17 @@ function snapCrosshairX(x: number): number {
 	return Math.round(x) + 0.5;
 }
 
+function scheduleChartDraw(chart: Chart, state: CrosshairState): void {
+	if (state.drawFrame !== null) {
+		return;
+	}
+
+	state.drawFrame = requestDrawFrame(() => {
+		state.drawFrame = null;
+		chart.draw();
+	});
+}
+
 export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 	id: 'verticalCrosshair',
 
@@ -165,7 +177,8 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 			isMouseOver: false,
 			showTooltip: false,
 			tooltipTimeout: null,
-			hoveredDate: null
+			hoveredDate: null,
+			drawFrame: null
 		});
 	},
 
@@ -202,7 +215,7 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 				// Hide tooltip while moving
 				if (state.showTooltip) {
 					state.showTooltip = false;
-					chart.draw(); // Redraw to hide tooltip
+					scheduleChartDraw(chart, state);
 				}
 
 				// Calculate hovered date
@@ -216,11 +229,11 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 					state.tooltipTimeout = setTimeout(() => {
 						state.showTooltip = true;
 						state.tooltipTimeout = null;
-						chart.draw(); // Trigger redraw to show tooltip
+						scheduleChartDraw(chart, state);
 					}, options.tooltip.delay);
 				}
 
-				chart.draw(); // Trigger redraw to show crosshair
+				scheduleChartDraw(chart, state);
 			} else if (state.isMouseOver) {
 				// Mouse left chart area
 				if (state.tooltipTimeout !== null) {
@@ -235,7 +248,7 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 				// Notify sync callback that hover ended
 				options.sync?.onHover?.(null);
 
-				chart.draw(); // Trigger redraw to hide crosshair and tooltip
+				scheduleChartDraw(chart, state);
 			}
 		} else if (event.type === 'mouseout') {
 			// Mouse completely left the canvas
@@ -251,7 +264,7 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 			// Notify sync callback that hover ended
 			options.sync?.onHover?.(null);
 
-			chart.draw(); // Trigger redraw to hide crosshair and tooltip
+			scheduleChartDraw(chart, state);
 		}
 	},
 
@@ -331,6 +344,9 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 		const state = chartStates.get(chart);
 		if (state && state.tooltipTimeout !== null) {
 			clearTimeout(state.tooltipTimeout);
+		}
+		if (state && state.drawFrame !== null) {
+			cancelDrawFrame(state.drawFrame);
 		}
 		chartStates.delete(chart);
 	}

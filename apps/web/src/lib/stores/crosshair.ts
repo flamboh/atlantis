@@ -1,4 +1,5 @@
 import type { Chart } from 'chart.js';
+import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
 
 export interface CrosshairSnapshot {
 	label: string | null;
@@ -12,6 +13,7 @@ export interface CrosshairSnapshot {
  */
 class CrosshairStore {
 	private charts = new Map<string, Chart>();
+	private drawFrames = new Map<Chart, number>();
 	private _hoveredLabel: string | null = null;
 	private _sourceChartId: string | null = null;
 	private listeners = new Set<(snapshot: CrosshairSnapshot) => void>();
@@ -39,7 +41,31 @@ class CrosshairStore {
 	 * Call this when the chart is destroyed/unmounted.
 	 */
 	unregister(id: string): void {
+		const chart = this.charts.get(id);
+		if (chart) {
+			this.cancelScheduledDraw(chart);
+		}
 		this.charts.delete(id);
+	}
+
+	private cancelScheduledDraw(chart: Chart): void {
+		const frame = this.drawFrames.get(chart);
+		if (frame !== undefined) {
+			cancelDrawFrame(frame);
+			this.drawFrames.delete(chart);
+		}
+	}
+
+	private scheduleDraw(chart: Chart): void {
+		if (this.drawFrames.has(chart)) {
+			return;
+		}
+
+		const frame = requestDrawFrame(() => {
+			this.drawFrames.delete(chart);
+			chart.draw();
+		});
+		this.drawFrames.set(chart, frame);
 	}
 
 	subscribe(listener: (snapshot: CrosshairSnapshot) => void): () => void {
@@ -68,7 +94,7 @@ class CrosshairStore {
 		// Directly redraw all OTHER charts - no reactive overhead
 		this.charts.forEach((chart, id) => {
 			if (id !== sourceId) {
-				chart.draw();
+				this.scheduleDraw(chart);
 			}
 		});
 	}
@@ -87,7 +113,7 @@ class CrosshairStore {
 
 		// Redraw all charts to clear crosshairs
 		this.charts.forEach((chart) => {
-			chart.draw();
+			this.scheduleDraw(chart);
 		});
 	}
 

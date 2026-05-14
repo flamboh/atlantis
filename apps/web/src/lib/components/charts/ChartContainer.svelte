@@ -1,11 +1,10 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { Chart } from 'chart.js/auto';
 	import type { TooltipItem } from 'chart.js';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { verticalCrosshairPlugin } from './crosshair-plugin';
+	import { Chart } from './chart-registry';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
 	import { theme } from '$lib/stores/theme.svelte';
@@ -501,6 +500,7 @@
 					maxRotation: compactChart ? 0 : 45,
 					maxTicksLimit: compactChart ? 4 : undefined,
 					minRotation: compactChart ? 0 : 45,
+					sampleSize: 12,
 					callback: (_val: string | number, idx: number) =>
 						formatTickLabel(getLabelPST(Number(idx)), groupBy, Number(idx))
 				},
@@ -568,6 +568,7 @@
 				onClick: handleChartClick,
 				responsive: true,
 				maintainAspectRatio: false,
+				animation: false,
 				interaction: {
 					mode: 'index',
 					intersect: false
@@ -636,9 +637,6 @@
 			tooltipBorderColor
 		} = getChartColors();
 
-		// Register the crosshair plugin
-		Chart.register(verticalCrosshairPlugin);
-
 		// Initialize empty chart (matches original)
 		chart = new Chart(chartCanvas, {
 			type: 'line',
@@ -666,6 +664,7 @@
 							autoSkip: false,
 							maxRotation: 45,
 							minRotation: 45,
+							sampleSize: 12,
 							callback: (_val: string | number, idx: number) =>
 								formatTickLabel(
 									getLabelPSTFromLabels(
@@ -800,7 +799,7 @@
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			chart.options = config.options as any;
 			compactChartMode = isCompactChart();
-			chart.update();
+			chart.update('none');
 		}
 	});
 
