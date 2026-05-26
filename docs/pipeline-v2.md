@@ -48,6 +48,18 @@ pipeline processes this tree one calendar day at a time into
 where every discovered nfcapd file is already marked `processed`; partial days
 are rebuilt as a full day so aggregate rows stay coherent.
 
+Native `nfcapd` buckets are written as each worker payload completes. The
+pipeline keeps only coarser aggregate union state after each 5-minute payload is
+written, instead of retaining every raw bucket address list through the full day.
+
+By default, `nfcapd_tree` also materializes bounded gaps as zero buckets. For
+each source, the pipeline fills missing 5-minute buckets only between the first
+and last real `nfcapd` file discovered for that source. Gap records use
+synthetic `gap://nfcapd/<source>/<YYYYMMDDHHMM>` locators in
+`processed_inputs_v2` while keeping `input_kind = 'nfcapd'`, so existing
+databases can be migrated in place. Set `"zero_fill_gaps": false` on an
+`nfcapd_tree` input to process only files that exist on disk.
+
 The generated SQLite database also gets a `datasets` metadata row copied from
 `datasets.json`. Local web discovery scans `data/*/netflow.sqlite`, reads those
 metadata rows, and opens the selected dataset's SQLite file for API queries.
@@ -275,21 +287,41 @@ CSV files and tar archives such as `*_csv.tar.gz`.
 
 ## NFDUMP Contract
 
-The current `nfcapd` adapter calls `nfdump` with a fixed csv order:
+The current `nfcapd` adapter uses grouped `nfdump` queries instead of
+materializing every flow row in Python. Each 5-minute file uses one grouped
+address query plus one grouped protocol query per IP family:
 
 ```bash
-nfdump -r <file> -q -o 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos' ipv4
-nfdump -r <file> -q -o 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos' ipv6 -6
+nfdump -r <file> -q -a -A srcip,dstip -o 'fmt:%sa,%da'
+nfdump -r <file> -q -a -A proto -o csv ipv4 -N
+nfdump -r <file> -q -a -A proto -o csv ipv6 -6 -N
 ```
 
-The v2 adapter treats these fields as:
+Use `tools/netflow-db/benchmark_nfcapd_v2.py` to capture repeatable slice
+timings. Payload mode isolates nfdump payload construction:
 
-- `time_received = %trr`
-- `time_end = %ter`
-- `time_start = %tsr`
+```bash
+python tools/netflow-db/benchmark_nfcapd_v2.py \
+  --root /research/obo/netflow_datasets/uoregon \
+  --source oh_ir1_gw \
+  --day 2025-04-15 \
+  --limit 24
+```
 
-The raw epoch forms are required because `%tr`, `%te`, and `%ts` emit formatted
-timestamps in nfdump CSV output.
+Pipeline mode includes SQLite writes and aggregate row generation:
+
+```bash
+python tools/netflow-db/benchmark_nfcapd_v2.py \
+  --mode pipeline \
+  --root /research/obo/netflow_datasets/uoregon \
+  --source oh_ir1_gw \
+  --day 2025-04-15 \
+  --limit 24 \
+  --max-workers 1
+```
+
+Add `--legacy-address-split` to either benchmark command to compare against the
+previous two-command IPv4/IPv6 address extraction shape.
 
 nfdump can emit ICMP type/code values such as `3.1` in port fields. Pipeline v2
 normalizes decimal pseudo-ports to `0` because they are not transport ports.

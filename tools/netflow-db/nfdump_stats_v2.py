@@ -30,8 +30,7 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
     """Build 5m stats and raw aggregate sets for one nfcapd file."""
     bucket_start = parse_nfcapd_bucket_start(path)
     bucket_end = bucket_start + 300
-    source_ipv4, destination_ipv4 = read_address_sets(path, 4)
-    source_ipv6, destination_ipv6 = read_address_sets(path, 6)
+    source_ipv4, destination_ipv4, source_ipv6, destination_ipv6 = read_address_sets_by_version(path)
     netflow_ipv4 = read_protocol_netflow_row(path, source_id, bucket_start, bucket_end, 4)
     netflow_ipv6 = read_protocol_netflow_row(path, source_id, bucket_start, bucket_end, 6)
     protocols_ipv4 = protocols_from_netflow_row(netflow_ipv4)
@@ -185,6 +184,48 @@ def parse_protocol_counter_row(
         return None
 
     return (protocol, packets, bytes_value, flows)
+
+
+def read_address_sets_by_version(path: str) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Read unique grouped source and destination address sets split by IP version."""
+    result = run_nfdump(
+        [
+            'nfdump',
+            '-r',
+            path,
+            '-q',
+            '-a',
+            '-A',
+            'srcip,dstip',
+            '-o',
+            'fmt:%sa,%da',
+        ]
+    )
+    source_ipv4 = set()
+    destination_ipv4 = set()
+    source_ipv6 = set()
+    destination_ipv6 = set()
+    for values in csv.reader(result.stdout.splitlines()):
+        if len(values) < 2:
+            continue
+        source_ip = values[0].strip()
+        destination_ip = values[1].strip()
+        if looks_like_ipv4_address(source_ip) and looks_like_ipv4_address(destination_ip):
+            source_ipv4.add(source_ip)
+            destination_ipv4.add(destination_ip)
+            continue
+        if ':' in source_ip and ':' in destination_ip:
+            try:
+                source_ipv6.add(str(ipaddress.ip_address(source_ip)))
+                destination_ipv6.add(str(ipaddress.ip_address(destination_ip)))
+            except ValueError:
+                continue
+    return source_ipv4, destination_ipv4, source_ipv6, destination_ipv6
+
+
+def looks_like_ipv4_address(value: str) -> bool:
+    """Return true for trusted nfdump IPv4 address text."""
+    return bool(value) and '.' in value and all(char.isdigit() or char == '.' for char in value)
 
 
 def read_address_sets(path: str, ip_version: int) -> tuple[set[str], set[str]]:

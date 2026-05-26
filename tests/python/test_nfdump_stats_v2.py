@@ -12,8 +12,10 @@ def load_module():
 def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) -> None:
     monkeypatch.setenv('NETFLOW_TIMEZONE', 'America/Los_Angeles')
     module = load_module()
+    commands = []
 
     def fake_run(command, capture_output, text, timeout):
+        commands.append(command)
         assert capture_output is True
         assert text is True
         assert timeout == 300
@@ -39,18 +41,17 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
                 ),
                 stderr='',
             )
-        if '-A srcip,dstip' in command_text and 'ipv4' in command:
+        if '-A srcip,dstip' in command_text:
+            assert 'ipv4' not in command
+            assert 'ipv6' not in command
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout='192.0.2.1,198.51.100.1\n192.0.2.2,198.51.100.2\n',
-                stderr='',
-            )
-        if '-A srcip,dstip' in command_text and 'ipv6' in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout='2001:db8::1,2001:db8::2\n',
+                stdout=(
+                    '192.0.2.1,198.51.100.1\n'
+                    '192.0.2.2,198.51.100.2\n'
+                    '2001:db8::1,2001:db8::2\n'
+                ),
                 stderr='',
             )
         raise AssertionError(f'unexpected command: {command}')
@@ -117,6 +118,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert payload['ip_row']['da_ipv6_count'] == 1
     assert payload['protocol_row']['protocols_list_ipv4'] == '17,6'
     assert payload['raw_bucket']['maad_source_ipv4'] == ['192.0.2.1', '192.0.2.2']
+    assert len(commands) == 3
 
 
 def test_parse_nfcapd_bucket_start_uses_first_fold_for_ambiguous_fall_back(monkeypatch) -> None:
@@ -134,6 +136,34 @@ def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
 
     with pytest.raises(ValueError, match='Invalid nfcapd filename'):
         module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115.tmp')
+
+
+def test_read_address_sets_by_version_uses_fast_ipv4_path(monkeypatch) -> None:
+    module = load_module()
+
+    def fake_run(command, capture_output, text, timeout):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                '192.0.2.1,198.51.100.1\n'
+                'source,destination\n'
+                '2001:0db8::1,2001:0db8::2\n'
+                'not-ip,198.51.100.2\n'
+            ),
+            stderr='',
+        )
+
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+
+    source_ipv4, destination_ipv4, source_ipv6, destination_ipv6 = module.read_address_sets_by_version(
+        '/captures/nfcapd.202508190500'
+    )
+
+    assert source_ipv4 == {'192.0.2.1'}
+    assert destination_ipv4 == {'198.51.100.1'}
+    assert source_ipv6 == {'2001:db8::1'}
+    assert destination_ipv6 == {'2001:db8::2'}
 
 
 def test_read_protocol_counters_skips_sparse_nfdump_rows(monkeypatch, caplog) -> None:
