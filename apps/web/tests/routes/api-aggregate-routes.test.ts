@@ -88,6 +88,35 @@ describe('aggregate API routes', () => {
 		});
 	});
 
+	it('keeps selected unique-count sources separate', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(getDatasetDb).mockResolvedValue({
+			all
+		} as never);
+
+		const response = await getIpStats({
+			url: new URL(
+				'http://localhost/api/ip/stats?routers=cc_ir1_gw,oh_ir1_gw,uoregon_all&granularity=1h&startDate=100&endDate=200'
+			)
+		} as never);
+
+		expect(response.status).toBe(200);
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM ip_stats_v2'), [
+			'1h',
+			'cc_ir1_gw',
+			'oh_ir1_gw',
+			'uoregon_all',
+			100,
+			200
+		]);
+		await expect(response.json()).resolves.toEqual({
+			buckets: [],
+			availableGranularities: ['5m', '30m', '1h', '1d'],
+			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
+		});
+	});
+
 	it('maps protocol unknown-dataset errors to 400', async () => {
 		vi.mocked(getRequestedDataset).mockImplementation(async () => {
 			throw new Error("Unknown dataset 'bad'");
@@ -99,6 +128,35 @@ describe('aggregate API routes', () => {
 
 		expect(response.status).toBe(400);
 		await expect(response.json()).resolves.toEqual({ error: "Unknown dataset 'bad'" });
+	});
+
+	it('keeps selected protocol sources separate', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(getDatasetDb).mockResolvedValue({
+			all
+		} as never);
+
+		const response = await getProtocolStats({
+			url: new URL(
+				'http://localhost/api/protocol/stats?routers=cc_ir1_gw,oh_ir1_gw,uoregon_all&granularity=1h&startDate=100&endDate=200'
+			)
+		} as never);
+
+		expect(response.status).toBe(200);
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM protocol_stats_v2'), [
+			'1h',
+			'cc_ir1_gw',
+			'oh_ir1_gw',
+			'uoregon_all',
+			100,
+			200
+		]);
+		await expect(response.json()).resolves.toEqual({
+			buckets: [],
+			availableGranularities: ['5m', '30m', '1h', '1d'],
+			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
+		});
 	});
 
 	it('parses spectrum and structure json payloads, tolerating bad json', async () => {
@@ -152,6 +210,34 @@ describe('aggregate API routes', () => {
 				}
 			],
 			requestedRouters: ['r1']
+		});
+	});
+
+	it('keeps selected spectrum sources separate', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(getDatasetDb).mockResolvedValue({
+			all
+		} as never);
+
+		const response = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=cc_ir1_gw,oh_ir1_gw,uoregon_all&granularity=1h&startDate=100&endDate=200'
+			)
+		} as never);
+
+		expect(response.status).toBe(200);
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM spectrum_stats_v2'), [
+			'1h',
+			'cc_ir1_gw',
+			'oh_ir1_gw',
+			'uoregon_all',
+			100,
+			200
+		]);
+		await expect(response.json()).resolves.toEqual({
+			buckets: [],
+			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
 		});
 	});
 });

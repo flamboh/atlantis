@@ -7,14 +7,19 @@ import type {
 	NetflowStatsResponse,
 	NetflowStatsResult
 } from '$lib/types/types';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import {
+	getDatasetDb,
+	getRequestedDataset,
+	listDatasetSourceDefinitions
+} from '$lib/server/datasets';
 import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
 import {
 	getBucketStartQuery,
 	groupByToGranularity,
 	parseSourceIds,
 	parseTimestamp,
-	placeholders
+	placeholders,
+	resolveSourceIds
 } from '$lib/server/netflow-v2';
 
 const V2_IP_VERSION_BY_FAMILY: Record<Exclude<NetflowIpFamily, 'all'>, 4 | 6> = {
@@ -119,6 +124,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const db = await getDatasetDb(dataset, platform);
+		const resolvedSources = resolveSourceIds(
+			await listDatasetSourceDefinitions(dataset, platform),
+			routers
+		);
 		const granularity = groupByToGranularity(groupBy);
 		const useAggregate = granularity !== '5m';
 		const timeColumn = 'bucket_start';
@@ -134,7 +143,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				${bucketStartQuery} as bucketStart,
 				${metricSelects.join(',\n\t\t\t\t')}
 			FROM ${tableName} 
-			WHERE ${sourceColumn} IN (${placeholders(routers)})
+			WHERE ${sourceColumn} IN (${placeholders(resolvedSources)})
 			${granularityClause}
 			AND ${timeColumn} >= ? 
 			AND ${timeColumn} < ?
@@ -142,7 +151,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			ORDER BY bucketStart
 		`;
 
-		const params = useAggregate ? [...routers, granularity, start, end] : [...routers, start, end];
+		const params = useAggregate
+			? [...resolvedSources, granularity, start, end]
+			: [...resolvedSources, start, end];
 
 		const rows = await db.all<Record<string, number | null>>(query, params);
 		const result = rows.map(normalizeRow);
