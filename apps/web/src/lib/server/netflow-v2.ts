@@ -1,4 +1,4 @@
-import type { IpGranularity } from '$lib/types/types';
+import { IP_GRANULARITIES, type IpGranularity } from '$lib/types/types';
 import type { StructureFunctionPoint } from '$lib/types/types';
 type RawStructureFunctionPoint = {
 	q: number;
@@ -8,8 +8,23 @@ type RawStructureFunctionPoint = {
 	s?: number;
 };
 
+export interface AggregateStatsParams {
+	routers: string[];
+	granularity: IpGranularity;
+	start: number;
+	end: number;
+}
+
+export interface RequestValidationError {
+	error: string;
+	status: 400;
+}
+
 export const FIVE_MINUTE_GRANULARITY: IpGranularity = '5m';
+export const DEFAULT_IP_GRANULARITY: IpGranularity = '1h';
 export type NetflowSchemaVersion = 'v2';
+
+const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
 
 export function assertNetflowV2Database(): void {
 	return;
@@ -31,6 +46,39 @@ export function parseTimestamp(param: string | null): number | null {
 	if (!param) return null;
 	const value = Number(param);
 	return Number.isFinite(value) ? value : null;
+}
+
+export function parseIpGranularity(param: string | null): IpGranularity | null {
+	if (!param) {
+		return null;
+	}
+
+	return VALID_IP_GRANULARITIES.has(param) ? (param as IpGranularity) : null;
+}
+
+export function parseIpGranularityOrDefault(param: string | null): IpGranularity {
+	return parseIpGranularity(param) ?? DEFAULT_IP_GRANULARITY;
+}
+
+export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
+	const routers = parseSourceIds(url.searchParams.get('routers'));
+	const granularity = parseIpGranularityOrDefault(url.searchParams.get('granularity'));
+	const start = parseTimestamp(url.searchParams.get('startDate'));
+	const end = parseTimestamp(url.searchParams.get('endDate'));
+
+	if (routers.length === 0) {
+		return { error: 'No routers selected', status: 400 };
+	}
+
+	if (start === null || end === null) {
+		return { error: 'Invalid start or end time', status: 400 };
+	}
+
+	if (start >= end) {
+		return { error: 'Start time must be before end time', status: 400 };
+	}
+
+	return { routers, granularity, start, end };
 }
 
 export function placeholders(values: unknown[]): string {

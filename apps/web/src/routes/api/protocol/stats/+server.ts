@@ -2,41 +2,18 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
 	IP_GRANULARITIES,
-	type IpGranularity,
 	type ProtocolStatsBucket,
 	type ProtocolStatsResponse
 } from '$lib/types/types';
 import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
-import { parseSourceIds, parseTimestamp, placeholders } from '$lib/server/netflow-v2';
-
-const VALID_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
-
-function parseGranularity(param: string | null): IpGranularity | null {
-	if (!param) return null;
-	if (VALID_GRANULARITIES.has(param)) {
-		return param as IpGranularity;
-	}
-	return null;
-}
+import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v2';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
-	const routers = parseSourceIds(url.searchParams.get('routers'));
-	const granularity =
-		parseGranularity(url.searchParams.get('granularity')) ?? (IP_GRANULARITIES[2] as IpGranularity); // default 1h
-	const start = parseTimestamp(url.searchParams.get('startDate'));
-	const end = parseTimestamp(url.searchParams.get('endDate'));
-
-	if (routers.length === 0) {
-		return json({ error: 'No routers selected' }, { status: 400 });
+	const params = parseAggregateStatsParams(url);
+	if ('error' in params) {
+		return json({ error: params.error }, { status: params.status });
 	}
-
-	if (start === null || end === null) {
-		return json({ error: 'Invalid start or end time' }, { status: 400 });
-	}
-
-	if (start >= end) {
-		return json({ error: 'Start time must be before end time' }, { status: 400 });
-	}
+	const { routers, granularity, start, end } = params;
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);

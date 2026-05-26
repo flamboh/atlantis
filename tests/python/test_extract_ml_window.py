@@ -48,8 +48,13 @@ def make_v2_source_db(path: Path) -> sqlite3.Connection:
         ) WITHOUT ROWID
         """
     )
-    conn.execute('CREATE INDEX idx_netflow_stats_v2_bucket_source ON netflow_stats_v2(bucket_start, source_id, ip_version)')
-    conn.execute('INSERT INTO datasets (id, label, default_start_date) VALUES (?, ?, ?)', ('uoregon', 'UONet-in v2', '2025-02-01'))
+    conn.execute(
+        'CREATE INDEX idx_netflow_stats_v2_bucket_source ON netflow_stats_v2(bucket_start, source_id, ip_version)'
+    )
+    conn.execute(
+        'INSERT INTO datasets (id, label, default_start_date) VALUES (?, ?, ?)',
+        ('uoregon', 'UONet-in v2', '2025-02-01'),
+    )
     conn.executemany(
         'INSERT INTO netflow_stats_v2 (source_id, bucket_start, bucket_end, ip_version, flows) VALUES (?, ?, ?, ?, ?)',
         [

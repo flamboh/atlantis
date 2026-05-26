@@ -27,6 +27,11 @@
 		endRangeDrag,
 		buildMirroredSelectionStyle
 	} from './chart-utils';
+	import {
+		formatIpGranularityTick,
+		formatTemporalBucketLabel,
+		shouldHighlightIpGranularityGrid
+	} from './ip-time-axis';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
 	import { theme } from '$lib/stores/theme.svelte';
@@ -39,12 +44,7 @@
 
 	const CHART_ID = 'protocol';
 
-	import {
-		dateStringToEpochPST,
-		epochToPSTComponents,
-		formatDateAsPSTDateString,
-		getWeekdayName
-	} from '$lib/utils/timezone';
+	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
 
 	type SeriesKey = 'uniqueProtocolsIpv4' | 'uniqueProtocolsIpv6';
 
@@ -125,82 +125,6 @@
 
 	function toEpochSeconds(dateString: string, isEnd = false): number {
 		return dateStringToEpochPST(dateString, isEnd);
-	}
-
-	function formatBucketLabel(bucket: ProtocolStatsBucket, granularity: IpGranularity): string {
-		const pst = epochToPSTComponents(bucket.bucketStart);
-		const year = pst.year;
-		const month = `${pst.month}`.padStart(2, '0');
-		const day = `${pst.day}`.padStart(2, '0');
-		const hours = `${pst.hours}`.padStart(2, '0');
-		const minutes = `${pst.minutes}`.padStart(2, '0');
-		return granularity === '1d'
-			? `${year}-${month}-${day}`
-			: `${year}-${month}-${day} ${hours}:${minutes}`;
-	}
-
-	function formatTickLabel(
-		bucketStart: number,
-		granularity: IpGranularity,
-		_index: number
-	): string {
-		const pst = epochToPSTComponents(bucketStart);
-		const day = pst.day.toString().padStart(2, '0');
-		const month = pst.month.toString().padStart(2, '0');
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-		const weekday = getWeekdayName(pst.dayOfWeek);
-
-		if (granularity === '1d') {
-			return pst.dayOfWeek === 1 ? `Mon ${month}/${day}` : '';
-		}
-
-		if (granularity === '1h') {
-			if (hours === 0) {
-				return `${weekday} ${pst.month}/${pst.day}`;
-			}
-			return '';
-		}
-
-		if (granularity === '30m') {
-			if (minutes === 0 && (hours === 0 || hours === 12)) {
-				return `${weekday} ${pst.month}/${pst.day} ${hours.toString().padStart(2, '0')}:00`;
-			}
-			return '';
-		}
-
-		if (granularity === '5m') {
-			if (minutes === 0) {
-				return `${weekday} ${pst.month}/${pst.day} ${hours.toString().padStart(2, '0')}:00`;
-			}
-			return '';
-		}
-
-		return '';
-	}
-
-	function shouldHighlightTick(
-		bucketStart: number,
-		granularity: IpGranularity,
-		index: number
-	): boolean {
-		const pst = epochToPSTComponents(bucketStart);
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-
-		if (granularity === '1d') {
-			return pst.dayOfWeek === 1;
-		}
-		if (granularity === '1h') {
-			return hours === 0;
-		}
-		if (granularity === '30m') {
-			return minutes === 0 && (hours === 0 || hours === 12);
-		}
-		if (granularity === '5m') {
-			return minutes === 0;
-		}
-		return index === 0;
 	}
 
 	const HUE_STEP = 110;
@@ -460,7 +384,7 @@
 
 		const labels = bucketStarts.map((bucketStart) => {
 			const bucket = labelSamples.get(bucketStart);
-			return bucket ? formatBucketLabel(bucket, currentGranularity) : '';
+			return bucket ? formatTemporalBucketLabel(bucket.bucketStart, currentGranularity) : '';
 		});
 
 		const bucketMap = new Map<string, ProtocolStatsBucket>();
@@ -548,7 +472,7 @@
 								minRotation: 45,
 								sampleSize: 12,
 								callback: (_value, idx) =>
-									formatTickLabel(
+									formatIpGranularityTick(
 										bucketStarts[idx as number] ?? 0,
 										currentGranularity,
 										idx as number
@@ -556,7 +480,11 @@
 							},
 							grid: {
 								color: (ctx) =>
-									shouldHighlightTick(bucketStarts[ctx.index] ?? 0, currentGranularity, ctx.index)
+									shouldHighlightIpGranularityGrid(
+										bucketStarts[ctx.index] ?? 0,
+										currentGranularity,
+										ctx.index
+									)
 										? gridColor
 										: gridHighlightColor
 							}
@@ -589,11 +517,19 @@
 						minRotation: 45,
 						sampleSize: 12,
 						callback: (_value, idx) =>
-							formatTickLabel(bucketStarts[idx as number] ?? 0, currentGranularity, idx as number)
+							formatIpGranularityTick(
+								bucketStarts[idx as number] ?? 0,
+								currentGranularity,
+								idx as number
+							)
 					},
 					grid: {
 						color: (ctx) =>
-							shouldHighlightTick(bucketStarts[ctx.index] ?? 0, currentGranularity, ctx.index)
+							shouldHighlightIpGranularityGrid(
+								bucketStarts[ctx.index] ?? 0,
+								currentGranularity,
+								ctx.index
+							)
 								? gridColor
 								: gridHighlightColor
 					}

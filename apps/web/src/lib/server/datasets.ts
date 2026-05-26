@@ -36,7 +36,6 @@ export interface ReadonlyDatasetDb {
 	prepare(sql: string): PreparedStatement;
 }
 
-let localDatasetCache: LocalDatasetRow[] | null = null;
 const localDbCache = new Map<string, ReadonlyDatasetDb>();
 
 function getEnv(name: string): string | undefined {
@@ -258,10 +257,6 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 }
 
 async function listLocalDatasetRows(): Promise<LocalDatasetRow[]> {
-	if (localDatasetCache) {
-		return localDatasetCache;
-	}
-
 	const dbPaths = await discoverLocalSqlitePaths();
 	const datasets = (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
 		.flat()
@@ -271,7 +266,6 @@ async function listLocalDatasetRows(): Promise<LocalDatasetRow[]> {
 		throw new Error('No local datasets configured in discovered SQLite databases');
 	}
 
-	localDatasetCache = datasets;
 	return datasets;
 }
 
