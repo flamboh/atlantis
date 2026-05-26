@@ -103,6 +103,7 @@ def test_build_legacy_dataset_registry_uses_env_defaults(monkeypatch: pytest.Mon
             'source_mode': 'subdirs',
             'discovery_mode': 'live',
             'source_ids': ['r2', 'r1'],
+            'sources': [],
         }
     ]
 

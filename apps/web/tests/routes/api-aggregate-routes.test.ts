@@ -4,11 +4,17 @@ import { GET as getIpStats } from '../../src/routes/api/ip/stats/+server';
 import { GET as getProtocolStats } from '../../src/routes/api/protocol/stats/+server';
 import { GET as getSpectrumStats } from '../../src/routes/api/netflow/spectrum-stats/+server';
 import { GET as getStructureStats } from '../../src/routes/api/netflow/structure-stats/+server';
-import { getDatasetDb, getRequestedDataset, listDatasetSources } from '$lib/server/datasets';
+import {
+	getDatasetDb,
+	getRequestedDataset,
+	listDatasetSourceDefinitions,
+	listDatasetSources
+} from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
 	getDatasetDb: vi.fn(),
 	getRequestedDataset: vi.fn(),
+	listDatasetSourceDefinitions: vi.fn(),
 	listDatasetSources: vi.fn()
 }));
 
@@ -55,6 +61,9 @@ describe('aggregate API routes', () => {
 			}
 		]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
+			{ sourceId: 'r1', members: ['r1'] }
+		]);
 		vi.mocked(getDatasetDb).mockResolvedValue({
 			all
 		} as never);
@@ -121,6 +130,9 @@ describe('aggregate API routes', () => {
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
+			{ sourceId: 'r1', members: ['r1'] }
+		]);
 		vi.mocked(getDatasetDb).mockResolvedValue({
 			all
 		} as never);

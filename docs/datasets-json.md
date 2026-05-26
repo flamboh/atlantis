@@ -26,6 +26,11 @@ The file is not meant to be committed with machine-specific paths. Start from
     "db_path": "./data/uoregon/netflow.sqlite",
     "default_start_date": "2025-02-11",
     "source_mode": "subdirs",
+    "sources": [
+      { "source_id": "cc_ir1_gw", "members": ["cc_ir1_gw"] },
+      { "source_id": "oh_ir1_gw", "members": ["oh_ir1_gw"] },
+      { "source_id": "uoregon_all", "members": ["cc_ir1_gw", "oh_ir1_gw"] }
+    ],
     "discovery_mode": "live"
   }
 ]
@@ -38,7 +43,8 @@ The file is not meant to be committed with machine-specific paths. Start from
 - `root_path`: root directory containing the dataset's prepared NetFlow files
 - `db_path`: SQLite output path for that dataset
 - `default_start_date`: default dashboard start date in `YYYY-MM-DD`
-- `source_mode`: currently `subdirs`, meaning each top-level subdirectory is treated as a source/router
+- `source_mode`: currently `subdirs`, meaning nfcapd member files are read from top-level source/router directories
+- `sources`: optional logical source list for nfcapd datasets. `members` are physical top-level directories, and `source_id` is the logical source written to v2 tables. If omitted, each top-level directory is treated as a single-member source. Pipeline v2 copies this membership into SQLite metadata so web queries can avoid double-counting additive metrics and prefer exact union sources for unique-count/spectrum views.
 - `discovery_mode`: descriptive only for now; use `live` for synced data and `static` for imported datasets
 
 ## Notes

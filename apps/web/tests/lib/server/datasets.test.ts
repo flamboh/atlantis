@@ -30,6 +30,12 @@ function createSqliteFixture(): string {
 					bucket_start INTEGER NOT NULL,
 					ip_version INTEGER NOT NULL
 				);
+				CREATE TABLE source_members (
+					dataset_id TEXT NOT NULL,
+					source_id TEXT NOT NULL,
+					member_id TEXT NOT NULL,
+					PRIMARY KEY(dataset_id, source_id, member_id)
+				);
 				INSERT INTO datasets (
 					id,
 					label,
@@ -76,6 +82,80 @@ describe('dataset server helpers', () => {
 		await expect(
 			datasets.getRequestedDataset(new URL('http://localhost/api?dataset=alpha'))
 		).resolves.toBe('alpha');
+	});
+
+	it('lists source member definitions from metadata', async () => {
+		const dbPath = createSqliteFixture();
+		const seedResult = spawnSync(
+			'sqlite3',
+			[
+				dbPath,
+				`
+					INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
+					VALUES ('uoregon_all', 1740823200, 4);
+					INSERT INTO source_members (dataset_id, source_id, member_id)
+					VALUES
+						('alpha', 'router-a', 'router-a'),
+						('alpha', 'router-b', 'router-b'),
+						('alpha', 'uoregon_all', 'router-a'),
+						('alpha', 'uoregon_all', 'router-b');
+				`
+			],
+			{ encoding: 'utf-8' }
+		);
+		expect(seedResult.status, seedResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSourceDefinitions('alpha')).resolves.toEqual([
+			{ sourceId: 'router-a', members: ['router-a'] },
+			{ sourceId: 'router-b', members: ['router-b'] },
+			{ sourceId: 'uoregon_all', members: ['router-a', 'router-b'] }
+		]);
+	});
+
+	it('infers source member definitions from processed nfcapd locators', async () => {
+		const dbPath = createSqliteFixture();
+		const seedResult = spawnSync(
+			'sqlite3',
+			[
+				dbPath,
+				`
+					INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
+					VALUES ('uoregon_all', 1740823200, 4);
+					CREATE TABLE processed_inputs_v2 (
+						input_kind TEXT NOT NULL,
+						input_locator TEXT NOT NULL,
+						source_id TEXT NOT NULL,
+						bucket_start INTEGER NOT NULL,
+						bucket_end INTEGER NOT NULL,
+						status TEXT NOT NULL
+					);
+					INSERT INTO processed_inputs_v2 (
+						input_kind,
+						input_locator,
+						source_id,
+						bucket_start,
+						bucket_end,
+						status
+					) VALUES
+						('nfcapd', '/data/cc_ir1_gw/2025/03/01/nfcapd.202503010000', 'uoregon_all', 1, 2, 'processed'),
+						('nfcapd', '/data/oh_ir1_gw/2025/03/01/nfcapd.202503010000', 'uoregon_all', 1, 2, 'processed');
+				`
+			],
+			{ encoding: 'utf-8' }
+		);
+		expect(seedResult.status, seedResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSourceDefinitions('alpha')).resolves.toEqual([
+			{ sourceId: 'router-a', members: ['router-a'] },
+			{ sourceId: 'router-b', members: ['router-b'] },
+			{ sourceId: 'uoregon_all', members: ['cc_ir1_gw', 'oh_ir1_gw'] }
+		]);
 	});
 
 	it('rejects unknown datasets', async () => {

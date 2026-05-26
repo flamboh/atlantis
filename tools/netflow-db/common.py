@@ -98,6 +98,7 @@ def build_legacy_dataset_registry() -> list[dict[str, Any]]:
             'source_mode': 'subdirs',
             'discovery_mode': 'live',
             'source_ids': available_routers,
+            'sources': [],
         }
     ]
 
@@ -143,6 +144,7 @@ def load_dataset_registry() -> list[dict[str, Any]]:
         source_ids = entry.get('source_ids')
         if source_ids is not None and not isinstance(source_ids, list):
             raise ConfigurationError(f"source_ids must be a list when provided for '{dataset_id}'")
+        sources = normalize_dataset_sources(entry, dataset_id)
 
         normalized.append(
             {
@@ -154,9 +156,44 @@ def load_dataset_registry() -> list[dict[str, Any]]:
                 'source_mode': str(entry.get('source_mode', 'subdirs')),
                 'discovery_mode': str(entry.get('discovery_mode', 'static')),
                 'source_ids': [str(source).strip() for source in (source_ids or []) if str(source).strip()],
+                'sources': sources,
             }
         )
 
+    return normalized
+
+
+def normalize_dataset_sources(entry: dict[str, Any], dataset_id: str) -> list[dict[str, Any]]:
+    """Normalize optional logical source definitions from datasets.json."""
+    raw_sources = entry.get('sources')
+    raw_source_ids = entry.get('source_ids')
+    if raw_sources is None:
+        return []
+    if raw_source_ids is not None:
+        raise ConfigurationError(f"Dataset '{dataset_id}' cannot define both sources and source_ids")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ConfigurationError(f"sources must be a non-empty list when provided for '{dataset_id}'")
+
+    normalized = []
+    seen_source_ids = set()
+    for raw_source in raw_sources:
+        if not isinstance(raw_source, dict):
+            raise ConfigurationError(f"Invalid source entry for '{dataset_id}': {raw_source!r}")
+        source_id = str(raw_source.get('source_id', '')).strip()
+        members = raw_source.get('members')
+        if not source_id:
+            raise ConfigurationError(f"Source entry missing source_id for '{dataset_id}'")
+        if source_id in seen_source_ids:
+            raise ConfigurationError(f"Duplicate source_id '{source_id}' for dataset '{dataset_id}'")
+        if not isinstance(members, list) or not members:
+            raise ConfigurationError(f"Source '{source_id}' must define a non-empty members list")
+        normalized_members = [str(member).strip() for member in members if str(member).strip()]
+        if len(normalized_members) != len(members):
+            raise ConfigurationError(f"Source '{source_id}' has an empty member id")
+        if len(set(normalized_members)) != len(normalized_members):
+            raise ConfigurationError(f"Source '{source_id}' contains duplicate members")
+        seen_source_ids.add(source_id)
+        normalized.append({'source_id': source_id, 'members': normalized_members})
     return normalized
 
 
@@ -187,6 +224,9 @@ def get_dataset_config(dataset_id: Optional[str] = None) -> dict[str, Any]:
 def list_dataset_sources(dataset_id: Optional[str] = None) -> list[str]:
     """Return the configured or discovered sources for a dataset."""
     config = get_dataset_config(dataset_id)
+    configured_logical_sources = config.get('sources') or []
+    if configured_logical_sources:
+        return [source['source_id'] for source in configured_logical_sources]
     configured_sources = config.get('source_ids') or []
     if configured_sources:
         return configured_sources

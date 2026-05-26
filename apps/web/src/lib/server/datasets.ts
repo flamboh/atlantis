@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { env as privateEnv } from '$env/dynamic/private';
 import { localSchemaSql } from '$lib/server/db/local-schema';
 import type { DatasetSummary } from '$lib/types/types';
 
@@ -14,6 +15,11 @@ type DatasetRow = {
 
 type LocalDatasetRow = DatasetRow & {
 	dbPath: string;
+};
+
+export type SourceDefinition = {
+	sourceId: string;
+	members: string[];
 };
 
 type SqliteClient = {
@@ -39,7 +45,7 @@ export interface ReadonlyDatasetDb {
 const localDbCache = new Map<string, ReadonlyDatasetDb>();
 
 function getEnv(name: string): string | undefined {
-	return globalThis.process?.env?.[name]?.trim() || undefined;
+	return globalThis.process?.env?.[name]?.trim() || privateEnv[name]?.trim() || undefined;
 }
 
 function formatLocalDate(timestampSeconds: number): string {
@@ -309,11 +315,11 @@ export async function listDatasets(platform?: App.Platform): Promise<DatasetRow[
 
 export async function getDefaultDatasetId(platform?: App.Platform): Promise<string> {
 	const configured = getEnv('DEFAULT_DATASET');
-	if (configured) {
+	const datasets = await listDatasetRows(platform);
+	if (configured && datasets.some((dataset) => dataset.id === configured)) {
 		return configured;
 	}
 
-	const datasets = await listDatasetRows(platform);
 	const firstDataset = datasets[0];
 	if (!firstDataset) {
 		throw new Error('No datasets configured');
@@ -375,6 +381,121 @@ export async function listDatasetSources(
 	);
 
 	return rows.map((row) => row.sourceId);
+}
+
+export async function listDatasetSourceDefinitions(
+	datasetId: string,
+	platform?: App.Platform
+): Promise<SourceDefinition[]> {
+	const db = await getDatasetDb(datasetId, platform);
+	const sourceIds = await listDatasetSources(datasetId, platform);
+	const configured = await listConfiguredSourceDefinitions(db, datasetId);
+	if (configured.length > 0) {
+		return mergeSourceDefinitions(sourceIds, configured);
+	}
+
+	return inferSourceDefinitions(db, sourceIds);
+}
+
+async function listConfiguredSourceDefinitions(
+	db: ReadonlyDatasetDb,
+	datasetId: string
+): Promise<SourceDefinition[]> {
+	let rows: { sourceId: string; memberId: string }[];
+	try {
+		rows = await db.all<{ sourceId: string; memberId: string }>(
+			`
+				SELECT source_id AS sourceId, member_id AS memberId
+				FROM source_members
+				WHERE dataset_id = ?
+				ORDER BY source_id, member_id
+			`,
+			[datasetId]
+		);
+	} catch {
+		return [];
+	}
+
+	return groupSourceMemberRows(rows);
+}
+
+async function inferSourceDefinitions(
+	db: ReadonlyDatasetDb,
+	sourceIds: string[]
+): Promise<SourceDefinition[]> {
+	let rows: { sourceId: string; inputLocator: string }[];
+	try {
+		rows = await db.all<{ sourceId: string; inputLocator: string }>(
+			`
+				SELECT DISTINCT source_id AS sourceId, input_locator AS inputLocator
+				FROM processed_inputs_v2
+				WHERE input_kind = 'nfcapd'
+					AND status = 'processed'
+			`
+		);
+	} catch {
+		rows = [];
+	}
+
+	const membersBySource = new Map<string, Set<string>>();
+	for (const row of rows) {
+		const memberId = inferMemberIdFromInputLocator(row.inputLocator);
+		if (!memberId) {
+			continue;
+		}
+		const members = membersBySource.get(row.sourceId) ?? new Set<string>();
+		members.add(memberId);
+		membersBySource.set(row.sourceId, members);
+	}
+
+	return sourceIds.map((sourceId) => ({
+		sourceId,
+		members: [...(membersBySource.get(sourceId) ?? new Set([sourceId]))].sort()
+	}));
+}
+
+function groupSourceMemberRows(rows: { sourceId: string; memberId: string }[]): SourceDefinition[] {
+	const membersBySource = new Map<string, Set<string>>();
+	for (const row of rows) {
+		const members = membersBySource.get(row.sourceId) ?? new Set<string>();
+		members.add(row.memberId);
+		membersBySource.set(row.sourceId, members);
+	}
+
+	return [...membersBySource]
+		.map(([sourceId, members]) => ({ sourceId, members: [...members].sort() }))
+		.sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+}
+
+function mergeSourceDefinitions(
+	sourceIds: string[],
+	definitions: SourceDefinition[]
+): SourceDefinition[] {
+	const definitionsBySource = new Map(
+		definitions.map((definition) => [definition.sourceId, definition])
+	);
+	for (const sourceId of sourceIds) {
+		if (!definitionsBySource.has(sourceId)) {
+			definitionsBySource.set(sourceId, { sourceId, members: [sourceId] });
+		}
+	}
+	return [...definitionsBySource.values()].sort((left, right) =>
+		left.sourceId.localeCompare(right.sourceId)
+	);
+}
+
+function inferMemberIdFromInputLocator(inputLocator: string): string | null {
+	if (inputLocator.startsWith('gap://')) {
+		return null;
+	}
+
+	const parts = inputLocator.split('/').filter(Boolean);
+	const filename = parts.at(-1) ?? '';
+	if (!filename.startsWith('nfcapd.') || parts.length < 5) {
+		return null;
+	}
+
+	return parts.at(-5) ?? null;
 }
 
 export async function listDatasetSummaries(platform?: App.Platform): Promise<DatasetSummary[]> {

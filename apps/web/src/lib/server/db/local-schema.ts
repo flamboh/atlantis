@@ -8,6 +8,13 @@ export const localSchemaSql = `
 		sort_order INTEGER DEFAULT 0 NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS source_members (
+		dataset_id TEXT NOT NULL,
+		source_id TEXT NOT NULL,
+		member_id TEXT NOT NULL,
+		PRIMARY KEY(dataset_id, source_id, member_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS dimension_stats_v2 (
 		source_id TEXT NOT NULL,
 		granularity TEXT NOT NULL,

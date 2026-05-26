@@ -250,6 +250,14 @@ class BucketAccumulator:
         }
 
 
+@dataclass(frozen=True)
+class SourceDefinition:
+    """Logical source backed by one or more physical nfcapd member directories."""
+
+    source_id: str
+    members: tuple[str, ...]
+
+
 def load_pipeline_v2_config(path: str | Path) -> dict:
     """Load the minimal v2 pipeline config file."""
     with open(path, 'r', encoding='utf-8') as handle:
@@ -324,40 +332,101 @@ def process_nfcapd_tree_spec(
 ) -> None:
     """Process a canonical nfcapd tree one day at a time."""
     root_path = Path(spec['root_path'])
-    source_ids = [str(source_id) for source_id in spec['source_ids']]
+    sources = normalize_nfcapd_sources(spec, root_path)
+    member_ids = sorted({member for source in sources for member in source.members})
     start_date = parse_config_date(str(spec['start_date']))
     end_date = (
         parse_config_date(str(spec['end_date']))
         if spec.get('end_date')
-        else discover_latest_nfcapd_tree_day(root_path, source_ids)
+        else discover_latest_nfcapd_tree_day(root_path, member_ids)
     )
     zero_fill_gaps = bool(spec.get('zero_fill_gaps', True))
-    source_bounds = discover_nfcapd_source_bounds(root_path, source_ids) if zero_fill_gaps else {}
+    source_bounds = discover_nfcapd_source_bounds(root_path, member_ids) if zero_fill_gaps else {}
 
     for day in iter_days(start_date, end_date):
-        input_specs = discover_nfcapd_tree_specs(
+        member_specs = discover_nfcapd_tree_specs(
             root_path,
-            source_ids,
+            member_ids,
             day,
             source_bounds=source_bounds,
         )
-        if not input_specs:
+        if not member_specs:
             LOGGER.info('No nfcapd files found for %s', day.strftime('%Y-%m-%d'))
             continue
-        if all_tree_specs_processed(conn, input_specs):
-            print(f"[pipeline_v2] Skip {day.strftime('%Y-%m-%d')}: {len(input_specs)} already processed")
+        jobs = build_nfcapd_logical_bucket_jobs(conn, sources, member_specs)
+        if not jobs:
+            print(f"[pipeline_v2] Skip {day.strftime('%Y-%m-%d')}: {len(member_specs)} already processed")
             continue
-        print(f"[pipeline_v2] Processing {day.strftime('%Y-%m-%d')}: {len(input_specs)} nfcapd files")
-        process_input_specs(
+        print(
+            f"[pipeline_v2] Processing {day.strftime('%Y-%m-%d')}: "
+            f"{len(jobs)} logical nfcapd buckets from {len(member_specs)} member inputs"
+        )
+        process_nfcapd_logical_bucket_jobs(
             conn,
-            input_specs,
+            jobs,
             maad_bin=maad_bin,
             maad_backend=maad_backend,
             maad_workers=maad_workers,
             max_workers=max_workers,
             run_maad=run_maad,
         )
-        print(f"[pipeline_v2] Complete {day.strftime('%Y-%m-%d')}: {len(input_specs)} nfcapd files")
+        print(
+            f"[pipeline_v2] Complete {day.strftime('%Y-%m-%d')}: "
+            f"{len(jobs)} logical nfcapd buckets"
+        )
+
+
+def normalize_nfcapd_sources(spec: dict, root_path: Path) -> list[SourceDefinition]:
+    """Return authoritative logical nfcapd sources from `sources` or legacy `source_ids`."""
+    if 'sources' in spec and 'source_ids' in spec:
+        raise ValueError("nfcapd_tree input cannot define both 'sources' and 'source_ids'")
+
+    raw_sources = spec.get('sources')
+    if raw_sources is None:
+        raw_source_ids = spec.get('source_ids')
+        if raw_source_ids is None:
+            raw_source_ids = discover_physical_member_ids(root_path)
+        raw_sources = [
+            {'source_id': str(source_id), 'members': [str(source_id)]}
+            for source_id in raw_source_ids
+        ]
+
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ValueError("nfcapd_tree input must define a non-empty 'sources' list")
+
+    sources = []
+    seen_source_ids = set()
+    for raw_source in raw_sources:
+        if not isinstance(raw_source, dict):
+            raise ValueError(f'Invalid source definition: {raw_source!r}')
+        source_id = str(raw_source.get('source_id', '')).strip()
+        raw_members = raw_source.get('members')
+        if not source_id:
+            raise ValueError('source_id is required for every nfcapd source')
+        if source_id in seen_source_ids:
+            raise ValueError(f"Duplicate source_id '{source_id}'")
+        if not isinstance(raw_members, list) or not raw_members:
+            raise ValueError(f"Source '{source_id}' must define a non-empty members list")
+        members = tuple(str(member).strip() for member in raw_members if str(member).strip())
+        if len(members) != len(raw_members) or not members:
+            raise ValueError(f"Source '{source_id}' has an empty member id")
+        if len(set(members)) != len(members):
+            raise ValueError(f"Source '{source_id}' contains duplicate members")
+        missing_members = [member for member in members if not (root_path / member).is_dir()]
+        if missing_members:
+            raise ValueError(
+                f"Source '{source_id}' references missing member directories: {', '.join(missing_members)}"
+            )
+        seen_source_ids.add(source_id)
+        sources.append(SourceDefinition(source_id=source_id, members=members))
+    return sources
+
+
+def discover_physical_member_ids(root_path: Path) -> list[str]:
+    """Discover physical nfcapd member directories under a canonical root."""
+    if not root_path.exists():
+        return []
+    return sorted(entry.name for entry in root_path.iterdir() if entry.is_dir())
 
 
 def process_csv_tree_spec(
@@ -511,6 +580,118 @@ def all_tree_specs_processed(conn: sqlite3.Connection, input_specs: list[dict]) 
     return processed == set(locators)
 
 
+def build_nfcapd_logical_bucket_jobs(
+    conn: sqlite3.Connection,
+    sources: list[SourceDefinition],
+    member_specs: list[dict],
+) -> list[dict]:
+    """Build unprocessed logical source buckets from physical member specs."""
+    specs_by_member_bucket: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    for spec in member_specs:
+        member_id = str(spec['source_id'])
+        bucket_start = int(spec.get('bucket_start') or parse_nfcapd_bucket_start(str(spec['path'])))
+        specs_by_member_bucket[(member_id, bucket_start)].append(spec)
+
+    jobs = []
+    needs_processing = False
+    for source in sources:
+        for bucket_start in source_candidate_bucket_starts(source, specs_by_member_bucket):
+            present_specs, missing_members = logical_source_member_specs(
+                source,
+                bucket_start,
+                specs_by_member_bucket,
+            )
+
+            locators = (
+                [str(spec['path']) for spec in present_specs]
+                if present_specs
+                else [logical_nfcapd_gap_locator(source.source_id, bucket_start)]
+            )
+            if not nfcapd_logical_bucket_processed(conn, source.source_id, bucket_start, locators):
+                needs_processing = True
+            jobs.append(
+                {
+                    'source_id': source.source_id,
+                    'bucket_start': bucket_start,
+                    'bucket_end': bucket_start + FIVE_MINUTE_SECONDS,
+                    'member_specs': present_specs,
+                    'missing_members': missing_members,
+                }
+            )
+            if missing_members:
+                bucket_label = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE).isoformat()
+                print(
+                    f"[pipeline_v2] Partial source {source.source_id} {bucket_label}: "
+                    f"missing members {', '.join(missing_members)}"
+                )
+    return jobs if needs_processing else []
+
+
+def source_candidate_bucket_starts(
+    source: SourceDefinition,
+    specs_by_member_bucket: dict[tuple[str, int], list[dict]],
+) -> list[int]:
+    """Return physical member buckets that can affect one logical source."""
+    buckets = {
+        bucket_start
+        for member_id, bucket_start in specs_by_member_bucket
+        if member_id in source.members
+    }
+    return sorted(buckets)
+
+
+def logical_source_member_specs(
+    source: SourceDefinition,
+    bucket_start: int,
+    specs_by_member_bucket: dict[tuple[str, int], list[dict]],
+) -> tuple[list[dict], list[str]]:
+    """Return present physical specs and missing members for one logical bucket."""
+    present_specs = []
+    missing_members = []
+    for member_id in source.members:
+        candidates = specs_by_member_bucket.get((member_id, bucket_start), [])
+        usable = candidates if len(source.members) == 1 else [
+            spec
+            for spec in candidates
+            if not spec.get('gap')
+        ]
+        if usable:
+            present_specs.extend(usable)
+        else:
+            missing_members.append(member_id)
+    return present_specs, missing_members
+
+
+def logical_nfcapd_gap_locator(source_id: str, bucket_start: int) -> str:
+    """Return the synthetic logical gap locator for an empty logical source bucket."""
+    timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
+    return f"gap://nfcapd/{source_id}/{timestamp.strftime('%Y%m%d%H%M')}"
+
+
+def nfcapd_logical_bucket_processed(
+    conn: sqlite3.Connection,
+    source_id: str,
+    bucket_start: int,
+    input_locators: list[str],
+) -> bool:
+    """Return true when the logical bucket was processed from exactly these inputs."""
+    if not input_locators:
+        return False
+    init_processed_inputs_v2_table(conn)
+    rows = conn.execute(
+        """
+        SELECT input_locator
+        FROM processed_inputs_v2
+        WHERE input_kind = 'nfcapd'
+          AND source_id = ?
+          AND bucket_start = ?
+          AND status = 'processed'
+        """,
+        (source_id, bucket_start),
+    ).fetchall()
+    return {row[0] for row in rows} == set(input_locators)
+
+
 def chunked(values: list[str], size: int) -> Iterable[list[str]]:
     """Yield fixed-size chunks from values."""
     for index in range(0, len(values), size):
@@ -588,9 +769,12 @@ def build_dataset_tree_config(
     tree_input = {
         'input_kind': 'nfcapd_tree',
         'root_path': dataset['root_path'],
-        'source_ids': list_dataset_sources(dataset_id),
         'start_date': start_date,
     }
+    if dataset.get('sources'):
+        tree_input['sources'] = dataset['sources']
+    else:
+        tree_input['source_ids'] = list_dataset_sources(dataset_id)
     if end_date is not None:
         tree_input['end_date'] = end_date
     return {
@@ -702,6 +886,242 @@ def process_nfcapd_input_specs_streaming_aggregates(
     )
     with conn:
         mark_processed_buckets(conn, processed_buckets)
+
+
+def process_nfcapd_logical_bucket_jobs(
+    conn: sqlite3.Connection,
+    jobs: list[dict],
+    *,
+    maad_bin: str | Path = DEFAULT_MAAD_BIN,
+    maad_backend: str = 'subprocess',
+    maad_workers: int = 1,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    run_maad: bool = True,
+) -> None:
+    """Process logical nfcapd source buckets from cached physical member payloads."""
+    init_processed_inputs_v2_table(conn)
+    init_netflow_stats_v2_table(conn)
+    init_ip_stats_v2_table(conn)
+    init_protocol_stats_v2_table(conn)
+    init_maad_v2_tables(conn)
+
+    member_specs_by_locator = {}
+    for job in jobs:
+        for spec in job['member_specs']:
+            member_specs_by_locator[str(spec['path'])] = spec
+
+    tasks = [
+        (spec, str(maad_bin), maad_backend, maad_workers, False)
+        for _, spec in sorted(member_specs_by_locator.items())
+    ]
+    member_raw_buckets = {}
+    for payload in iter_input_payloads(tasks, max_workers):
+        processed_bucket = payload['processed_buckets'][0]
+        member_raw_buckets[processed_bucket['input_locator']] = payload['raw_buckets'][0]
+
+    processed_buckets = []
+    raw_buckets = []
+    for job in jobs:
+        payload = build_logical_nfcapd_bucket_payload(
+            job,
+            member_raw_buckets,
+            maad_bin=maad_bin,
+            maad_backend=maad_backend,
+            run_maad=False,
+        )
+        write_input_payload(conn, payload, mark_processed=False, delete_existing=True)
+        processed_buckets.extend(payload['processed_buckets'])
+        raw_buckets.extend(payload['raw_buckets'])
+
+    if run_maad:
+        maad_rows = build_5m_maad_rows_from_raw_buckets(
+            raw_buckets,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        with conn:
+            for rows in maad_rows:
+                insert_maad_v2_rows(conn, rows)
+
+    write_aggregate_rows(
+        conn,
+        raw_buckets,
+        maad_bin,
+        max_workers,
+        maad_backend=maad_backend,
+        maad_workers=maad_workers,
+        run_maad=run_maad,
+        delete_existing=True,
+    )
+    with conn:
+        mark_processed_buckets(conn, processed_buckets)
+
+
+def build_5m_maad_rows_from_raw_buckets(
+    raw_buckets: list[dict],
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+) -> list[dict[str, dict]]:
+    """Build 5m MAAD rows for logical nfcapd buckets with bounded parallelism."""
+    tasks = [
+        {
+            'maad_bin': str(maad_bin),
+            'maad_backend': maad_backend,
+            'source_id': raw_bucket['source_id'],
+            'granularity': '5m',
+            'bucket_start': raw_bucket['bucket_start'],
+            'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
+            'source_addresses': raw_bucket['maad_source_ipv4'],
+            'destination_addresses': raw_bucket['maad_destination_ipv4'],
+            'log_progress': False,
+        }
+        for raw_bucket in raw_buckets
+    ]
+    return process_maad_tasks(tasks, maad_workers)
+
+
+def build_logical_nfcapd_bucket_payload(
+    job: dict,
+    member_raw_buckets: dict[str, dict],
+    *,
+    maad_bin: str | Path,
+    maad_backend: str,
+    run_maad: bool,
+) -> dict:
+    """Build one logical nfcapd bucket by summing and unioning member payloads."""
+    source_id = str(job['source_id'])
+    bucket_start = int(job['bucket_start'])
+    bucket_end = int(job['bucket_end'])
+    raw_buckets = [
+        member_raw_buckets[str(spec['path'])]
+        for spec in job['member_specs']
+    ]
+    if not raw_buckets:
+        return build_nfcapd_gap_payload(
+            logical_nfcapd_gap_locator(source_id, bucket_start),
+            source_id,
+            bucket_start,
+            run_maad=run_maad,
+        )
+    raw_bucket = merge_raw_buckets_for_source(
+        source_id=source_id,
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+        raw_buckets=raw_buckets,
+    )
+    return {
+        'processed_buckets': [
+            {
+                'input_kind': 'nfcapd',
+                'input_locator': str(spec['path']),
+                'source_id': source_id,
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_end,
+            }
+            for spec in job['member_specs']
+        ],
+        'netflow_rows': raw_bucket['netflow_rows'],
+        'ip_rows': [ip_row_from_raw_bucket(raw_bucket)],
+        'protocol_rows': [protocol_row_from_raw_bucket(raw_bucket)],
+        'maad_rows': [
+            build_maad_rows_for_raw_bucket(raw_bucket, '5m', maad_bin, maad_backend)
+        ]
+        if run_maad
+        else [],
+        'raw_buckets': [raw_bucket],
+    }
+
+
+def merge_raw_buckets_for_source(
+    *,
+    source_id: str,
+    bucket_start: int,
+    bucket_end: int,
+    raw_buckets: list[dict],
+) -> dict:
+    """Merge physical member raw buckets into one logical source raw bucket."""
+    merged = {
+        'source_id': source_id,
+        'bucket_start': bucket_start,
+        'source_ipv4': set(),
+        'destination_ipv4': set(),
+        'source_ipv6': set(),
+        'destination_ipv6': set(),
+        'protocols_ipv4': set(),
+        'protocols_ipv6': set(),
+        'maad_source_ipv4': set(),
+        'maad_destination_ipv4': set(),
+        'netflow_by_version': {},
+    }
+    for raw in raw_buckets:
+        merged['source_ipv4'].update(raw['source_ipv4'])
+        merged['destination_ipv4'].update(raw['destination_ipv4'])
+        merged['source_ipv6'].update(raw['source_ipv6'])
+        merged['destination_ipv6'].update(raw['destination_ipv6'])
+        merged['protocols_ipv4'].update(raw['protocols_ipv4'])
+        merged['protocols_ipv6'].update(raw['protocols_ipv6'])
+        merged['maad_source_ipv4'].update(raw['maad_source_ipv4'])
+        merged['maad_destination_ipv4'].update(raw['maad_destination_ipv4'])
+        for row in raw['netflow_rows']:
+            ip_version = validate_ip_version(row['ip_version'])
+            target = merged['netflow_by_version'].setdefault(
+                ip_version,
+                new_netflow_bucket_from_values(
+                    source_id=source_id,
+                    bucket_start=bucket_start,
+                    bucket_end=bucket_end,
+                    ip_version=ip_version,
+                ),
+            )
+            for column in NETFLOW_METRIC_COLUMNS:
+                target[column] += row[column]
+
+    return {
+        'source_id': source_id,
+        'bucket_start': bucket_start,
+        'source_ipv4': sorted(merged['source_ipv4']),
+        'destination_ipv4': sorted(merged['destination_ipv4']),
+        'source_ipv6': sorted(merged['source_ipv6']),
+        'destination_ipv6': sorted(merged['destination_ipv6']),
+        'protocols_ipv4': sorted(merged['protocols_ipv4']),
+        'protocols_ipv6': sorted(merged['protocols_ipv6']),
+        'maad_source_ipv4': sorted(merged['maad_source_ipv4']),
+        'maad_destination_ipv4': sorted(merged['maad_destination_ipv4']),
+        'netflow_rows': [
+            merged['netflow_by_version'][ip_version]
+            for ip_version in sorted(merged['netflow_by_version'])
+        ],
+    }
+
+
+def ip_row_from_raw_bucket(raw_bucket: dict) -> dict:
+    """Build one 5m IP stats row from a raw bucket."""
+    return {
+        'source_id': raw_bucket['source_id'],
+        'granularity': '5m',
+        'bucket_start': raw_bucket['bucket_start'],
+        'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
+        'sa_ipv4_count': len(raw_bucket['source_ipv4']),
+        'da_ipv4_count': len(raw_bucket['destination_ipv4']),
+        'sa_ipv6_count': len(raw_bucket['source_ipv6']),
+        'da_ipv6_count': len(raw_bucket['destination_ipv6']),
+    }
+
+
+def protocol_row_from_raw_bucket(raw_bucket: dict) -> dict:
+    """Build one 5m protocol stats row from a raw bucket."""
+    return {
+        'source_id': raw_bucket['source_id'],
+        'granularity': '5m',
+        'bucket_start': raw_bucket['bucket_start'],
+        'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
+        'unique_protocols_count_ipv4': len(raw_bucket['protocols_ipv4']),
+        'unique_protocols_count_ipv6': len(raw_bucket['protocols_ipv6']),
+        'protocols_list_ipv4': ','.join(sorted(raw_bucket['protocols_ipv4'])),
+        'protocols_list_ipv6': ','.join(sorted(raw_bucket['protocols_ipv6'])),
+    }
 
 
 def should_stream_csv_input_specs(input_specs: list[dict]) -> bool:
@@ -2045,13 +2465,22 @@ def build_input_payload(
     }
 
 
-def write_input_payload(conn: sqlite3.Connection, payload: dict, *, mark_processed: bool = True) -> None:
+def write_input_payload(
+    conn: sqlite3.Connection,
+    payload: dict,
+    *,
+    mark_processed: bool = True,
+    delete_existing: bool = False,
+) -> None:
     """Persist a worker payload. SQLite writes remain in the parent process."""
     processed_buckets = payload['processed_buckets']
     if not processed_buckets:
         return
 
     with conn:
+        if delete_existing:
+            delete_5m_outputs_for_processed_buckets(conn, processed_buckets)
+
         for bucket in processed_buckets:
             upsert_input_bucket(conn, **bucket)
 
@@ -2064,6 +2493,46 @@ def write_input_payload(conn: sqlite3.Connection, payload: dict, *, mark_process
 
         if mark_processed:
             mark_processed_buckets(conn, processed_buckets)
+
+
+def delete_5m_outputs_for_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
+    """Delete stale 5m rows before rewriting logical source buckets."""
+    seen = set()
+    for bucket in processed_buckets:
+        key = (bucket['source_id'], bucket['bucket_start'])
+        if key in seen:
+            continue
+        seen.add(key)
+        delete_5m_outputs(conn, source_id=bucket['source_id'], bucket_start=bucket['bucket_start'])
+
+
+def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start: int) -> None:
+    """Delete one source/bucket from all 5m output tables and input tracking."""
+    conn.execute(
+        """
+        DELETE FROM processed_inputs_v2
+        WHERE input_kind = 'nfcapd' AND source_id = ? AND bucket_start = ?
+        """,
+        (source_id, bucket_start),
+    )
+    for table_name in (
+        'netflow_stats_v2',
+        'ip_stats_v2',
+        'protocol_stats_v2',
+        'structure_stats_v2',
+        'spectrum_stats_v2',
+        'dimension_stats_v2',
+    ):
+        if table_name == 'netflow_stats_v2':
+            conn.execute(
+                f'DELETE FROM {table_name} WHERE source_id = ? AND bucket_start = ?',
+                (source_id, bucket_start),
+            )
+        else:
+            conn.execute(
+                f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
+                (source_id, bucket_start),
+            )
 
 
 def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
@@ -2088,6 +2557,7 @@ def write_aggregate_rows(
     maad_backend: str = 'subprocess',
     maad_workers: int = 1,
     run_maad: bool = True,
+    delete_existing: bool = False,
 ) -> None:
     """Write 30m, 1h, and 1d aggregate rows from raw bucket sets."""
     if not raw_buckets:
@@ -2101,11 +2571,35 @@ def write_aggregate_rows(
         else []
     )
     with conn:
+        if delete_existing:
+            delete_aggregate_outputs_for_raw_buckets(conn, raw_buckets)
         insert_netflow_stats_aggregate_v2_rows(conn, netflow_rows)
         insert_ip_stats_v2_rows(conn, ip_rows)
         insert_protocol_stats_v2_rows(conn, protocol_rows)
         for rows in maad_rows:
             insert_maad_v2_rows(conn, rows)
+
+
+def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_buckets: list[dict]) -> None:
+    """Delete stale aggregate rows affected by rewritten raw buckets."""
+    keys = set()
+    for raw in raw_buckets:
+        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
+            keys.add((raw['source_id'], granularity, floor_bucket_start(raw['bucket_start'], seconds)))
+
+    for source_id, granularity, bucket_start in sorted(keys):
+        for table_name in (
+            'netflow_stats_aggregate_v2',
+            'ip_stats_v2',
+            'protocol_stats_v2',
+            'structure_stats_v2',
+            'spectrum_stats_v2',
+            'dimension_stats_v2',
+        ):
+            conn.execute(
+                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
+                (source_id, granularity, bucket_start),
+            )
 
 
 def build_aggregate_netflow_rows(raw_buckets: list[dict]) -> list[dict]:

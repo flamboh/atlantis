@@ -2,8 +2,12 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { IP_GRANULARITIES } from '$lib/types/types';
 import type { IpStatsBucket, IpStatsResponse } from '$lib/types/types';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v2';
+import {
+	getDatasetDb,
+	getRequestedDataset,
+	listDatasetSourceDefinitions
+} from '$lib/server/datasets';
+import { parseAggregateStatsParams, placeholders, resolveSourceIds } from '$lib/server/netflow-v2';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
@@ -15,9 +19,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
+		const resolvedSources = resolveSourceIds(
+			await listDatasetSourceDefinitions(dataset, platform),
+			routers,
+			'union'
+		);
 		const tableName = 'ip_stats_v2';
 		const sourceColumn = 'source_id';
-		const params = [granularity, ...routers, start, end];
+		const params = [granularity, ...resolvedSources, start, end];
 
 		const query = `
 			SELECT
@@ -32,7 +41,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				MAX(processed_at) AS processedAt
 			FROM ${tableName}
 			WHERE granularity = ?
-				AND ${sourceColumn} IN (${placeholders(routers)})
+				AND ${sourceColumn} IN (${placeholders(resolvedSources)})
 				AND bucket_start >= ?
 				AND bucket_start < ?
 			GROUP BY ${sourceColumn}, bucket_start, bucket_end, granularity
@@ -46,7 +55,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				granularity
 			})),
 			availableGranularities: [...IP_GRANULARITIES],
-			requestedRouters: routers
+			requestedRouters: resolvedSources
 		};
 
 		return json(response);

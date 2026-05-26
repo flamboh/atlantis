@@ -5,11 +5,16 @@ import type {
 	StructureStatsBucket,
 	StructureStatsResponse
 } from '$lib/types/types';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import {
+	getDatasetDb,
+	getRequestedDataset,
+	listDatasetSourceDefinitions
+} from '$lib/server/datasets';
 import {
 	normalizeStructurePoints,
 	parseAggregateStatsParams,
-	placeholders
+	placeholders,
+	resolveSourceIds
 } from '$lib/server/netflow-v2';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
@@ -22,9 +27,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
+		const resolvedSources = resolveSourceIds(
+			await listDatasetSourceDefinitions(dataset, platform),
+			routers,
+			'union'
+		);
 		const tableName = 'structure_stats_v2';
 		const sourceColumn = 'source_id';
-		const params = [granularity, ...routers, start, end];
+		const params = [granularity, ...resolvedSources, start, end];
 
 		const query = `
 			SELECT
@@ -34,7 +44,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				structure_json_da AS structureJsonDa
 			FROM ${tableName}
 			WHERE granularity = ?
-				AND ${sourceColumn} IN (${placeholders(routers)})
+				AND ${sourceColumn} IN (${placeholders(resolvedSources)})
 				AND bucket_start >= ?
 				AND bucket_start < ?
 				AND ip_version = 4
@@ -81,7 +91,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 		const response: StructureStatsResponse = {
 			buckets,
-			requestedRouters: routers
+			requestedRouters: resolvedSources
 		};
 
 		return json(response);

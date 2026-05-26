@@ -1,4 +1,5 @@
 import { IP_GRANULARITIES, type IpGranularity } from '$lib/types/types';
+import type { SourceDefinition } from '$lib/server/datasets';
 import type { StructureFunctionPoint } from '$lib/types/types';
 type RawStructureFunctionPoint = {
 	q: number;
@@ -23,6 +24,7 @@ export interface RequestValidationError {
 export const FIVE_MINUTE_GRANULARITY: IpGranularity = '5m';
 export const DEFAULT_IP_GRANULARITY: IpGranularity = '1h';
 export type NetflowSchemaVersion = 'v2';
+export type SourceMetricKind = 'additive' | 'union';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
 
@@ -83,6 +85,126 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 
 export function placeholders(values: unknown[]): string {
 	return values.map(() => '?').join(',');
+}
+
+export function resolveSourceIds(
+	definitions: SourceDefinition[],
+	requestedSourceIds: string[],
+	metricKind: SourceMetricKind
+): string[] {
+	const requested = uniqueSorted(requestedSourceIds);
+	const completeDefinitions = ensureRequestedSourceDefinitions(definitions, requested);
+	const targetMembers = expandRequestedMembers(completeDefinitions, requested);
+	const exactSource = findExactSourceForMembers(completeDefinitions, targetMembers, requested);
+	if (exactSource) {
+		return [exactSource.sourceId];
+	}
+
+	if (metricKind === 'union') {
+		return requested;
+	}
+
+	return resolveDisjointAdditiveSources(completeDefinitions, targetMembers);
+}
+
+function ensureRequestedSourceDefinitions(
+	definitions: SourceDefinition[],
+	requestedSourceIds: string[]
+): SourceDefinition[] {
+	const definitionsBySource = new Map(
+		definitions.map((definition) => [definition.sourceId, definition])
+	);
+	for (const sourceId of requestedSourceIds) {
+		if (!definitionsBySource.has(sourceId)) {
+			definitionsBySource.set(sourceId, { sourceId, members: [sourceId] });
+		}
+	}
+	return [...definitionsBySource.values()].map((definition) => ({
+		sourceId: definition.sourceId,
+		members: uniqueSorted(definition.members)
+	}));
+}
+
+function expandRequestedMembers(
+	definitions: SourceDefinition[],
+	requestedSourceIds: string[]
+): string[] {
+	const definitionsBySource = new Map(
+		definitions.map((definition) => [definition.sourceId, definition])
+	);
+	const members = new Set<string>();
+	for (const sourceId of requestedSourceIds) {
+		const definition = definitionsBySource.get(sourceId);
+		for (const memberId of definition?.members ?? [sourceId]) {
+			members.add(memberId);
+		}
+	}
+	return [...members].sort();
+}
+
+function findExactSourceForMembers(
+	definitions: SourceDefinition[],
+	targetMembers: string[],
+	requestedSourceIds: string[]
+): SourceDefinition | null {
+	const matches = definitions.filter((definition) =>
+		sameMembers(definition.members, targetMembers)
+	);
+	if (matches.length === 0) {
+		return null;
+	}
+
+	const requested = new Set(requestedSourceIds);
+	return [...matches].sort((left, right) => {
+		const leftRequested = requested.has(left.sourceId) ? 0 : 1;
+		const rightRequested = requested.has(right.sourceId) ? 0 : 1;
+		return (
+			leftRequested - rightRequested ||
+			right.members.length - left.members.length ||
+			left.sourceId.localeCompare(right.sourceId)
+		);
+	})[0];
+}
+
+function resolveDisjointAdditiveSources(
+	definitions: SourceDefinition[],
+	targetMembers: string[]
+): string[] {
+	const remaining = new Set(targetMembers);
+	const selected: string[] = [];
+	const candidates = [...definitions].sort(
+		(left, right) =>
+			right.members.length - left.members.length || left.sourceId.localeCompare(right.sourceId)
+	);
+
+	for (const candidate of candidates) {
+		if (
+			candidate.members.length === 0 ||
+			!candidate.members.every((memberId) => remaining.has(memberId))
+		) {
+			continue;
+		}
+		selected.push(candidate.sourceId);
+		for (const memberId of candidate.members) {
+			remaining.delete(memberId);
+		}
+	}
+
+	selected.push(...[...remaining].sort());
+	return selected.sort();
+}
+
+function sameMembers(left: string[], right: string[]): boolean {
+	const normalizedLeft = uniqueSorted(left);
+	const normalizedRight = uniqueSorted(right);
+	return (
+		normalizedLeft.length === normalizedRight.length &&
+		normalizedLeft.every((memberId, index) => memberId === normalizedRight[index])
+	);
+}
+
+function uniqueSorted(values: string[]): string[] {
+	return [...new Set(values)].sort();
 }
 
 export function groupByToGranularity(groupBy: string): IpGranularity {
