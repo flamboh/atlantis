@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { env as privateEnv } from '$env/dynamic/private';
 import { localSchemaSql } from '$lib/server/db/local-schema';
 import type { DatasetSummary } from '$lib/types/types';
 
@@ -39,7 +40,7 @@ export interface ReadonlyDatasetDb {
 const localDbCache = new Map<string, ReadonlyDatasetDb>();
 
 function getEnv(name: string): string | undefined {
-	return globalThis.process?.env?.[name]?.trim() || undefined;
+	return globalThis.process?.env?.[name]?.trim() || privateEnv[name]?.trim() || undefined;
 }
 
 function formatLocalDate(timestampSeconds: number): string {
@@ -309,11 +310,11 @@ export async function listDatasets(platform?: App.Platform): Promise<DatasetRow[
 
 export async function getDefaultDatasetId(platform?: App.Platform): Promise<string> {
 	const configured = getEnv('DEFAULT_DATASET');
-	if (configured) {
+	const datasets = await listDatasetRows(platform);
+	if (configured && datasets.some((dataset) => dataset.id === configured)) {
 		return configured;
 	}
 
-	const datasets = await listDatasetRows(platform);
 	const firstDataset = datasets[0];
 	if (!firstDataset) {
 		throw new Error('No datasets configured');
