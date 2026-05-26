@@ -118,6 +118,28 @@ describe('dataset server helpers', () => {
 		]);
 		await expect(datasets.listDatasetSources('beta')).resolves.toEqual(['router-b']);
 	});
+
+	it('refreshes local dataset discovery after files move', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-refresh-'));
+		const alphaDir = path.join(workspace, 'data', 'alpha');
+		const archivedDir = path.join(workspace, 'data', '_archive', 'alpha');
+		const betaDir = path.join(workspace, 'data', 'beta');
+		fs.mkdirSync(alphaDir, { recursive: true });
+		seedDatasetDb(path.join(alphaDir, 'netflow.sqlite'), 'alpha', 'Alpha', 'router-a');
+		process.chdir(workspace);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasets()).resolves.toMatchObject([{ id: 'alpha' }]);
+
+		fs.mkdirSync(path.dirname(archivedDir), { recursive: true });
+		fs.renameSync(alphaDir, archivedDir);
+		fs.mkdirSync(betaDir, { recursive: true });
+		seedDatasetDb(path.join(betaDir, 'netflow.sqlite'), 'beta', 'Beta', 'router-b');
+
+		await expect(datasets.listDatasets()).resolves.toMatchObject([{ id: 'beta' }]);
+		await expect(datasets.getDatasetConfig('alpha')).rejects.toThrow(/Unknown dataset 'alpha'/);
+	});
 });
 
 function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceId: string): void {

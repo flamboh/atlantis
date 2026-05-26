@@ -28,11 +28,11 @@
 		buildMirroredSelectionStyle
 	} from './chart-utils';
 	import {
-		dateStringToEpochPST,
-		epochToPSTComponents,
-		formatDateAsPSTDateString,
-		getWeekdayName
-	} from '$lib/utils/timezone';
+		formatIpGranularityTick,
+		formatTemporalBucketLabel,
+		shouldHighlightIpGranularityGrid
+	} from './ip-time-axis';
+	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
 	import { theme } from '$lib/stores/theme.svelte';
@@ -126,85 +126,6 @@
 
 	function toEpochSeconds(dateString: string, isEnd = false): number {
 		return dateStringToEpochPST(dateString, isEnd);
-	}
-
-	function formatBucketLabel(bucketStart: number, granularity: IpGranularity): string {
-		const pst = epochToPSTComponents(bucketStart);
-		const year = pst.year;
-		const month = `${pst.month}`.padStart(2, '0');
-		const day = `${pst.day}`.padStart(2, '0');
-		const hours = `${pst.hours}`.padStart(2, '0');
-		const minutes = `${pst.minutes}`.padStart(2, '0');
-
-		if (granularity === '1d') {
-			return `${year}-${month}-${day}`;
-		}
-
-		return `${year}-${month}-${day} ${hours}:${minutes}`;
-	}
-
-	function formatTickLabel(
-		bucketStart: number,
-		granularity: IpGranularity,
-		_index: number
-	): string {
-		const pst = epochToPSTComponents(bucketStart);
-		const day = pst.day.toString().padStart(2, '0');
-		const month = pst.month.toString().padStart(2, '0');
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-		const weekday = getWeekdayName(pst.dayOfWeek);
-
-		if (granularity === '1d') {
-			return pst.dayOfWeek === 1 ? `Mon ${month}/${day}` : '';
-		}
-
-		if (granularity === '1h') {
-			if (hours === 0) {
-				return `${weekday} ${pst.month}/${pst.day}`;
-			}
-			return '';
-		}
-
-		if (granularity === '30m') {
-			if (minutes === 0 && (hours === 0 || hours === 12)) {
-				return `${weekday} ${pst.month}/${pst.day} ${hours.toString().padStart(2, '0')}:00`;
-			}
-			return '';
-		}
-
-		if (granularity === '5m') {
-			if (minutes === 0) {
-				return `${weekday} ${pst.month}/${pst.day} ${hours.toString().padStart(2, '0')}:00`;
-			}
-			return '';
-		}
-
-		return '';
-	}
-
-	function shouldHighlightTick(
-		bucketStart: number,
-		granularity: IpGranularity,
-		index: number
-	): boolean {
-		const pst = epochToPSTComponents(bucketStart);
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-
-		if (granularity === '1d') {
-			return pst.dayOfWeek === 1;
-		}
-		if (granularity === '1h') {
-			return hours === 0;
-		}
-		if (granularity === '30m') {
-			return minutes === 0 && (hours === 0 || hours === 12);
-		}
-		if (granularity === '5m') {
-			return minutes === 0;
-		}
-		return index === 0;
 	}
 
 	function getBucketStartForTickValue(value: unknown): number | null {
@@ -578,12 +499,11 @@
 		minAlpha: number;
 		maxAlpha: number;
 	} {
-		// Create a map for quick lookup: bucketStart -> spectrum points
-		const bucketMap = new Map<number, SpectrumPoint[]>();
+		const pointsByBucketStart: Record<number, SpectrumPoint[]> = {};
 		selectedBuckets.forEach((bucket) => {
 			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
 			if (points.length > 0) {
-				bucketMap.set(bucket.bucketStart, points);
+				pointsByBucketStart[bucket.bucketStart] = points;
 			}
 		});
 
@@ -593,7 +513,7 @@
 		let minAlpha = Infinity;
 		let maxAlpha = -Infinity;
 
-		bucketMap.forEach((points) => {
+		Object.values(pointsByBucketStart).forEach((points) => {
 			points.forEach((point) => {
 				minF = Math.min(minF, point.f);
 				maxF = Math.max(maxF, point.f);
@@ -610,10 +530,10 @@
 		const data: DataPoint[] = [];
 
 		bucketStarts.forEach((bucketStart, timeIndex) => {
-			const points = bucketMap.get(bucketStart);
+			const points = pointsByBucketStart[bucketStart];
 			if (!points || points.length === 0) return;
 
-			const timeLabel = formatBucketLabel(bucketStart, currentGranularity);
+			const timeLabel = formatTemporalBucketLabel(bucketStart, currentGranularity);
 
 			points.forEach((point) => {
 				data.push({
@@ -665,7 +585,7 @@
 		}
 
 		const labels = bucketStarts.map((bucketStart) =>
-			formatBucketLabel(bucketStart, currentGranularity)
+			formatTemporalBucketLabel(bucketStart, currentGranularity)
 		);
 
 		// Create scatter dataset with individual point colors based on f
@@ -728,7 +648,7 @@
 									const bucketStart = getBucketStartForTickValue(value);
 									if (bucketStart === null) return '';
 									const index = Math.round(value as number);
-									return formatTickLabel(bucketStart, granularity, index);
+									return formatIpGranularityTick(bucketStart, granularity, index);
 								}
 							},
 							grid: {
@@ -739,7 +659,7 @@
 										return gridHighlightColor;
 									}
 									const index = Math.round(tickValue);
-									return shouldHighlightTick(bucketStart, granularity, index)
+									return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
 										? gridColor
 										: gridHighlightColor;
 								}
@@ -790,7 +710,7 @@
 							const bucketStart = getBucketStartForTickValue(value);
 							if (bucketStart === null) return '';
 							const index = Math.round(value as number);
-							return formatTickLabel(bucketStart, granularity, index);
+							return formatIpGranularityTick(bucketStart, granularity, index);
 						}
 					},
 					grid: {
@@ -801,7 +721,7 @@
 								return gridHighlightColor;
 							}
 							const index = Math.round(tickValue);
-							return shouldHighlightTick(bucketStart, granularity, index)
+							return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
 								? gridColor
 								: gridHighlightColor;
 						}
