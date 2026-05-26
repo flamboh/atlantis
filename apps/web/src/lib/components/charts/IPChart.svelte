@@ -402,28 +402,20 @@
 		).sort((a, b) => a - b);
 		const routers = Array.from(new Set(selectedBuckets.map((bucket) => bucket.router))).sort();
 
-		const labelSamples = new Map<number, IpStatsBucket>();
-		selectedBuckets.forEach((bucket) => {
-			if (!labelSamples.has(bucket.bucketStart)) {
-				labelSamples.set(bucket.bucketStart, bucket);
-			}
-		});
+		const labels = bucketStarts.map((bucketStart) =>
+			formatTemporalBucketLabel(bucketStart, currentGranularity)
+		);
 
-		const labels = bucketStarts.map((bucketStart) => {
-			const bucket = labelSamples.get(bucketStart);
-			return bucket ? formatTemporalBucketLabel(bucket.bucketStart, currentGranularity) : '';
-		});
-
-		const bucketMap = new Map<string, IpStatsBucket>();
+		const bucketByRouterAndStart: Record<string, IpStatsBucket> = {};
 		selectedBuckets.forEach((bucket) => {
-			bucketMap.set(`${bucket.router}-${bucket.bucketStart}`, bucket);
+			bucketByRouterAndStart[`${bucket.router}-${bucket.bucketStart}`] = bucket;
 		});
 
 		const datasets = routers.flatMap((router, routerIndex) =>
 			IP_METRIC_OPTIONS.filter((option) => activeMetrics.includes(option.key)).map((option) => {
 				const { stroke, fill } = buildColors(option, routerIndex);
 				const data = bucketStarts.map((bucketStart) => {
-					const bucket = bucketMap.get(`${router}-${bucketStart}`);
+					const bucket = bucketByRouterAndStart[`${router}-${bucketStart}`];
 					return bucket ? bucket[option.key] : null;
 				});
 

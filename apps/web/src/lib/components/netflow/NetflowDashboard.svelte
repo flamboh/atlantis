@@ -104,7 +104,7 @@
 
 	let lastFiltersKey = '';
 	let requestToken = 0;
-	const ipFamilyCache = new Map<string, NetflowIpFamily[]>();
+	const ipFamilyCache: Record<string, NetflowIpFamily[] | undefined> = {};
 
 	function setAvailableIpFamilies(ipFamilies: NetflowIpFamily[]) {
 		availableIpFamilies = ipFamilies;
@@ -189,7 +189,7 @@
 					}
 
 					const json = (await response.json()) as NetflowStatsResponse;
-					ipFamilyCache.set(cacheKey, json.availableIpFamilies);
+					ipFamilyCache[cacheKey] = json.availableIpFamilies;
 					return json.result;
 				},
 				getRecordKey: (record) => `${record.bucketStart}`,
@@ -199,7 +199,7 @@
 			if (token !== requestToken) {
 				return;
 			}
-			setAvailableIpFamilies(ipFamilyCache.get(cacheKey) ?? ['all']);
+			setAvailableIpFamilies(ipFamilyCache[cacheKey] ?? ['all']);
 			rawResults = readCachedResults(cacheKey, requestedRange);
 		} catch (err) {
 			if (token !== requestToken) {

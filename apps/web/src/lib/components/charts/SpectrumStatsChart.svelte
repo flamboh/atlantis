@@ -499,12 +499,11 @@
 		minAlpha: number;
 		maxAlpha: number;
 	} {
-		// Create a map for quick lookup: bucketStart -> spectrum points
-		const bucketMap = new Map<number, SpectrumPoint[]>();
+		const pointsByBucketStart: Record<number, SpectrumPoint[]> = {};
 		selectedBuckets.forEach((bucket) => {
 			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
 			if (points.length > 0) {
-				bucketMap.set(bucket.bucketStart, points);
+				pointsByBucketStart[bucket.bucketStart] = points;
 			}
 		});
 
@@ -514,7 +513,7 @@
 		let minAlpha = Infinity;
 		let maxAlpha = -Infinity;
 
-		bucketMap.forEach((points) => {
+		Object.values(pointsByBucketStart).forEach((points) => {
 			points.forEach((point) => {
 				minF = Math.min(minF, point.f);
 				maxF = Math.max(maxF, point.f);
@@ -531,7 +530,7 @@
 		const data: DataPoint[] = [];
 
 		bucketStarts.forEach((bucketStart, timeIndex) => {
-			const points = bucketMap.get(bucketStart);
+			const points = pointsByBucketStart[bucketStart];
 			if (!points || points.length === 0) return;
 
 			const timeLabel = formatTemporalBucketLabel(bucketStart, currentGranularity);
