@@ -1,13 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Chart from 'chart.js/auto';
-	import annotationPlugin from 'chartjs-plugin-annotation';
+	import { Chart } from './annotation-chart-registry';
 	import type { StructureFunctionData } from '$lib/types/types';
 	import { theme } from '$lib/stores/theme.svelte';
-	import { verticalCrosshairPlugin } from './crosshair-plugin';
-
-	Chart.register(annotationPlugin);
-	Chart.register(verticalCrosshairPlugin);
 
 	let { data }: { data: StructureFunctionData } = $props();
 	let chartCanvas: HTMLCanvasElement;

@@ -67,6 +67,7 @@ export interface ChartConfig {
 			activeElements: { datasetIndex: number; index: number }[]
 		) => void;
 		responsive: boolean;
+		animation?: boolean;
 		maintainAspectRatio?: boolean;
 		scales?: Record<string, object>;
 		plugins?: Record<string, object>;

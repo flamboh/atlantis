@@ -1,7 +1,6 @@
 <script lang="ts">
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { createEventDispatcher } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
 	import { goto } from '$app/navigation';
 	import ChartContainer from '$lib/components/charts/ChartContainer.svelte';
 	import MetricSelector from '$lib/components/filters/MetricSelector.svelte';
@@ -105,7 +104,7 @@
 
 	let lastFiltersKey = '';
 	let requestToken = 0;
-	const ipFamilyCache = new SvelteMap<string, NetflowIpFamily[]>();
+	const ipFamilyCache = new Map<string, NetflowIpFamily[]>();
 
 	function setAvailableIpFamilies(ipFamilies: NetflowIpFamily[]) {
 		availableIpFamilies = ipFamilies;
