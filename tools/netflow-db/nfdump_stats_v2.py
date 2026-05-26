@@ -11,6 +11,7 @@ import csv
 import ipaddress
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -22,14 +23,14 @@ from stats_v2 import protocol_metric_keys
 NFDUMP_TIMEOUT_SECONDS = 300
 PIPELINE_TIMEZONE = ZoneInfo(os.environ.get('NETFLOW_TIMEZONE', 'America/Los_Angeles'))
 LOGGER = logging.getLogger(__name__)
+NFCAPD_FILENAME_RE = re.compile(r'^nfcapd\.(\d{12})$')
 
 
 def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
     """Build 5m stats and raw aggregate sets for one nfcapd file."""
     bucket_start = parse_nfcapd_bucket_start(path)
     bucket_end = bucket_start + 300
-    source_ipv4, destination_ipv4 = read_address_sets(path, 4)
-    source_ipv6, destination_ipv6 = read_address_sets(path, 6)
+    source_ipv4, destination_ipv4, source_ipv6, destination_ipv6 = read_address_sets_by_version(path)
     netflow_ipv4 = read_protocol_netflow_row(path, source_id, bucket_start, bucket_end, 4)
     netflow_ipv6 = read_protocol_netflow_row(path, source_id, bucket_start, bucket_end, 6)
     protocols_ipv4 = protocols_from_netflow_row(netflow_ipv4)
@@ -78,6 +79,11 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
             'netflow_rows': [strip_internal_keys(netflow_ipv4), strip_internal_keys(netflow_ipv6)],
         },
     }
+
+
+def is_nfcapd_bucket_filename(name: str) -> bool:
+    """Return true for canonical nfcapd bucket filenames."""
+    return NFCAPD_FILENAME_RE.fullmatch(name) is not None
 
 
 def read_protocol_netflow_row(
@@ -180,6 +186,48 @@ def parse_protocol_counter_row(
     return (protocol, packets, bytes_value, flows)
 
 
+def read_address_sets_by_version(path: str) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Read unique grouped source and destination address sets split by IP version."""
+    result = run_nfdump(
+        [
+            'nfdump',
+            '-r',
+            path,
+            '-q',
+            '-a',
+            '-A',
+            'srcip,dstip',
+            '-o',
+            'fmt:%sa,%da',
+        ]
+    )
+    source_ipv4 = set()
+    destination_ipv4 = set()
+    source_ipv6 = set()
+    destination_ipv6 = set()
+    for values in csv.reader(result.stdout.splitlines()):
+        if len(values) < 2:
+            continue
+        source_ip = values[0].strip()
+        destination_ip = values[1].strip()
+        if looks_like_ipv4_address(source_ip) and looks_like_ipv4_address(destination_ip):
+            source_ipv4.add(source_ip)
+            destination_ipv4.add(destination_ip)
+            continue
+        if ':' in source_ip and ':' in destination_ip:
+            try:
+                source_ipv6.add(str(ipaddress.ip_address(source_ip)))
+                destination_ipv6.add(str(ipaddress.ip_address(destination_ip)))
+            except ValueError:
+                continue
+    return source_ipv4, destination_ipv4, source_ipv6, destination_ipv6
+
+
+def looks_like_ipv4_address(value: str) -> bool:
+    """Return true for trusted nfdump IPv4 address text."""
+    return bool(value) and '.' in value and all(char.isdigit() or char == '.' for char in value)
+
+
 def read_address_sets(path: str, ip_version: int) -> tuple[set[str], set[str]]:
     """Read unique grouped source and destination address sets."""
     result = run_nfdump(
@@ -270,9 +318,10 @@ def family_filter(ip_version: int) -> list[str]:
 def parse_nfcapd_bucket_start(path: str) -> int:
     """Parse the local-time 5m bucket from an nfcapd filename."""
     name = Path(path).name
-    if not name.startswith('nfcapd.'):
+    match = NFCAPD_FILENAME_RE.fullmatch(name)
+    if match is None:
         raise ValueError(f'Invalid nfcapd filename: {name}')
-    timestamp = name.split('.', 1)[1]
+    timestamp = match.group(1)
     local_time = datetime.strptime(timestamp, '%Y%m%d%H%M')
     # Ambiguous fall-back labels cannot distinguish both folds. Canonical nfcapd
     # paths contain one file per local 5m label, so use the first fold.

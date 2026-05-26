@@ -7,88 +7,84 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+
+def v2_table(granularity_column: str | None = None) -> dict[str, str | None]:
+    return {
+        "time_column": "bucket_start",
+        "source_column": "source_id",
+        "granularity_column": granularity_column,
+    }
 
 
 TABLE_CONFIG = {
-    "netflow_stats": {"time_column": "timestamp", "extra_where": "", "extra_params": ()},
-    "ip_stats": {"time_column": "bucket_start", "extra_where": "AND granularity = ?", "extra_params": ("5m",)},
-    "protocol_stats": {"time_column": "bucket_start", "extra_where": "AND granularity = ?", "extra_params": ("5m",)},
-    "spectrum_stats": {"time_column": "bucket_start", "extra_where": "AND granularity = ?", "extra_params": ("5m",)},
-    "structure_stats": {"time_column": "bucket_start", "extra_where": "AND granularity = ?", "extra_params": ("5m",)},
+    "datasets": {"time_column": None, "source_column": None, "granularity_column": None},
+    "processed_inputs_v2": v2_table(),
+    "netflow_stats_v2": v2_table(),
+    "netflow_stats_aggregate_v2": v2_table("granularity"),
+    "ip_stats_v2": v2_table("granularity"),
+    "protocol_stats_v2": v2_table("granularity"),
+    "structure_stats_v2": v2_table("granularity"),
+    "spectrum_stats_v2": v2_table("granularity"),
+    "dimension_stats_v2": v2_table("granularity"),
 }
 
-DEFAULT_START = "2025-03-30"
-DEFAULT_END_INCLUSIVE = "2025-06-07"
-DEFAULT_OUTPUT_DIR = "data/uoregon/ml-2025-03-30-to-2025-06-07"
+DEFAULT_DATASET_ID = "uoregon"
+DEFAULT_START = "2025-05-01"
+DEFAULT_END_EXCLUSIVE = "2026-05-01"
+DEFAULT_OUTPUT_DIR = "data/uoregon-v2/ml-2025-05-01-to-2026-05-01"
 SQLITE_FILENAME = "netflow_window.sqlite"
+DEFAULT_TIMEZONE = os.environ.get("NETFLOW_TIMEZONE", "America/Los_Angeles")
 
 
-def resolve_default_source_db() -> str:
+def resolve_default_source_db(dataset_id: str) -> str:
     try:
         from common import get_dataset_db_path
-        return str(get_dataset_db_path("uoregon"))
+
+        return str(get_dataset_db_path(dataset_id))
     except Exception as error:
         raise SystemExit(f"Could not resolve default source DB: {error}") from error
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Extract a fixed NetFlow window for ML workflows.",
-    )
+    parser = argparse.ArgumentParser(description="Extract a fixed NetFlow window for ML workflows.")
+    parser.add_argument("--source-id", help="Only extract rows for a single v2 source_id.")
+    parser.add_argument("--router", help="Alias for --source-id.")
+    parser.add_argument("--dataset", default=DEFAULT_DATASET_ID, help="Dataset id for default DB lookup.")
+    parser.add_argument("--source-db", default=None, help="Path to the source SQLite database.")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--start", default=DEFAULT_START, help="Inclusive start date in YYYY-MM-DD.")
+    parser.add_argument("--end-exclusive", default=DEFAULT_END_EXCLUSIVE, help="Exclusive end date.")
+    parser.add_argument("--end-inclusive", default=None, help="Legacy inclusive end date.")
+    parser.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="Timezone for date boundaries.")
+    parser.add_argument("--batch-size", type=int, default=5000, help="Fetch/insert batch size.")
+    parser.add_argument("--skip-sqlite", action="store_true", help="Skip SQLite output.")
+    parser.add_argument("--skip-parquet", action="store_true", help="Skip Parquet output.")
     parser.add_argument(
-        "--router",
-        help="Only extract rows for a single router.",
-    )
-    parser.add_argument(
-        "--source-db",
-        default=None,
-        help="Path to the source SQLite database.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=DEFAULT_OUTPUT_DIR,
-        help="Directory for the extracted SQLite, Parquet, and manifest outputs.",
-    )
-    parser.add_argument(
-        "--start",
-        default=DEFAULT_START,
-        help="Inclusive window start date in YYYY-MM-DD.",
-    )
-    parser.add_argument(
-        "--end-inclusive",
-        default=DEFAULT_END_INCLUSIVE,
-        help="Inclusive window end date in YYYY-MM-DD.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=5000,
-        help="Fetch/insert batch size.",
-    )
-    parser.add_argument(
-        "--skip-sqlite",
-        action="store_true",
-        help="Skip writing the extracted SQLite database.",
-    )
-    parser.add_argument(
-        "--skip-parquet",
-        action="store_true",
-        help="Skip writing Parquet files.",
-    )
-    parser.add_argument(
-        "--all-granularities",
-        action="store_true",
-        help="Include non-5m rows from derived tables.",
+        "--granularity",
+        action="append",
+        choices=("5m", "30m", "1h", "1d"),
+        help="Limit tables with a granularity column. Repeat for multiple granularities.",
     )
     args = parser.parse_args(argv)
+    if args.source_id is not None and args.router is not None and args.source_id != args.router:
+        raise SystemExit("--source-id and --router must match when both are provided.")
+    args.source_id = args.source_id or args.router
+    if args.end_inclusive is not None:
+        if args.end_exclusive != DEFAULT_END_EXCLUSIVE:
+            raise SystemExit("Use only one of --end-exclusive or --end-inclusive.")
+        end_inclusive_dt = parse_date(args.end_inclusive)
+        args.end_exclusive = (end_inclusive_dt + timedelta(days=1)).strftime("%Y-%m-%d")
     if args.source_db is None:
-        args.source_db = resolve_default_source_db()
+        args.source_db = resolve_default_source_db(args.dataset)
     return args
 
 
@@ -96,13 +92,13 @@ def parse_date(date_str: str) -> datetime:
     return datetime.strptime(date_str, "%Y-%m-%d")
 
 
-def compute_window(start_date: str, end_inclusive: str) -> tuple[datetime, datetime, int, int]:
-    start_dt = parse_date(start_date)
-    end_dt = parse_date(end_inclusive)
-    if end_dt < start_dt:
-        raise SystemExit("--end-inclusive must be on or after --start")
+def compute_window(start_date: str, end_exclusive: str, timezone: str) -> tuple[datetime, datetime, int, int]:
+    tzinfo = ZoneInfo(timezone)
+    start_dt = parse_date(start_date).replace(tzinfo=tzinfo)
+    end_exclusive_dt = parse_date(end_exclusive).replace(tzinfo=tzinfo)
+    if end_exclusive_dt <= start_dt:
+        raise SystemExit("--end-exclusive must be after --start")
 
-    end_exclusive_dt = end_dt + timedelta(days=1)
     return start_dt, end_exclusive_dt, int(start_dt.timestamp()), int(end_exclusive_dt.timestamp())
 
 
@@ -120,20 +116,22 @@ def connect_db(path: Path) -> sqlite3.Connection:
 
 def build_table_filters(
     *,
-    router: str | None,
-    all_granularities: bool,
+    source_id: str | None,
+    granularities: list[str] | None,
     config: dict[str, Any],
 ) -> tuple[str, tuple[Any, ...]]:
     clauses: list[str] = []
     params: list[Any] = []
 
-    if not all_granularities and config["extra_where"]:
-        clauses.append(str(config["extra_where"]).removeprefix("AND ").strip())
-        params.extend(config["extra_params"])
+    granularity_column = config["granularity_column"]
+    if granularities is not None and granularity_column is not None:
+        clauses.append(f"{granularity_column} IN ({', '.join(['?'] * len(granularities))})")
+        params.extend(granularities)
 
-    if router is not None:
-        clauses.append("router = ?")
-        params.append(router)
+    source_column = config["source_column"]
+    if source_id is not None and source_column is not None:
+        clauses.append(f"{source_column} = ?")
+        params.append(source_id)
 
     extra_where = ""
     if clauses:
@@ -173,22 +171,24 @@ def create_sqlite_table(source_conn: sqlite3.Connection, dest_conn: sqlite3.Conn
 def iter_table_batches(
     conn: sqlite3.Connection,
     table: str,
-    time_column: str,
+    time_column: str | None,
     start_ts: int,
     end_ts: int,
     batch_size: int,
     extra_where: str = "",
     extra_params: tuple[Any, ...] = (),
 ):
-    cursor = conn.execute(
-        f"""
-        SELECT *
-        FROM {table}
-        WHERE {time_column} >= ? AND {time_column} < ?
-        {extra_where}
-        """,
-        (start_ts, end_ts, *extra_params),
-    )
+    clauses: list[str] = []
+    params: list[Any] = []
+    if time_column is not None:
+        clauses.append(f"{time_column} >= ? AND {time_column} < ?")
+        params.extend((start_ts, end_ts))
+    if extra_where:
+        clauses.append(extra_where.removeprefix("AND ").strip())
+        params.extend(extra_params)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    cursor = conn.execute(f"SELECT * FROM {table} {where_sql}", tuple(params))
 
     while True:
         rows = cursor.fetchmany(batch_size)
@@ -201,7 +201,7 @@ def copy_table_to_sqlite(
     source_conn: sqlite3.Connection,
     dest_conn: sqlite3.Connection,
     table: str,
-    time_column: str,
+    time_column: str | None,
     start_ts: int,
     end_ts: int,
     batch_size: int,
@@ -238,7 +238,7 @@ def export_table_to_parquet(
     source_conn: sqlite3.Connection,
     output_path: Path,
     table: str,
-    time_column: str,
+    time_column: str | None,
     start_ts: int,
     end_ts: int,
     batch_size: int,
@@ -294,22 +294,30 @@ def export_table_to_parquet(
 def collect_table_summary(
     conn: sqlite3.Connection,
     table: str,
-    time_column: str,
+    time_column: str | None,
     start_ts: int,
     end_ts: int,
     extra_where: str = "",
     extra_params: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if time_column is not None:
+        clauses.append(f"{time_column} >= ? AND {time_column} < ?")
+        params.extend((start_ts, end_ts))
+    if extra_where:
+        clauses.append(extra_where.removeprefix("AND ").strip())
+        params.extend(extra_params)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    time_select = (
+        f"MIN({time_column}) AS min_time, MAX({time_column}) AS max_time"
+        if time_column is not None
+        else "NULL AS min_time, NULL AS max_time"
+    )
     row = conn.execute(
-        f"""
-        SELECT COUNT(*) AS row_count,
-               MIN({time_column}) AS min_time,
-               MAX({time_column}) AS max_time
-        FROM {table}
-        WHERE {time_column} >= ? AND {time_column} < ?
-        {extra_where}
-        """,
-        (start_ts, end_ts, *extra_params),
+        f"SELECT COUNT(*) AS row_count, {time_select} FROM {table} {where_sql}",
+        tuple(params),
     ).fetchone()
 
     return {
@@ -326,16 +334,21 @@ def build_manifest(
     end_exclusive_dt: datetime,
     start_ts: int,
     end_ts: int,
+    timezone: str,
+    source_id: str | None,
+    granularities: list[str] | None,
     tables: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "source_db": str(source_db),
         "output_dir": str(output_dir),
         "start_date": start_dt.strftime("%Y-%m-%d"),
-        "end_inclusive_date": (end_exclusive_dt - timedelta(days=1)).strftime("%Y-%m-%d"),
         "end_exclusive_date": end_exclusive_dt.strftime("%Y-%m-%d"),
         "start_ts": start_ts,
         "end_exclusive_ts": end_ts,
+        "timezone": timezone,
+        "source_id_filter": source_id,
+        "granularity_filter": granularities,
         "tables": tables,
     }
 
@@ -364,7 +377,11 @@ def main() -> None:
     if not args.skip_parquet:
         parquet_dir.mkdir(parents=True, exist_ok=True)
 
-    start_dt, end_exclusive_dt, start_ts, end_ts = compute_window(args.start, args.end_inclusive)
+    start_dt, end_exclusive_dt, start_ts, end_ts = compute_window(
+        args.start,
+        args.end_exclusive,
+        args.timezone,
+    )
 
     manifest_tables: dict[str, dict[str, Any]] = {}
     sqlite_output_path = output_dir / SQLITE_FILENAME
@@ -378,15 +395,12 @@ def main() -> None:
                 dest_conn = connect_db(sqlite_output_path)
 
             for table, config in TABLE_CONFIG.items():
-                time_column = str(config["time_column"])
+                time_column = config["time_column"]
                 extra_where, extra_params = build_table_filters(
-                    router=args.router,
-                    all_granularities=args.all_granularities,
+                    source_id=args.source_id,
+                    granularities=args.granularity,
                     config=config,
                 )
-                granularity_filter = None
-                if not args.all_granularities and config["extra_params"]:
-                    granularity_filter = config["extra_params"][0]
                 summary = collect_table_summary(
                     source_conn,
                     table,
@@ -399,8 +413,8 @@ def main() -> None:
 
                 table_manifest = {
                     "time_column": time_column,
-                    "router_filter": args.router,
-                    "granularity_filter": granularity_filter,
+                    "source_id_filter": args.source_id,
+                    "granularity_filter": args.granularity if config["granularity_column"] else None,
                     "source_row_count": summary["row_count"],
                     "source_min_time": summary["min_time"],
                     "source_max_time": summary["max_time"],
@@ -462,6 +476,9 @@ def main() -> None:
         end_exclusive_dt=end_exclusive_dt,
         start_ts=start_ts,
         end_ts=end_ts,
+        timezone=args.timezone,
+        source_id=args.source_id,
+        granularities=args.granularity,
         tables=manifest_tables,
     )
     manifest_path = write_manifest(output_dir, manifest)

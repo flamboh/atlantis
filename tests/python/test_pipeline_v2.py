@@ -318,6 +318,11 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
         }
 
     monkeypatch.setattr(pipeline_v2, 'build_nfcapd_bucket_payload', fake_build_nfcapd_bucket_payload)
+    monkeypatch.setattr(
+        pipeline_v2,
+        'write_aggregate_rows',
+        lambda *args, **kwargs: pytest.fail('nfcapd inputs should use streaming aggregate state'),
+    )
 
     pipeline_v2.process_input_specs(
         conn,
@@ -337,6 +342,13 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
     processed_inputs = conn.execute(
         'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2'
     ).fetchall()
+    aggregate_netflow = conn.execute(
+        """
+        SELECT granularity, ip_version, flows, packets, bytes
+        FROM netflow_stats_aggregate_v2
+        ORDER BY granularity, ip_version
+        """
+    ).fetchall()
 
     assert netflow == [
         ('oh_ir1_gw', 1744733100, 4, 1),
@@ -350,6 +362,14 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
             1744733100,
             'processed',
         )
+    ]
+    assert aggregate_netflow == [
+        ('1d', 4, 1, 10, 1000),
+        ('1d', 6, 1, 3, 300),
+        ('1h', 4, 1, 10, 1000),
+        ('1h', 6, 1, 3, 300),
+        ('30m', 4, 1, 10, 1000),
+        ('30m', 6, 1, 3, 300),
     ]
 
 
@@ -728,7 +748,8 @@ def test_discover_nfcapd_tree_specs_uses_canonical_layout(tmp_path: Path) -> Non
         root / 'oh_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000',
     ]
     ignored = root / 'oh_ir1_gw' / '2025' / '02' / '02' / 'nfcapd.202502020000'
-    for path in [*valid, ignored]:
+    tmp_file = root / 'oh_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010005.tmp'
+    for path in [*valid, ignored, tmp_file]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('', encoding='utf-8')
 
@@ -753,6 +774,46 @@ def test_discover_nfcapd_tree_specs_uses_canonical_layout(tmp_path: Path) -> Non
             'input_kind': 'nfcapd',
             'path': str(valid[2]),
             'source_id': 'oh_ir1_gw',
+        },
+    ]
+
+
+def test_discover_nfcapd_tree_specs_zero_fills_bounded_missing_buckets(tmp_path: Path) -> None:
+    pipeline_v2, _ = load_modules()
+    root = tmp_path / 'uoregon'
+    first = root / 'cc_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000'
+    second = root / 'cc_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010010'
+    for path in [first, second]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('', encoding='utf-8')
+
+    specs = pipeline_v2.discover_nfcapd_tree_specs(
+        root_path=root,
+        source_ids=['cc_ir1_gw'],
+        day=datetime(2025, 2, 1),
+        source_bounds=pipeline_v2.discover_nfcapd_source_bounds(root, ['cc_ir1_gw']),
+    )
+
+    assert specs == [
+        {
+            'input_kind': 'nfcapd',
+            'path': str(first),
+            'source_id': 'cc_ir1_gw',
+        },
+        {
+            'input_kind': 'nfcapd',
+            'path': 'gap://nfcapd/cc_ir1_gw/202502010005',
+            'expected_path': str(
+                root / 'cc_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010005'
+            ),
+            'source_id': 'cc_ir1_gw',
+            'bucket_start': pipeline_v2.parse_nfcapd_bucket_start(str(first)) + 300,
+            'gap': True,
+        },
+        {
+            'input_kind': 'nfcapd',
+            'path': str(second),
+            'source_id': 'cc_ir1_gw',
         },
     ]
 
@@ -786,6 +847,7 @@ def test_process_pipeline_v2_config_chunks_nfcapd_tree_by_day(monkeypatch, tmp_p
                     'source_ids': ['cc_ir1_gw', 'oh_ir1_gw'],
                     'start_date': '2025-02-01',
                     'end_date': '2025-02-02',
+                    'zero_fill_gaps': False,
                 }
             ],
         },
@@ -824,6 +886,7 @@ def test_process_pipeline_v2_config_defaults_tree_end_date_to_latest_file(
                     'root_path': str(root),
                     'source_ids': ['cc_ir1_gw'],
                     'start_date': '2025-02-01',
+                    'zero_fill_gaps': False,
                 }
             ],
         },
@@ -882,6 +945,75 @@ def test_process_pipeline_v2_config_skips_fully_processed_tree_day(
             ],
         },
     )
+
+
+def test_process_input_specs_writes_zero_rows_for_nfcapd_gap() -> None:
+    pipeline_v2, _ = load_modules()
+    conn = sqlite3.connect(':memory:')
+    bucket_start = 1744733100
+
+    pipeline_v2.process_input_specs(
+        conn,
+        [
+            {
+                'input_kind': 'nfcapd',
+                'path': 'gap://nfcapd/oh_ir1_gw/202504150005',
+                'source_id': 'oh_ir1_gw',
+                'bucket_start': bucket_start,
+                'gap': True,
+            }
+        ],
+        max_workers=1,
+        run_maad=False,
+    )
+
+    processed_inputs = conn.execute(
+        'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2'
+    ).fetchall()
+    netflow = conn.execute(
+        'SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 ORDER BY ip_version'
+    ).fetchall()
+    aggregate_netflow = conn.execute(
+        """
+        SELECT granularity, ip_version, flows, packets, bytes
+        FROM netflow_stats_aggregate_v2
+        ORDER BY granularity, ip_version
+        """
+    ).fetchall()
+    ip_stats = conn.execute(
+        "SELECT granularity, sa_ipv4_count, da_ipv4_count, sa_ipv6_count, da_ipv6_count FROM ip_stats_v2 ORDER BY granularity"
+    ).fetchall()
+    protocol_stats = conn.execute(
+        "SELECT granularity, protocols_list_ipv4, protocols_list_ipv6 FROM protocol_stats_v2 ORDER BY granularity"
+    ).fetchall()
+
+    assert processed_inputs == [
+        ('nfcapd', 'gap://nfcapd/oh_ir1_gw/202504150005', 'oh_ir1_gw', bucket_start, 'processed')
+    ]
+    assert netflow == [
+        ('oh_ir1_gw', bucket_start, 4, 0, 0, 0),
+        ('oh_ir1_gw', bucket_start, 6, 0, 0, 0),
+    ]
+    assert aggregate_netflow == [
+        ('1d', 4, 0, 0, 0),
+        ('1d', 6, 0, 0, 0),
+        ('1h', 4, 0, 0, 0),
+        ('1h', 6, 0, 0, 0),
+        ('30m', 4, 0, 0, 0),
+        ('30m', 6, 0, 0, 0),
+    ]
+    assert ip_stats == [
+        ('1d', 0, 0, 0, 0),
+        ('1h', 0, 0, 0, 0),
+        ('30m', 0, 0, 0, 0),
+        ('5m', 0, 0, 0, 0),
+    ]
+    assert protocol_stats == [
+        ('1d', '', ''),
+        ('1h', '', ''),
+        ('30m', '', ''),
+        ('5m', '', ''),
+    ]
 
 
 def test_process_input_specs_always_runs_maad(monkeypatch) -> None:

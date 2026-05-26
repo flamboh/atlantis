@@ -55,7 +55,11 @@ from maad_v2 import (
     insert_maad_v2_rows,
     run_maad_json,
 )
-from nfdump_stats_v2 import build_nfcapd_bucket_payload
+from nfdump_stats_v2 import (
+    build_nfcapd_bucket_payload,
+    is_nfcapd_bucket_filename,
+    parse_nfcapd_bucket_start,
+)
 from normalized_rows_v2 import NormalizedRow, build_nfdump_csv_command, normalize_nfdump_csv_values
 from normalized_rows_v2 import infer_ip_version
 from processed_inputs_v2 import (
@@ -81,6 +85,7 @@ DEFAULT_MAAD_BIN = Path(__file__).resolve().parent / 'maad_fast'
 DEFAULT_MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '8'))
 DEFAULT_AGGREGATE_MAAD_MAX_WORKERS = int(os.environ.get('AGGREGATE_MAAD_MAX_WORKERS', '4'))
 PIPELINE_TIMEZONE = ZoneInfo(os.environ.get('NETFLOW_TIMEZONE', 'America/Los_Angeles'))
+FIVE_MINUTE_SECONDS = 300
 ARROW_IPV4_REGEX = (
     r'^(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
     r'(?:\.(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}$'
@@ -326,9 +331,16 @@ def process_nfcapd_tree_spec(
         if spec.get('end_date')
         else discover_latest_nfcapd_tree_day(root_path, source_ids)
     )
+    zero_fill_gaps = bool(spec.get('zero_fill_gaps', True))
+    source_bounds = discover_nfcapd_source_bounds(root_path, source_ids) if zero_fill_gaps else {}
 
     for day in iter_days(start_date, end_date):
-        input_specs = discover_nfcapd_tree_specs(root_path, source_ids, day)
+        input_specs = discover_nfcapd_tree_specs(
+            root_path,
+            source_ids,
+            day,
+            source_bounds=source_bounds,
+        )
         if not input_specs:
             LOGGER.info('No nfcapd files found for %s', day.strftime('%Y-%m-%d'))
             continue
@@ -380,23 +392,100 @@ def discover_nfcapd_tree_specs(
     root_path: str | Path,
     source_ids: list[str],
     day: datetime,
+    *,
+    source_bounds: dict[str, tuple[int, int]] | None = None,
 ) -> list[dict]:
-    """Discover nfcapd files under <root>/<source>/YYYY/MM/DD."""
+    """Discover nfcapd files and bounded gap buckets under <root>/<source>/YYYY/MM/DD."""
     root = Path(root_path)
     specs = []
     for source_id in sorted(source_ids):
         day_dir = root / source_id / day.strftime('%Y') / day.strftime('%m') / day.strftime('%d')
-        if not day_dir.is_dir():
-            continue
-        for path in sorted(day_dir.glob('nfcapd.*')):
-            specs.append(
-                {
+        real_specs = {}
+        if day_dir.is_dir():
+            for path in sorted(day_dir.glob('nfcapd.*')):
+                if not is_nfcapd_bucket_filename(path.name):
+                    continue
+                real_specs[parse_nfcapd_bucket_start(str(path))] = {
                     'input_kind': 'nfcapd',
                     'path': str(path),
                     'source_id': source_id,
                 }
-            )
+        if source_bounds is None or source_id not in source_bounds:
+            specs.extend(real_specs[bucket_start] for bucket_start in sorted(real_specs))
+            continue
+
+        first_bucket, last_bucket = source_bounds[source_id]
+        for bucket_start in iter_local_day_bucket_starts(day):
+            spec = real_specs.get(bucket_start)
+            if spec is not None:
+                specs.append(spec)
+            elif first_bucket < bucket_start < last_bucket:
+                specs.append(build_nfcapd_gap_spec(root, source_id, bucket_start))
     return specs
+
+
+def discover_nfcapd_source_bounds(
+    root_path: str | Path,
+    source_ids: list[str],
+) -> dict[str, tuple[int, int]]:
+    """Return first and last real nfcapd bucket per source."""
+    root = Path(root_path)
+    bounds: dict[str, tuple[int, int]] = {}
+    for source_id in source_ids:
+        bucket_starts = [
+            parse_nfcapd_bucket_start(str(path))
+            for path in iter_nfcapd_source_paths(root / source_id)
+        ]
+        if bucket_starts:
+            bounds[source_id] = (min(bucket_starts), max(bucket_starts))
+    return bounds
+
+
+def iter_nfcapd_source_paths(source_root: Path) -> Iterable[Path]:
+    """Yield canonical nfcapd files below one source root."""
+    if not source_root.is_dir():
+        return
+    for year_dir in sorted(source_root.glob('????')):
+        if not year_dir.is_dir():
+            continue
+        for month_dir in sorted(year_dir.glob('??')):
+            if not month_dir.is_dir():
+                continue
+            for day_dir in sorted(month_dir.glob('??')):
+                if not day_dir.is_dir():
+                    continue
+                for path in sorted(day_dir.glob('nfcapd.*')):
+                    if is_nfcapd_bucket_filename(path.name):
+                        yield path
+
+
+def iter_local_day_bucket_starts(day: datetime) -> Iterable[int]:
+    """Yield local-time 5m bucket starts for one calendar day."""
+    current = day.replace(tzinfo=PIPELINE_TIMEZONE)
+    end = current + timedelta(days=1)
+    while current < end:
+        yield int(current.timestamp())
+        current += timedelta(seconds=FIVE_MINUTE_SECONDS)
+
+
+def build_nfcapd_gap_spec(root: Path, source_id: str, bucket_start: int) -> dict:
+    """Build an internal zero-fill spec for one missing nfcapd bucket."""
+    timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
+    return {
+        'input_kind': 'nfcapd',
+        'path': f"gap://nfcapd/{source_id}/{timestamp.strftime('%Y%m%d%H%M')}",
+        'expected_path': str(
+            root
+            / source_id
+            / timestamp.strftime('%Y')
+            / timestamp.strftime('%m')
+            / timestamp.strftime('%d')
+            / f"nfcapd.{timestamp.strftime('%Y%m%d%H%M')}"
+        ),
+        'source_id': source_id,
+        'bucket_start': bucket_start,
+        'gap': True,
+    }
 
 
 def all_tree_specs_processed(conn: sqlite3.Connection, input_specs: list[dict]) -> bool:
@@ -541,6 +630,18 @@ def process_input_specs(
         )
         return
 
+    if should_stream_nfcapd_input_specs(input_specs):
+        process_nfcapd_input_specs_streaming_aggregates(
+            conn,
+            input_specs,
+            maad_bin=maad_bin,
+            maad_backend=maad_backend,
+            maad_workers=maad_workers,
+            max_workers=max_workers,
+            run_maad=run_maad,
+        )
+        return
+
     tasks = [(spec, str(maad_bin), maad_backend, maad_workers, run_maad) for spec in input_specs]
     processed_buckets = []
     raw_buckets = []
@@ -558,6 +659,46 @@ def process_input_specs(
         maad_backend=maad_backend,
         maad_workers=maad_workers,
         run_maad=run_maad,
+    )
+    with conn:
+        mark_processed_buckets(conn, processed_buckets)
+
+
+def should_stream_nfcapd_input_specs(input_specs: list[dict]) -> bool:
+    """Return true when every input spec is a native nfcapd bucket."""
+    return bool(input_specs) and all(str(spec['input_kind']) == 'nfcapd' for spec in input_specs)
+
+
+def process_nfcapd_input_specs_streaming_aggregates(
+    conn: sqlite3.Connection,
+    input_specs: list[dict],
+    *,
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+    max_workers: int,
+    run_maad: bool,
+) -> None:
+    """Process nfcapd inputs without retaining every raw 5m address payload."""
+    tasks = [(spec, str(maad_bin), maad_backend, maad_workers, run_maad) for spec in input_specs]
+    processed_buckets = []
+    aggregate_buckets: dict[tuple[str, str, int], dict] = {}
+
+    for payload in iter_input_payloads(tasks, max_workers):
+        write_input_payload(conn, payload, mark_processed=False)
+        processed_buckets.extend(payload['processed_buckets'])
+        for raw_bucket in payload.get('raw_buckets', []):
+            add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
+
+    aggregate_workers = aggregate_maad_worker_count(max(max_workers, maad_workers))
+    flush_streaming_aggregate_buckets(
+        conn,
+        aggregate_buckets,
+        list(aggregate_buckets),
+        maad_bin,
+        maad_backend,
+        aggregate_workers,
+        run_maad,
     )
     with conn:
         mark_processed_buckets(conn, processed_buckets)
@@ -1856,6 +1997,13 @@ def build_input_payload(
     input_kind = str(spec['input_kind'])
     input_locator = str(spec['path'])
     if input_kind == 'nfcapd':
+        if spec.get('gap'):
+            return build_nfcapd_gap_payload(
+                input_locator=input_locator,
+                source_id=str(spec['source_id']),
+                bucket_start=int(spec['bucket_start']),
+                run_maad=run_maad,
+            )
         nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
         return {
             'processed_buckets': [nfcapd_payload['processed_bucket']],
@@ -2267,6 +2415,79 @@ def iter_input_rows(spec: dict) -> Iterable[NormalizedRow]:
         yield from iter_nfdump_rows(input_path, source_id)
         return
     raise ValueError(f'Unsupported input_kind: {input_kind}')
+
+
+def build_nfcapd_gap_payload(
+    input_locator: str,
+    source_id: str,
+    bucket_start: int,
+    *,
+    run_maad: bool = True,
+) -> dict:
+    """Build zero-valued v2 rows for one bounded missing nfcapd bucket."""
+    bucket_end = bucket_start + FIVE_MINUTE_SECONDS
+    netflow_rows = [
+        new_netflow_bucket_from_values(
+            source_id=source_id,
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+            ip_version=ip_version,
+        )
+        for ip_version in (4, 6)
+    ]
+    raw_bucket = {
+        'source_id': source_id,
+        'bucket_start': bucket_start,
+        'source_ipv4': [],
+        'destination_ipv4': [],
+        'source_ipv6': [],
+        'destination_ipv6': [],
+        'protocols_ipv4': [],
+        'protocols_ipv6': [],
+        'maad_source_ipv4': [],
+        'maad_destination_ipv4': [],
+        'netflow_rows': [dict(row) for row in netflow_rows],
+    }
+    return {
+        'processed_buckets': [
+            {
+                'input_kind': 'nfcapd',
+                'input_locator': input_locator,
+                'source_id': source_id,
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_end,
+            }
+        ],
+        'netflow_rows': netflow_rows,
+        'ip_rows': [
+            {
+                'source_id': source_id,
+                'granularity': '5m',
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_end,
+                'sa_ipv4_count': 0,
+                'da_ipv4_count': 0,
+                'sa_ipv6_count': 0,
+                'da_ipv6_count': 0,
+            }
+        ],
+        'protocol_rows': [
+            {
+                'source_id': source_id,
+                'granularity': '5m',
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_end,
+                'unique_protocols_count_ipv4': 0,
+                'unique_protocols_count_ipv6': 0,
+                'protocols_list_ipv4': '',
+                'protocols_list_ipv6': '',
+            }
+        ],
+        'maad_rows': [build_maad_rows_for_raw_bucket(raw_bucket, '5m', '', maad_backend='python')]
+        if run_maad
+        else [],
+        'raw_buckets': [raw_bucket],
+    }
 
 
 def accumulate_input_buckets(rows: Iterable[NormalizedRow]) -> dict[tuple[str, int, int], BucketAccumulator]:
