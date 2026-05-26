@@ -700,6 +700,10 @@ def test_process_pipeline_v2_config_writes_dataset_metadata() -> None:
                     'source_mode': 'subdirs',
                     'discovery_mode': 'live',
                     'sort_order': 3,
+                    'sources': [
+                        {'source_id': 'router-a', 'members': ['router-a']},
+                        {'source_id': 'all', 'members': ['router-a', 'router-b']},
+                    ],
                 }
             ],
             'inputs': [],
@@ -712,6 +716,17 @@ def test_process_pipeline_v2_config_writes_dataset_metadata() -> None:
         FROM datasets
         """
     ).fetchall() == [('alpha', 'Alpha Dataset', '2025-03-01', 'subdirs', 'live', 3)]
+    assert conn.execute(
+        """
+        SELECT dataset_id, source_id, member_id
+        FROM source_members
+        ORDER BY source_id, member_id
+        """
+    ).fetchall() == [
+        ('alpha', 'all', 'router-a'),
+        ('alpha', 'all', 'router-b'),
+        ('alpha', 'router-a', 'router-a'),
+    ]
 
 
 def test_build_dataset_tree_config_includes_dataset_metadata(monkeypatch, tmp_path: Path) -> None:
@@ -824,8 +839,8 @@ def test_process_pipeline_v2_config_chunks_nfcapd_tree_by_day(monkeypatch, tmp_p
     root = tmp_path / 'uoregon'
     calls = []
 
-    def fake_process_input_specs(conn, input_specs, *, maad_bin, max_workers, **kwargs):
-        calls.append((input_specs, str(maad_bin), max_workers))
+    def fake_process_jobs(conn, jobs, *, maad_bin, max_workers, **kwargs):
+        calls.append((jobs, str(maad_bin), max_workers))
 
     for day in ['01', '02']:
         for source_id in ['cc_ir1_gw', 'oh_ir1_gw']:
@@ -833,7 +848,7 @@ def test_process_pipeline_v2_config_chunks_nfcapd_tree_by_day(monkeypatch, tmp_p
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('', encoding='utf-8')
 
-    monkeypatch.setattr(pipeline_v2, 'process_input_specs', fake_process_input_specs)
+    monkeypatch.setattr(pipeline_v2, 'process_nfcapd_logical_bucket_jobs', fake_process_jobs)
 
     pipeline_v2.process_pipeline_v2_config(
         conn,
@@ -853,9 +868,9 @@ def test_process_pipeline_v2_config_chunks_nfcapd_tree_by_day(monkeypatch, tmp_p
         },
     )
 
-    assert [len(input_specs) for input_specs, _, _ in calls] == [2, 2]
-    assert calls[0][0][0]['path'].endswith('/cc_ir1_gw/2025/02/01/nfcapd.202502010000')
-    assert calls[1][0][1]['path'].endswith('/oh_ir1_gw/2025/02/02/nfcapd.202502020000')
+    assert [len(jobs) for jobs, _, _ in calls] == [2, 2]
+    assert calls[0][0][0]['member_specs'][0]['path'].endswith('/cc_ir1_gw/2025/02/01/nfcapd.202502010000')
+    assert calls[1][0][1]['member_specs'][0]['path'].endswith('/oh_ir1_gw/2025/02/02/nfcapd.202502020000')
     assert all(maad_bin == '/tmp/MAAD' and max_workers == 16 for _, maad_bin, max_workers in calls)
 
 
@@ -867,15 +882,15 @@ def test_process_pipeline_v2_config_defaults_tree_end_date_to_latest_file(
     root = tmp_path / 'uoregon'
     calls = []
 
-    def fake_process_input_specs(conn, input_specs, *, maad_bin, max_workers, **kwargs):
-        calls.append(input_specs)
+    def fake_process_jobs(conn, jobs, *, maad_bin, max_workers, **kwargs):
+        calls.append(jobs)
 
     for day in ['01', '03']:
         path = root / 'cc_ir1_gw' / '2025' / '02' / day / f'nfcapd.202502{day}0000'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('', encoding='utf-8')
 
-    monkeypatch.setattr(pipeline_v2, 'process_input_specs', fake_process_input_specs)
+    monkeypatch.setattr(pipeline_v2, 'process_nfcapd_logical_bucket_jobs', fake_process_jobs)
 
     pipeline_v2.process_pipeline_v2_config(
         conn,
@@ -892,7 +907,7 @@ def test_process_pipeline_v2_config_defaults_tree_end_date_to_latest_file(
         },
     )
 
-    assert [input_specs[0]['path'] for input_specs in calls] == [
+    assert [jobs[0]['member_specs'][0]['path'] for jobs in calls] == [
         str(root / 'cc_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000'),
         str(root / 'cc_ir1_gw' / '2025' / '02' / '03' / 'nfcapd.202502030000'),
     ]
@@ -927,7 +942,7 @@ def test_process_pipeline_v2_config_skips_fully_processed_tree_day(
 
     monkeypatch.setattr(
         pipeline_v2,
-        'process_input_specs',
+        'process_nfcapd_logical_bucket_jobs',
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('processed day should skip')),
     )
 
@@ -945,6 +960,250 @@ def test_process_pipeline_v2_config_skips_fully_processed_tree_day(
             ],
         },
     )
+
+
+def test_process_pipeline_v2_config_builds_union_source_jobs(monkeypatch, tmp_path: Path) -> None:
+    pipeline_v2, _ = load_modules()
+    conn = sqlite3.connect(':memory:')
+    root = tmp_path / 'uoregon'
+    cc_path = root / 'cc_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000'
+    oh_path = root / 'oh_ir1_gw' / '2025' / '02' / '01' / 'nfcapd.202502010000'
+    for path in [cc_path, oh_path]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('', encoding='utf-8')
+    calls = []
+
+    def fake_process_jobs(conn, jobs, *, maad_bin, max_workers, **kwargs):
+        calls.append(jobs)
+
+    monkeypatch.setattr(pipeline_v2, 'process_nfcapd_logical_bucket_jobs', fake_process_jobs)
+
+    pipeline_v2.process_pipeline_v2_config(
+        conn,
+        {
+            'inputs': [
+                {
+                    'input_kind': 'nfcapd_tree',
+                    'root_path': str(root),
+                    'sources': [
+                        {'source_id': 'cc_ir1_gw', 'members': ['cc_ir1_gw']},
+                        {'source_id': 'uoregon_all', 'members': ['cc_ir1_gw', 'oh_ir1_gw']},
+                    ],
+                    'start_date': '2025-02-01',
+                    'end_date': '2025-02-01',
+                    'zero_fill_gaps': False,
+                }
+            ],
+        },
+    )
+
+    assert [(job['source_id'], len(job['member_specs'])) for job in calls[0]] == [
+        ('cc_ir1_gw', 1),
+        ('uoregon_all', 2),
+    ]
+
+
+def test_build_nfcapd_logical_bucket_jobs_keeps_empty_union_gap() -> None:
+    pipeline_v2, _ = load_modules()
+    conn = sqlite3.connect(':memory:')
+    bucket_start = 1738396800
+    member_specs = [
+        {
+            'input_kind': 'nfcapd',
+            'path': 'gap://nfcapd/cc_ir1_gw/202502010000',
+            'source_id': 'cc_ir1_gw',
+            'bucket_start': bucket_start,
+            'gap': True,
+        },
+        {
+            'input_kind': 'nfcapd',
+            'path': 'gap://nfcapd/oh_ir1_gw/202502010000',
+            'source_id': 'oh_ir1_gw',
+            'bucket_start': bucket_start,
+            'gap': True,
+        },
+    ]
+
+    jobs = pipeline_v2.build_nfcapd_logical_bucket_jobs(
+        conn,
+        [
+            pipeline_v2.SourceDefinition(
+                source_id='uoregon_all',
+                members=('cc_ir1_gw', 'oh_ir1_gw'),
+            )
+        ],
+        member_specs,
+    )
+
+    assert jobs == [
+        {
+            'source_id': 'uoregon_all',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_start + 300,
+            'member_specs': [],
+            'missing_members': ['cc_ir1_gw', 'oh_ir1_gw'],
+        }
+    ]
+
+
+def test_process_nfcapd_logical_bucket_jobs_rewrites_empty_union_gap() -> None:
+    pipeline_v2, _ = load_modules()
+    conn = sqlite3.connect(':memory:')
+    bucket_start = 1738396800
+
+    pipeline_v2.process_nfcapd_logical_bucket_jobs(
+        conn,
+        [
+            {
+                'source_id': 'uoregon_all',
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_start + 300,
+                'member_specs': [],
+                'missing_members': ['cc_ir1_gw', 'oh_ir1_gw'],
+            }
+        ],
+        max_workers=1,
+        run_maad=False,
+    )
+
+    assert conn.execute(
+        'SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2 ORDER BY ip_version'
+    ).fetchall() == [
+        ('uoregon_all', bucket_start, 4, 0),
+        ('uoregon_all', bucket_start, 6, 0),
+    ]
+    assert conn.execute(
+        'SELECT input_locator, source_id, status FROM processed_inputs_v2'
+    ).fetchall() == [
+        ('gap://nfcapd/uoregon_all/202502010000', 'uoregon_all', 'processed')
+    ]
+
+
+def test_process_nfcapd_logical_bucket_jobs_merges_member_payloads(monkeypatch) -> None:
+    pipeline_v2, _ = load_modules()
+    conn = sqlite3.connect(':memory:')
+    bucket_start = 1738396800
+    bucket_end = bucket_start + 300
+
+    def raw_bucket(path: str, member_id: str, src_ip: str, dst_ip: str, flows: int) -> dict:
+        netflow_row = pipeline_v2.new_netflow_bucket_from_values(
+            source_id=member_id,
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+            ip_version=4,
+        )
+        netflow_row['flows'] = flows
+        netflow_row['flows_tcp'] = flows
+        netflow_row['packets'] = flows * 10
+        netflow_row['packets_tcp'] = flows * 10
+        netflow_row['bytes'] = flows * 100
+        netflow_row['bytes_tcp'] = flows * 100
+        return {
+            'processed_buckets': [
+                {
+                    'input_kind': 'nfcapd',
+                    'input_locator': path,
+                    'source_id': member_id,
+                    'bucket_start': bucket_start,
+                    'bucket_end': bucket_end,
+                }
+            ],
+            'raw_buckets': [
+                {
+                    'source_id': member_id,
+                    'bucket_start': bucket_start,
+                    'source_ipv4': [src_ip],
+                    'destination_ipv4': [dst_ip],
+                    'source_ipv6': [],
+                    'destination_ipv6': [],
+                    'protocols_ipv4': ['6'],
+                    'protocols_ipv6': [],
+                    'maad_source_ipv4': [src_ip],
+                    'maad_destination_ipv4': [dst_ip],
+                    'netflow_rows': [netflow_row],
+                }
+            ],
+        }
+
+    payloads = {
+        '/captures/cc/nfcapd.202502010000': raw_bucket(
+            '/captures/cc/nfcapd.202502010000',
+            'cc_ir1_gw',
+            '192.0.2.1',
+            '198.51.100.1',
+            2,
+        ),
+        '/captures/oh/nfcapd.202502010000': raw_bucket(
+            '/captures/oh/nfcapd.202502010000',
+            'oh_ir1_gw',
+            '192.0.2.2',
+            '198.51.100.2',
+            3,
+        ),
+    }
+
+    def fake_build_input_payload(spec, maad_bin, maad_backend='subprocess', maad_workers=1, run_maad=True):
+        return payloads[str(spec['path'])]
+
+    monkeypatch.setattr(pipeline_v2, 'build_input_payload', fake_build_input_payload)
+
+    pipeline_v2.process_nfcapd_logical_bucket_jobs(
+        conn,
+        [
+            {
+                'source_id': 'uoregon_all',
+                'bucket_start': bucket_start,
+                'bucket_end': bucket_end,
+                'member_specs': [
+                    {'input_kind': 'nfcapd', 'path': '/captures/cc/nfcapd.202502010000', 'source_id': 'cc_ir1_gw'},
+                    {'input_kind': 'nfcapd', 'path': '/captures/oh/nfcapd.202502010000', 'source_id': 'oh_ir1_gw'},
+                ],
+                'missing_members': [],
+            }
+        ],
+        max_workers=1,
+        run_maad=False,
+    )
+
+    assert conn.execute(
+        'SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2'
+    ).fetchall() == [('uoregon_all', bucket_start, 4, 5, 50, 500)]
+    assert conn.execute(
+        "SELECT source_id, granularity, sa_ipv4_count, da_ipv4_count FROM ip_stats_v2 WHERE granularity = '5m'"
+    ).fetchall() == [('uoregon_all', '5m', 2, 2)]
+    assert conn.execute(
+        'SELECT input_locator, source_id, status FROM processed_inputs_v2 ORDER BY input_locator'
+    ).fetchall() == [
+        ('/captures/cc/nfcapd.202502010000', 'uoregon_all', 'processed'),
+        ('/captures/oh/nfcapd.202502010000', 'uoregon_all', 'processed'),
+    ]
+
+
+def test_logical_5m_maad_uses_maad_workers(monkeypatch) -> None:
+    pipeline_v2, _ = load_modules()
+    calls = []
+
+    def fake_process_maad_tasks(tasks, maad_workers):
+        calls.append((tasks, maad_workers))
+        return []
+
+    monkeypatch.setattr(pipeline_v2, 'process_maad_tasks', fake_process_maad_tasks)
+
+    pipeline_v2.build_5m_maad_rows_from_raw_buckets(
+        [
+            {
+                'source_id': 'uoregon_all',
+                'bucket_start': 1738396800,
+                'maad_source_ipv4': ['192.0.2.1'],
+                'maad_destination_ipv4': ['198.51.100.1'],
+            }
+        ],
+        maad_bin='/tmp/maad',
+        maad_backend='subprocess',
+        maad_workers=1,
+    )
+
+    assert calls[0][1] == 1
 
 
 def test_process_input_specs_writes_zero_rows_for_nfcapd_gap() -> None:

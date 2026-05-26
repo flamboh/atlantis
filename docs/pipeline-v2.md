@@ -53,9 +53,12 @@ pipeline keeps only coarser aggregate union state after each 5-minute payload is
 written, instead of retaining every raw bucket address list through the full day.
 
 By default, `nfcapd_tree` also materializes bounded gaps as zero buckets. For
-each source, the pipeline fills missing 5-minute buckets only between the first
-and last real `nfcapd` file discovered for that source. Gap records use
-synthetic `gap://nfcapd/<source>/<YYYYMMDDHHMM>` locators in
+each physical member, the pipeline fills missing 5-minute buckets only between
+the first and last real `nfcapd` file discovered for that member. Single-member
+logical sources keep the member gap locator. Multi-member logical sources ignore
+missing member gaps when at least one physical member is present, and write a
+synthetic logical gap only when every member is missing for that bucket. Gap
+records use synthetic `gap://nfcapd/<source>/<YYYYMMDDHHMM>` locators in
 `processed_inputs_v2` while keeping `input_kind = 'nfcapd'`, so existing
 databases can be migrated in place. Set `"zero_fill_gaps": false` on an
 `nfcapd_tree` input to process only files that exist on disk.
@@ -63,6 +66,10 @@ databases can be migrated in place. Set `"zero_fill_gaps": false` on an
 The generated SQLite database also gets a `datasets` metadata row copied from
 `datasets.json`. Local web discovery scans `data/*/netflow.sqlite`, reads those
 metadata rows, and opens the selected dataset's SQLite file for API queries.
+When `sources` are configured, the pipeline also writes `source_members`
+metadata. The web API uses that provenance to collapse additive flow/packet/byte
+queries onto a disjoint physical-member cover and to prefer exact logical union
+sources for non-additive unique-count, spectrum, and structure queries.
 
 Explicit json configs are still supported for csv inputs and unusual file
 layouts:

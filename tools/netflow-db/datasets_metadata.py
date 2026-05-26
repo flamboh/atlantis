@@ -20,6 +20,16 @@ def init_datasets_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_members (
+            dataset_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            PRIMARY KEY (dataset_id, source_id, member_id)
+        )
+        """
+    )
     conn.commit()
 
 
@@ -52,4 +62,28 @@ def upsert_dataset_metadata(conn: sqlite3.Connection, dataset: dict[str, Any]) -
         """,
         (dataset_id, label, default_start_date, source_mode, discovery_mode, sort_order),
     )
+    upsert_source_members(conn, dataset_id, dataset.get('sources') or [])
     conn.commit()
+
+
+def upsert_source_members(
+    conn: sqlite3.Connection,
+    dataset_id: str,
+    sources: list[dict[str, Any]],
+) -> None:
+    """Replace logical source membership metadata for one dataset."""
+    conn.execute('DELETE FROM source_members WHERE dataset_id = ?', (dataset_id,))
+    rows = [
+        (dataset_id, str(source['source_id']).strip(), str(member).strip())
+        for source in sources
+        for member in source.get('members', [])
+        if str(source.get('source_id', '')).strip() and str(member).strip()
+    ]
+    if rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO source_members (dataset_id, source_id, member_id)
+            VALUES (?, ?, ?)
+            """,
+            rows,
+        )

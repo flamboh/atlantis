@@ -6,6 +6,11 @@
     "db_path": "./data/uoregon/netflow.sqlite",
     "default_start_date": "2025-02-11",
     "source_mode": "subdirs",
+    "sources": [
+      { "source_id": "cc_ir1_gw", "members": ["cc_ir1_gw"] },
+      { "source_id": "oh_ir1_gw", "members": ["oh_ir1_gw"] },
+      { "source_id": "uoregon_all", "members": ["cc_ir1_gw", "oh_ir1_gw"] }
+    ],
     "discovery_mode": "live"
   },
   {

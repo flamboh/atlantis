@@ -8,7 +8,8 @@ import {
 	parseIpGranularity,
 	parseIpGranularityOrDefault,
 	parseSourceIds,
-	parseTimestamp
+	parseTimestamp,
+	resolveSourceIds
 } from '../../../src/lib/server/netflow-v2';
 
 describe('netflow v2 helpers', () => {
@@ -65,6 +66,38 @@ describe('netflow v2 helpers', () => {
 	it('normalizes structure points from MAAD variants', () => {
 		expect(normalizeStructurePoints([{ q: 1, tauTilde: 2, s: 3 }])).toEqual([
 			{ q: 1, tau: 2, sd: 3 }
+		]);
+	});
+
+	it('resolves additive sources to one disjoint physical cover', () => {
+		const definitions = [
+			{ sourceId: 'cc_ir1_gw', members: ['cc_ir1_gw'] },
+			{ sourceId: 'oh_ir1_gw', members: ['oh_ir1_gw'] },
+			{ sourceId: 'uoregon_all', members: ['cc_ir1_gw', 'oh_ir1_gw'] }
+		];
+
+		expect(resolveSourceIds(definitions, ['cc_ir1_gw', 'oh_ir1_gw'], 'additive')).toEqual([
+			'uoregon_all'
+		]);
+		expect(resolveSourceIds(definitions, ['cc_ir1_gw', 'uoregon_all'], 'additive')).toEqual([
+			'uoregon_all'
+		]);
+		expect(resolveSourceIds(definitions, ['cc_ir1_gw'], 'additive')).toEqual(['cc_ir1_gw']);
+	});
+
+	it('resolves union-only sources only when an exact logical source exists', () => {
+		const definitions = [
+			{ sourceId: 'cc_ir1_gw', members: ['cc_ir1_gw'] },
+			{ sourceId: 'oh_ir1_gw', members: ['oh_ir1_gw'] },
+			{ sourceId: 'uoregon_all', members: ['cc_ir1_gw', 'oh_ir1_gw'] }
+		];
+
+		expect(resolveSourceIds(definitions, ['cc_ir1_gw', 'oh_ir1_gw'], 'union')).toEqual([
+			'uoregon_all'
+		]);
+		expect(resolveSourceIds(definitions.slice(0, 2), ['cc_ir1_gw', 'oh_ir1_gw'], 'union')).toEqual([
+			'cc_ir1_gw',
+			'oh_ir1_gw'
 		]);
 	});
 });
