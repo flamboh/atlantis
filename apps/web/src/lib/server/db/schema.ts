@@ -143,6 +143,163 @@ export const protocolStatsV2 = sqliteTable(
 	]
 );
 
+export const trafficStatsV3 = sqliteTable(
+	'traffic_stats_v3',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		...netflowMetricColumns(),
+		processedAt: text('processed_at').default(currentTimestamp)
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.sourceId,
+				table.granularity,
+				table.bucketStart,
+				table.ipVersion,
+				table.srcVisibility,
+				table.dstVisibility
+			]
+		}),
+		index('idx_traffic_stats_v3_query').on(
+			table.granularity,
+			table.bucketStart,
+			table.sourceId,
+			table.ipVersion,
+			table.srcVisibility,
+			table.dstVisibility
+		),
+		check('traffic_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+	]
+);
+
+export const protocolStatsV3 = sqliteTable(
+	'protocol_stats_v3',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		uniqueProtocolsCount: integer('unique_protocols_count').notNull(),
+		protocolsList: text('protocols_list').notNull(),
+		processedAt: text('processed_at').default(currentTimestamp)
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.sourceId,
+				table.granularity,
+				table.bucketStart,
+				table.ipVersion,
+				table.srcVisibility,
+				table.dstVisibility
+			]
+		}),
+		index('idx_protocol_stats_v3_query').on(
+			table.granularity,
+			table.bucketStart,
+			table.sourceId,
+			table.ipVersion,
+			table.srcVisibility,
+			table.dstVisibility
+		),
+		check('protocol_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+	]
+);
+
+export const addressCountStatsV3 = sqliteTable(
+	'address_count_stats_v3',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
+		uniqueAddressCount: integer('unique_address_count').notNull(),
+		processedAt: text('processed_at').default(currentTimestamp)
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.sourceId,
+				table.granularity,
+				table.bucketStart,
+				table.ipVersion,
+				table.srcVisibility,
+				table.dstVisibility,
+				table.addressSide
+			]
+		}),
+		index('idx_address_count_stats_v3_query').on(
+			table.granularity,
+			table.bucketStart,
+			table.sourceId,
+			table.ipVersion,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.addressSide
+		),
+		check('address_count_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+	]
+);
+
+export const addressStructureStatsV3 = sqliteTable(
+	'address_structure_stats_v3',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
+		structureKind: text('structure_kind', {
+			enum: ['structure', 'spectrum', 'dimension']
+		}).notNull(),
+		valuesJson: text('values_json').notNull(),
+		metadataJson: text('metadata_json').notNull(),
+		processedAt: text('processed_at').default(currentTimestamp)
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.sourceId,
+				table.granularity,
+				table.bucketStart,
+				table.ipVersion,
+				table.srcVisibility,
+				table.dstVisibility,
+				table.addressSide,
+				table.structureKind
+			]
+		}),
+		index('idx_address_structure_stats_v3_query').on(
+			table.granularity,
+			table.bucketStart,
+			table.sourceId,
+			table.ipVersion,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.addressSide,
+			table.structureKind
+		),
+		check('address_structure_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+	]
+);
+
 export const structureStatsV2 = sqliteTable(
 	'structure_stats_v2',
 	{

@@ -20,6 +20,24 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
         assert text is True
         assert timeout == 300
         command_text = ' '.join(command)
+        if '-A proto,srctos,dsttos' in command_text and 'ipv4' in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    'proto,srcTos,dstTos,packets,bytes,flows\n'
+                    '6,2,0,10,1000,2\n'
+                    '17,1,0,5,500,1\n'
+                ),
+                stderr='',
+            )
+        if '-A proto,srctos,dsttos' in command_text and 'ipv6' in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='proto,srcTos,dstTos,packets,bytes,flows\n58,0,0,3,300,1\n',
+                stderr='',
+            )
         if '-A proto' in command_text and 'ipv4' in command:
             return subprocess.CompletedProcess(
                 command,
@@ -38,6 +56,20 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
                 stdout=(
                     'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
                     '2025-01-01 00:00:00.000,1.0,58,3,300,0,0,1\n'
+                ),
+                stderr='',
+            )
+        if '-A srcip,dstip,srctos,dsttos' in command_text:
+            assert 'ipv4' not in command
+            assert 'ipv6' not in command
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    'srcAddr,dstAddr,srcTos,dstTos\n'
+                    '192.0.2.1,198.51.100.1,2,0\n'
+                    '192.0.2.2,198.51.100.2,1,0\n'
+                    '2001:db8::1,2001:db8::2,0,0\n'
                 ),
                 stderr='',
             )
@@ -120,7 +152,24 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert payload['ip_row']['da_ipv6_count'] == 1
     assert payload['protocol_row']['protocols_list_ipv4'] == '17,6'
     assert payload['raw_bucket']['maad_source_ipv4'] == ['192.0.2.1', '192.0.2.2']
-    assert len(commands) == 3
+    assert payload['traffic_v3_rows'][0]['src_visibility'] == 'all'
+    assert payload['traffic_v3_rows'][0]['dst_visibility'] == 'all'
+    assert {
+        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['address_side'], row['unique_address_count'])
+        for row in payload['address_count_v3_rows']
+    } == {
+        (4, 'all', 'all', 'source', 2),
+        (4, 'all', 'all', 'destination', 2),
+        (4, 'anonymized', 'literal', 'source', 1),
+        (4, 'anonymized', 'literal', 'destination', 1),
+        (4, 'literal', 'anonymized', 'source', 1),
+        (4, 'literal', 'anonymized', 'destination', 1),
+        (6, 'all', 'all', 'source', 1),
+        (6, 'all', 'all', 'destination', 1),
+        (6, 'literal', 'literal', 'source', 1),
+        (6, 'literal', 'literal', 'destination', 1),
+    }
+    assert len(commands) == 6
 
 
 def test_parse_nfcapd_bucket_start_uses_first_fold_for_ambiguous_fall_back(monkeypatch) -> None:
