@@ -25,28 +25,6 @@ REQUIRED_COLUMNS = {
     ],
     'netflow_stats_v2': [
         'source_id',
-        'bucket_start',
-        'bucket_end',
-        'ip_version',
-        'flows',
-        'flows_tcp',
-        'flows_udp',
-        'flows_icmp',
-        'flows_other',
-        'packets',
-        'packets_tcp',
-        'packets_udp',
-        'packets_icmp',
-        'packets_other',
-        'bytes',
-        'bytes_tcp',
-        'bytes_udp',
-        'bytes_icmp',
-        'bytes_other',
-        'processed_at',
-    ],
-    'netflow_stats_aggregate_v2': [
-        'source_id',
         'granularity',
         'bucket_start',
         'bucket_end',
@@ -202,12 +180,16 @@ def verify_database(
         if require_data:
             for table_name in (
                 'netflow_stats_v2',
-                'netflow_stats_aggregate_v2',
                 'ip_stats_v2',
                 'protocol_stats_v2',
             ):
                 if row_counts[table_name] == 0:
                     raise SystemExit(f'{table_name} has no rows.')
+            netflow_rollup_count = conn.execute(
+                "SELECT COUNT(*) FROM netflow_stats_v2 WHERE granularity != '5m'"
+            ).fetchone()[0]
+            if netflow_rollup_count == 0:
+                raise SystemExit('netflow_stats_v2 has no rollup rows.')
         if require_maad_data:
             for table_name in ('structure_stats_v2', 'spectrum_stats_v2', 'dimension_stats_v2'):
                 if row_counts[table_name] == 0:
@@ -303,7 +285,7 @@ def quote_identifier(identifier: str) -> str:
 
 def first_source_id(conn: sqlite3.Connection) -> str | None:
     row = conn.execute(
-        'SELECT source_id FROM netflow_stats_v2 ORDER BY source_id LIMIT 1'
+        "SELECT source_id FROM netflow_stats_v2 WHERE granularity = '5m' ORDER BY source_id LIMIT 1"
     ).fetchone()
     return None if row is None else row['source_id']
 
@@ -321,6 +303,7 @@ def select_query_window(conn: sqlite3.Connection, source_id: str) -> tuple[int, 
         SELECT MIN(bucket_start) AS start, MAX(bucket_end) AS end
         FROM netflow_stats_v2
         WHERE source_id = ?
+          AND granularity = '5m'
         """,
         (source_id,),
     ).fetchone()
@@ -343,7 +326,7 @@ def assert_netflow_stats_query(
                SUM(bytes) AS bytes,
                SUM(CASE WHEN ip_version = 4 THEN flows ELSE 0 END) AS flowsIpv4,
                SUM(CASE WHEN ip_version = 6 THEN flows ELSE 0 END) AS flowsIpv6
-        FROM netflow_stats_aggregate_v2
+        FROM netflow_stats_v2
         WHERE source_id IN (?)
           AND granularity = '1h'
           AND bucket_start >= ?
@@ -393,6 +376,7 @@ def assert_netflow_rollup_parity(conn: sqlite3.Connection) -> None:
               ON ns.source_id = calendar.source_id
              AND ns.bucket_start >= calendar.bucket_start
              AND ns.bucket_start < calendar.bucket_end
+             AND ns.granularity = '5m'
             GROUP BY calendar.source_id, calendar.granularity, calendar.bucket_start, calendar.bucket_end, ns.ip_version
         ),
         actual AS (
@@ -417,7 +401,8 @@ def assert_netflow_rollup_parity(conn: sqlite3.Connection) -> None:
                 bytes_udp,
                 bytes_icmp,
                 bytes_other
-            FROM netflow_stats_aggregate_v2
+            FROM netflow_stats_v2
+            WHERE granularity IN ('30m', '1h', '1d')
         ),
         missing_or_changed AS (
             SELECT * FROM expected
@@ -438,7 +423,7 @@ def assert_netflow_rollup_parity(conn: sqlite3.Connection) -> None:
     total_mismatches = sum(mismatches.values())
     if total_mismatches:
         raise SystemExit(
-            'netflow_stats_aggregate_v2 parity failed: '
+            'netflow_stats_v2 rollup parity failed: '
             f"missing_or_changed={mismatches.get('missing_or_changed', 0)}, "
             f"extra_or_changed={mismatches.get('extra_or_changed', 0)}"
         )
@@ -581,7 +566,8 @@ def assert_file_details_query(conn: sqlite3.Connection, bucket_start: int) -> No
                    SUM(flows) AS flows,
                    MAX(processed_at) AS processed_at
             FROM netflow_stats_v2
-            WHERE bucket_start = ?
+            WHERE granularity = '5m'
+              AND bucket_start = ?
             GROUP BY source_id, bucket_start
         ) ns
         LEFT JOIN (

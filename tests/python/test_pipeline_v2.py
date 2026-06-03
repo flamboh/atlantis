@@ -70,7 +70,7 @@ def test_process_input_specs_populates_v2_tables_for_csv(tmp_path: Path) -> None
         'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2 ORDER BY bucket_start'
     ).fetchall()
     netflow = conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 ORDER BY bucket_start, ip_version'
+        "SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m' ORDER BY bucket_start, ip_version"
     ).fetchall()
     ip_stats = conn.execute(
         "SELECT source_id, bucket_start, sa_ipv4_count, sa_ipv6_count FROM ip_stats_v2 WHERE granularity = '5m' ORDER BY bucket_start"
@@ -198,6 +198,7 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
             'netflow_rows': [
                 {
                     'source_id': 'oh_ir1_gw',
+                    'granularity': '5m',
                     'bucket_start': 1744733100,
                     'bucket_end': 1744733400,
                     'ip_version': 4,
@@ -219,6 +220,7 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
                 },
                 {
                     'source_id': 'oh_ir1_gw',
+                    'granularity': '5m',
                     'bucket_start': 1744733100,
                     'bucket_end': 1744733400,
                     'ip_version': 6,
@@ -273,6 +275,7 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
                 'netflow_rows': [
                     {
                         'source_id': 'oh_ir1_gw',
+                        'granularity': '5m',
                         'bucket_start': 1744733100,
                         'bucket_end': 1744733400,
                         'ip_version': 4,
@@ -294,6 +297,7 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
                     },
                     {
                         'source_id': 'oh_ir1_gw',
+                        'granularity': '5m',
                         'bucket_start': 1744733100,
                         'bucket_end': 1744733400,
                         'ip_version': 6,
@@ -337,7 +341,7 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
     )
 
     netflow = conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2 ORDER BY ip_version'
+        "SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2 WHERE granularity = '5m' ORDER BY ip_version"
     ).fetchall()
     processed_inputs = conn.execute(
         'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2'
@@ -345,7 +349,8 @@ def test_process_input_specs_uses_nfdump_adapter_for_nfcapd(monkeypatch) -> None
     aggregate_netflow = conn.execute(
         """
         SELECT granularity, ip_version, flows, packets, bytes
-        FROM netflow_stats_aggregate_v2
+        FROM netflow_stats_v2
+        WHERE granularity != '5m'
         ORDER BY granularity, ip_version
         """
     ).fetchall()
@@ -453,7 +458,7 @@ def test_process_input_specs_populates_v2_tables_for_ugr16_csv_config(tmp_path: 
     )
 
     netflow = conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2'
+        "SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m'"
     ).fetchall()
     processed_inputs = conn.execute(
         'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2'
@@ -500,7 +505,7 @@ def test_process_input_specs_uses_arrow_fast_path_for_ugr16_without_maad(tmp_pat
     )
 
     netflow = conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2'
+        "SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m'"
     ).fetchall()
     ip_stats = conn.execute(
         "SELECT granularity, bucket_start, sa_ipv4_count, da_ipv4_count FROM ip_stats_v2 ORDER BY granularity, bucket_start"
@@ -628,7 +633,7 @@ def test_process_input_specs_uses_arrow_fast_path_for_ugr16_tar_without_maad(tmp
     )
 
     assert conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2'
+        "SELECT source_id, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m'"
     ).fetchall() == [
         ('ugr16-test', 1469619600, 4, 2, 1, 1, 7, 5370),
     ]
@@ -1067,7 +1072,7 @@ def test_process_nfcapd_logical_bucket_jobs_rewrites_empty_union_gap() -> None:
     )
 
     assert conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2 ORDER BY ip_version'
+        "SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2 WHERE granularity = '5m' ORDER BY ip_version"
     ).fetchall() == [
         ('uoregon_all', bucket_start, 4, 0),
         ('uoregon_all', bucket_start, 6, 0),
@@ -1166,7 +1171,7 @@ def test_process_nfcapd_logical_bucket_jobs_merges_member_payloads(monkeypatch) 
     )
 
     assert conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2'
+        "SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m'"
     ).fetchall() == [('uoregon_all', bucket_start, 4, 5, 50, 500)]
     assert conn.execute(
         "SELECT source_id, granularity, sa_ipv4_count, da_ipv4_count FROM ip_stats_v2 WHERE granularity = '5m'"
@@ -1230,12 +1235,13 @@ def test_process_input_specs_writes_zero_rows_for_nfcapd_gap() -> None:
         'SELECT input_kind, input_locator, source_id, bucket_start, status FROM processed_inputs_v2'
     ).fetchall()
     netflow = conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 ORDER BY ip_version'
+        "SELECT source_id, bucket_start, ip_version, flows, packets, bytes FROM netflow_stats_v2 WHERE granularity = '5m' ORDER BY ip_version"
     ).fetchall()
     aggregate_netflow = conn.execute(
         """
         SELECT granularity, ip_version, flows, packets, bytes
-        FROM netflow_stats_aggregate_v2
+        FROM netflow_stats_v2
+        WHERE granularity != '5m'
         ORDER BY granularity, ip_version
         """
     ).fetchall()
@@ -1412,6 +1418,7 @@ def test_write_input_payload_rolls_back_stats_on_failure(monkeypatch) -> None:
         'netflow_rows': [
             {
                 'source_id': 'feed-a',
+                'granularity': '5m',
                 'bucket_start': 1744732800,
                 'bucket_end': 1744733100,
                 'ip_version': 4,
@@ -1749,7 +1756,8 @@ def test_process_input_specs_writes_v1_granularity_aggregates_for_csv(monkeypatc
     netflow_aggregate_stats = conn.execute(
         """
         SELECT granularity, bucket_start, ip_version, flows, flows_tcp, flows_udp, packets, bytes
-        FROM netflow_stats_aggregate_v2
+        FROM netflow_stats_v2
+        WHERE granularity != '5m'
         ORDER BY granularity, bucket_start, ip_version
         """
     ).fetchall()

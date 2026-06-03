@@ -281,15 +281,19 @@ def run_pipeline_iterations(args: argparse.Namespace, specs: list[dict], conn: s
     return {
         'processed_inputs_v2': table_count(conn, 'processed_inputs_v2'),
         'netflow_stats_v2': table_count(conn, 'netflow_stats_v2'),
-        'netflow_stats_aggregate_v2': table_count(conn, 'netflow_stats_aggregate_v2'),
+        'netflow_stats_v2_5m': table_count(conn, 'netflow_stats_v2', "granularity = '5m'"),
+        'netflow_stats_v2_rollups': table_count(conn, 'netflow_stats_v2', "granularity != '5m'"),
         'ip_stats_v2': table_count(conn, 'ip_stats_v2'),
         'protocol_stats_v2': table_count(conn, 'protocol_stats_v2'),
         'structure_stats_v2': table_count(conn, 'structure_stats_v2'),
     }
 
 
-def table_count(conn: sqlite3.Connection, table_name: str) -> int:
-    return int(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0])
+def table_count(conn: sqlite3.Connection, table_name: str, where_clause: str | None = None) -> int:
+    query = f'SELECT COUNT(*) FROM {table_name}'
+    if where_clause is not None:
+        query += f' WHERE {where_clause}'
+    return int(conn.execute(query).fetchone()[0])
 
 
 if __name__ == '__main__':

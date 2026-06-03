@@ -76,28 +76,7 @@ export const netflowStatsV2 = sqliteTable(
 	'netflow_stats_v2',
 	{
 		sourceId: text('source_id').notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		ipVersion: integer('ip_version').notNull(),
-		...netflowMetricColumns(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({ columns: [table.sourceId, table.bucketStart, table.ipVersion] }),
-		index('idx_netflow_stats_v2_bucket_source').on(
-			table.bucketStart,
-			table.sourceId,
-			table.ipVersion
-		),
-		check('netflow_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
-	]
-);
-
-export const netflowStatsAggregateV2 = sqliteTable(
-	'netflow_stats_aggregate_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
@@ -108,13 +87,13 @@ export const netflowStatsAggregateV2 = sqliteTable(
 		primaryKey({
 			columns: [table.sourceId, table.granularity, table.bucketStart, table.ipVersion]
 		}),
-		index('idx_netflow_stats_aggregate_v2_granularity_bucket_source').on(
+		index('idx_netflow_stats_v2_granularity_bucket_source').on(
 			table.granularity,
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion
 		),
-		check('netflow_stats_aggregate_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('netflow_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
 

@@ -25,11 +25,12 @@ function createSqliteFixture(): string {
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
 					sort_order INTEGER DEFAULT 0 NOT NULL
 				);
-				CREATE TABLE netflow_stats_v2 (
-					source_id TEXT NOT NULL,
-					bucket_start INTEGER NOT NULL,
-					ip_version INTEGER NOT NULL
-				);
+					CREATE TABLE netflow_stats_v2 (
+						source_id TEXT NOT NULL,
+						granularity TEXT NOT NULL,
+						bucket_start INTEGER NOT NULL,
+						ip_version INTEGER NOT NULL
+					);
 				CREATE TABLE source_members (
 					dataset_id TEXT NOT NULL,
 					source_id TEXT NOT NULL,
@@ -44,8 +45,8 @@ function createSqliteFixture(): string {
 					discovery_mode,
 					sort_order
 				) VALUES ('alpha', 'Alpha Label', '2025-03-01', 'static', 'static', 0);
-				INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
-				VALUES ('router-b', 1740823200, 4), ('router-a', 1740823200, 4);
+					INSERT INTO netflow_stats_v2 (source_id, granularity, bucket_start, ip_version)
+					VALUES ('router-b', '5m', 1740823200, 4), ('router-a', '5m', 1740823200, 4);
 			`
 		],
 		{ encoding: 'utf-8' }
@@ -84,6 +85,30 @@ describe('dataset server helpers', () => {
 		).resolves.toBe('alpha');
 	});
 
+	it('migrates legacy split netflow stats tables on local open', async () => {
+		const dbPath = createLegacyNetflowStatsFixture();
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		vi.stubEnv('DEFAULT_DATASET', 'alpha');
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toMatchObject([
+			{
+				datasetId: 'alpha',
+				sourceCount: 1,
+				isDefault: true
+			}
+		]);
+		await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-a']);
+
+		const db = await datasets.getDatasetDb('alpha');
+		await expect(
+			db.get<{ rollupCount: number }>(
+				"SELECT COUNT(*) AS rollupCount FROM netflow_stats_v2 WHERE granularity = '1h'"
+			)
+		).resolves.toEqual({ rollupCount: 1 });
+	});
+
 	it('lists source member definitions from metadata', async () => {
 		const dbPath = createSqliteFixture();
 		const seedResult = spawnSync(
@@ -91,8 +116,8 @@ describe('dataset server helpers', () => {
 			[
 				dbPath,
 				`
-					INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
-					VALUES ('uoregon_all', 1740823200, 4);
+						INSERT INTO netflow_stats_v2 (source_id, granularity, bucket_start, ip_version)
+						VALUES ('uoregon_all', '5m', 1740823200, 4);
 					INSERT INTO source_members (dataset_id, source_id, member_id)
 					VALUES
 						('alpha', 'router-a', 'router-a'),
@@ -122,8 +147,8 @@ describe('dataset server helpers', () => {
 			[
 				dbPath,
 				`
-					INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
-					VALUES ('uoregon_all', 1740823200, 4);
+						INSERT INTO netflow_stats_v2 (source_id, granularity, bucket_start, ip_version)
+						VALUES ('uoregon_all', '5m', 1740823200, 4);
 					CREATE TABLE processed_inputs_v2 (
 						input_kind TEXT NOT NULL,
 						input_locator TEXT NOT NULL,
@@ -222,7 +247,9 @@ describe('dataset server helpers', () => {
 	});
 });
 
-function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceId: string): void {
+function createLegacyNetflowStatsFixture(): string {
+	const tempDir = os.tmpdir();
+	const dbPath = path.join(tempDir, `datasets-legacy-${crypto.randomUUID()}.sqlite`);
 	const seedResult = spawnSync(
 		'sqlite3',
 		[
@@ -239,7 +266,49 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 				CREATE TABLE netflow_stats_v2 (
 					source_id TEXT NOT NULL,
 					bucket_start INTEGER NOT NULL,
-					ip_version INTEGER NOT NULL
+					bucket_end INTEGER NOT NULL,
+					ip_version INTEGER NOT NULL,
+					flows INTEGER NOT NULL,
+					flows_tcp INTEGER NOT NULL,
+					flows_udp INTEGER NOT NULL,
+					flows_icmp INTEGER NOT NULL,
+					flows_other INTEGER NOT NULL,
+					packets INTEGER NOT NULL,
+					packets_tcp INTEGER NOT NULL,
+					packets_udp INTEGER NOT NULL,
+					packets_icmp INTEGER NOT NULL,
+					packets_other INTEGER NOT NULL,
+					bytes INTEGER NOT NULL,
+					bytes_tcp INTEGER NOT NULL,
+					bytes_udp INTEGER NOT NULL,
+					bytes_icmp INTEGER NOT NULL,
+					bytes_other INTEGER NOT NULL,
+					processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+					PRIMARY KEY(source_id, bucket_start, ip_version)
+				);
+				CREATE TABLE netflow_stats_aggregate_v2 (
+					source_id TEXT NOT NULL,
+					granularity TEXT NOT NULL,
+					bucket_start INTEGER NOT NULL,
+					bucket_end INTEGER NOT NULL,
+					ip_version INTEGER NOT NULL,
+					flows INTEGER NOT NULL,
+					flows_tcp INTEGER NOT NULL,
+					flows_udp INTEGER NOT NULL,
+					flows_icmp INTEGER NOT NULL,
+					flows_other INTEGER NOT NULL,
+					packets INTEGER NOT NULL,
+					packets_tcp INTEGER NOT NULL,
+					packets_udp INTEGER NOT NULL,
+					packets_icmp INTEGER NOT NULL,
+					packets_other INTEGER NOT NULL,
+					bytes INTEGER NOT NULL,
+					bytes_tcp INTEGER NOT NULL,
+					bytes_udp INTEGER NOT NULL,
+					bytes_icmp INTEGER NOT NULL,
+					bytes_other INTEGER NOT NULL,
+					processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+					PRIMARY KEY(source_id, granularity, bucket_start, ip_version)
 				);
 				INSERT INTO datasets (
 					id,
@@ -248,9 +317,67 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 					source_mode,
 					discovery_mode,
 					sort_order
+				) VALUES ('alpha', 'Alpha Label', '2025-03-01', 'static', 'static', 0);
+				INSERT INTO netflow_stats_v2 (
+					source_id, bucket_start, bucket_end, ip_version,
+					flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+					packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+					bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other
+				) VALUES (
+					'router-a', 1740823200, 1740823500, 4,
+					1, 1, 0, 0, 0,
+					10, 10, 0, 0, 0,
+					1000, 1000, 0, 0, 0
+				);
+				INSERT INTO netflow_stats_aggregate_v2 (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+					packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+					bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other
+				) VALUES (
+					'router-a', '1h', 1740823200, 1740826800, 4,
+					1, 1, 0, 0, 0,
+					10, 10, 0, 0, 0,
+					1000, 1000, 0, 0, 0
+				);
+			`
+		],
+		{ encoding: 'utf-8' }
+	);
+	expect(seedResult.status, seedResult.stderr).toBe(0);
+	return dbPath;
+}
+
+function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceId: string): void {
+	const seedResult = spawnSync(
+		'sqlite3',
+		[
+			dbPath,
+			`
+				CREATE TABLE datasets (
+					id TEXT PRIMARY KEY NOT NULL,
+					label TEXT NOT NULL,
+					default_start_date TEXT NOT NULL,
+					source_mode TEXT DEFAULT 'static' NOT NULL,
+					discovery_mode TEXT DEFAULT 'static' NOT NULL,
+					sort_order INTEGER DEFAULT 0 NOT NULL
+				);
+					CREATE TABLE netflow_stats_v2 (
+						source_id TEXT NOT NULL,
+						granularity TEXT NOT NULL,
+						bucket_start INTEGER NOT NULL,
+						ip_version INTEGER NOT NULL
+					);
+				INSERT INTO datasets (
+					id,
+					label,
+					default_start_date,
+					source_mode,
+					discovery_mode,
+					sort_order
 				) VALUES ('${datasetId}', '${label}', '2025-03-01', 'static', 'static', 0);
-				INSERT INTO netflow_stats_v2 (source_id, bucket_start, ip_version)
-				VALUES ('${sourceId}', 1740823200, 4);
+					INSERT INTO netflow_stats_v2 (source_id, granularity, bucket_start, ip_version)
+					VALUES ('${sourceId}', '5m', 1740823200, 4);
 			`
 		],
 		{ encoding: 'utf-8' }

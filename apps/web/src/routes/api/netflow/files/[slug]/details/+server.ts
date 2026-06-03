@@ -178,7 +178,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					NULL AS sequence_failures,
 					MAX(processed_at) AS processed_at
 				FROM netflow_stats_v2
-				WHERE bucket_start = ?
+				WHERE granularity = ?
+					AND bucket_start = ?
 				GROUP BY source_id, bucket_start
 			) ns
 			LEFT JOIN (
@@ -212,7 +213,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND sp.bucket_start = ns.bucket_start
 				AND sp.ip_version = 4
 			ORDER BY ns.router`,
-			[bucketStart, bucketStart, FIVE_MINUTES, FIVE_MINUTES, FIVE_MINUTES]
+			[FIVE_MINUTES, bucketStart, bucketStart, FIVE_MINUTES, FIVE_MINUTES, FIVE_MINUTES]
 		);
 
 		if (rows.length === 0) {

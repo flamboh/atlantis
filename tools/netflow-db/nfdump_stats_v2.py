@@ -274,6 +274,7 @@ def empty_netflow_row(source_id: str, bucket_start: int, bucket_end: int, ip_ver
     """Create an empty netflow_stats_v2 row."""
     return {
         'source_id': source_id,
+        'granularity': '5m',
         'bucket_start': bucket_start,
         'bucket_end': bucket_end,
         'ip_version': ip_version,

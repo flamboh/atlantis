@@ -144,7 +144,7 @@ describe('/api/netflow/stats GET', () => {
 			],
 			availableIpFamilies: ['all', 'ipv4', 'ipv6']
 		});
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_aggregate_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
 			'r1',
 			'r2',
 			'1h',
@@ -180,13 +180,10 @@ describe('/api/netflow/stats GET', () => {
 		expect(response.status).toBe(200);
 		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
 			'r1',
+			'5m',
 			1,
 			2
 		]);
-		expect(all).not.toHaveBeenCalledWith(
-			expect.stringContaining('FROM netflow_stats_aggregate_v2'),
-			expect.any(Array)
-		);
 	});
 
 	it('uses an exact union source for additive totals', async () => {
@@ -208,7 +205,7 @@ describe('/api/netflow/stats GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_aggregate_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
 			'uoregon_all',
 			'1h',
 			1,

@@ -28,8 +28,7 @@ def v2_table(granularity_column: str | None = None) -> dict[str, str | None]:
 TABLE_CONFIG = {
     "datasets": {"time_column": None, "source_column": None, "granularity_column": None},
     "processed_inputs_v2": v2_table(),
-    "netflow_stats_v2": v2_table(),
-    "netflow_stats_aggregate_v2": v2_table("granularity"),
+    "netflow_stats_v2": v2_table("granularity"),
     "ip_stats_v2": v2_table("granularity"),
     "protocol_stats_v2": v2_table("granularity"),
     "structure_stats_v2": v2_table("granularity"),

@@ -31,6 +31,10 @@ type SqliteClient = {
 	};
 };
 
+type SqliteColumnInfo = {
+	name: string;
+};
+
 export type PreparedStatement = {
 	get<T = unknown>(...params: QueryParam[]): Promise<T | undefined>;
 	all<T = unknown>(...params: QueryParam[]): Promise<T[]>;
@@ -180,7 +184,9 @@ function inferDatasetLabel(datasetId: string): string {
 
 function inferDefaultStartDate(client: SqliteClient): string {
 	const row = client
-		.prepare('SELECT MIN(bucket_start) AS minTimestamp FROM netflow_stats_v2')
+		.prepare(
+			"SELECT MIN(bucket_start) AS minTimestamp FROM netflow_stats_v2 WHERE granularity = '5m'"
+		)
 		.get() as { minTimestamp: number | null } | undefined;
 
 	if (typeof row?.minTimestamp === 'number' && Number.isFinite(row.minTimestamp)) {
@@ -226,8 +232,110 @@ async function openLocalClient(dbPath: string): Promise<SqliteClient> {
 	return drizzleDb.$client as SqliteClient;
 }
 
+function tableHasColumn(client: SqliteClient, tableName: string, columnName: string): boolean {
+	const columns = client.prepare(`PRAGMA table_info(${tableName})`).all() as SqliteColumnInfo[];
+	return columns.some((column) => column.name === columnName);
+}
+
+function tableExists(client: SqliteClient, tableName: string): boolean {
+	return tableHasColumn(client, tableName, 'source_id');
+}
+
+function migrateLocalNetflowStatsSchema(client: SqliteClient): void {
+	const hasNetflowStats = tableExists(client, 'netflow_stats_v2');
+	const hasGranularity =
+		hasNetflowStats && tableHasColumn(client, 'netflow_stats_v2', 'granularity');
+	const hasOldAggregate = tableExists(client, 'netflow_stats_aggregate_v2');
+
+	if (!hasNetflowStats || (hasGranularity && !hasOldAggregate)) {
+		return;
+	}
+
+	if (hasGranularity && hasOldAggregate) {
+		client.exec(`
+			INSERT OR REPLACE INTO netflow_stats_v2 (
+				source_id, granularity, bucket_start, bucket_end, ip_version,
+				flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+				packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+				bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+			)
+			SELECT
+				source_id, granularity, bucket_start, bucket_end, ip_version,
+				flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+				packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+				bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+			FROM netflow_stats_aggregate_v2;
+			DROP TABLE netflow_stats_aggregate_v2;
+		`);
+		return;
+	}
+
+	const aggregateCopySql = hasOldAggregate
+		? `
+			INSERT OR REPLACE INTO netflow_stats_v2_new (
+				source_id, granularity, bucket_start, bucket_end, ip_version,
+				flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+				packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+				bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+			)
+			SELECT
+				source_id, granularity, bucket_start, bucket_end, ip_version,
+				flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+				packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+				bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+			FROM netflow_stats_aggregate_v2;
+		`
+		: '';
+
+	client.exec(`
+		BEGIN;
+		CREATE TABLE netflow_stats_v2_new (
+			source_id TEXT NOT NULL,
+			granularity TEXT NOT NULL,
+			bucket_start INTEGER NOT NULL,
+			bucket_end INTEGER NOT NULL,
+			ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
+			flows INTEGER NOT NULL,
+			flows_tcp INTEGER NOT NULL,
+			flows_udp INTEGER NOT NULL,
+			flows_icmp INTEGER NOT NULL,
+			flows_other INTEGER NOT NULL,
+			packets INTEGER NOT NULL,
+			packets_tcp INTEGER NOT NULL,
+			packets_udp INTEGER NOT NULL,
+			packets_icmp INTEGER NOT NULL,
+			packets_other INTEGER NOT NULL,
+			bytes INTEGER NOT NULL,
+			bytes_tcp INTEGER NOT NULL,
+			bytes_udp INTEGER NOT NULL,
+			bytes_icmp INTEGER NOT NULL,
+			bytes_other INTEGER NOT NULL,
+			processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY(source_id, granularity, bucket_start, ip_version)
+		);
+		INSERT OR REPLACE INTO netflow_stats_v2_new (
+			source_id, granularity, bucket_start, bucket_end, ip_version,
+			flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+			packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+			bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+		)
+		SELECT
+			source_id, '5m', bucket_start, bucket_end, ip_version,
+			flows, flows_tcp, flows_udp, flows_icmp, flows_other,
+			packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+			bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, processed_at
+		FROM netflow_stats_v2;
+		${aggregateCopySql}
+		DROP TABLE netflow_stats_v2;
+		ALTER TABLE netflow_stats_v2_new RENAME TO netflow_stats_v2;
+		DROP TABLE IF EXISTS netflow_stats_aggregate_v2;
+		COMMIT;
+	`);
+}
+
 async function createLocalDb(dbPath: string): Promise<ReadonlyDatasetDb> {
 	const client = await openLocalClient(dbPath);
+	migrateLocalNetflowStatsSchema(client);
 	client.exec(localSchemaSql);
 	await seedInferredDatasetMetadata(client, dbPath);
 	return createReadonlyDb(client);
@@ -376,6 +484,7 @@ export async function listDatasetSources(
 		`
 			SELECT DISTINCT source_id AS sourceId
 			FROM netflow_stats_v2
+			WHERE granularity = '5m'
 			ORDER BY source_id
 		`
 	);
@@ -506,7 +615,7 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 		datasets.map(async (dataset) => {
 			const db = await getDatasetDb(dataset.id, platform);
 			const sourceRows = await db.all<{ sourceCount: number }>(
-				'SELECT COUNT(DISTINCT source_id) AS sourceCount FROM netflow_stats_v2'
+				"SELECT COUNT(DISTINCT source_id) AS sourceCount FROM netflow_stats_v2 WHERE granularity = '5m'"
 			);
 			const sourceCount = sourceRows[0]?.sourceCount ?? 0;
 

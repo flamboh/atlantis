@@ -46,7 +46,7 @@ CREATE TABLE `ip_stats_v2` (
 );
 --> statement-breakpoint
 CREATE INDEX `idx_ip_stats_v2_granularity_bucket_source` ON `ip_stats_v2` (`granularity`,`bucket_start`,`source_id`);--> statement-breakpoint
-CREATE TABLE `netflow_stats_aggregate_v2` (
+CREATE TABLE `netflow_stats_v2` (
 	`source_id` text NOT NULL,
 	`granularity` text NOT NULL,
 	`bucket_start` integer NOT NULL,
@@ -69,36 +69,10 @@ CREATE TABLE `netflow_stats_aggregate_v2` (
 	`bytes_other` integer NOT NULL,
 	`processed_at` text DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY(`source_id`, `granularity`, `bucket_start`, `ip_version`),
-	CONSTRAINT "netflow_stats_aggregate_v2_ip_version_check" CHECK("netflow_stats_aggregate_v2"."ip_version" IN (4, 6))
-);
---> statement-breakpoint
-CREATE INDEX `idx_netflow_stats_aggregate_v2_granularity_bucket_source` ON `netflow_stats_aggregate_v2` (`granularity`,`bucket_start`,`source_id`,`ip_version`);--> statement-breakpoint
-CREATE TABLE `netflow_stats_v2` (
-	`source_id` text NOT NULL,
-	`bucket_start` integer NOT NULL,
-	`bucket_end` integer NOT NULL,
-	`ip_version` integer NOT NULL,
-	`flows` integer NOT NULL,
-	`flows_tcp` integer NOT NULL,
-	`flows_udp` integer NOT NULL,
-	`flows_icmp` integer NOT NULL,
-	`flows_other` integer NOT NULL,
-	`packets` integer NOT NULL,
-	`packets_tcp` integer NOT NULL,
-	`packets_udp` integer NOT NULL,
-	`packets_icmp` integer NOT NULL,
-	`packets_other` integer NOT NULL,
-	`bytes` integer NOT NULL,
-	`bytes_tcp` integer NOT NULL,
-	`bytes_udp` integer NOT NULL,
-	`bytes_icmp` integer NOT NULL,
-	`bytes_other` integer NOT NULL,
-	`processed_at` text DEFAULT CURRENT_TIMESTAMP,
-	PRIMARY KEY(`source_id`, `bucket_start`, `ip_version`),
 	CONSTRAINT "netflow_stats_v2_ip_version_check" CHECK("netflow_stats_v2"."ip_version" IN (4, 6))
 );
 --> statement-breakpoint
-CREATE INDEX `idx_netflow_stats_v2_bucket_source` ON `netflow_stats_v2` (`bucket_start`,`source_id`,`ip_version`);--> statement-breakpoint
+CREATE INDEX `idx_netflow_stats_v2_granularity_bucket_source` ON `netflow_stats_v2` (`granularity`,`bucket_start`,`source_id`,`ip_version`);--> statement-breakpoint
 CREATE TABLE `processed_inputs_v2` (
 	`input_kind` text NOT NULL,
 	`input_locator` text NOT NULL,
