@@ -8,6 +8,7 @@
 	import type { GroupByOption } from '$lib/components/netflow/types.ts';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import type {
+		FlowVisibility,
 		IpGranularity,
 		SpectrumPoint,
 		SpectrumStatsBucket,
@@ -67,6 +68,8 @@
 		router?: string;
 		addressType?: 'sa' | 'da';
 		availableRouters?: string[];
+		srcVisibility?: FlowVisibility;
+		dstVisibility?: FlowVisibility;
 	}>();
 
 	const dispatch = createEventDispatcher<{
@@ -90,8 +93,7 @@
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let chart: Chart<'scatter', any[], any> | null = null;
+	let chart: Chart<'scatter', { x: number; y: number }[], unknown> | null = null;
 	let rangeDrag = $state(createRangeDragState());
 	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
 	let selectionWidth = $derived(Math.abs(rangeDrag.dragStartX - rangeDrag.dragCurrentX));
@@ -749,6 +751,8 @@
 		endDate: string;
 		granularity: IpGranularity;
 		routers: string[];
+		srcVisibility: FlowVisibility;
+		dstVisibility: FlowVisibility;
 	};
 
 	let lastFiltersKey = '';
@@ -766,7 +770,9 @@
 			chart: CHART_ID,
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
-			routers: filters.routers
+			routers: filters.routers,
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 	}
 
@@ -782,7 +788,9 @@
 		const params = new URLSearchParams({
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
-			routers: filters.routers.join(',')
+			routers: filters.routers.join(','),
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 
 		try {
@@ -856,6 +864,8 @@
 		const endDateProp = props.endDate;
 		const granularityProp = props.granularity;
 		const nextAddressType = props.addressType ?? 'sa';
+		const srcVisibility = props.srcVisibility ?? 'all';
+		const dstVisibility = props.dstVisibility ?? 'all';
 
 		if (nextAddressType !== addressType) {
 			addressType = nextAddressType;
@@ -874,7 +884,9 @@
 			startDate: startDateProp ?? '2025-01-01',
 			endDate: endDateProp ?? formatDate(today),
 			granularity: granularityProp ?? '1h',
-			routers: availableRouters
+			routers: availableRouters,
+			srcVisibility,
+			dstVisibility
 		};
 
 		currentGranularity = filters.granularity;

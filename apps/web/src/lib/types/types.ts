@@ -140,6 +140,13 @@ export interface NetflowFileDetailsResponse {
 export const IP_GRANULARITIES = ['5m', '30m', '1h', '1d'] as const;
 
 export type IpGranularity = (typeof IP_GRANULARITIES)[number];
+export const FLOW_VISIBILITIES = ['all', 'literal', 'anonymized'] as const;
+export type FlowVisibility = (typeof FLOW_VISIBILITIES)[number];
+
+export interface FlowScope {
+	srcVisibility: FlowVisibility;
+	dstVisibility: FlowVisibility;
+}
 
 export type IpMetricKey = 'saIpv4Count' | 'daIpv4Count' | 'saIpv6Count' | 'daIpv6Count';
 

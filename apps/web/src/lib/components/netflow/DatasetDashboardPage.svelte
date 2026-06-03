@@ -9,7 +9,9 @@
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
+		FLOW_VISIBILITIES,
 		IP_METRIC_OPTIONS,
+		type FlowVisibility,
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
@@ -42,13 +44,15 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
+	let srcVisibility = $state<FlowVisibility>('all');
+	let dstVisibility = $state<FlowVisibility>('all');
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
 	type ChartCardId = 'dashboard' | 'ip' | 'protocol' | 'spectrum';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = ['dashboard', 'ip', 'protocol', 'spectrum'];
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v1';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v3';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
@@ -311,6 +315,12 @@
 		ipMetrics = event.detail.metrics;
 	}
 
+	function visibilityLabel(visibility: FlowVisibility): string {
+		if (visibility === 'all') return 'All';
+		if (visibility === 'literal') return 'Literal';
+		return 'Anonymized';
+	}
+
 	function handleResetView() {
 		const today = new Date().toJSON().slice(0, 10);
 		selectedGroupBy = 'date';
@@ -342,6 +352,33 @@
 		on:resetView={handleResetView}
 	/>
 
+	<div
+		class="dark:border-dark-border dark:bg-dark-surface flex flex-wrap items-center gap-3 rounded-lg border bg-white px-3 py-2 text-sm shadow-sm"
+	>
+		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
+			<span>Source</span>
+			<select
+				bind:value={srcVisibility}
+				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:text-gray-100"
+			>
+				{#each FLOW_VISIBILITIES as visibility (visibility)}
+					<option value={visibility}>{visibilityLabel(visibility)}</option>
+				{/each}
+			</select>
+		</label>
+		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
+			<span>Destination</span>
+			<select
+				bind:value={dstVisibility}
+				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:text-gray-100"
+			>
+				{#each FLOW_VISIBILITIES as visibility (visibility)}
+					<option value={visibility}>{visibilityLabel(visibility)}</option>
+				{/each}
+			</select>
+		</label>
+	</div>
+
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
 		{#each chartOrder as chartId (chartId)}
 			<section
@@ -371,6 +408,8 @@
 						routers={selectedRouters}
 						{routersLoaded}
 						{dataOptions}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:dataOptionsChange={handleDataOptionsChange}
@@ -383,6 +422,8 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={ipMetrics}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:metricsChange={handleIpMetricsChange}
@@ -395,6 +436,8 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={protocolMetrics}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:metricsChange={(event) => {
@@ -410,6 +453,8 @@
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
 						availableRouters={availableSpectrumRouters}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:routerChange={(event) => {

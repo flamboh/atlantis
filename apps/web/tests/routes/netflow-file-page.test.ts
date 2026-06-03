@@ -6,7 +6,7 @@ describe('/netflow/files/[slug] page load', () => {
 		vi.unstubAllEnvs();
 	});
 
-	it('returns page props with v2 singularities disabled', async () => {
+	it('returns page props with stored-stat singularities disabled', async () => {
 		vi.stubEnv('SHOW_SINGULARITIES', 'true');
 
 		const fetch = vi.fn().mockResolvedValue({

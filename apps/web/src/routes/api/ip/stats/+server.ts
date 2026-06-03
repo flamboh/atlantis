@@ -3,21 +3,21 @@ import type { RequestHandler } from './$types';
 import { IP_GRANULARITIES } from '$lib/types/types';
 import type { IpStatsBucket, IpStatsResponse } from '$lib/types/types';
 import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v2';
+import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
 		return json({ error: params.error }, { status: params.status });
 	}
-	const { routers, granularity, start, end } = params;
+	const { routers, granularity, start, end, srcVisibility, dstVisibility } = params;
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'ip_stats_v2';
+		const tableName = 'address_count_stats_v3';
 		const sourceColumn = 'source_id';
-		const params = [granularity, ...routers, start, end];
+		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 
 		const query = `
 			SELECT
@@ -25,21 +25,23 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				bucket_start AS bucketStart,
 				bucket_end   AS bucketEnd,
 				granularity,
-				SUM(sa_ipv4_count) AS saIpv4Count,
-				SUM(da_ipv4_count) AS daIpv4Count,
-				SUM(sa_ipv6_count) AS saIpv6Count,
-				SUM(da_ipv6_count) AS daIpv6Count,
+				SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
+				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
+				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
+				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count,
 				MAX(processed_at) AS processedAt
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
+				AND src_visibility = ?
+				AND dst_visibility = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
 			GROUP BY ${sourceColumn}, bucket_start, bucket_end, granularity
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
-		const rows = await db.all<IpStatsBucket>(query, params);
+		const rows = await db.all<IpStatsBucket>(query, queryParams);
 		const response: IpStatsResponse = {
 			buckets: rows.map((row) => ({
 				...row,

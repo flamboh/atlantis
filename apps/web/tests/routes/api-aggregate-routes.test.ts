@@ -12,16 +12,6 @@ vi.mock('$lib/server/datasets', () => ({
 	listDatasetSources: vi.fn()
 }));
 
-vi.mock('$lib/server/netflow-v2', async () => {
-	const actual =
-		await vi.importActual<typeof import('$lib/server/netflow-v2')>('$lib/server/netflow-v2');
-	return {
-		...actual,
-		assertNetflowV2Database: vi.fn(),
-		getNetflowSchemaVersion: vi.fn(() => 'v2')
-	};
-});
-
 describe('aggregate API routes', () => {
 	it('lists routers for a dataset and returns 404 when none exist', async () => {
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
@@ -102,11 +92,13 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM ip_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_count_stats_v3'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',
 			'uoregon_all',
+			'all',
+			'all',
 			100,
 			200
 		]);
@@ -144,11 +136,13 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM protocol_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM protocol_stats_v3'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',
 			'uoregon_all',
+			'all',
+			'all',
 			100,
 			200
 		]);
@@ -166,16 +160,28 @@ describe('aggregate API routes', () => {
 				{
 					router: 'r1',
 					bucketStart: 100,
-					spectrumJsonSa: '[{"alpha":1,"f":2}]',
-					spectrumJsonDa: 'not-json'
+					addressSide: 'source',
+					valuesJson: '[{"alpha":1,"f":2}]'
+				},
+				{
+					router: 'r1',
+					bucketStart: 100,
+					addressSide: 'destination',
+					valuesJson: 'not-json'
 				}
 			])
 			.mockResolvedValueOnce([
 				{
 					router: 'r1',
 					bucketStart: 100,
-					structureJsonSa: '[{"q":1,"tauTilde":2,"sd":0.5}]',
-					structureJsonDa: 'not-json'
+					addressSide: 'source',
+					valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]'
+				},
+				{
+					router: 'r1',
+					bucketStart: 100,
+					addressSide: 'destination',
+					valuesJson: 'not-json'
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
@@ -227,11 +233,13 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM spectrum_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_structure_stats_v3'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',
 			'uoregon_all',
+			'all',
+			'all',
 			100,
 			200
 		]);

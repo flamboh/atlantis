@@ -11,9 +11,11 @@ import type {
 	StructureFunctionPoint
 } from '$lib/types/types';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
-import { normalizeStructurePoints } from '$lib/server/netflow-v2';
+import { normalizeStructurePoints } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
+const DEFAULT_SRC_VISIBILITY = 'all';
+const DEFAULT_DST_VISIBILITY = 'all';
 
 type FileDetailsRow = NetflowFileSummaryRecord & {
 	input_kind: string | null;
@@ -136,22 +138,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	try {
 		const db = await getDb(dataset, platform);
 		const rows = await db.all<FileDetailsRow>(
-			`SELECT
-				ns.*,
-				pi.input_locator AS file_path,
-				pi.input_kind,
-				pi.status AS input_status,
-				pi.error_message AS input_error_message,
-				COALESCE(ns.processed_at, pi.processed_at, pi.discovered_at) AS processed_at,
-				ip.sa_ipv4_count AS saIpv4Count,
-				ip.da_ipv4_count AS daIpv4Count,
-				ip.sa_ipv6_count AS saIpv6Count,
-				ip.da_ipv6_count AS daIpv6Count,
-				st.structure_json_sa AS structureJsonSa,
-				st.structure_json_da AS structureJsonDa,
-				sp.spectrum_json_sa AS spectrumJsonSa,
-				sp.spectrum_json_da AS spectrumJsonDa
-			FROM (
+			`WITH ns AS (
 				SELECT
 					source_id AS router,
 					bucket_start,
@@ -177,11 +164,74 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					NULL AS msec_last,
 					NULL AS sequence_failures,
 					MAX(processed_at) AS processed_at
-				FROM netflow_stats_v2
+				FROM traffic_stats_v3
 				WHERE granularity = ?
 					AND bucket_start = ?
+					AND src_visibility = ?
+					AND dst_visibility = ?
 				GROUP BY source_id, bucket_start
-			) ns
+			),
+			ip AS (
+				SELECT
+					source_id,
+					bucket_start,
+					SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
+					SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
+					SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
+					SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
+				FROM address_count_stats_v3
+				WHERE granularity = ?
+					AND bucket_start = ?
+					AND src_visibility = ?
+					AND dst_visibility = ?
+				GROUP BY source_id, bucket_start
+			),
+			st AS (
+				SELECT
+					source_id,
+					bucket_start,
+					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS structureJsonSa,
+					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS structureJsonDa
+				FROM address_structure_stats_v3
+				WHERE granularity = ?
+					AND bucket_start = ?
+					AND ip_version = 4
+					AND src_visibility = ?
+					AND dst_visibility = ?
+					AND structure_kind = 'structure'
+				GROUP BY source_id, bucket_start
+			),
+			sp AS (
+				SELECT
+					source_id,
+					bucket_start,
+					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS spectrumJsonSa,
+					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS spectrumJsonDa
+				FROM address_structure_stats_v3
+				WHERE granularity = ?
+					AND bucket_start = ?
+					AND ip_version = 4
+					AND src_visibility = ?
+					AND dst_visibility = ?
+					AND structure_kind = 'spectrum'
+				GROUP BY source_id, bucket_start
+			)
+			SELECT
+				ns.*,
+				pi.input_locator AS file_path,
+				pi.input_kind,
+				pi.status AS input_status,
+				pi.error_message AS input_error_message,
+				COALESCE(ns.processed_at, pi.processed_at, pi.discovered_at) AS processed_at,
+				ip.saIpv4Count,
+				ip.daIpv4Count,
+				ip.saIpv6Count,
+				ip.daIpv6Count,
+				st.structureJsonSa,
+				st.structureJsonDa,
+				sp.spectrumJsonSa,
+				sp.spectrumJsonDa
+			FROM ns
 			LEFT JOIN (
 				SELECT
 					source_id,
@@ -198,22 +248,35 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			) pi
 				ON pi.source_id = ns.router
 				AND pi.bucket_start = ns.bucket_start
-			LEFT JOIN ip_stats_v2 ip
-				ON ip.source_id = ns.router
-				AND ip.granularity = ?
-				AND ip.bucket_start = ns.bucket_start
-			LEFT JOIN structure_stats_v2 st
-				ON st.source_id = ns.router
-				AND st.granularity = ?
-				AND st.bucket_start = ns.bucket_start
-				AND st.ip_version = 4
-			LEFT JOIN spectrum_stats_v2 sp
-				ON sp.source_id = ns.router
-				AND sp.granularity = ?
-				AND sp.bucket_start = ns.bucket_start
-				AND sp.ip_version = 4
-			ORDER BY ns.router`,
-			[FIVE_MINUTES, bucketStart, bucketStart, FIVE_MINUTES, FIVE_MINUTES, FIVE_MINUTES]
+				LEFT JOIN ip
+					ON ip.source_id = ns.router
+					AND ip.bucket_start = ns.bucket_start
+				LEFT JOIN st
+					ON st.source_id = ns.router
+					AND st.bucket_start = ns.bucket_start
+				LEFT JOIN sp
+					ON sp.source_id = ns.router
+					AND sp.bucket_start = ns.bucket_start
+				ORDER BY ns.router`,
+			[
+				FIVE_MINUTES,
+				bucketStart,
+				DEFAULT_SRC_VISIBILITY,
+				DEFAULT_DST_VISIBILITY,
+				FIVE_MINUTES,
+				bucketStart,
+				DEFAULT_SRC_VISIBILITY,
+				DEFAULT_DST_VISIBILITY,
+				FIVE_MINUTES,
+				bucketStart,
+				DEFAULT_SRC_VISIBILITY,
+				DEFAULT_DST_VISIBILITY,
+				FIVE_MINUTES,
+				bucketStart,
+				DEFAULT_SRC_VISIBILITY,
+				DEFAULT_DST_VISIBILITY,
+				bucketStart
+			]
 		);
 
 		if (rows.length === 0) {
