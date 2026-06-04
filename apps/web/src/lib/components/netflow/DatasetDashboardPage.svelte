@@ -9,9 +9,9 @@
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
-		FLOW_VISIBILITIES,
+		FLOW_SCOPE_OPTIONS,
 		IP_METRIC_OPTIONS,
-		type FlowVisibility,
+		type FlowScopeKey,
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
@@ -44,8 +44,7 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
-	let srcVisibility = $state<FlowVisibility>('all');
-	let dstVisibility = $state<FlowVisibility>('all');
+	let flowScopeKey = $state<FlowScopeKey>('all');
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
@@ -66,6 +65,11 @@
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
+	const flowScope = $derived(
+		FLOW_SCOPE_OPTIONS.find((option) => option.key === flowScopeKey) ?? FLOW_SCOPE_OPTIONS[0]
+	);
+	const srcVisibility = $derived(flowScope.srcVisibility);
+	const dstVisibility = $derived(flowScope.dstVisibility);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -315,10 +319,8 @@
 		ipMetrics = event.detail.metrics;
 	}
 
-	function visibilityLabel(visibility: FlowVisibility): string {
-		if (visibility === 'all') return 'All';
-		if (visibility === 'literal') return 'Literal';
-		return 'Anonymized';
+	function handleScopeChange(event: CustomEvent<{ scope: FlowScopeKey }>) {
+		flowScopeKey = event.detail.scope;
 	}
 
 	function handleResetView() {
@@ -345,39 +347,14 @@
 		{endDate}
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
+		flowScope={flowScopeKey}
 		on:startDateChange={handleStartDateChange}
 		on:endDateChange={handleEndDateChange}
 		on:groupByChange={handleGroupByChange}
 		on:routersChange={handleRoutersChange}
+		on:scopeChange={handleScopeChange}
 		on:resetView={handleResetView}
 	/>
-
-	<div
-		class="dark:border-dark-border dark:bg-dark-surface flex flex-wrap items-center gap-3 rounded-lg border bg-white px-3 py-2 text-sm shadow-sm"
-	>
-		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
-			<span>Source</span>
-			<select
-				bind:value={srcVisibility}
-				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:text-gray-100"
-			>
-				{#each FLOW_VISIBILITIES as visibility (visibility)}
-					<option value={visibility}>{visibilityLabel(visibility)}</option>
-				{/each}
-			</select>
-		</label>
-		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
-			<span>Destination</span>
-			<select
-				bind:value={dstVisibility}
-				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:text-gray-100"
-			>
-				{#each FLOW_VISIBILITIES as visibility (visibility)}
-					<option value={visibility}>{visibilityLabel(visibility)}</option>
-				{/each}
-			</select>
-		</label>
-	</div>
 
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
 		{#each chartOrder as chartId (chartId)}
