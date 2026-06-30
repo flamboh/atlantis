@@ -92,7 +92,7 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_count_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_count_stats'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',
@@ -136,7 +136,7 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM protocol_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM protocol_stats'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',
@@ -233,7 +233,7 @@ describe('aggregate API routes', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_structure_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM address_structure_stats'), [
 			'1h',
 			'cc_ir1_gw',
 			'oh_ir1_gw',

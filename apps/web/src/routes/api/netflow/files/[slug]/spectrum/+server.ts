@@ -44,7 +44,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		const row = await db.get<SpectrumRow>(
 			`SELECT
 				values_json AS valuesJson
-			FROM address_structure_stats_v3
+			FROM address_structure_stats
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?

@@ -164,7 +164,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					NULL AS msec_last,
 					NULL AS sequence_failures,
 					MAX(processed_at) AS processed_at
-				FROM traffic_stats_v3
+				FROM traffic_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND src_visibility = ?
@@ -179,7 +179,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
 					SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
 					SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
-				FROM address_count_stats_v3
+				FROM address_count_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND src_visibility = ?
@@ -192,7 +192,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					bucket_start,
 					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS structureJsonSa,
 					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS structureJsonDa
-				FROM address_structure_stats_v3
+				FROM address_structure_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND ip_version = 4
@@ -207,7 +207,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					bucket_start,
 					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS spectrumJsonSa,
 					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS spectrumJsonDa
-				FROM address_structure_stats_v3
+				FROM address_structure_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND ip_version = 4
@@ -242,7 +242,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					MAX(error_message) AS error_message,
 					MAX(discovered_at) AS discovered_at,
 					MAX(processed_at) AS processed_at
-				FROM processed_inputs_v2
+				FROM processed_inputs
 				WHERE bucket_start = ?
 				GROUP BY source_id, bucket_start
 			) pi

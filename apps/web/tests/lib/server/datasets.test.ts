@@ -25,7 +25,7 @@ function createSqliteFixture(): string {
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
 					sort_order INTEGER DEFAULT 0 NOT NULL
 				);
-					CREATE TABLE traffic_stats_v3 (
+					CREATE TABLE traffic_stats (
 						source_id TEXT NOT NULL,
 						granularity TEXT NOT NULL,
 						bucket_start INTEGER NOT NULL,
@@ -47,7 +47,7 @@ function createSqliteFixture(): string {
 					discovery_mode,
 					sort_order
 				) VALUES ('alpha', 'Alpha Label', '2025-03-01', 'static', 'static', 0);
-					INSERT INTO traffic_stats_v3 (
+					INSERT INTO traffic_stats (
 						source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
 					) VALUES
 						('router-b', '5m', 1740823200, 4, 'all', 'all'),
@@ -97,7 +97,7 @@ describe('dataset server helpers', () => {
 			[
 				dbPath,
 				`
-						INSERT INTO traffic_stats_v3 (
+						INSERT INTO traffic_stats (
 							source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
 						) VALUES ('uoregon_all', '5m', 1740823200, 4, 'all', 'all');
 					INSERT INTO source_members (dataset_id, source_id, member_id)
@@ -129,10 +129,10 @@ describe('dataset server helpers', () => {
 			[
 				dbPath,
 				`
-						INSERT INTO traffic_stats_v3 (
+						INSERT INTO traffic_stats (
 							source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
 						) VALUES ('uoregon_all', '5m', 1740823200, 4, 'all', 'all');
-					CREATE TABLE processed_inputs_v2 (
+					CREATE TABLE processed_inputs (
 						input_kind TEXT NOT NULL,
 						input_locator TEXT NOT NULL,
 						source_id TEXT NOT NULL,
@@ -140,7 +140,7 @@ describe('dataset server helpers', () => {
 						bucket_end INTEGER NOT NULL,
 						status TEXT NOT NULL
 					);
-					INSERT INTO processed_inputs_v2 (
+					INSERT INTO processed_inputs (
 						input_kind,
 						input_locator,
 						source_id,
@@ -244,7 +244,7 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
 					sort_order INTEGER DEFAULT 0 NOT NULL
 				);
-					CREATE TABLE traffic_stats_v3 (
+					CREATE TABLE traffic_stats (
 						source_id TEXT NOT NULL,
 						granularity TEXT NOT NULL,
 						bucket_start INTEGER NOT NULL,
@@ -260,7 +260,7 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 					discovery_mode,
 					sort_order
 				) VALUES ('${datasetId}', '${label}', '2025-03-01', 'static', 'static', 0);
-					INSERT INTO traffic_stats_v3 (
+					INSERT INTO traffic_stats (
 						source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
 					) VALUES ('${sourceId}', '5m', 1740823200, 4, 'all', 'all');
 			`

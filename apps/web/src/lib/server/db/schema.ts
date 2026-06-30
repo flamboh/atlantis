@@ -30,7 +30,7 @@ export const sourceMembers = sqliteTable(
 );
 
 export const processedInputs = sqliteTable(
-	'processed_inputs_v2',
+	'processed_inputs',
 	{
 		inputKind: text('input_kind', { enum: ['nfcapd', 'csv'] }).notNull(),
 		inputLocator: text('input_locator').notNull(),
@@ -48,7 +48,7 @@ export const processedInputs = sqliteTable(
 		primaryKey({
 			columns: [table.inputKind, table.inputLocator, table.sourceId, table.bucketStart]
 		}),
-		index('idx_processed_inputs_v2_source_bucket').on(table.sourceId, table.bucketStart)
+		index('idx_processed_inputs_source_bucket').on(table.sourceId, table.bucketStart)
 	]
 );
 
@@ -72,8 +72,8 @@ function netflowMetricColumns() {
 	};
 }
 
-export const trafficStatsV3 = sqliteTable(
-	'traffic_stats_v3',
+export const trafficStats = sqliteTable(
+	'traffic_stats',
 	{
 		sourceId: text('source_id').notNull(),
 		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
@@ -96,7 +96,7 @@ export const trafficStatsV3 = sqliteTable(
 				table.dstVisibility
 			]
 		}),
-		index('idx_traffic_stats_v3_query').on(
+		index('idx_traffic_stats_query').on(
 			table.granularity,
 			table.bucketStart,
 			table.sourceId,
@@ -104,12 +104,12 @@ export const trafficStatsV3 = sqliteTable(
 			table.srcVisibility,
 			table.dstVisibility
 		),
-		check('traffic_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
 
-export const protocolStatsV3 = sqliteTable(
-	'protocol_stats_v3',
+export const protocolStats = sqliteTable(
+	'protocol_stats',
 	{
 		sourceId: text('source_id').notNull(),
 		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
@@ -133,7 +133,7 @@ export const protocolStatsV3 = sqliteTable(
 				table.dstVisibility
 			]
 		}),
-		index('idx_protocol_stats_v3_query').on(
+		index('idx_protocol_stats_query').on(
 			table.granularity,
 			table.bucketStart,
 			table.sourceId,
@@ -141,12 +141,12 @@ export const protocolStatsV3 = sqliteTable(
 			table.srcVisibility,
 			table.dstVisibility
 		),
-		check('protocol_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
 
-export const addressCountStatsV3 = sqliteTable(
-	'address_count_stats_v3',
+export const addressCountStats = sqliteTable(
+	'address_count_stats',
 	{
 		sourceId: text('source_id').notNull(),
 		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
@@ -171,7 +171,7 @@ export const addressCountStatsV3 = sqliteTable(
 				table.addressSide
 			]
 		}),
-		index('idx_address_count_stats_v3_query').on(
+		index('idx_address_count_stats_query').on(
 			table.granularity,
 			table.bucketStart,
 			table.sourceId,
@@ -180,12 +180,12 @@ export const addressCountStatsV3 = sqliteTable(
 			table.dstVisibility,
 			table.addressSide
 		),
-		check('address_count_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
 
-export const addressStructureStatsV3 = sqliteTable(
-	'address_structure_stats_v3',
+export const addressStructureStats = sqliteTable(
+	'address_structure_stats',
 	{
 		sourceId: text('source_id').notNull(),
 		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
@@ -215,7 +215,7 @@ export const addressStructureStatsV3 = sqliteTable(
 				table.structureKind
 			]
 		}),
-		index('idx_address_structure_stats_v3_query').on(
+		index('idx_address_structure_stats_query').on(
 			table.granularity,
 			table.bucketStart,
 			table.sourceId,
@@ -225,6 +225,6 @@ export const addressStructureStatsV3 = sqliteTable(
 			table.addressSide,
 			table.structureKind
 		),
-		check('address_structure_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );

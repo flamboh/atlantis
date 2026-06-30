@@ -131,7 +131,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		const granularity = groupByToGranularity(groupBy);
 		const timeColumn = 'bucket_start';
 		const sourceColumn = 'source_id';
-		const tableName = 'traffic_stats_v3';
+		const tableName = 'traffic_stats';
 		const metricSelects = getBaseMetricSelects();
 		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
 		const srcVisibility = parseFlowVisibility(url.searchParams.get('srcVisibility'));

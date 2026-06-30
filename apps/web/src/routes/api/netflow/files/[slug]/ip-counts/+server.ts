@@ -49,7 +49,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
-			FROM address_count_stats_v3
+			FROM address_count_stats
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?

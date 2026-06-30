@@ -21,7 +21,7 @@ def test_visibility_pair_from_tos_uses_low_bits_only() -> None:
 
 def test_merge_v3_rows_preserves_all_and_exact_scopes() -> None:
     stats_v3, _ = load_modules()
-    row = stats_v3.empty_traffic_stats_v3_row(
+    row = stats_v3.empty_traffic_stats_row(
         source_id='oh_ir1_gw',
         granularity='5m',
         bucket_start=1744733100,
@@ -50,7 +50,7 @@ def test_stats_v3_insert_round_trip() -> None:
     stats_v3, maad_v2 = load_modules()
     conn = sqlite3.connect(':memory:')
     stats_v3.init_stats_v3_tables(conn)
-    traffic_row = stats_v3.empty_traffic_stats_v3_row(
+    traffic_row = stats_v3.empty_traffic_stats_row(
         source_id='oh_ir1_gw',
         granularity='5m',
         bucket_start=1744733100,
@@ -95,7 +95,7 @@ def test_stats_v3_insert_round_trip() -> None:
             }
         ]
     )
-    structure_rows = stats_v3.build_address_structure_stats_v3_rows(
+    structure_rows = stats_v3.build_address_structure_stats_rows(
         source_id='oh_ir1_gw',
         granularity='5m',
         bucket_start=1744733100,
@@ -107,15 +107,15 @@ def test_stats_v3_insert_round_trip() -> None:
         result=maad_v2.empty_maad_result(2),
     )
 
-    stats_v3.insert_traffic_stats_v3_rows(conn, [traffic_row])
-    stats_v3.insert_protocol_stats_v3_rows(conn, protocol_rows)
-    stats_v3.insert_address_count_stats_v3_rows(conn, address_rows)
-    stats_v3.insert_address_structure_stats_v3_rows(conn, structure_rows)
+    stats_v3.insert_traffic_stats_rows(conn, [traffic_row])
+    stats_v3.insert_protocol_stats_rows(conn, protocol_rows)
+    stats_v3.insert_address_count_stats_rows(conn, address_rows)
+    stats_v3.insert_address_structure_stats_rows(conn, structure_rows)
 
-    assert conn.execute('SELECT flows_udp, packets_udp FROM traffic_stats_v3').fetchone() == (1, 5)
-    assert conn.execute('SELECT unique_protocols_count, protocols_list FROM protocol_stats_v3').fetchone() == (1, '17')
-    assert conn.execute('SELECT unique_address_count FROM address_count_stats_v3').fetchone() == (2,)
+    assert conn.execute('SELECT flows_udp, packets_udp FROM traffic_stats').fetchone() == (1, 5)
+    assert conn.execute('SELECT unique_protocols_count, protocols_list FROM protocol_stats').fetchone() == (1, '17')
+    assert conn.execute('SELECT unique_address_count FROM address_count_stats').fetchone() == (2,)
     assert conn.execute(
-        'SELECT COUNT(*) FROM address_structure_stats_v3 WHERE structure_kind IN '
+        'SELECT COUNT(*) FROM address_structure_stats WHERE structure_kind IN '
         "('structure', 'spectrum', 'dimension')"
     ).fetchone() == (3,)

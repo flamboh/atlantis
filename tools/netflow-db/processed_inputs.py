@@ -12,11 +12,11 @@ import sqlite3
 VALID_INPUT_STATUSES = {'pending', 'processed', 'failed'}
 
 
-def init_processed_inputs_v2_table(conn: sqlite3.Connection) -> None:
-    """Create the processed_inputs_v2 table if it does not exist."""
+def init_processed_inputs_table(conn: sqlite3.Connection) -> None:
+    """Create the processed_inputs table if it does not exist."""
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS processed_inputs_v2 (
+        CREATE TABLE IF NOT EXISTS processed_inputs (
             input_kind TEXT NOT NULL CHECK (input_kind IN ('nfcapd', 'csv')),
             input_locator TEXT NOT NULL,
             source_id TEXT NOT NULL,
@@ -30,13 +30,13 @@ def init_processed_inputs_v2_table(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    ensure_column(conn, 'processed_inputs_v2', 'status', "TEXT NOT NULL DEFAULT 'pending'")
-    ensure_column(conn, 'processed_inputs_v2', 'error_message', 'TEXT')
-    ensure_column(conn, 'processed_inputs_v2', 'processed_at', 'DATETIME')
+    ensure_column(conn, 'processed_inputs', 'status', "TEXT NOT NULL DEFAULT 'pending'")
+    ensure_column(conn, 'processed_inputs', 'error_message', 'TEXT')
+    ensure_column(conn, 'processed_inputs', 'processed_at', 'DATETIME')
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_processed_inputs_v2_source_bucket
-        ON processed_inputs_v2(source_id, bucket_start)
+        CREATE INDEX IF NOT EXISTS idx_processed_inputs_source_bucket
+        ON processed_inputs(source_id, bucket_start)
         """
     )
     conn.commit()
@@ -62,10 +62,10 @@ def upsert_input_bucket(
     bucket_end: int,
 ) -> None:
     """Insert or replace an input bucket record without committing."""
-    init_processed_inputs_v2_table(conn)
+    init_processed_inputs_table(conn)
     conn.execute(
         """
-        INSERT INTO processed_inputs_v2 (
+        INSERT INTO processed_inputs (
             input_kind, input_locator, source_id, bucket_start, bucket_end, status
         ) VALUES (?, ?, ?, ?, ?, 'pending')
         ON CONFLICT(input_kind, input_locator, source_id, bucket_start)
@@ -84,7 +84,7 @@ def get_pending_inputs(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """
         SELECT input_kind, input_locator, source_id, bucket_start, bucket_end
-        FROM processed_inputs_v2
+        FROM processed_inputs
         WHERE status != 'processed'
         ORDER BY bucket_start, source_id, input_locator
         """
@@ -116,7 +116,7 @@ def mark_input_bucket_status(
         raise ValueError(f'Unsupported v2 input status: {status}')
     conn.execute(
         """
-        UPDATE processed_inputs_v2
+        UPDATE processed_inputs
         SET status = ?,
             error_message = ?,
             processed_at = CURRENT_TIMESTAMP
