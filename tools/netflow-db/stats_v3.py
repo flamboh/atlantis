@@ -14,6 +14,13 @@ VISIBILITIES = ('all', 'literal', 'anonymized')
 ADDRESS_SIDES = ('source', 'destination')
 STRUCTURE_KINDS = ('structure', 'spectrum', 'dimension')
 ALL_VISIBILITY = ('all', 'all')
+EXACT_VISIBILITY_PAIRS = (
+    ('anonymized', 'anonymized'),
+    ('anonymized', 'literal'),
+    ('literal', 'anonymized'),
+    ('literal', 'literal'),
+)
+ZERO_FILL_VISIBILITY_PAIRS = (ALL_VISIBILITY, *EXACT_VISIBILITY_PAIRS)
 NETFLOW_METRIC_COLUMNS = (
     'flows',
     'flows_tcp',
@@ -237,6 +244,79 @@ def empty_traffic_stats_row(
         'dst_visibility': dst_visibility,
         **{column: 0 for column in NETFLOW_METRIC_COLUMNS},
     }
+
+
+def empty_traffic_stats_rows(
+    *,
+    source_id: str,
+    granularity: str,
+    bucket_start: int,
+    bucket_end: int,
+) -> list[dict]:
+    """Create zero traffic rows for every query visibility scope."""
+    return [
+        empty_traffic_stats_row(
+            source_id=source_id,
+            granularity=granularity,
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+            ip_version=ip_version,
+            src_visibility=src_visibility,
+            dst_visibility=dst_visibility,
+        )
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
+    ]
+
+
+def empty_protocol_set_entries(
+    *,
+    source_id: str,
+    granularity: str,
+    bucket_start: int,
+    bucket_end: int,
+) -> list[dict]:
+    """Create empty protocol sets for every query visibility scope."""
+    return [
+        {
+            'source_id': source_id,
+            'granularity': granularity,
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_end,
+            'ip_version': ip_version,
+            'src_visibility': src_visibility,
+            'dst_visibility': dst_visibility,
+            'protocols': [],
+        }
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
+    ]
+
+
+def empty_address_set_entries(
+    *,
+    source_id: str,
+    granularity: str,
+    bucket_start: int,
+    bucket_end: int,
+) -> list[dict]:
+    """Create empty address sets for every query visibility scope and side."""
+    return [
+        {
+            'source_id': source_id,
+            'granularity': granularity,
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_end,
+            'ip_version': ip_version,
+            'src_visibility': src_visibility,
+            'dst_visibility': dst_visibility,
+            'address_side': address_side,
+            'addresses': [],
+        }
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
+        for address_side in ADDRESS_SIDES
+    ]
 
 
 def add_traffic_metrics_v3(

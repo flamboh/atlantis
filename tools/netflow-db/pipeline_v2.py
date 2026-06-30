@@ -63,7 +63,10 @@ from stats_v3 import (
     address_set_entries_to_count_rows,
     aggregate_raw_v3_entries,
     build_address_structure_stats_rows,
+    empty_address_set_entries,
+    empty_protocol_set_entries,
     empty_traffic_stats_row,
+    empty_traffic_stats_rows,
     init_stats_v3_tables,
     insert_address_count_stats_rows,
     insert_address_structure_stats_rows,
@@ -73,6 +76,7 @@ from stats_v3 import (
     protocol_set_entries_to_rows,
     validate_ip_version,
     visibility_pairs_for_row,
+    ZERO_FILL_VISIBILITY_PAIRS,
 )
 
 
@@ -335,15 +339,28 @@ def process_nfcapd_tree_spec(
     sources = normalize_nfcapd_sources(spec, root_path)
     member_ids = sorted({member for source in sources for member in source.members})
     start_date = parse_config_date(str(spec['start_date']))
+    explicit_end_date = bool(spec.get('end_date'))
     end_date = (
         parse_config_date(str(spec['end_date']))
-        if spec.get('end_date')
+        if explicit_end_date
         else discover_latest_nfcapd_tree_day(root_path, member_ids)
     )
     zero_fill_gaps = bool(spec.get('zero_fill_gaps', True))
-    source_bounds = discover_nfcapd_source_bounds(root_path, member_ids) if zero_fill_gaps else {}
     start_bucket = parse_optional_config_time(spec.get('start_time'))
     end_bucket = parse_optional_config_time(spec.get('end_time'))
+    source_bounds = (
+        build_nfcapd_zero_fill_source_bounds(
+            member_ids,
+            discover_nfcapd_source_bounds(root_path, member_ids),
+            start_date=start_date,
+            end_date=end_date,
+            start_bucket=start_bucket,
+            end_bucket=end_bucket,
+            extend_to_requested_window=explicit_end_date,
+        )
+        if zero_fill_gaps
+        else {}
+    )
     force = bool(spec.get('force', False))
 
     for day in iter_days(start_date, end_date):
@@ -497,9 +514,69 @@ def discover_nfcapd_tree_specs(
             spec = real_specs.get(bucket_start)
             if spec is not None:
                 specs.append(spec)
-            elif first_bucket < bucket_start < last_bucket:
+            elif first_bucket <= bucket_start <= last_bucket:
                 specs.append(build_nfcapd_gap_spec(root, source_id, bucket_start))
     return specs
+
+
+def build_nfcapd_zero_fill_source_bounds(
+    source_ids: list[str],
+    discovered_bounds: dict[str, tuple[int, int]],
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    start_bucket: int | None,
+    end_bucket: int | None,
+    extend_to_requested_window: bool,
+) -> dict[str, tuple[int, int]]:
+    """Return per-source bounds used to materialize missing nfcapd buckets."""
+    if not extend_to_requested_window:
+        return discovered_bounds
+
+    requested_first, requested_last = nfcapd_requested_bucket_bounds(
+        start_date,
+        end_date,
+        start_bucket=start_bucket,
+        end_bucket=end_bucket,
+    )
+    return {
+        source_id: extend_bucket_bounds(
+            discovered_bounds.get(source_id),
+            requested_first=requested_first,
+            requested_last=requested_last,
+        )
+        for source_id in source_ids
+    }
+
+
+def nfcapd_requested_bucket_bounds(
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    start_bucket: int | None,
+    end_bucket: int | None,
+) -> tuple[int, int]:
+    """Return inclusive local 5-minute bucket bounds for the requested tree window."""
+    first_bucket = next(iter(iter_local_day_bucket_starts(start_date)))
+    last_bucket = max(iter_local_day_bucket_starts(end_date))
+    if start_bucket is not None:
+        first_bucket = max(first_bucket, start_bucket)
+    if end_bucket is not None:
+        last_bucket = min(last_bucket, end_bucket - FIVE_MINUTE_SECONDS)
+    return first_bucket, last_bucket
+
+
+def extend_bucket_bounds(
+    bounds: tuple[int, int] | None,
+    *,
+    requested_first: int,
+    requested_last: int,
+) -> tuple[int, int]:
+    """Extend discovered bounds to include the configured zero-fill window."""
+    if bounds is None:
+        return requested_first, requested_last
+    first_bucket, last_bucket = bounds
+    return min(first_bucket, requested_first), max(last_bucket, requested_last)
 
 
 def discover_nfcapd_source_bounds(
@@ -2307,11 +2384,13 @@ def new_streaming_aggregate_bucket(source_id: str, granularity: str, bucket_star
         'protocol_v3_by_key': defaultdict(set),
         'address_v3_by_key': defaultdict(set),
         'address_all_by_key': defaultdict(set),
+        'bucket_starts': set(),
     }
 
 
 def add_raw_bucket_v3_to_streaming_aggregate(bucket: dict, raw_bucket: dict) -> None:
     """Merge one raw bucket's v3 sets into a streaming aggregate bucket."""
+    bucket['bucket_starts'].add(raw_bucket['bucket_start'])
     for row in raw_bucket.get('traffic_v3_rows', []):
         key = (
             row['ip_version'],
@@ -2367,6 +2446,10 @@ def flush_streaming_aggregate_buckets(
     if not keys:
         return
     buckets = [aggregate_buckets.pop(key) for key in sorted(keys)]
+    if delete_existing:
+        buckets = [bucket for bucket in buckets if streaming_aggregate_bucket_is_complete(bucket)]
+        if not buckets:
+            return
     v3_payloads = [build_streaming_aggregate_v3_payload(bucket) for bucket in buckets]
     traffic_v3_rows = [
         row
@@ -2455,6 +2538,12 @@ def delete_aggregate_outputs_for_streaming_buckets(conn: sqlite3.Connection, buc
                 f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
                 (bucket['source_id'], bucket['granularity'], bucket['bucket_start']),
             )
+
+
+def streaming_aggregate_bucket_is_complete(bucket: dict) -> bool:
+    """Return true when a rewrite covers every 5-minute slice in a coarse bucket."""
+    expected_count = (int(bucket['bucket_end']) - int(bucket['bucket_start'])) // FIVE_MINUTE_SECONDS
+    return len(bucket.get('bucket_starts', set())) == expected_count
 
 
 def streaming_address_set(bucket: dict, ip_version: int, address_side: str) -> set:
@@ -2900,46 +2989,24 @@ def build_nfcapd_gap_payload(
 ) -> dict:
     """Build zero-valued canonical rows for one bounded missing nfcapd bucket."""
     bucket_end = bucket_start + FIVE_MINUTE_SECONDS
-    traffic_v3_rows = [
-        empty_traffic_stats_row(
-            source_id=source_id,
-            granularity='5m',
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-            ip_version=ip_version,
-            src_visibility='all',
-            dst_visibility='all',
-        )
-        for ip_version in (4, 6)
-    ]
-    protocol_v3_sets = [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': 'all',
-            'dst_visibility': 'all',
-            'protocols': [],
-        }
-        for ip_version in (4, 6)
-    ]
-    address_v3_sets = [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': 'all',
-            'dst_visibility': 'all',
-            'address_side': address_side,
-            'addresses': [],
-        }
-        for ip_version in (4, 6)
-        for address_side in ('source', 'destination')
-    ]
+    traffic_v3_rows = empty_traffic_stats_rows(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
+    protocol_v3_sets = empty_protocol_set_entries(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
+    address_v3_sets = empty_address_set_entries(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
     raw_bucket = {
         'source_id': source_id,
         'bucket_start': bucket_start,

@@ -108,10 +108,29 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert 'maad_source_ipv4' not in payload['raw_bucket']
     assert payload['traffic_v3_rows'][0]['src_visibility'] == 'all'
     assert payload['traffic_v3_rows'][0]['dst_visibility'] == 'all'
-    assert {
+    address_counts = {
         (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['address_side'], row['unique_address_count'])
         for row in payload['address_count_v3_rows']
-    } == {
+    }
+    expected_address_counts = {
+        (ip_version, src_visibility, dst_visibility, address_side, 0)
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+        for address_side in ('source', 'destination')
+    }
+    expected_address_counts -= {
+        (4, 'all', 'all', 'source', 0),
+        (4, 'all', 'all', 'destination', 0),
+        (4, 'anonymized', 'literal', 'source', 0),
+        (4, 'anonymized', 'literal', 'destination', 0),
+        (4, 'literal', 'anonymized', 'source', 0),
+        (4, 'literal', 'anonymized', 'destination', 0),
+        (6, 'all', 'all', 'source', 0),
+        (6, 'all', 'all', 'destination', 0),
+        (6, 'literal', 'literal', 'source', 0),
+        (6, 'literal', 'literal', 'destination', 0),
+    }
+    expected_address_counts |= {
         (4, 'all', 'all', 'source', 2),
         (4, 'all', 'all', 'destination', 2),
         (4, 'anonymized', 'literal', 'source', 1),
@@ -123,6 +142,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
         (6, 'literal', 'literal', 'source', 1),
         (6, 'literal', 'literal', 'destination', 1),
     }
+    assert address_counts == expected_address_counts
     assert len(commands) == 3
 
 
@@ -141,6 +161,34 @@ def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
 
     with pytest.raises(ValueError, match='Invalid nfcapd filename'):
         module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115.tmp')
+
+
+def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> None:
+    module = load_module()
+
+    traffic_rows, protocol_sets = module.traffic_stats_rows_from_scoped_counters(
+        {4: [], 6: []},
+        'r1',
+        1744700700,
+        1744701000,
+    )
+
+    assert {
+        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['flows'])
+        for row in traffic_rows
+    } == {
+        (ip_version, src_visibility, dst_visibility, 0)
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+    }
+    assert {
+        (row['ip_version'], row['src_visibility'], row['dst_visibility'], tuple(row['protocols']))
+        for row in protocol_sets
+    } == {
+        (ip_version, src_visibility, dst_visibility, ())
+        for ip_version in (4, 6)
+        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+    }
 
 
 def test_read_address_sets_by_version_uses_fast_ipv4_path(monkeypatch) -> None:

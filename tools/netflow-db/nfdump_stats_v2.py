@@ -18,9 +18,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from stats_v3 import (
+    ZERO_FILL_VISIBILITY_PAIRS,
     add_traffic_metrics_v3,
     address_set_entries_to_count_rows,
-    empty_traffic_stats_row,
+    empty_address_set_entries,
+    empty_protocol_set_entries,
+    empty_traffic_stats_rows,
     protocol_set_entries_to_rows,
     visibility_pairs_for_row,
 )
@@ -128,25 +131,30 @@ def traffic_stats_rows_from_scoped_counters(
     bucket_end: int,
 ) -> tuple[list[dict], list[dict]]:
     """Build scoped v3 traffic rows from grouped protocol counters."""
-    rows_by_key: dict[tuple[int, str, str], dict] = {}
-    protocols_by_key: dict[tuple[int, str, str], set[str]] = {}
+    rows_by_key: dict[tuple[int, str, str], dict] = {
+        (row['ip_version'], row['src_visibility'], row['dst_visibility']): row
+        for row in empty_traffic_stats_rows(
+            source_id=source_id,
+            granularity='5m',
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+        )
+    }
+    protocols_by_key: dict[tuple[int, str, str], set[str]] = {
+        (entry['ip_version'], entry['src_visibility'], entry['dst_visibility']): set()
+        for entry in empty_protocol_set_entries(
+            source_id=source_id,
+            granularity='5m',
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+        )
+    }
 
     for ip_version in (4, 6):
         for protocol, src_tos, packets, bytes_value, flows in scoped_counters_by_version[ip_version]:
             for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
                 key = (ip_version, src_visibility, dst_visibility)
-                row = rows_by_key.setdefault(
-                    key,
-                    empty_traffic_stats_row(
-                        source_id=source_id,
-                        granularity='5m',
-                        bucket_start=bucket_start,
-                        bucket_end=bucket_end,
-                        ip_version=ip_version,
-                        src_visibility=src_visibility,
-                        dst_visibility=dst_visibility,
-                    ),
-                )
+                row = rows_by_key[key]
                 add_traffic_metrics_v3(
                     row,
                     protocol=protocol,
@@ -154,7 +162,7 @@ def traffic_stats_rows_from_scoped_counters(
                     packets=packets,
                     bytes_count=bytes_value,
                 )
-                protocols_by_key.setdefault(key, set()).add(str(protocol))
+                protocols_by_key[key].add(str(protocol))
 
     protocol_entries = [
         {
@@ -347,7 +355,20 @@ def read_address_sets_v3(
             'csv:%sa,%da,%stos',
         ]
     )
-    sets_by_key: dict[tuple[int, str, str, str], set] = {}
+    sets_by_key: dict[tuple[int, str, str, str], set] = {
+        (
+            entry['ip_version'],
+            entry['src_visibility'],
+            entry['dst_visibility'],
+            entry['address_side'],
+        ): set()
+        for entry in empty_address_set_entries(
+            source_id=source_id,
+            granularity='5m',
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+        )
+    }
     for row in csv.DictReader(result.stdout.splitlines()):
         source_ip = (row.get('srcAddr') or '').strip()
         destination_ip = (row.get('dstAddr') or '').strip()
