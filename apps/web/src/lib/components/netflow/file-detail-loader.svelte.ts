@@ -1,5 +1,6 @@
 import type {
 	FileIpCounts,
+	FlowScope,
 	NetflowFileDetailsResponse,
 	NetflowFileSummaryRecord,
 	SpectrumData,
@@ -65,8 +66,19 @@ export type NetflowFileRouterRow = {
 	};
 };
 
-function buildLoaderKey(dataset: string, slug: string): string {
-	return `${dataset}:${slug}`;
+function buildLoaderKey(dataset: string, slug: string, flowScope: FlowScope): string {
+	return `${dataset}:${slug}:${flowScope.srcVisibility}:${flowScope.dstVisibility}`;
+}
+
+function buildScopeSearchParams(flowScope: FlowScope): Record<string, string> {
+	if (flowScope.srcVisibility === 'all' && flowScope.dstVisibility === 'all') {
+		return {};
+	}
+
+	return {
+		srcVisibility: flowScope.srcVisibility,
+		dstVisibility: flowScope.dstVisibility
+	};
 }
 
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -85,6 +97,7 @@ async function readErrorMessage(response: Response, fallback: string): Promise<s
 class NetflowFileDetailLoader {
 	readonly dataset: string;
 	readonly slug: string;
+	readonly flowScope: FlowScope;
 	readonly key: string;
 
 	private _loading = $state(false);
@@ -97,10 +110,11 @@ class NetflowFileDetailLoader {
 	private _lastAccessedAt = Date.now();
 	private summarySkeletonDelayId: ReturnType<typeof setTimeout> | null = null;
 
-	constructor(dataset: string, slug: string) {
+	constructor(dataset: string, slug: string, flowScope: FlowScope) {
 		this.dataset = dataset;
 		this.slug = slug;
-		this.key = buildLoaderKey(dataset, slug);
+		this.flowScope = flowScope;
+		this.key = buildLoaderKey(dataset, slug, flowScope);
 	}
 
 	get loading() {
@@ -268,7 +282,10 @@ class NetflowFileDetailLoader {
 
 		try {
 			const response = await fetch(
-				`/api/netflow/files/${this.slug}/details?dataset=${encodeURIComponent(this.dataset)}`
+				`/api/netflow/files/${this.slug}/details?${new URLSearchParams({
+					dataset: this.dataset,
+					...buildScopeSearchParams(this.flowScope)
+				}).toString()}`
 			);
 
 			if (!response.ok) {
@@ -347,6 +364,7 @@ class NetflowFileDetailLoader {
 		return `/api/netflow/files/${this.slug}/${kind === 'ipCounts' ? 'ip-counts' : kind}?${new URLSearchParams(
 			{
 				dataset: this.dataset,
+				...buildScopeSearchParams(this.flowScope),
 				router,
 				source: String(side === 'source')
 			}
@@ -375,12 +393,12 @@ function evictStaleLoaders() {
 	}
 }
 
-export function getNetflowFileDetailLoader(dataset: string, slug: string) {
-	const key = buildLoaderKey(dataset, slug);
+export function getNetflowFileDetailLoader(dataset: string, slug: string, flowScope: FlowScope) {
+	const key = buildLoaderKey(dataset, slug, flowScope);
 	let loader = fileDetailLoaders.get(key);
 
 	if (!loader) {
-		loader = new NetflowFileDetailLoader(dataset, slug);
+		loader = new NetflowFileDetailLoader(dataset, slug, flowScope);
 		fileDetailLoaders.set(key, loader);
 	}
 

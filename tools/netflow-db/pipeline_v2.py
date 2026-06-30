@@ -110,6 +110,15 @@ NFDUMP_HEADER_FIRST_VALUES = {
     'time received',
     'received',
 }
+CSV_ARROW_REQUIRED_COLUMN_KEYS = (
+    'time_end',
+    'src_ip',
+    'dst_ip',
+    'protocol',
+    'packets',
+    'bytes',
+    'src_tos',
+)
 
 
 @dataclass
@@ -1465,8 +1474,7 @@ def should_accumulate_csv_with_arrow(config: CsvSourceConfig) -> bool:
         return False
     if config.timestamp_format != 'datetime' or config.datetime_format != '%Y-%m-%d %H:%M:%S':
         return False
-    required_columns = {'src_ip', 'dst_ip', 'protocol', 'packets', 'bytes'}
-    return required_columns.issubset(config.columns)
+    return set(CSV_ARROW_REQUIRED_COLUMN_KEYS).issubset(config.columns)
 
 
 def arrow_ipv4_address_mask(values):
@@ -1578,14 +1586,7 @@ def iter_csv_arrow_batches(input_locator: str, config: CsvSourceConfig):
     import pyarrow as pa
     import pyarrow.csv as arrow_csv
 
-    include_columns = [
-        config.columns['time_end'],
-        config.columns['src_ip'],
-        config.columns['dst_ip'],
-        config.columns['protocol'],
-        config.columns['packets'],
-        config.columns['bytes'],
-    ]
+    include_columns = [config.columns[key] for key in CSV_ARROW_REQUIRED_COLUMN_KEYS]
     column_types = {column_name: pa.string() for column_name in include_columns}
 
     def invalid_row_handler(_row):
@@ -1669,7 +1670,6 @@ def merge_arrow_batch_into_table_buckets(
     protocol_column = config.columns['protocol']
     packets_column = config.columns['packets']
     bytes_column = config.columns['bytes']
-    src_tos_column = config.columns['src_tos']
     src_tos_column = config.columns['src_tos']
     batch = filter_arrow_valid_flow_rows(
         batch,

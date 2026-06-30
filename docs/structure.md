@@ -5,6 +5,7 @@
 | Path               | Role                                                 |
 | ------------------ | ---------------------------------------------------- |
 | `apps/web`         | SvelteKit visualization dashboard                    |
+| `apps/web/drizzle` | Canonical D1 migration files for the web app         |
 | `apps/landing`     | Marketing/SEO landing page                           |
 | `tools/netflow-db` | Python ingestion pipeline + DB schema                |
 | `vendor/*`         | Optional analyzer submodules and local build outputs |

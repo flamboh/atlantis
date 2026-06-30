@@ -11,11 +11,9 @@ import type {
 	StructureFunctionPoint
 } from '$lib/types/types';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
-import { normalizeStructurePoints } from '$lib/server/netflow-v3';
+import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
-const DEFAULT_SRC_VISIBILITY = 'all';
-const DEFAULT_DST_VISIBILITY = 'all';
 
 type FileDetailsRow = NetflowFileSummaryRecord & {
 	input_kind: string | null;
@@ -125,6 +123,11 @@ function buildIpCounts(ipv4Count: number | null, ipv6Count: number | null): File
 export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const { slug } = params;
 	const dataset = await getDatasetFromRequest(url, platform);
+	const flowScope = parseFlowScopeParams(url);
+
+	if ('error' in flowScope) {
+		return json({ error: flowScope.error }, { status: flowScope.status });
+	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
 		return json({ error: 'Invalid slug format' }, { status: 400 });
@@ -261,20 +264,20 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			[
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				bucketStart
 			]
 		);

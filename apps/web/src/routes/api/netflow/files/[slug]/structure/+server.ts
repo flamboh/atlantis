@@ -2,11 +2,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { StructureFunctionData, StructureFunctionPoint } from '$lib/types/types';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
-import { normalizeStructurePoints } from '$lib/server/netflow-v3';
+import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
-const DEFAULT_SRC_VISIBILITY = 'all';
-const DEFAULT_DST_VISIBILITY = 'all';
 
 type StructureRow = {
 	valuesJson: string | null;
@@ -17,6 +15,11 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const dataset = await getDatasetFromRequest(url, platform);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
+	const flowScope = parseFlowScopeParams(url);
+
+	if ('error' in flowScope) {
+		return json({ error: flowScope.error }, { status: flowScope.status });
+	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
 		return json({ error: 'Invalid slug format' }, { status: 400 });
@@ -59,8 +62,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				router,
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				isSource ? 'source' : 'destination'
 			]
 		);

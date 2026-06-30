@@ -1,6 +1,7 @@
 import {
 	FLOW_VISIBILITIES,
 	IP_GRANULARITIES,
+	type FlowScope,
 	type FlowVisibility,
 	type IpGranularity
 } from '$lib/types/types';
@@ -69,12 +70,52 @@ export function parseIpGranularityOrDefault(param: string | null): IpGranularity
 	return parseIpGranularity(param) ?? DEFAULT_IP_GRANULARITY;
 }
 
-export function parseFlowVisibility(param: string | null): FlowVisibility {
+export function parseFlowVisibility(param: string | null): FlowVisibility | null {
+	if (!param) {
+		return null;
+	}
+
+	return VALID_FLOW_VISIBILITIES.has(param) ? (param as FlowVisibility) : null;
+}
+
+export function parseFlowVisibilityParam(
+	param: string | null,
+	name: 'srcVisibility' | 'dstVisibility'
+): FlowVisibility | RequestValidationError {
+	const visibility = parseFlowVisibility(param);
+	if (visibility) {
+		return visibility;
+	}
+
 	if (!param) {
 		return 'all';
 	}
 
-	return VALID_FLOW_VISIBILITIES.has(param) ? (param as FlowVisibility) : 'all';
+	return {
+		error: `Invalid ${name}. Expected one of: ${FLOW_VISIBILITIES.join(', ')}`,
+		status: 400
+	};
+}
+
+export function parseFlowScopeParams(url: URL): FlowScope | RequestValidationError {
+	const srcVisibility = parseFlowVisibilityParam(
+		url.searchParams.get('srcVisibility'),
+		'srcVisibility'
+	);
+	const dstVisibility = parseFlowVisibilityParam(
+		url.searchParams.get('dstVisibility'),
+		'dstVisibility'
+	);
+
+	if (typeof srcVisibility !== 'string') {
+		return srcVisibility;
+	}
+
+	if (typeof dstVisibility !== 'string') {
+		return dstVisibility;
+	}
+
+	return { srcVisibility, dstVisibility };
 }
 
 export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
@@ -82,11 +123,14 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 	const granularity = parseIpGranularityOrDefault(url.searchParams.get('granularity'));
 	const start = parseTimestamp(url.searchParams.get('startDate'));
 	const end = parseTimestamp(url.searchParams.get('endDate'));
-	const srcVisibility = parseFlowVisibility(url.searchParams.get('srcVisibility'));
-	const dstVisibility = parseFlowVisibility(url.searchParams.get('dstVisibility'));
+	const flowScope = parseFlowScopeParams(url);
 
 	if (routers.length === 0) {
 		return { error: 'No routers selected', status: 400 };
+	}
+
+	if ('error' in flowScope) {
+		return flowScope;
 	}
 
 	if (start === null || end === null) {
@@ -97,7 +141,14 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		return { error: 'Start time must be before end time', status: 400 };
 	}
 
-	return { routers, granularity, start, end, srcVisibility, dstVisibility };
+	return {
+		routers,
+		granularity,
+		start,
+		end,
+		srcVisibility: flowScope.srcVisibility,
+		dstVisibility: flowScope.dstVisibility
+	};
 }
 
 export function placeholders(values: unknown[]): string {

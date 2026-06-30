@@ -66,18 +66,48 @@ describe('netflow file helpers and routes', () => {
 		} as never);
 		const ipResponse = await getIpCounts({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/api/netflow/files/x/ip-counts?router=r1&source=true')
+			url: new URL(
+				'http://localhost/api/netflow/files/x/ip-counts?router=r1&source=true&srcVisibility=literal&dstVisibility=anonymized'
+			)
 		} as never);
 		const spectrumResponse = await getSpectrum({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/api/netflow/files/x/spectrum?router=r1&source=false')
+			url: new URL(
+				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=false&srcVisibility=literal&dstVisibility=anonymized'
+			)
 		} as never);
 		const structureResponse = await getStructure({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/api/netflow/files/x/structure?router=r1&source=true')
+			url: new URL(
+				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&srcVisibility=literal&dstVisibility=anonymized'
+			)
 		} as never);
+		const bucketStart = slugToBucketStart('202503010005');
 
 		expect(badIpResponse.status).toBe(400);
+		expect(get).toHaveBeenNthCalledWith(1, expect.any(String), [
+			'r1',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized'
+		]);
+		expect(get).toHaveBeenNthCalledWith(2, expect.any(String), [
+			'r1',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			'destination'
+		]);
+		expect(get).toHaveBeenNthCalledWith(3, expect.any(String), [
+			'r1',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			'source'
+		]);
 		await expect(ipResponse.json()).resolves.toEqual({ ipv4Count: 1, ipv6Count: 3 });
 		await expect(spectrumResponse.json()).resolves.toEqual({
 			slug: '202503010005',
@@ -108,56 +138,79 @@ describe('netflow file helpers and routes', () => {
 	});
 
 	it('builds file details response with attached derived datasets', async () => {
+		const all = vi.fn().mockResolvedValue([
+			{
+				router: 'r1',
+				file_path: '/captures/r1/nfcapd.202503010005',
+				input_kind: 'nfcapd',
+				input_status: 'processed',
+				input_error_message: null,
+				bucket_start: 1740823500,
+				bucket_end: 1740823800,
+				flows: 1,
+				flows_tcp: 2,
+				flows_udp: 3,
+				flows_icmp: 4,
+				flows_other: 5,
+				packets: 6,
+				packets_tcp: 7,
+				packets_udp: 8,
+				packets_icmp: 9,
+				packets_other: 10,
+				bytes: 11,
+				bytes_tcp: 12,
+				bytes_udp: 13,
+				bytes_icmp: 14,
+				bytes_other: 15,
+				first_timestamp: 16,
+				last_timestamp: 17,
+				msec_first: 18,
+				msec_last: 19,
+				sequence_failures: 20,
+				processed_at: 'now',
+				saIpv4Count: 2,
+				daIpv4Count: 3,
+				saIpv6Count: 4,
+				daIpv6Count: 5,
+				structureJsonSa: '[{"q":2,"tauTilde":8,"sd":0.25}]',
+				structureJsonDa: null,
+				spectrumJsonSa: '[{"alpha":1.5,"f":2}]',
+				spectrumJsonDa: null
+			}
+		]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(getDatasetDb).mockResolvedValue({
-			all: vi.fn().mockResolvedValue([
-				{
-					router: 'r1',
-					file_path: '/captures/r1/nfcapd.202503010005',
-					input_kind: 'nfcapd',
-					input_status: 'processed',
-					input_error_message: null,
-					bucket_start: 1740823500,
-					bucket_end: 1740823800,
-					flows: 1,
-					flows_tcp: 2,
-					flows_udp: 3,
-					flows_icmp: 4,
-					flows_other: 5,
-					packets: 6,
-					packets_tcp: 7,
-					packets_udp: 8,
-					packets_icmp: 9,
-					packets_other: 10,
-					bytes: 11,
-					bytes_tcp: 12,
-					bytes_udp: 13,
-					bytes_icmp: 14,
-					bytes_other: 15,
-					first_timestamp: 16,
-					last_timestamp: 17,
-					msec_first: 18,
-					msec_last: 19,
-					sequence_failures: 20,
-					processed_at: 'now',
-					saIpv4Count: 2,
-					daIpv4Count: 3,
-					saIpv6Count: 4,
-					daIpv6Count: 5,
-					structureJsonSa: '[{"q":2,"tauTilde":8,"sd":0.25}]',
-					structureJsonDa: null,
-					spectrumJsonSa: '[{"alpha":1.5,"f":2}]',
-					spectrumJsonDa: null
-				}
-			])
+			all
 		} as never);
 
 		const response = await getDetails({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha')
+			url: new URL(
+				'http://localhost/api/netflow/files/x/details?dataset=alpha&srcVisibility=literal&dstVisibility=anonymized'
+			)
 		} as never);
+		const bucketStart = slugToBucketStart('202503010005');
 
 		expect(response.status).toBe(200);
+		expect(all).toHaveBeenCalledWith(expect.any(String), [
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			'5m',
+			bucketStart,
+			'literal',
+			'anonymized',
+			bucketStart
+		]);
 		await expect(response.json()).resolves.toEqual({
 			routers: [
 				{
@@ -225,6 +278,22 @@ describe('netflow file helpers and routes', () => {
 				}
 			]
 		});
+	});
+
+	it('rejects invalid file detail visibility params', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(getDatasetDb).mockClear();
+
+		const response = await getDetails({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&srcVisibility=bogus')
+		} as never);
+
+		expect(response.status).toBe(400);
+		await expect(response.json()).resolves.toEqual({
+			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized'
+		});
+		expect(getDatasetDb).not.toHaveBeenCalledWith('alpha', undefined);
 	});
 
 	it('handles singularities validation and missing-file failures', async () => {

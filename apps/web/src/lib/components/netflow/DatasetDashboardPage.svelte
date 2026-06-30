@@ -10,6 +10,7 @@
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
 		FLOW_SCOPE_OPTIONS,
+		type FlowVisibility,
 		IP_METRIC_OPTIONS,
 		type FlowScopeKey,
 		type IpGranularity,
@@ -44,7 +45,6 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
-	let flowScopeKey = $state<FlowScopeKey>('all');
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
@@ -65,11 +65,22 @@
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
-	const flowScope = $derived(
-		FLOW_SCOPE_OPTIONS.find((option) => option.key === flowScopeKey) ?? FLOW_SCOPE_OPTIONS[0]
+	function getFlowScopeKey(
+		srcVisibility: FlowVisibility,
+		dstVisibility: FlowVisibility
+	): FlowScopeKey {
+		return (
+			FLOW_SCOPE_OPTIONS.find(
+				(option) => option.srcVisibility === srcVisibility && option.dstVisibility === dstVisibility
+			)?.key ?? 'all'
+		);
+	}
+
+	const flowScopeKey = $derived(
+		getFlowScopeKey(params.srcVisibility as FlowVisibility, params.dstVisibility as FlowVisibility)
 	);
-	const srcVisibility = $derived(flowScope.srcVisibility);
-	const dstVisibility = $derived(flowScope.dstVisibility);
+	const srcVisibility = $derived(params.srcVisibility as FlowVisibility);
+	const dstVisibility = $derived(params.dstVisibility as FlowVisibility);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -320,7 +331,14 @@
 	}
 
 	function handleScopeChange(event: CustomEvent<{ scope: FlowScopeKey }>) {
-		flowScopeKey = event.detail.scope;
+		const flowScope = FLOW_SCOPE_OPTIONS.find((option) => option.key === event.detail.scope);
+		if (!flowScope) {
+			return;
+		}
+		params.update({
+			srcVisibility: flowScope.srcVisibility,
+			dstVisibility: flowScope.dstVisibility
+		});
 	}
 
 	function handleResetView() {
@@ -328,7 +346,13 @@
 		selectedGroupBy = 'date';
 		startDate = props.defaultStartDate;
 		endDate = today;
-		params.update({ groupBy: selectedGroupBy, startDate, endDate });
+		params.update({
+			groupBy: selectedGroupBy,
+			startDate,
+			endDate,
+			srcVisibility: 'all',
+			dstVisibility: 'all'
+		});
 	}
 </script>
 

@@ -17,7 +17,7 @@ import {
 	groupByToGranularity,
 	parseSourceIds,
 	parseTimestamp,
-	parseFlowVisibility,
+	parseFlowScopeParams,
 	placeholders,
 	resolveSourceIds
 } from '$lib/server/netflow-v3';
@@ -122,6 +122,11 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		return json({ error: 'Start time must be before end time' }, { status: 400 });
 	}
 
+	const flowScope = parseFlowScopeParams(url);
+	if ('error' in flowScope) {
+		return json({ error: flowScope.error }, { status: flowScope.status });
+	}
+
 	try {
 		const db = await getDatasetDb(dataset, platform);
 		const resolvedSources = resolveSourceIds(
@@ -134,8 +139,6 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		const tableName = 'traffic_stats';
 		const metricSelects = getBaseMetricSelects();
 		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
-		const srcVisibility = parseFlowVisibility(url.searchParams.get('srcVisibility'));
-		const dstVisibility = parseFlowVisibility(url.searchParams.get('dstVisibility'));
 
 		const query = `
 			SELECT 
@@ -152,7 +155,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			ORDER BY bucketStart
 		`;
 
-		const params = [...resolvedSources, granularity, srcVisibility, dstVisibility, start, end];
+		const params = [
+			...resolvedSources,
+			granularity,
+			flowScope.srcVisibility,
+			flowScope.dstVisibility,
+			start,
+			end
+		];
 
 		const rows = await db.all<Record<string, number | null>>(query, params);
 		const result = rows.map(normalizeRow);

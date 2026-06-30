@@ -1,4 +1,5 @@
 import importlib
+import json
 import sqlite3
 from datetime import datetime
 
@@ -33,6 +34,138 @@ def make_raw_bucket(pipeline, source_id: str, bucket_start: int) -> dict:
         bytes_count=1000,
     )
     return bucket.raw_bucket_row()
+
+
+def test_headerless_timestamp_ordered_csv_accumulates_src_tos_with_arrow(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    csv_path = tmp_path / 'flows.csv'
+    mapping_path = tmp_path / 'mapping.json'
+    csv_path.write_text(
+        '\n'.join(
+            [
+                '2016-07-27 13:43:30,42.219.154.107,143.72.8.137,6,3,300,3',
+                '2016-07-27 13:44:00,42.219.154.108,143.72.8.138,17,2,200,0',
+            ]
+        )
+        + '\n',
+        encoding='utf-8',
+    )
+    mapping_path.write_text(
+        json.dumps(
+            {
+                'has_header': False,
+                'timestamp_format': 'datetime',
+                'timestamp_timezone': 'UTC',
+                'fieldnames': ['te', 'src', 'dst', 'proto', 'packets', 'bytes', 'stos'],
+                'columns': {
+                    'time_end': 'te',
+                    'src_ip': 'src',
+                    'dst_ip': 'dst',
+                    'protocol': 'proto',
+                    'packets': 'packets',
+                    'bytes': 'bytes',
+                    'src_tos': 'stos',
+                },
+                'source_id': {'value': 'ugr16'},
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    pipeline.process_input_specs(
+        conn,
+        [
+            {
+                'input_kind': 'csv',
+                'path': str(csv_path),
+                'mapping_path': str(mapping_path),
+            }
+        ],
+        maad_bin='',
+        maad_backend='python',
+        max_workers=1,
+        run_maad=False,
+    )
+
+    traffic_rows = conn.execute(
+        """
+        SELECT src_visibility, dst_visibility, flows, packets, bytes
+        FROM traffic_stats
+        WHERE source_id = 'ugr16'
+          AND granularity = '5m'
+          AND ip_version = 4
+        ORDER BY src_visibility, dst_visibility
+        """
+    ).fetchall()
+
+    assert traffic_rows == [
+        ('all', 'all', 2, 5, 500),
+        ('anonymized', 'anonymized', 1, 3, 300),
+        ('literal', 'literal', 1, 2, 200),
+    ]
+
+
+def test_headerless_timestamp_ordered_csv_without_src_tos_uses_default_visibility(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    csv_path = tmp_path / 'flows.csv'
+    mapping_path = tmp_path / 'mapping.json'
+    csv_path.write_text(
+        '2016-07-27 13:43:30,42.219.154.107,143.72.8.137,6,3,300\n',
+        encoding='utf-8',
+    )
+    mapping_path.write_text(
+        json.dumps(
+            {
+                'has_header': False,
+                'timestamp_format': 'datetime',
+                'timestamp_timezone': 'UTC',
+                'fieldnames': ['te', 'src', 'dst', 'proto', 'packets', 'bytes'],
+                'columns': {
+                    'time_end': 'te',
+                    'src_ip': 'src',
+                    'dst_ip': 'dst',
+                    'protocol': 'proto',
+                    'packets': 'packets',
+                    'bytes': 'bytes',
+                },
+                'source_id': {'value': 'ugr16'},
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    pipeline.process_input_specs(
+        conn,
+        [
+            {
+                'input_kind': 'csv',
+                'path': str(csv_path),
+                'mapping_path': str(mapping_path),
+            }
+        ],
+        maad_bin='',
+        maad_backend='python',
+        max_workers=1,
+        run_maad=False,
+    )
+
+    traffic_rows = conn.execute(
+        """
+        SELECT src_visibility, dst_visibility, flows, packets, bytes
+        FROM traffic_stats
+        WHERE source_id = 'ugr16'
+          AND granularity = '5m'
+          AND ip_version = 4
+        ORDER BY src_visibility, dst_visibility
+        """
+    ).fetchall()
+
+    assert traffic_rows == [
+        ('all', 'all', 1, 3, 300),
+        ('literal', 'literal', 1, 3, 300),
+    ]
 
 
 def test_gap_input_writes_only_canonical_stats_tables() -> None:

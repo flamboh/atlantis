@@ -105,6 +105,15 @@
 	let activeCrosshairX = $derived(localHoverX ?? externalHoverX);
 	let showLocalTooltip = $state(false);
 	let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
+	const hasSelectedSpectrumData = $derived(
+		buckets.some((bucket) => {
+			if (bucket.router !== currentRouter) {
+				return false;
+			}
+			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
+			return points.length > 0;
+		})
+	);
 
 	$effect(() => {
 		const unsubscribe = rangeSelectionStore.subscribe((value) => {
@@ -460,7 +469,10 @@
 			const labelForSlug = activeLabel ?? label;
 			const slug = generateSlugFromLabel(labelForSlug, '5min');
 			if (slug) {
-				void navigateToNetflowFile(goto, slug, props.dataset);
+				void navigateToNetflowFile(goto, slug, props.dataset, {
+					srcVisibility: props.srcVisibility ?? 'all',
+					dstVisibility: props.dstVisibility ?? 'all'
+				});
 			}
 			return;
 		}
@@ -989,6 +1001,12 @@
 				<div class="flex h-full items-center justify-center">
 					<div class="text-gray-500 dark:text-gray-400">
 						No spectrum data for the selected window.
+					</div>
+				</div>
+			{:else if !hasSelectedSpectrumData}
+				<div class="flex h-full items-center justify-center">
+					<div class="text-gray-500 dark:text-gray-400">
+						No {addressType === 'sa' ? 'source' : 'destination'} spectrum data for the selected source.
 					</div>
 				</div>
 			{:else}
