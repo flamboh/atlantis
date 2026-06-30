@@ -22,7 +22,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'address_structure_stats_v3';
+		const tableName = 'address_structure_stats';
 		const sourceColumn = 'source_id';
 		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 

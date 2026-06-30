@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { buildNetflowFileHref } from '$lib/utils/netflow-file-navigation';
+	import type { FlowScope } from '$lib/types/types';
 
 	let {
 		dataset,
 		nextSlug,
+		flowScope,
 		filename,
 		year,
 		month,
@@ -14,6 +16,7 @@
 	}: {
 		dataset: string;
 		nextSlug: string;
+		flowScope: FlowScope;
 		filename: string;
 		year: string;
 		month: string;
@@ -26,7 +29,7 @@
 
 <div class="mb-2 flex items-center justify-between text-2xl text-gray-900 dark:text-gray-100">
 	<h1>NetFlow File: {filename}</h1>
-	<form method="GET" action={buildNetflowFileHref(nextSlug, dataset)}>
+	<form method="GET" action={buildNetflowFileHref(nextSlug, dataset, flowScope)}>
 		<button
 			type="submit"
 			class="w-24 rounded bg-blue-600 px-4 py-1 text-center text-sm text-white hover:bg-blue-700"

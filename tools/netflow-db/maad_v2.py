@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import sqlite3
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -90,7 +89,7 @@ def parse_maad_json(output: str) -> MaadJsonResult:
 
 def run_maad_json(
     maad_bin: str | Path,
-    addresses: set[str],
+    addresses: set[str | int],
     *,
     timeout_seconds: int = DEFAULT_MAAD_TIMEOUT_SECONDS,
 ) -> MaadJsonResult:
@@ -98,7 +97,8 @@ def run_maad_json(
     if len(addresses) < MIN_MAAD_ADDRS:
         return empty_maad_result(len(addresses))
 
-    input_payload = '\n'.join(sorted(addresses))
+    address_values = sorted({parse_ipv4_address(address) for address in addresses})
+    input_payload = '\n'.join(format_ipv4_address(address) for address in address_values)
     try:
         result = subprocess.run(
             [
@@ -127,7 +127,7 @@ def run_maad_json(
     return parse_maad_json(result.stdout)
 
 
-def compute_maad_json(addresses: set[str]) -> MaadJsonResult:
+def compute_maad_json(addresses: set[str | int]) -> MaadJsonResult:
     """Compute MAAD-compatible JSON in process for already-materialized IPv4 sets."""
     if len(addresses) < MIN_MAAD_ADDRS:
         return empty_maad_result(len(addresses))
@@ -160,8 +160,12 @@ def compute_maad_json(addresses: set[str]) -> MaadJsonResult:
 
 
 @lru_cache(maxsize=2_000_000)
-def parse_ipv4_address(address: str) -> int:
+def parse_ipv4_address(address: str | int) -> int:
     """Parse dotted IPv4 without constructing ipaddress objects in the hot path."""
+    if isinstance(address, int):
+        if 0 <= address <= 0xFFFFFFFF:
+            return address
+        raise MaadV2Error(f'Invalid IPv4 address for MAAD: {address!r}.')
     parts = address.split('.')
     if len(parts) != 4:
         raise MaadV2Error(f'Invalid IPv4 address for MAAD: {address!r}.')
@@ -175,6 +179,11 @@ def parse_ipv4_address(address: str) -> int:
             raise MaadV2Error(f'Invalid IPv4 address for MAAD: {address!r}.')
         value = (value << 8) | octet
     return value
+
+
+def format_ipv4_address(address: int) -> str:
+    """Format a 32-bit IPv4 integer as dotted quad."""
+    return '.'.join(str((address >> shift) & 0xFF) for shift in (24, 16, 8, 0))
 
 
 def build_prefix_counts_by_length(addresses: list[int]) -> list[dict[int, int]]:
@@ -348,210 +357,4 @@ def empty_maad_result(total_addrs: int = 0) -> MaadJsonResult:
         structure=[],
         spectrum=[],
         dimensions=[],
-    )
-
-
-def init_maad_v2_tables(conn: sqlite3.Connection) -> None:
-    """Create all MAAD v2 output tables."""
-    init_structure_stats_v2_table(conn)
-    init_spectrum_stats_v2_table(conn)
-    init_dimension_stats_v2_table(conn)
-
-
-def init_structure_stats_v2_table(conn: sqlite3.Connection) -> None:
-    """Create structure_stats_v2."""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS structure_stats_v2 (
-            source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
-            bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
-            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            structure_json_sa TEXT NOT NULL,
-            structure_json_da TEXT NOT NULL,
-            metadata_json_sa TEXT NOT NULL,
-            metadata_json_da TEXT NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version)
-        ) WITHOUT ROWID
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_structure_stats_v2_granularity_bucket_source
-        ON structure_stats_v2(granularity, bucket_start, source_id, ip_version)
-        """
-    )
-    conn.commit()
-
-
-def init_spectrum_stats_v2_table(conn: sqlite3.Connection) -> None:
-    """Create spectrum_stats_v2."""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS spectrum_stats_v2 (
-            source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
-            bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
-            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            spectrum_json_sa TEXT NOT NULL,
-            spectrum_json_da TEXT NOT NULL,
-            metadata_json_sa TEXT NOT NULL,
-            metadata_json_da TEXT NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version)
-        ) WITHOUT ROWID
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_spectrum_stats_v2_granularity_bucket_source
-        ON spectrum_stats_v2(granularity, bucket_start, source_id, ip_version)
-        """
-    )
-    conn.commit()
-
-
-def init_dimension_stats_v2_table(conn: sqlite3.Connection) -> None:
-    """Create dimension_stats_v2."""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dimension_stats_v2 (
-            source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
-            bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
-            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            dimensions_json_sa TEXT NOT NULL,
-            dimensions_json_da TEXT NOT NULL,
-            metadata_json_sa TEXT NOT NULL,
-            metadata_json_da TEXT NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version)
-        ) WITHOUT ROWID
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_dimension_stats_v2_granularity_bucket_source
-        ON dimension_stats_v2(granularity, bucket_start, source_id, ip_version)
-        """
-    )
-    conn.commit()
-
-
-def build_maad_v2_rows(
-    *,
-    source_id: str,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-    ip_version: int,
-    source_result: MaadJsonResult,
-    destination_result: MaadJsonResult,
-) -> dict[str, dict]:
-    """Build insert payloads for MAAD v2 tables."""
-    base = {
-        'source_id': source_id,
-        'granularity': granularity,
-        'bucket_start': bucket_start,
-        'bucket_end': bucket_end,
-        'ip_version': ip_version,
-        'metadata_json_sa': json.dumps(source_result.metadata, sort_keys=True),
-        'metadata_json_da': json.dumps(destination_result.metadata, sort_keys=True),
-    }
-    return {
-        'structure': {
-            **base,
-            'structure_json_sa': json.dumps(source_result.structure, sort_keys=True),
-            'structure_json_da': json.dumps(destination_result.structure, sort_keys=True),
-        },
-        'spectrum': {
-            **base,
-            'spectrum_json_sa': json.dumps(source_result.spectrum, sort_keys=True),
-            'spectrum_json_da': json.dumps(destination_result.spectrum, sort_keys=True),
-        },
-        'dimensions': {
-            **base,
-            'dimensions_json_sa': json.dumps(source_result.dimensions, sort_keys=True),
-            'dimensions_json_da': json.dumps(destination_result.dimensions, sort_keys=True),
-        },
-    }
-
-
-def insert_maad_v2_rows(conn: sqlite3.Connection, rows: dict[str, dict]) -> None:
-    """Insert one bucket's MAAD v2 table rows without committing."""
-    insert_structure_stats_v2_row(conn, rows['structure'])
-    insert_spectrum_stats_v2_row(conn, rows['spectrum'])
-    insert_dimension_stats_v2_row(conn, rows['dimensions'])
-
-
-def insert_structure_stats_v2_row(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert one structure_stats_v2 row without committing."""
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO structure_stats_v2 (
-            source_id, granularity, bucket_start, bucket_end, ip_version,
-            structure_json_sa, structure_json_da, metadata_json_sa, metadata_json_da
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            row['source_id'],
-            row['granularity'],
-            row['bucket_start'],
-            row['bucket_end'],
-            row['ip_version'],
-            row['structure_json_sa'],
-            row['structure_json_da'],
-            row['metadata_json_sa'],
-            row['metadata_json_da'],
-        ),
-    )
-
-
-def insert_spectrum_stats_v2_row(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert one spectrum_stats_v2 row without committing."""
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO spectrum_stats_v2 (
-            source_id, granularity, bucket_start, bucket_end, ip_version,
-            spectrum_json_sa, spectrum_json_da, metadata_json_sa, metadata_json_da
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            row['source_id'],
-            row['granularity'],
-            row['bucket_start'],
-            row['bucket_end'],
-            row['ip_version'],
-            row['spectrum_json_sa'],
-            row['spectrum_json_da'],
-            row['metadata_json_sa'],
-            row['metadata_json_da'],
-        ),
-    )
-
-
-def insert_dimension_stats_v2_row(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert one dimension_stats_v2 row without committing."""
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO dimension_stats_v2 (
-            source_id, granularity, bucket_start, bucket_end, ip_version,
-            dimensions_json_sa, dimensions_json_da, metadata_json_sa, metadata_json_da
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            row['source_id'],
-            row['granularity'],
-            row['bucket_start'],
-            row['bucket_end'],
-            row['ip_version'],
-            row['dimensions_json_sa'],
-            row['dimensions_json_da'],
-            row['metadata_json_sa'],
-            row['metadata_json_da'],
-        ),
     )

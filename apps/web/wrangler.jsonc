@@ -12,7 +12,8 @@
 		{
 			"binding": "DB",
 			"database_name": "atlantis-db",
-			"database_id": "c3a5dd76-f764-4614-aa02-248341445042"
+			"database_id": "c3a5dd76-f764-4614-aa02-248341445042",
+			"migrations_dir": "drizzle"
 		}
 	],
 	"observability": {

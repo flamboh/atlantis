@@ -1,10 +1,16 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '$lib/datasets';
+import { parseFlowScopeParams } from '$lib/server/netflow-v3';
 
 export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	const { slug } = params;
 	let dataset = url.searchParams.get('dataset')?.trim() || '';
+	const flowScope = parseFlowScopeParams(url);
+
+	if ('error' in flowScope) {
+		throw error(flowScope.status, flowScope.error);
+	}
 
 	if (!dataset) {
 		const datasets = await loadDatasetSummariesFromFetch(fetch);
@@ -27,6 +33,8 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	return {
 		dataset,
 		slug,
+		srcVisibility: flowScope.srcVisibility,
+		dstVisibility: flowScope.dstVisibility,
 		showSingularities: false,
 		fileInfo: {
 			year,

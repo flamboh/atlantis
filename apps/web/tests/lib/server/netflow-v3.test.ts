@@ -7,6 +7,7 @@ import {
 	parseAggregateStatsParams,
 	parseIpGranularity,
 	parseIpGranularityOrDefault,
+	parseFlowVisibility,
 	parseSourceIds,
 	parseTimestamp,
 	resolveSourceIds
@@ -37,6 +38,13 @@ describe('netflow v3 helpers', () => {
 		expect(parseIpGranularityOrDefault('bad')).toBe('1h');
 	});
 
+	it('parses flow visibility request values without coercing invalid values', () => {
+		expect(parseFlowVisibility('literal')).toBe('literal');
+		expect(parseFlowVisibility('anonymized')).toBe('anonymized');
+		expect(parseFlowVisibility(null)).toBeNull();
+		expect(parseFlowVisibility('bad')).toBeNull();
+	});
+
 	it('validates aggregate stats request params', () => {
 		expect(
 			parseAggregateStatsParams(
@@ -64,6 +72,14 @@ describe('netflow v3 helpers', () => {
 				new URL('http://localhost/api/test?routers=r1&startDate=200&endDate=100')
 			)
 		).toEqual({ error: 'Start time must be before end time', status: 400 });
+		expect(
+			parseAggregateStatsParams(
+				new URL('http://localhost/api/test?routers=r1&startDate=100&endDate=200&srcVisibility=bad')
+			)
+		).toEqual({
+			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized',
+			status: 400
+		});
 	});
 
 	it('keeps raw bucket starts for 5 minute requests', () => {

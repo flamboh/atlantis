@@ -180,9 +180,7 @@ function inferDatasetLabel(datasetId: string): string {
 
 function inferDefaultStartDate(client: SqliteClient): string {
 	const row = client
-		.prepare(
-			"SELECT MIN(bucket_start) AS minTimestamp FROM traffic_stats_v3 WHERE granularity = '5m'"
-		)
+		.prepare("SELECT MIN(bucket_start) AS minTimestamp FROM traffic_stats WHERE granularity = '5m'")
 		.get() as { minTimestamp: number | null } | undefined;
 
 	if (typeof row?.minTimestamp === 'number' && Number.isFinite(row.minTimestamp)) {
@@ -377,7 +375,7 @@ export async function listDatasetSources(
 	const rows = await db.all<{ sourceId: string }>(
 		`
 			SELECT DISTINCT source_id AS sourceId
-			FROM traffic_stats_v3
+			FROM traffic_stats
 			WHERE granularity = '5m'
 			ORDER BY source_id
 		`
@@ -431,7 +429,7 @@ async function inferSourceDefinitions(
 		rows = await db.all<{ sourceId: string; inputLocator: string }>(
 			`
 				SELECT DISTINCT source_id AS sourceId, input_locator AS inputLocator
-				FROM processed_inputs_v2
+				FROM processed_inputs
 				WHERE input_kind = 'nfcapd'
 					AND status = 'processed'
 			`
@@ -509,7 +507,7 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 		datasets.map(async (dataset) => {
 			const db = await getDatasetDb(dataset.id, platform);
 			const sourceRows = await db.all<{ sourceCount: number }>(
-				"SELECT COUNT(DISTINCT source_id) AS sourceCount FROM traffic_stats_v3 WHERE granularity = '5m'"
+				"SELECT COUNT(DISTINCT source_id) AS sourceCount FROM traffic_stats WHERE granularity = '5m'"
 			);
 			const sourceCount = sourceRows[0]?.sourceCount ?? 0;
 

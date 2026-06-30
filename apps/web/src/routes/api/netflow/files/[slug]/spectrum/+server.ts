@@ -1,11 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumData, SpectrumPoint } from '$lib/types/types';
+import { parseFlowScopeParams } from '$lib/server/netflow-v3';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
 
 const FIVE_MINUTES = '5m';
-const DEFAULT_SRC_VISIBILITY = 'all';
-const DEFAULT_DST_VISIBILITY = 'all';
 
 type SpectrumRow = {
 	valuesJson: string | null;
@@ -16,6 +15,11 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const dataset = await getDatasetFromRequest(url, platform);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
+	const flowScope = parseFlowScopeParams(url);
+
+	if ('error' in flowScope) {
+		return json({ error: flowScope.error }, { status: flowScope.status });
+	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
 		return json({ error: 'Invalid slug format' }, { status: 400 });
@@ -44,7 +48,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		const row = await db.get<SpectrumRow>(
 			`SELECT
 				values_json AS valuesJson
-			FROM address_structure_stats_v3
+			FROM address_structure_stats
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?
@@ -58,8 +62,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				router,
 				FIVE_MINUTES,
 				bucketStart,
-				DEFAULT_SRC_VISIBILITY,
-				DEFAULT_DST_VISIBILITY,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
 				isSource ? 'source' : 'destination'
 			]
 		);

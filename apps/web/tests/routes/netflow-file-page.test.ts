@@ -29,7 +29,9 @@ describe('/netflow/files/[slug] page load', () => {
 
 		const result = await load({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/netflow/files/202503010005'),
+			url: new URL(
+				'http://localhost/netflow/files/202503010005?srcVisibility=literal&dstVisibility=anonymized'
+			),
 			fetch
 		} as never);
 
@@ -37,6 +39,8 @@ describe('/netflow/files/[slug] page load', () => {
 		expect(result).toEqual({
 			dataset: 'alpha',
 			slug: '202503010005',
+			srcVisibility: 'literal',
+			dstVisibility: 'anonymized',
 			showSingularities: false,
 			fileInfo: {
 				year: '2025',
@@ -45,6 +49,21 @@ describe('/netflow/files/[slug] page load', () => {
 				hour: '00',
 				minute: '05',
 				filename: 'nfcapd.202503010005'
+			}
+		});
+	});
+
+	it('rejects invalid visibility params', async () => {
+		await expect(
+			load({
+				params: { slug: '202503010005' },
+				url: new URL('http://localhost/netflow/files/202503010005?dstVisibility=bogus'),
+				fetch: vi.fn()
+			} as never)
+		).rejects.toMatchObject({
+			status: 400,
+			body: {
+				message: 'Invalid dstVisibility. Expected one of: all, literal, anonymized'
 			}
 		});
 	});

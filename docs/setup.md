@@ -58,6 +58,27 @@ python tools/netflow-db/pipeline.py
 This discovers and processes NetFlow files into SQLite.
 See [pipeline-usage.md](pipeline-usage.md) for flags and scheduling patterns.
 
+## D1 Migrations
+
+The web app's D1 schema is tracked in `apps/web/drizzle`. Generate migrations
+from the Drizzle schema:
+
+```bash
+bun run --cwd apps/web db:generate
+```
+
+Wrangler is configured to read the same directory:
+
+```bash
+bun run --cwd apps/web d1:migrations:list
+bun run --cwd apps/web d1:migrations:apply:local
+```
+
+Current stack policy is greenfield: before a shared D1 database has applied
+these files, rebaseline `apps/web/drizzle` when the schema changes. After a D1
+database has applied a migration, add a new migration instead of editing the
+applied file.
+
 ## Optional: Compile Vendor Analyzers
 
 If you need `spectrum_stats` / `structure_stats` for real captures, initialize

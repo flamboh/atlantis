@@ -2,14 +2,7 @@
 """
 Pipeline v2 entrypoint.
 
-Processes explicit csv and nfcapd inputs into:
-- processed_inputs_v2
-- netflow_stats_v2
-- ip_stats_v2
-- protocol_stats_v2
-- structure_stats_v2
-- spectrum_stats_v2
-- dimension_stats_v2
+Processes explicit csv and nfcapd inputs into canonical netflow tables.
 """
 
 from __future__ import annotations
@@ -49,10 +42,7 @@ from datasets_metadata import init_datasets_table, upsert_dataset_metadata
 from maad_v2 import (
     MaadTimeoutError,
     MaadJsonResult,
-    build_maad_v2_rows,
     compute_maad_json,
-    init_maad_v2_tables,
-    insert_maad_v2_rows,
     run_maad_json,
 )
 from nfdump_stats_v2 import (
@@ -62,35 +52,31 @@ from nfdump_stats_v2 import (
 )
 from normalized_rows_v2 import NormalizedRow, build_nfdump_csv_command, normalize_nfdump_csv_values
 from normalized_rows_v2 import infer_ip_version
-from processed_inputs_v2 import (
-    init_processed_inputs_v2_table,
+from processed_inputs import (
+    init_processed_inputs_table,
     mark_input_bucket_status,
     upsert_input_bucket,
 )
-from stats_v2 import (
-    NETFLOW_METRIC_COLUMNS,
-    init_ip_stats_v2_table,
-    init_netflow_stats_v2_table,
-    init_protocol_stats_v2_table,
-    insert_ip_stats_v2_rows,
-    insert_netflow_stats_v2_rows,
-    insert_protocol_stats_v2_rows,
-    protocol_metric_keys,
-    validate_ip_version,
-)
 from stats_v3 import (
+    NETFLOW_METRIC_COLUMNS,
     add_traffic_metrics_v3,
     address_set_entries_to_count_rows,
     aggregate_raw_v3_entries,
-    build_address_structure_stats_v3_rows,
-    empty_traffic_stats_v3_row,
+    build_address_structure_stats_rows,
+    empty_address_set_entries,
+    empty_protocol_set_entries,
+    empty_traffic_stats_row,
+    empty_traffic_stats_rows,
     init_stats_v3_tables,
-    insert_address_count_stats_v3_rows,
-    insert_address_structure_stats_v3_rows,
-    insert_protocol_stats_v3_rows,
-    insert_traffic_stats_v3_rows,
+    insert_address_count_stats_rows,
+    insert_address_structure_stats_rows,
+    insert_protocol_stats_rows,
+    insert_traffic_stats_rows,
+    protocol_metric_keys,
     protocol_set_entries_to_rows,
+    validate_ip_version,
     visibility_pairs_for_row,
+    ZERO_FILL_VISIBILITY_PAIRS,
 )
 
 
@@ -124,24 +110,24 @@ NFDUMP_HEADER_FIRST_VALUES = {
     'time received',
     'received',
 }
+CSV_ARROW_REQUIRED_COLUMN_KEYS = (
+    'time_end',
+    'src_ip',
+    'dst_ip',
+    'protocol',
+    'packets',
+    'bytes',
+    'src_tos',
+)
 
 
 @dataclass
 class BucketAccumulator:
-    """Per-source 5-minute accumulator for v2 stats and MAAD inputs."""
+    """Per-source 5-minute accumulator for canonical stats."""
 
     source_id: str
     bucket_start: int
     bucket_end: int
-    netflow_by_version: dict[int, dict] = field(default_factory=dict)
-    source_ipv4: set[str] = field(default_factory=set)
-    destination_ipv4: set[str] = field(default_factory=set)
-    source_ipv6: set[str] = field(default_factory=set)
-    destination_ipv6: set[str] = field(default_factory=set)
-    protocols_ipv4: set[str] = field(default_factory=set)
-    protocols_ipv6: set[str] = field(default_factory=set)
-    maad_source_ipv4: set[str] = field(default_factory=set)
-    maad_destination_ipv4: set[str] = field(default_factory=set)
     traffic_v3_by_scope: dict[tuple[int, str, str], dict] = field(default_factory=dict)
     protocol_v3_by_scope: dict[tuple[int, str, str], set[str]] = field(default_factory=dict)
     address_v3_by_scope: dict[tuple[int, str, str, str], set[str]] = field(default_factory=dict)
@@ -170,25 +156,6 @@ class BucketAccumulator:
         src_tos: int = 0,
     ) -> None:
         """Accumulate one flow row without constructing a NormalizedRow."""
-        self.add_netflow_metrics(
-            ip_version=ip_version,
-            protocol=protocol,
-            flows=1,
-            packets=packets,
-            bytes_count=bytes_count,
-        )
-
-        if ip_version == 4:
-            self.source_ipv4.add(src_ip)
-            self.destination_ipv4.add(dst_ip)
-            self.protocols_ipv4.add(str(protocol))
-            self.maad_source_ipv4.add(src_ip)
-            self.maad_destination_ipv4.add(dst_ip)
-        elif ip_version == 6:
-            self.source_ipv6.add(src_ip)
-            self.destination_ipv6.add(dst_ip)
-            self.protocols_ipv6.add(str(protocol))
-
         self.add_v3_flow(
             ip_version=ip_version,
             src_ip=src_ip,
@@ -198,38 +165,6 @@ class BucketAccumulator:
             bytes_count=bytes_count,
             src_tos=src_tos,
         )
-
-    def add_netflow_metrics(
-        self,
-        *,
-        ip_version: int,
-        protocol: int,
-        flows: int,
-        packets: int,
-        bytes_count: int,
-    ) -> None:
-        """Accumulate already-grouped netflow metrics."""
-        ip_version = validate_ip_version(ip_version)
-        netflow = self.netflow_by_version.setdefault(
-            ip_version,
-            new_netflow_bucket_from_values(
-                source_id=self.source_id,
-                bucket_start=self.bucket_start,
-                bucket_end=self.bucket_end,
-                ip_version=ip_version,
-            ),
-        )
-        netflow['flows'] += flows
-        netflow['packets'] += packets
-        netflow['bytes'] += bytes_count
-        flow_key, packets_key, bytes_key = protocol_metric_keys(protocol)
-        netflow[flow_key] += flows
-        netflow[packets_key] += packets
-        netflow[bytes_key] += bytes_count
-        if ip_version == 4:
-            self.protocols_ipv4.add(str(protocol))
-        elif ip_version == 6:
-            self.protocols_ipv6.add(str(protocol))
 
     def add_v3_flow(
         self,
@@ -248,7 +183,7 @@ class BucketAccumulator:
             key = (ip_version, src_visibility, dst_visibility)
             traffic = self.traffic_v3_by_scope.setdefault(
                 key,
-                empty_traffic_stats_v3_row(
+                empty_traffic_stats_row(
                     source_id=self.source_id,
                     granularity='5m',
                     bucket_start=self.bucket_start,
@@ -269,50 +204,11 @@ class BucketAccumulator:
             self.address_v3_by_scope.setdefault((*key, 'source'), set()).add(src_ip)
             self.address_v3_by_scope.setdefault((*key, 'destination'), set()).add(dst_ip)
 
-    def netflow_rows(self) -> list[dict]:
-        """Return netflow_stats_v2 rows for this bucket."""
-        return [self.netflow_by_version[ip_version] for ip_version in sorted(self.netflow_by_version)]
-
-    def ip_row(self) -> dict:
-        """Return one ip_stats_v2 row for this bucket."""
-        return {
-            'source_id': self.source_id,
-            'granularity': '5m',
-            'bucket_start': self.bucket_start,
-            'bucket_end': self.bucket_end,
-            'sa_ipv4_count': len(self.source_ipv4),
-            'da_ipv4_count': len(self.destination_ipv4),
-            'sa_ipv6_count': len(self.source_ipv6),
-            'da_ipv6_count': len(self.destination_ipv6),
-        }
-
-    def protocol_row(self) -> dict:
-        """Return one protocol_stats_v2 row for this bucket."""
-        return {
-            'source_id': self.source_id,
-            'granularity': '5m',
-            'bucket_start': self.bucket_start,
-            'bucket_end': self.bucket_end,
-            'unique_protocols_count_ipv4': len(self.protocols_ipv4),
-            'unique_protocols_count_ipv6': len(self.protocols_ipv6),
-            'protocols_list_ipv4': ','.join(sorted(self.protocols_ipv4)),
-            'protocols_list_ipv6': ','.join(sorted(self.protocols_ipv6)),
-        }
-
     def raw_bucket_row(self) -> dict:
         """Return raw set payloads needed for cross-bucket aggregate rows."""
         return {
             'source_id': self.source_id,
             'bucket_start': self.bucket_start,
-            'source_ipv4': sorted(self.source_ipv4),
-            'destination_ipv4': sorted(self.destination_ipv4),
-            'source_ipv6': sorted(self.source_ipv6),
-            'destination_ipv6': sorted(self.destination_ipv6),
-            'protocols_ipv4': sorted(self.protocols_ipv4),
-            'protocols_ipv6': sorted(self.protocols_ipv6),
-            'maad_source_ipv4': sorted(self.maad_source_ipv4),
-            'maad_destination_ipv4': sorted(self.maad_destination_ipv4),
-            'netflow_rows': [dict(row) for row in self.netflow_rows()],
             'traffic_v3_rows': [dict(row) for row in self.traffic_v3_rows()],
             'protocol_v3_sets': self.protocol_v3_set_entries(),
             'address_v3_sets': self.address_v3_set_entries(),
@@ -359,11 +255,11 @@ class BucketAccumulator:
         ]
 
     def protocol_v3_rows(self) -> list[dict]:
-        """Return protocol_stats_v3 rows for this bucket."""
+        """Return protocol_stats rows for this bucket."""
         return protocol_set_entries_to_rows(self.protocol_v3_set_entries())
 
     def address_count_v3_rows(self) -> list[dict]:
-        """Return address_count_stats_v3 rows for this bucket."""
+        """Return address_count_stats rows for this bucket."""
         return address_set_entries_to_count_rows(self.address_v3_set_entries())
 
 
@@ -452,15 +348,28 @@ def process_nfcapd_tree_spec(
     sources = normalize_nfcapd_sources(spec, root_path)
     member_ids = sorted({member for source in sources for member in source.members})
     start_date = parse_config_date(str(spec['start_date']))
+    explicit_end_date = bool(spec.get('end_date'))
     end_date = (
         parse_config_date(str(spec['end_date']))
-        if spec.get('end_date')
+        if explicit_end_date
         else discover_latest_nfcapd_tree_day(root_path, member_ids)
     )
     zero_fill_gaps = bool(spec.get('zero_fill_gaps', True))
-    source_bounds = discover_nfcapd_source_bounds(root_path, member_ids) if zero_fill_gaps else {}
     start_bucket = parse_optional_config_time(spec.get('start_time'))
     end_bucket = parse_optional_config_time(spec.get('end_time'))
+    source_bounds = (
+        build_nfcapd_zero_fill_source_bounds(
+            member_ids,
+            discover_nfcapd_source_bounds(root_path, member_ids),
+            start_date=start_date,
+            end_date=end_date,
+            start_bucket=start_bucket,
+            end_bucket=end_bucket,
+            extend_to_requested_window=explicit_end_date,
+        )
+        if zero_fill_gaps
+        else {}
+    )
     force = bool(spec.get('force', False))
 
     for day in iter_days(start_date, end_date):
@@ -614,9 +523,69 @@ def discover_nfcapd_tree_specs(
             spec = real_specs.get(bucket_start)
             if spec is not None:
                 specs.append(spec)
-            elif first_bucket < bucket_start < last_bucket:
+            elif first_bucket <= bucket_start <= last_bucket:
                 specs.append(build_nfcapd_gap_spec(root, source_id, bucket_start))
     return specs
+
+
+def build_nfcapd_zero_fill_source_bounds(
+    source_ids: list[str],
+    discovered_bounds: dict[str, tuple[int, int]],
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    start_bucket: int | None,
+    end_bucket: int | None,
+    extend_to_requested_window: bool,
+) -> dict[str, tuple[int, int]]:
+    """Return per-source bounds used to materialize missing nfcapd buckets."""
+    if not extend_to_requested_window:
+        return discovered_bounds
+
+    requested_first, requested_last = nfcapd_requested_bucket_bounds(
+        start_date,
+        end_date,
+        start_bucket=start_bucket,
+        end_bucket=end_bucket,
+    )
+    return {
+        source_id: extend_bucket_bounds(
+            discovered_bounds.get(source_id),
+            requested_first=requested_first,
+            requested_last=requested_last,
+        )
+        for source_id in source_ids
+    }
+
+
+def nfcapd_requested_bucket_bounds(
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    start_bucket: int | None,
+    end_bucket: int | None,
+) -> tuple[int, int]:
+    """Return inclusive local 5-minute bucket bounds for the requested tree window."""
+    first_bucket = next(iter(iter_local_day_bucket_starts(start_date)))
+    last_bucket = max(iter_local_day_bucket_starts(end_date))
+    if start_bucket is not None:
+        first_bucket = max(first_bucket, start_bucket)
+    if end_bucket is not None:
+        last_bucket = min(last_bucket, end_bucket - FIVE_MINUTE_SECONDS)
+    return first_bucket, last_bucket
+
+
+def extend_bucket_bounds(
+    bounds: tuple[int, int] | None,
+    *,
+    requested_first: int,
+    requested_last: int,
+) -> tuple[int, int]:
+    """Extend discovered bounds to include the configured zero-fill window."""
+    if bounds is None:
+        return requested_first, requested_last
+    first_bucket, last_bucket = bounds
+    return min(first_bucket, requested_first), max(last_bucket, requested_last)
 
 
 def discover_nfcapd_source_bounds(
@@ -687,7 +656,7 @@ def all_tree_specs_processed(conn: sqlite3.Connection, input_specs: list[dict]) 
     """Return true when every discovered file has processed v2 status."""
     if not input_specs:
         return False
-    init_processed_inputs_v2_table(conn)
+    init_processed_inputs_table(conn)
     locators = [spec['path'] for spec in input_specs]
     processed = set()
     for batch in chunked(locators, 900):
@@ -695,7 +664,7 @@ def all_tree_specs_processed(conn: sqlite3.Connection, input_specs: list[dict]) 
         rows = conn.execute(
             f"""
             SELECT input_locator
-            FROM processed_inputs_v2
+            FROM processed_inputs
             WHERE input_kind = 'nfcapd'
               AND status = 'processed'
               AND input_locator IN ({placeholders})
@@ -805,11 +774,11 @@ def nfcapd_logical_bucket_processed(
     """Return true when the logical bucket was processed from exactly these inputs."""
     if not input_locators:
         return False
-    init_processed_inputs_v2_table(conn)
+    init_processed_inputs_table(conn)
     rows = conn.execute(
         """
         SELECT input_locator
-        FROM processed_inputs_v2
+        FROM processed_inputs
         WHERE input_kind = 'nfcapd'
           AND source_id = ?
           AND bucket_start = ?
@@ -965,12 +934,8 @@ def process_input_specs(
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_maad: bool = True,
 ) -> None:
-    """Process explicit input specs into the v2 aggregate tables."""
-    init_processed_inputs_v2_table(conn)
-    init_netflow_stats_v2_table(conn)
-    init_ip_stats_v2_table(conn)
-    init_protocol_stats_v2_table(conn)
-    init_maad_v2_tables(conn)
+    """Process explicit input specs into canonical aggregate tables."""
+    init_processed_inputs_table(conn)
     init_stats_v3_tables(conn)
 
     if max_workers == 1 and should_stream_csv_input_specs(input_specs):
@@ -1068,19 +1033,113 @@ def process_nfcapd_logical_bucket_jobs(
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_maad: bool = True,
 ) -> None:
-    """Process logical nfcapd source buckets from cached physical member payloads."""
-    init_processed_inputs_v2_table(conn)
-    init_netflow_stats_v2_table(conn)
-    init_ip_stats_v2_table(conn)
-    init_protocol_stats_v2_table(conn)
-    init_maad_v2_tables(conn)
+    """Process logical nfcapd source buckets with bounded raw payload retention."""
+    init_processed_inputs_table(conn)
     init_stats_v3_tables(conn)
 
+    jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
+    processed_buckets = []
+    aggregate_buckets: dict[tuple[str, str, int], dict] = {}
+    pending_structure_raw_buckets = []
+    structure_batch_size = max(1, maad_workers) * 4
+    bucket_window_size = max(1, max_workers // 2)
+
+    for window_jobs in iter_logical_job_windows(jobs, bucket_window_size):
+        member_raw_buckets = build_member_raw_buckets_for_jobs(
+            window_jobs,
+            maad_bin=maad_bin,
+            maad_backend=maad_backend,
+            maad_workers=maad_workers,
+            max_workers=max_workers,
+        )
+        for job in window_jobs:
+            raw_bucket = process_logical_nfcapd_job(
+                conn,
+                job,
+                member_raw_buckets,
+                maad_bin=maad_bin,
+                maad_backend=maad_backend,
+                aggregate_buckets=aggregate_buckets,
+                processed_buckets=processed_buckets,
+                delete_existing=True,
+            )
+            if run_maad:
+                pending_structure_raw_buckets.append(raw_bucket)
+                if len(pending_structure_raw_buckets) >= structure_batch_size:
+                    flush_5m_address_structure_raw_buckets(
+                        conn,
+                        pending_structure_raw_buckets,
+                        maad_bin,
+                        maad_backend,
+                        maad_workers,
+                    )
+                    pending_structure_raw_buckets.clear()
+        aggregate_cutoff = max(int(job['bucket_start']) for job in window_jobs)
+        ready_aggregate_keys = [
+            key for key, bucket in aggregate_buckets.items() if bucket['bucket_end'] <= aggregate_cutoff
+        ]
+        flush_streaming_aggregate_buckets(
+            conn,
+            aggregate_buckets,
+            ready_aggregate_keys,
+            maad_bin,
+            maad_backend,
+            aggregate_maad_worker_count(max(max_workers, maad_workers)),
+            run_maad,
+            delete_existing=True,
+        )
+
+    if pending_structure_raw_buckets:
+        flush_5m_address_structure_raw_buckets(
+            conn,
+            pending_structure_raw_buckets,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+
+    flush_streaming_aggregate_buckets(
+        conn,
+        aggregate_buckets,
+        list(aggregate_buckets),
+        maad_bin,
+        maad_backend,
+        aggregate_maad_worker_count(max(max_workers, maad_workers)),
+        run_maad,
+        delete_existing=True,
+    )
+    with conn:
+        mark_processed_buckets(conn, processed_buckets)
+
+
+def iter_logical_job_windows(jobs: list[dict], bucket_window_size: int) -> Iterable[list[dict]]:
+    """Yield sorted logical jobs grouped by bounded bucket-start windows."""
+    jobs_by_bucket = defaultdict(list)
+    for job in jobs:
+        jobs_by_bucket[int(job['bucket_start'])].append(job)
+    bucket_starts = sorted(jobs_by_bucket)
+    for index in range(0, len(bucket_starts), bucket_window_size):
+        window_starts = bucket_starts[index:index + bucket_window_size]
+        yield [
+            job
+            for bucket_start in window_starts
+            for job in sorted(jobs_by_bucket[bucket_start], key=lambda item: str(item['source_id']))
+        ]
+
+
+def build_member_raw_buckets_for_jobs(
+    jobs: list[dict],
+    *,
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+    max_workers: int,
+) -> dict[str, dict]:
+    """Build physical member raw buckets needed by a bounded logical job window."""
     member_specs_by_locator = {}
     for job in jobs:
         for spec in job['member_specs']:
             member_specs_by_locator[str(spec['path'])] = spec
-
     tasks = [
         (spec, str(maad_bin), maad_backend, maad_workers, False)
         for _, spec in sorted(member_specs_by_locator.items())
@@ -1089,75 +1148,53 @@ def process_nfcapd_logical_bucket_jobs(
     for payload in iter_input_payloads(tasks, max_workers):
         processed_bucket = payload['processed_buckets'][0]
         member_raw_buckets[processed_bucket['input_locator']] = payload['raw_buckets'][0]
+    return member_raw_buckets
 
-    processed_buckets = []
-    raw_buckets = []
-    for job in jobs:
-        payload = build_logical_nfcapd_bucket_payload(
-            job,
-            member_raw_buckets,
-            maad_bin=maad_bin,
-            maad_backend=maad_backend,
-            run_maad=False,
-        )
-        write_input_payload(conn, payload, mark_processed=False, delete_existing=True)
-        processed_buckets.extend(payload['processed_buckets'])
-        raw_buckets.extend(payload['raw_buckets'])
 
-    if run_maad:
-        maad_rows = build_5m_maad_rows_from_raw_buckets(
-            raw_buckets,
-            maad_bin,
-            maad_backend,
-            maad_workers,
-        )
-        address_structure_v3_rows = build_address_structure_v3_rows_from_raw_buckets(
-            raw_buckets,
-            maad_bin,
-            maad_backend,
-            maad_workers,
-        )
-        with conn:
-            for rows in maad_rows:
-                insert_maad_v2_rows(conn, rows)
-            insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
-
-    write_aggregate_rows(
-        conn,
-        raw_buckets,
-        maad_bin,
-        max_workers,
+def process_logical_nfcapd_job(
+    conn: sqlite3.Connection,
+    job: dict,
+    member_raw_buckets: dict[str, dict],
+    *,
+    maad_bin: str | Path,
+    maad_backend: str,
+    aggregate_buckets: dict[tuple[str, str, int], dict],
+    processed_buckets: list[dict],
+    delete_existing: bool,
+) -> dict:
+    """Write one logical nfcapd job and feed streaming aggregates."""
+    payload = build_logical_nfcapd_bucket_payload(
+        job,
+        member_raw_buckets,
+        maad_bin=maad_bin,
         maad_backend=maad_backend,
-        maad_workers=maad_workers,
-        run_maad=run_maad,
-        delete_existing=True,
+        run_maad=False,
     )
-    with conn:
-        mark_processed_buckets(conn, processed_buckets)
+    write_input_payload(conn, payload, mark_processed=False, delete_existing=delete_existing)
+    processed_buckets.extend(payload['processed_buckets'])
+    raw_bucket = payload['raw_buckets'][0]
+    add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
+    return raw_bucket
 
 
-def build_5m_maad_rows_from_raw_buckets(
+def flush_5m_address_structure_raw_buckets(
+    conn: sqlite3.Connection,
     raw_buckets: list[dict],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
-) -> list[dict[str, dict]]:
-    """Build 5m MAAD rows for logical nfcapd buckets with bounded parallelism."""
-    tasks = [
-        {
-            'maad_bin': str(maad_bin),
-            'maad_backend': maad_backend,
-            'source_id': raw_bucket['source_id'],
-            'granularity': '5m',
-            'bucket_start': raw_bucket['bucket_start'],
-            'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
-            'source_addresses': raw_bucket['maad_source_ipv4'],
-            'destination_addresses': raw_bucket['maad_destination_ipv4'],
-            'log_progress': False,
-        }
-        for raw_bucket in raw_buckets
-    ]
-    return process_maad_tasks(tasks, maad_workers)
+) -> None:
+    """Write 5m address-structure rows for a bounded raw-bucket batch."""
+    if not raw_buckets:
+        return
+    address_structure_v3_rows = build_address_structure_v3_rows_from_raw_buckets(
+        raw_buckets,
+        maad_bin,
+        maad_backend,
+        maad_workers,
+    )
+    with conn:
+        insert_address_structure_stats_rows(conn, address_structure_v3_rows)
 
 
 def build_logical_nfcapd_bucket_payload(
@@ -1200,17 +1237,9 @@ def build_logical_nfcapd_bucket_payload(
             }
             for spec in job['member_specs']
         ],
-        'netflow_rows': raw_bucket['netflow_rows'],
-        'ip_rows': [ip_row_from_raw_bucket(raw_bucket)],
-        'protocol_rows': [protocol_row_from_raw_bucket(raw_bucket)],
         'traffic_v3_rows': raw_bucket['traffic_v3_rows'],
         'protocol_v3_rows': protocol_set_entries_to_rows(raw_bucket['protocol_v3_sets']),
         'address_count_v3_rows': address_set_entries_to_count_rows(raw_bucket['address_v3_sets']),
-        'maad_rows': [
-            build_maad_rows_for_raw_bucket(raw_bucket, '5m', maad_bin, maad_backend)
-        ]
-        if run_maad
-        else [],
         'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
             [raw_bucket],
             maad_bin,
@@ -1231,48 +1260,6 @@ def merge_raw_buckets_for_source(
     raw_buckets: list[dict],
 ) -> dict:
     """Merge physical member raw buckets into one logical source raw bucket."""
-    merged = {
-        'source_id': source_id,
-        'bucket_start': bucket_start,
-        'source_ipv4': set(),
-        'destination_ipv4': set(),
-        'source_ipv6': set(),
-        'destination_ipv6': set(),
-        'protocols_ipv4': set(),
-        'protocols_ipv6': set(),
-        'maad_source_ipv4': set(),
-        'maad_destination_ipv4': set(),
-        'netflow_by_version': {},
-        'traffic_v3_rows': [],
-        'protocol_v3_sets': [],
-        'address_v3_sets': [],
-    }
-    for raw in raw_buckets:
-        merged['source_ipv4'].update(raw['source_ipv4'])
-        merged['destination_ipv4'].update(raw['destination_ipv4'])
-        merged['source_ipv6'].update(raw['source_ipv6'])
-        merged['destination_ipv6'].update(raw['destination_ipv6'])
-        merged['protocols_ipv4'].update(raw['protocols_ipv4'])
-        merged['protocols_ipv6'].update(raw['protocols_ipv6'])
-        merged['maad_source_ipv4'].update(raw['maad_source_ipv4'])
-        merged['maad_destination_ipv4'].update(raw['maad_destination_ipv4'])
-        merged['traffic_v3_rows'].extend(raw.get('traffic_v3_rows', []))
-        merged['protocol_v3_sets'].extend(raw.get('protocol_v3_sets', []))
-        merged['address_v3_sets'].extend(raw.get('address_v3_sets', []))
-        for row in raw['netflow_rows']:
-            ip_version = validate_ip_version(row['ip_version'])
-            target = merged['netflow_by_version'].setdefault(
-                ip_version,
-                new_netflow_bucket_from_values(
-                    source_id=source_id,
-                    bucket_start=bucket_start,
-                    bucket_end=bucket_end,
-                    ip_version=ip_version,
-                ),
-            )
-            for column in NETFLOW_METRIC_COLUMNS:
-                target[column] += row[column]
-
     retargeted_v3_raw_buckets = [
         retarget_raw_bucket_v3(raw, source_id, bucket_start, bucket_end)
         for raw in raw_buckets
@@ -1286,18 +1273,6 @@ def merge_raw_buckets_for_source(
     return {
         'source_id': source_id,
         'bucket_start': bucket_start,
-        'source_ipv4': sorted(merged['source_ipv4']),
-        'destination_ipv4': sorted(merged['destination_ipv4']),
-        'source_ipv6': sorted(merged['source_ipv6']),
-        'destination_ipv6': sorted(merged['destination_ipv6']),
-        'protocols_ipv4': sorted(merged['protocols_ipv4']),
-        'protocols_ipv6': sorted(merged['protocols_ipv6']),
-        'maad_source_ipv4': sorted(merged['maad_source_ipv4']),
-        'maad_destination_ipv4': sorted(merged['maad_destination_ipv4']),
-        'netflow_rows': [
-            merged['netflow_by_version'][ip_version]
-            for ip_version in sorted(merged['netflow_by_version'])
-        ],
         'traffic_v3_rows': v3_payload['traffic_v3_rows'],
         'protocol_v3_sets': v3_payload['protocol_v3_sets'],
         'address_v3_sets': v3_payload['address_v3_sets'],
@@ -1330,39 +1305,11 @@ def retarget_raw_bucket_v3(
 
 
 def ensure_raw_bucket_v3_defaults(raw_bucket: dict) -> dict:
-    """Ensure older test/raw payloads have v3 keys."""
+    """Ensure raw payloads have canonical keys."""
     raw_bucket.setdefault('traffic_v3_rows', [])
     raw_bucket.setdefault('protocol_v3_sets', [])
     raw_bucket.setdefault('address_v3_sets', [])
     return raw_bucket
-
-
-def ip_row_from_raw_bucket(raw_bucket: dict) -> dict:
-    """Build one 5m IP stats row from a raw bucket."""
-    return {
-        'source_id': raw_bucket['source_id'],
-        'granularity': '5m',
-        'bucket_start': raw_bucket['bucket_start'],
-        'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
-        'sa_ipv4_count': len(raw_bucket['source_ipv4']),
-        'da_ipv4_count': len(raw_bucket['destination_ipv4']),
-        'sa_ipv6_count': len(raw_bucket['source_ipv6']),
-        'da_ipv6_count': len(raw_bucket['destination_ipv6']),
-    }
-
-
-def protocol_row_from_raw_bucket(raw_bucket: dict) -> dict:
-    """Build one 5m protocol stats row from a raw bucket."""
-    return {
-        'source_id': raw_bucket['source_id'],
-        'granularity': '5m',
-        'bucket_start': raw_bucket['bucket_start'],
-        'bucket_end': raw_bucket['bucket_start'] + FIVE_MINUTE_SECONDS,
-        'unique_protocols_count_ipv4': len(raw_bucket['protocols_ipv4']),
-        'unique_protocols_count_ipv6': len(raw_bucket['protocols_ipv6']),
-        'protocols_list_ipv4': ','.join(sorted(raw_bucket['protocols_ipv4'])),
-        'protocols_list_ipv6': ','.join(sorted(raw_bucket['protocols_ipv6'])),
-    }
 
 
 def should_stream_csv_input_specs(input_specs: list[dict]) -> bool:
@@ -1501,11 +1448,11 @@ def should_accumulate_csv_values_directly(config: CsvSourceConfig) -> bool:
 
 def csv_input_fully_processed(conn: sqlite3.Connection, input_locator: str) -> bool:
     """Return true when a CSV input has only processed bucket records."""
-    init_processed_inputs_v2_table(conn)
+    init_processed_inputs_table(conn)
     rows = conn.execute(
         """
         SELECT status, COUNT(*)
-        FROM processed_inputs_v2
+        FROM processed_inputs
         WHERE input_kind = 'csv' AND input_locator = ?
         GROUP BY status
         """,
@@ -1527,8 +1474,7 @@ def should_accumulate_csv_with_arrow(config: CsvSourceConfig) -> bool:
         return False
     if config.timestamp_format != 'datetime' or config.datetime_format != '%Y-%m-%d %H:%M:%S':
         return False
-    required_columns = {'src_ip', 'dst_ip', 'protocol', 'packets', 'bytes'}
-    return required_columns.issubset(config.columns)
+    return set(CSV_ARROW_REQUIRED_COLUMN_KEYS).issubset(config.columns)
 
 
 def arrow_ipv4_address_mask(values):
@@ -1640,14 +1586,7 @@ def iter_csv_arrow_batches(input_locator: str, config: CsvSourceConfig):
     import pyarrow as pa
     import pyarrow.csv as arrow_csv
 
-    include_columns = [
-        config.columns['time_end'],
-        config.columns['src_ip'],
-        config.columns['dst_ip'],
-        config.columns['protocol'],
-        config.columns['packets'],
-        config.columns['bytes'],
-    ]
+    include_columns = [config.columns[key] for key in CSV_ARROW_REQUIRED_COLUMN_KEYS]
     column_types = {column_name: pa.string() for column_name in include_columns}
 
     def invalid_row_handler(_row):
@@ -1731,6 +1670,7 @@ def merge_arrow_batch_into_table_buckets(
     protocol_column = config.columns['protocol']
     packets_column = config.columns['packets']
     bytes_column = config.columns['bytes']
+    src_tos_column = config.columns['src_tos']
     batch = filter_arrow_valid_flow_rows(
         batch,
         config=config,
@@ -1756,6 +1696,7 @@ def merge_arrow_batch_into_table_buckets(
             'protocol': batch[protocol_column],
             'packets': pc.cast(batch[packets_column], pa.int64()),
             'bytes': pc.cast(batch[bytes_column], pa.int64()),
+            'src_tos': pc.cast(batch[src_tos_column], pa.int64()),
         }
     )
 
@@ -1854,7 +1795,6 @@ def build_bucket_accumulator_from_arrow_tables(
 ) -> BucketAccumulator:
     """Build a BucketAccumulator from Arrow chunks for one 5-minute bucket."""
     import pyarrow as pa
-    import pyarrow.compute as pc
 
     table = pa.concat_tables(tables)
     bucket = BucketAccumulator(
@@ -1862,34 +1802,16 @@ def build_bucket_accumulator_from_arrow_tables(
         bucket_start=bucket_start,
         bucket_end=bucket_start + 300,
     )
-
-    netflow_groups = table.group_by(['ip_version', 'protocol']).aggregate(
-        [('protocol', 'count'), ('packets', 'sum'), ('bytes', 'sum')]
-    )
-    for row in netflow_groups.to_pylist():
-        bucket.add_netflow_metrics(
+    for row in table.to_pylist():
+        bucket.add_flow(
             ip_version=int(row['ip_version']),
+            src_ip=row['src_ip'],
+            dst_ip=row['dst_ip'],
             protocol=parse_arrow_protocol(row['protocol'], config),
-            flows=int(row['protocol_count']),
-            packets=int(row['packets_sum']),
-            bytes_count=int(row['bytes_sum']),
+            packets=int(row['packets']),
+            bytes_count=int(row['bytes']),
+            src_tos=int(row['src_tos']),
         )
-
-    for ip_version in (4, 6):
-        family = table.filter(pc.equal(table['ip_version'], ip_version))
-        if family.num_rows == 0:
-            continue
-        source_addresses = set(pc.unique(family['src_ip']).to_pylist())
-        destination_addresses = set(pc.unique(family['dst_ip']).to_pylist())
-        if ip_version == 4:
-            bucket.source_ipv4.update(source_addresses)
-            bucket.destination_ipv4.update(destination_addresses)
-            bucket.maad_source_ipv4.update(source_addresses)
-            bucket.maad_destination_ipv4.update(destination_addresses)
-        else:
-            bucket.source_ipv6.update(source_addresses)
-            bucket.destination_ipv6.update(destination_addresses)
-
     return bucket
 
 
@@ -1924,73 +1846,30 @@ def merge_arrow_batch_into_buckets(
             'protocol': batch[protocol_column],
             'packets': packets,
             'bytes': bytes_count,
+            'src_tos': pc.cast(batch[src_tos_column], pa.int64()),
         }
     )
 
-    max_bucket_start = merge_arrow_netflow_groups(active_buckets, table, config, max_bucket_start)
-    merge_arrow_unique_ip_groups(active_buckets, table, config, 'src_ip')
-    merge_arrow_unique_ip_groups(active_buckets, table, config, 'dst_ip')
-    return max_bucket_start
-
-
-def merge_arrow_netflow_groups(
-    active_buckets: dict[tuple[str, int, int], BucketAccumulator],
-    table,
-    config: CsvSourceConfig,
-    max_bucket_start: int | None,
-) -> int | None:
-    """Merge grouped netflow metrics from a PyArrow table."""
-    grouped = table.group_by(['minute', 'ip_version', 'protocol']).aggregate(
-        [('protocol', 'count'), ('packets', 'sum'), ('bytes', 'sum')]
-    )
-    for row in grouped.to_pylist():
+    for row in table.to_pylist():
         bucket_start = parse_arrow_minute_bucket(row['minute'], config)
         max_bucket_start = (
             bucket_start if max_bucket_start is None else max(max_bucket_start, bucket_start)
         )
-        protocol = parse_arrow_protocol(row['protocol'], config)
         bucket = get_primitive_bucket(
             active_buckets,
             config.source_id_value,
             bucket_start,
         )
-        bucket.add_netflow_metrics(
+        bucket.add_flow(
             ip_version=int(row['ip_version']),
-            protocol=protocol,
-            flows=int(row['protocol_count']),
-            packets=int(row['packets_sum']),
-            bytes_count=int(row['bytes_sum']),
+            src_ip=row['src_ip'],
+            dst_ip=row['dst_ip'],
+            protocol=parse_arrow_protocol(row['protocol'], config),
+            packets=int(row['packets']),
+            bytes_count=int(row['bytes']),
+            src_tos=int(row['src_tos']),
         )
     return max_bucket_start
-
-
-def merge_arrow_unique_ip_groups(
-    active_buckets: dict[tuple[str, int, int], BucketAccumulator],
-    table,
-    config: CsvSourceConfig,
-    column_name: str,
-) -> None:
-    """Merge grouped unique endpoint addresses from a PyArrow table."""
-    grouped = table.group_by(['minute', 'ip_version', column_name]).aggregate([(column_name, 'count')])
-    for row in grouped.to_pylist():
-        bucket = get_primitive_bucket(
-            active_buckets,
-            config.source_id_value,
-            parse_arrow_minute_bucket(row['minute'], config),
-        )
-        address = row[column_name]
-        if int(row['ip_version']) == 4:
-            if column_name == 'src_ip':
-                bucket.source_ipv4.add(address)
-                bucket.maad_source_ipv4.add(address)
-            else:
-                bucket.destination_ipv4.add(address)
-                bucket.maad_destination_ipv4.add(address)
-        else:
-            if column_name == 'src_ip':
-                bucket.source_ipv6.add(address)
-            else:
-                bucket.destination_ipv6.add(address)
 
 
 def get_primitive_bucket(
@@ -2363,7 +2242,7 @@ def skip_processed_csv_bucket_values(
         for row in conn.execute(
             """
             SELECT source_id, bucket_start
-            FROM processed_inputs_v2
+            FROM processed_inputs
             WHERE input_kind = 'csv'
               AND input_locator = ?
               AND status = 'processed'
@@ -2413,7 +2292,7 @@ def ready_csv_buckets_for_processed_mark(conn: sqlite3.Connection, aggregate_cut
     rows = conn.execute(
         """
         SELECT input_kind, input_locator, source_id, bucket_start, bucket_end
-        FROM processed_inputs_v2
+        FROM processed_inputs
         WHERE input_kind = 'csv' AND status != 'processed'
         ORDER BY bucket_start, input_locator, source_id
         """
@@ -2462,23 +2341,9 @@ def build_bucket_payload_from_values(
             }
             for bucket in bucket_values
         ],
-        'netflow_rows': [row for bucket in bucket_values for row in bucket.netflow_rows()],
-        'ip_rows': [bucket.ip_row() for bucket in bucket_values],
-        'protocol_rows': [bucket.protocol_row() for bucket in bucket_values],
         'traffic_v3_rows': [row for bucket in bucket_values for row in bucket.traffic_v3_rows()],
         'protocol_v3_rows': [row for bucket in bucket_values for row in bucket.protocol_v3_rows()],
         'address_count_v3_rows': [row for bucket in bucket_values for row in bucket.address_count_v3_rows()],
-        'maad_rows': build_maad_payload_rows(
-            {
-                (bucket.source_id, bucket.bucket_start, bucket.bucket_end): bucket
-                for bucket in bucket_values
-            },
-            maad_bin,
-            maad_backend,
-            maad_workers,
-        )
-        if run_maad
-        else [],
         'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
             raw_buckets,
             maad_bin,
@@ -2504,17 +2369,7 @@ def add_raw_bucket_to_streaming_aggregates(
             key,
             new_streaming_aggregate_bucket(raw_bucket['source_id'], granularity, bucket_start),
         )
-        aggregate['source_ipv4'].update(raw_bucket['source_ipv4'])
-        aggregate['destination_ipv4'].update(raw_bucket['destination_ipv4'])
-        aggregate['source_ipv6'].update(raw_bucket['source_ipv6'])
-        aggregate['destination_ipv6'].update(raw_bucket['destination_ipv6'])
-        aggregate['protocols_ipv4'].update(raw_bucket['protocols_ipv4'])
-        aggregate['protocols_ipv6'].update(raw_bucket['protocols_ipv6'])
-        aggregate['maad_source_ipv4'].update(raw_bucket['maad_source_ipv4'])
-        aggregate['maad_destination_ipv4'].update(raw_bucket['maad_destination_ipv4'])
-        aggregate['raw_v3_buckets'].append(raw_bucket)
-        for row in raw_bucket['netflow_rows']:
-            add_netflow_row_to_aggregate(aggregate, row)
+        add_raw_bucket_v3_to_streaming_aggregate(aggregate, raw_bucket)
 
 
 def new_streaming_aggregate_bucket(source_id: str, granularity: str, bucket_start: int) -> dict:
@@ -2525,34 +2380,56 @@ def new_streaming_aggregate_bucket(source_id: str, granularity: str, bucket_star
         'granularity': granularity,
         'bucket_start': bucket_start,
         'bucket_end': next_bucket_start(bucket_start, bucket_seconds),
-        'source_ipv4': set(),
-        'destination_ipv4': set(),
-        'source_ipv6': set(),
-        'destination_ipv6': set(),
-        'protocols_ipv4': set(),
-        'protocols_ipv6': set(),
-        'maad_source_ipv4': set(),
-        'maad_destination_ipv4': set(),
-        'netflow_by_version': {},
-        'raw_v3_buckets': [],
+        'traffic_v3_by_key': {},
+        'protocol_v3_by_key': defaultdict(set),
+        'address_v3_by_key': defaultdict(set),
+        'address_all_by_key': defaultdict(set),
+        'bucket_starts': set(),
     }
 
 
-def add_netflow_row_to_aggregate(bucket: dict, row: dict) -> None:
-    """Sum one 5m netflow row into a coarser aggregate bucket."""
-    ip_version = validate_ip_version(row['ip_version'])
-    aggregate = bucket['netflow_by_version'].setdefault(
-        ip_version,
-        new_netflow_bucket_from_values(
-            source_id=bucket['source_id'],
-            bucket_start=bucket['bucket_start'],
-            bucket_end=bucket['bucket_end'],
-            ip_version=ip_version,
-        ),
-    )
-    aggregate['granularity'] = bucket['granularity']
-    for column in NETFLOW_METRIC_COLUMNS:
-        aggregate[column] += row[column]
+def add_raw_bucket_v3_to_streaming_aggregate(bucket: dict, raw_bucket: dict) -> None:
+    """Merge one raw bucket's v3 sets into a streaming aggregate bucket."""
+    bucket['bucket_starts'].add(raw_bucket['bucket_start'])
+    for row in raw_bucket.get('traffic_v3_rows', []):
+        key = (
+            row['ip_version'],
+            row['src_visibility'],
+            row['dst_visibility'],
+        )
+        target = bucket['traffic_v3_by_key'].setdefault(
+            key,
+            empty_traffic_stats_row(
+                source_id=bucket['source_id'],
+                granularity=bucket['granularity'],
+                bucket_start=bucket['bucket_start'],
+                bucket_end=bucket['bucket_end'],
+                ip_version=row['ip_version'],
+                src_visibility=row['src_visibility'],
+                dst_visibility=row['dst_visibility'],
+            ),
+        )
+        for column in NETFLOW_METRIC_COLUMNS:
+            target[column] += row[column]
+
+    for entry in raw_bucket.get('protocol_v3_sets', []):
+        key = (
+            entry['ip_version'],
+            entry['src_visibility'],
+            entry['dst_visibility'],
+        )
+        bucket['protocol_v3_by_key'][key].update(str(protocol) for protocol in entry['protocols'])
+
+    for entry in raw_bucket.get('address_v3_sets', []):
+        key = (
+            entry['ip_version'],
+            entry['src_visibility'],
+            entry['dst_visibility'],
+            entry['address_side'],
+        )
+        bucket['address_v3_by_key'][key].update(entry['addresses'])
+        if entry['src_visibility'] == 'all' and entry['dst_visibility'] == 'all':
+            bucket['address_all_by_key'][(entry['ip_version'], entry['address_side'])].update(entry['addresses'])
 
 
 def flush_streaming_aggregate_buckets(
@@ -2563,32 +2440,17 @@ def flush_streaming_aggregate_buckets(
     maad_backend: str,
     maad_workers: int,
     run_maad: bool,
+    delete_existing: bool = False,
 ) -> None:
     """Write and discard aggregate buckets that cannot receive more rows."""
     if not keys:
         return
     buckets = [aggregate_buckets.pop(key) for key in sorted(keys)]
-    netflow_rows = [
-        row
-        for bucket in buckets
-        for row in build_streaming_aggregate_netflow_rows(bucket)
-    ]
-    ip_rows = [build_streaming_aggregate_ip_row(bucket) for bucket in buckets]
-    protocol_rows = [build_streaming_aggregate_protocol_row(bucket) for bucket in buckets]
-    maad_rows = (
-        build_streaming_aggregate_maad_rows(buckets, maad_bin, maad_backend, maad_workers)
-        if run_maad
-        else []
-    )
-    v3_payloads = [
-        aggregate_raw_v3_entries(
-            bucket['raw_v3_buckets'],
-            granularity=bucket['granularity'],
-            bucket_start=bucket['bucket_start'],
-            bucket_end=bucket['bucket_end'],
-        )
-        for bucket in buckets
-    ]
+    if delete_existing:
+        buckets = [bucket for bucket in buckets if streaming_aggregate_bucket_is_complete(bucket)]
+        if not buckets:
+            return
+    v3_payloads = [build_streaming_aggregate_v3_payload(bucket) for bucket in buckets]
     traffic_v3_rows = [
         row
         for payload in v3_payloads
@@ -2615,74 +2477,83 @@ def flush_streaming_aggregate_buckets(
         else []
     )
     with conn:
-        insert_netflow_stats_v2_rows(conn, netflow_rows)
-        insert_ip_stats_v2_rows(conn, ip_rows)
-        insert_protocol_stats_v2_rows(conn, protocol_rows)
-        insert_traffic_stats_v3_rows(conn, traffic_v3_rows)
-        insert_protocol_stats_v3_rows(conn, protocol_v3_rows)
-        insert_address_count_stats_v3_rows(conn, address_count_v3_rows)
-        insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
-        for rows in maad_rows:
-            insert_maad_v2_rows(conn, rows)
+        if delete_existing:
+            delete_aggregate_outputs_for_streaming_buckets(conn, buckets)
+        insert_traffic_stats_rows(conn, traffic_v3_rows)
+        insert_protocol_stats_rows(conn, protocol_v3_rows)
+        insert_address_count_stats_rows(conn, address_count_v3_rows)
+        insert_address_structure_stats_rows(conn, address_structure_v3_rows)
 
 
-def build_streaming_aggregate_netflow_rows(bucket: dict) -> list[dict]:
-    """Build aggregate netflow_stats_v2 rows from streaming state."""
-    return [
-        bucket['netflow_by_version'][ip_version]
-        for ip_version in sorted(bucket['netflow_by_version'])
-    ]
-
-
-def build_streaming_aggregate_ip_row(bucket: dict) -> dict:
-    """Build one aggregate ip_stats_v2 row from streaming state."""
-    return {
-        'source_id': bucket['source_id'],
-        'granularity': bucket['granularity'],
-        'bucket_start': bucket['bucket_start'],
-        'bucket_end': bucket['bucket_end'],
-        'sa_ipv4_count': len(bucket['source_ipv4']),
-        'da_ipv4_count': len(bucket['destination_ipv4']),
-        'sa_ipv6_count': len(bucket['source_ipv6']),
-        'da_ipv6_count': len(bucket['destination_ipv6']),
-    }
-
-
-def build_streaming_aggregate_protocol_row(bucket: dict) -> dict:
-    """Build one aggregate protocol_stats_v2 row from streaming state."""
-    return {
-        'source_id': bucket['source_id'],
-        'granularity': bucket['granularity'],
-        'bucket_start': bucket['bucket_start'],
-        'bucket_end': bucket['bucket_end'],
-        'unique_protocols_count_ipv4': len(bucket['protocols_ipv4']),
-        'unique_protocols_count_ipv6': len(bucket['protocols_ipv6']),
-        'protocols_list_ipv4': ','.join(sorted(bucket['protocols_ipv4'])),
-        'protocols_list_ipv6': ','.join(sorted(bucket['protocols_ipv6'])),
-    }
-
-
-def build_streaming_aggregate_maad_rows(
-    buckets: list[dict],
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-) -> list[dict[str, dict]]:
-    """Build MAAD rows from already-unioned streaming aggregate buckets."""
-    tasks = [
+def build_streaming_aggregate_v3_payload(bucket: dict) -> dict:
+    """Build v3 aggregate rows from streaming aggregate state."""
+    protocol_entries = [
         {
-            'maad_bin': str(maad_bin),
-            'maad_backend': maad_backend,
             'source_id': bucket['source_id'],
             'granularity': bucket['granularity'],
             'bucket_start': bucket['bucket_start'],
             'bucket_end': bucket['bucket_end'],
-            'source_addresses': sorted(bucket['maad_source_ipv4']),
-            'destination_addresses': sorted(bucket['maad_destination_ipv4']),
+            'ip_version': key[0],
+            'src_visibility': key[1],
+            'dst_visibility': key[2],
+            'protocols': sorted(protocols),
         }
-        for bucket in buckets
+        for key, protocols in bucket['protocol_v3_by_key'].items()
     ]
-    return process_maad_tasks(tasks, maad_workers)
+    address_entries = [
+        {
+            'source_id': bucket['source_id'],
+            'granularity': bucket['granularity'],
+            'bucket_start': bucket['bucket_start'],
+            'bucket_end': bucket['bucket_end'],
+            'ip_version': key[0],
+            'src_visibility': key[1],
+            'dst_visibility': key[2],
+            'address_side': key[3],
+            'addresses': sorted(addresses),
+        }
+        for key, addresses in bucket['address_v3_by_key'].items()
+    ]
+    return {
+        'traffic_v3_rows': [
+            bucket['traffic_v3_by_key'][key]
+            for key in sorted(bucket['traffic_v3_by_key'])
+        ],
+        'protocol_v3_rows': protocol_set_entries_to_rows(protocol_entries),
+        'address_count_v3_rows': address_set_entries_to_count_rows(address_entries),
+        'address_v3_sets': address_entries,
+    }
+
+
+def delete_aggregate_outputs_for_streaming_buckets(conn: sqlite3.Connection, buckets: list[dict]) -> None:
+    """Delete stale aggregate rows for streaming aggregate buckets before rewrite."""
+    for bucket in buckets:
+        for table_name in (
+            'traffic_stats',
+            'protocol_stats',
+            'address_count_stats',
+            'address_structure_stats',
+        ):
+            conn.execute(
+                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
+                (bucket['source_id'], bucket['granularity'], bucket['bucket_start']),
+            )
+
+
+def streaming_aggregate_bucket_is_complete(bucket: dict) -> bool:
+    """Return true when a rewrite covers every 5-minute slice in a coarse bucket."""
+    expected_count = (int(bucket['bucket_end']) - int(bucket['bucket_start'])) // FIVE_MINUTE_SECONDS
+    return len(bucket.get('bucket_starts', set())) == expected_count
+
+
+def streaming_address_set(bucket: dict, ip_version: int, address_side: str) -> set:
+    """Return an aggregate all/all address set from v3 streaming state."""
+    return bucket['address_all_by_key'].get((ip_version, address_side), set())
+
+
+def streaming_protocol_set(bucket: dict, ip_version: int) -> set:
+    """Return an aggregate all/all protocol set from v3 streaming state."""
+    return bucket['protocol_v3_by_key'].get((ip_version, 'all', 'all'), set())
 
 
 def iter_input_payloads(tasks: list[tuple[dict, str, str, int, bool]], max_workers: int) -> Iterable[dict]:
@@ -2724,9 +2595,6 @@ def build_input_payload(
         raw_bucket = ensure_raw_bucket_v3_defaults(nfcapd_payload['raw_bucket'])
         return {
             'processed_buckets': [nfcapd_payload['processed_bucket']],
-            'netflow_rows': nfcapd_payload['netflow_rows'],
-            'ip_rows': [nfcapd_payload['ip_row']],
-            'protocol_rows': [nfcapd_payload['protocol_row']],
             'traffic_v3_rows': nfcapd_payload.get('traffic_v3_rows', raw_bucket['traffic_v3_rows']),
             'protocol_v3_rows': nfcapd_payload.get(
                 'protocol_v3_rows',
@@ -2736,16 +2604,6 @@ def build_input_payload(
                 'address_count_v3_rows',
                 address_set_entries_to_count_rows(raw_bucket['address_v3_sets']),
             ),
-            'maad_rows': [
-                build_maad_rows_for_raw_bucket(
-                    raw_bucket,
-                    '5m',
-                    maad_bin,
-                    maad_backend,
-                )
-            ]
-            if run_maad
-            else [],
             'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
                 [raw_bucket],
                 maad_bin,
@@ -2771,13 +2629,9 @@ def build_input_payload(
             }
             for source_id, bucket_start, bucket_end in sorted(buckets)
         ],
-        'netflow_rows': [row for bucket in bucket_values for row in bucket.netflow_rows()],
-        'ip_rows': [bucket.ip_row() for bucket in bucket_values],
-        'protocol_rows': [bucket.protocol_row() for bucket in bucket_values],
         'traffic_v3_rows': [row for bucket in bucket_values for row in bucket.traffic_v3_rows()],
         'protocol_v3_rows': [row for bucket in bucket_values for row in bucket.protocol_v3_rows()],
         'address_count_v3_rows': [row for bucket in bucket_values for row in bucket.address_count_v3_rows()],
-        'maad_rows': build_maad_payload_rows(buckets, maad_bin, maad_backend, maad_workers) if run_maad else [],
         'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
             [bucket.raw_bucket_row() for bucket in bucket_values],
             maad_bin,
@@ -2811,16 +2665,10 @@ def write_input_payload(
         for bucket in processed_buckets:
             upsert_input_bucket(conn, **bucket)
 
-        insert_netflow_stats_v2_rows(conn, payload['netflow_rows'])
-        insert_ip_stats_v2_rows(conn, payload['ip_rows'])
-        insert_protocol_stats_v2_rows(conn, payload['protocol_rows'])
-        insert_traffic_stats_v3_rows(conn, payload.get('traffic_v3_rows', []))
-        insert_protocol_stats_v3_rows(conn, payload.get('protocol_v3_rows', []))
-        insert_address_count_stats_v3_rows(conn, payload.get('address_count_v3_rows', []))
-
-        for rows in payload['maad_rows']:
-            insert_maad_v2_rows(conn, rows)
-        insert_address_structure_stats_v3_rows(conn, payload.get('address_structure_v3_rows', []))
+        insert_traffic_stats_rows(conn, payload.get('traffic_v3_rows', []))
+        insert_protocol_stats_rows(conn, payload.get('protocol_v3_rows', []))
+        insert_address_count_stats_rows(conn, payload.get('address_count_v3_rows', []))
+        insert_address_structure_stats_rows(conn, payload.get('address_structure_v3_rows', []))
 
         if mark_processed:
             mark_processed_buckets(conn, processed_buckets)
@@ -2841,22 +2689,16 @@ def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start:
     """Delete one source/bucket from all 5m output tables and input tracking."""
     conn.execute(
         """
-        DELETE FROM processed_inputs_v2
+        DELETE FROM processed_inputs
         WHERE input_kind = 'nfcapd' AND source_id = ? AND bucket_start = ?
         """,
         (source_id, bucket_start),
     )
     for table_name in (
-        'netflow_stats_v2',
-        'ip_stats_v2',
-        'protocol_stats_v2',
-        'structure_stats_v2',
-        'spectrum_stats_v2',
-        'dimension_stats_v2',
-        'traffic_stats_v3',
-        'protocol_stats_v3',
-        'address_count_stats_v3',
-        'address_structure_stats_v3',
+        'traffic_stats',
+        'protocol_stats',
+        'address_count_stats',
+        'address_structure_stats',
     ):
         conn.execute(
             f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
@@ -2891,14 +2733,6 @@ def write_aggregate_rows(
     """Write 30m, 1h, and 1d aggregate rows from raw bucket sets."""
     if not raw_buckets:
         return
-    netflow_rows = build_aggregate_netflow_rows(raw_buckets)
-    ip_rows = build_aggregate_ip_rows(raw_buckets)
-    protocol_rows = build_aggregate_protocol_rows(raw_buckets)
-    maad_rows = (
-        build_aggregate_maad_rows(raw_buckets, maad_bin, maad_backend, maad_workers, max_workers)
-        if run_maad
-        else []
-    )
     v3_payloads = build_aggregate_stats_v3_payloads(raw_buckets)
     traffic_v3_rows = [
         row
@@ -2928,15 +2762,10 @@ def write_aggregate_rows(
     with conn:
         if delete_existing:
             delete_aggregate_outputs_for_raw_buckets(conn, raw_buckets)
-        insert_netflow_stats_v2_rows(conn, netflow_rows)
-        insert_ip_stats_v2_rows(conn, ip_rows)
-        insert_protocol_stats_v2_rows(conn, protocol_rows)
-        insert_traffic_stats_v3_rows(conn, traffic_v3_rows)
-        insert_protocol_stats_v3_rows(conn, protocol_v3_rows)
-        insert_address_count_stats_v3_rows(conn, address_count_v3_rows)
-        insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
-        for rows in maad_rows:
-            insert_maad_v2_rows(conn, rows)
+        insert_traffic_stats_rows(conn, traffic_v3_rows)
+        insert_protocol_stats_rows(conn, protocol_v3_rows)
+        insert_address_count_stats_rows(conn, address_count_v3_rows)
+        insert_address_structure_stats_rows(conn, address_structure_v3_rows)
 
 
 def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_buckets: list[dict]) -> None:
@@ -2948,115 +2777,15 @@ def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_bucke
 
     for source_id, granularity, bucket_start in sorted(keys):
         for table_name in (
-            'netflow_stats_v2',
-            'ip_stats_v2',
-            'protocol_stats_v2',
-            'structure_stats_v2',
-            'spectrum_stats_v2',
-            'dimension_stats_v2',
-            'traffic_stats_v3',
-            'protocol_stats_v3',
-            'address_count_stats_v3',
-            'address_structure_stats_v3',
+            'traffic_stats',
+            'protocol_stats',
+            'address_count_stats',
+            'address_structure_stats',
         ):
             conn.execute(
                 f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
                 (source_id, granularity, bucket_start),
             )
-
-
-def build_aggregate_netflow_rows(raw_buckets: list[dict]) -> list[dict]:
-    """Build netflow aggregate rows from raw 5m netflow stats."""
-    buckets: dict[tuple[str, str, int, int], dict] = {}
-
-    for raw in raw_buckets:
-        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
-            bucket_end = next_bucket_start(bucket_start, seconds)
-            for raw_row in raw['netflow_rows']:
-                ip_version = validate_ip_version(raw_row['ip_version'])
-                key = (raw['source_id'], granularity, bucket_start, ip_version)
-                bucket = buckets.setdefault(
-                    key,
-                    new_netflow_bucket_from_values(
-                        source_id=raw['source_id'],
-                        bucket_start=bucket_start,
-                        bucket_end=bucket_end,
-                        ip_version=ip_version,
-                    ),
-                )
-                bucket['granularity'] = granularity
-                for column in NETFLOW_METRIC_COLUMNS:
-                    bucket[column] += raw_row[column]
-
-    return [buckets[key] for key in sorted(buckets)]
-
-
-def build_aggregate_ip_rows(raw_buckets: list[dict]) -> list[dict]:
-    """Build v1-parity IP aggregate rows from raw 5m bucket sets."""
-    buckets = defaultdict(
-        lambda: {
-            'source_ipv4': set(),
-            'destination_ipv4': set(),
-            'source_ipv6': set(),
-            'destination_ipv6': set(),
-        }
-    )
-
-    for raw in raw_buckets:
-        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
-            bucket = buckets[(raw['source_id'], granularity, bucket_start)]
-            bucket['source_ipv4'].update(raw['source_ipv4'])
-            bucket['destination_ipv4'].update(raw['destination_ipv4'])
-            bucket['source_ipv6'].update(raw['source_ipv6'])
-            bucket['destination_ipv6'].update(raw['destination_ipv6'])
-
-    rows = []
-    for (source_id, granularity, bucket_start), bucket in sorted(buckets.items()):
-        bucket_seconds = dict(AGGREGATE_GRANULARITY_SECONDS)[granularity]
-        rows.append(
-            {
-                'source_id': source_id,
-                'granularity': granularity,
-                'bucket_start': bucket_start,
-                'bucket_end': next_bucket_start(bucket_start, bucket_seconds),
-                'sa_ipv4_count': len(bucket['source_ipv4']),
-                'da_ipv4_count': len(bucket['destination_ipv4']),
-                'sa_ipv6_count': len(bucket['source_ipv6']),
-                'da_ipv6_count': len(bucket['destination_ipv6']),
-            }
-        )
-    return rows
-
-
-def build_aggregate_protocol_rows(raw_buckets: list[dict]) -> list[dict]:
-    """Build v1-parity protocol aggregate rows from raw 5m bucket sets."""
-    buckets = defaultdict(lambda: {'ipv4': set(), 'ipv6': set()})
-
-    for raw in raw_buckets:
-        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
-            bucket = buckets[(raw['source_id'], granularity, bucket_start)]
-            bucket['ipv4'].update(raw['protocols_ipv4'])
-            bucket['ipv6'].update(raw['protocols_ipv6'])
-
-    rows = []
-    for (source_id, granularity, bucket_start), bucket in sorted(buckets.items()):
-        bucket_seconds = dict(AGGREGATE_GRANULARITY_SECONDS)[granularity]
-        rows.append(
-            {
-                'source_id': source_id,
-                'granularity': granularity,
-                'bucket_start': bucket_start,
-                'bucket_end': next_bucket_start(bucket_start, bucket_seconds),
-                'unique_protocols_count_ipv4': len(bucket['ipv4']),
-                'unique_protocols_count_ipv6': len(bucket['ipv6']),
-                'protocols_list_ipv4': ','.join(sorted(bucket['ipv4'])),
-                'protocols_list_ipv6': ','.join(sorted(bucket['ipv6'])),
-            }
-        )
-    return rows
 
 
 def build_aggregate_stats_v3_payloads(raw_buckets: list[dict]) -> list[dict]:
@@ -3079,64 +2808,13 @@ def build_aggregate_stats_v3_payloads(raw_buckets: list[dict]) -> list[dict]:
     ]
 
 
-def build_aggregate_maad_rows(
-    raw_buckets: list[dict],
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    max_workers: int,
-) -> list[dict[str, dict]]:
-    """Build aggregate MAAD rows from unioned IPv4 address sets."""
-    tasks = build_aggregate_maad_tasks(raw_buckets, maad_bin, maad_backend)
-    aggregate_workers = aggregate_maad_worker_count(max(max_workers, maad_workers))
-    if tasks:
-        print(f'[pipeline_v2] Aggregate MAAD: {len(tasks)} tasks with {aggregate_workers} workers')
-    if aggregate_workers > 1 and len(tasks) > 1:
-        return process_maad_tasks(tasks, aggregate_workers)
-    return process_maad_tasks(tasks, 1)
-
-
-def build_aggregate_maad_tasks(
-    raw_buckets: list[dict],
-    maad_bin: str | Path,
-    maad_backend: str,
-) -> list[dict]:
-    """Build serializable MAAD tasks for aggregate buckets."""
-    buckets = defaultdict(lambda: {'source': set(), 'destination': set()})
-
-    for raw in raw_buckets:
-        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
-            bucket = buckets[(raw['source_id'], granularity, bucket_start)]
-            bucket['source'].update(raw['maad_source_ipv4'])
-            bucket['destination'].update(raw['maad_destination_ipv4'])
-
-    tasks = []
-    for (source_id, granularity, bucket_start), bucket in sorted(buckets.items()):
-        bucket_seconds = dict(AGGREGATE_GRANULARITY_SECONDS)[granularity]
-        tasks.append(
-            {
-                'maad_bin': str(maad_bin),
-                'maad_backend': maad_backend,
-                'source_id': source_id,
-                'granularity': granularity,
-                'bucket_start': bucket_start,
-                'bucket_end': next_bucket_start(bucket_start, bucket_seconds),
-                'source_addresses': sorted(bucket['source']),
-                'destination_addresses': sorted(bucket['destination']),
-                'log_progress': True,
-            }
-        )
-    return tasks
-
-
 def build_address_structure_v3_rows_from_payloads(
     payloads: list[dict],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
 ) -> list[dict]:
-    """Build address_structure_stats_v3 rows from v3 raw address-set payloads."""
+    """Build address_structure_stats rows from v3 raw address-set payloads."""
     entries = [
         entry
         for payload in payloads
@@ -3157,7 +2835,7 @@ def build_address_structure_v3_rows_from_raw_buckets(
     maad_backend: str,
     maad_workers: int,
 ) -> list[dict]:
-    """Build 5m address_structure_stats_v3 rows from raw bucket address sets."""
+    """Build 5m address_structure_stats rows from raw bucket address sets."""
     entries = [
         entry
         for raw_bucket in raw_buckets
@@ -3206,7 +2884,7 @@ def process_address_structure_v3_task(task: dict) -> list[dict]:
         maad_backend=str(task.get('maad_backend', 'subprocess')),
         timeout_seconds=timeout_seconds,
     )
-    return build_address_structure_stats_v3_rows(
+    return build_address_structure_stats_rows(
         source_id=task['source_id'],
         granularity=task['granularity'],
         bucket_start=task['bucket_start'],
@@ -3216,79 +2894,6 @@ def process_address_structure_v3_task(task: dict) -> list[dict]:
         dst_visibility=task['dst_visibility'],
         address_side=task['address_side'],
         result=result,
-    )
-
-
-def process_maad_row_task(task: dict) -> dict[str, dict]:
-    """Run MAAD for one aggregate task."""
-    timeout_seconds = maad_timeout_seconds(str(task['granularity']))
-    bucket_label = datetime.fromtimestamp(task['bucket_start'], PIPELINE_TIMEZONE).isoformat()
-    source_count = len(task['source_addresses'])
-    destination_count = len(task['destination_addresses'])
-    if task.get('log_progress'):
-        print(
-            '[pipeline_v2] Aggregate MAAD task '
-            f"{task['source_id']} {task['granularity']} {bucket_label} "
-            f'sa={source_count} da={destination_count} timeout={timeout_seconds}s'
-        )
-
-    try:
-        source_result = run_maad_for_addresses(
-            task['maad_bin'],
-            set(task['source_addresses']),
-            maad_backend=str(task.get('maad_backend', 'subprocess')),
-            timeout_seconds=timeout_seconds,
-        )
-    except MaadTimeoutError as error:
-        raise MaadTimeoutError(
-            'MAAD timed out for '
-            f"{task['source_id']} {task['granularity']} {bucket_label} "
-            f'source addresses={source_count} timeout={timeout_seconds}s'
-        ) from error
-    try:
-        destination_result = run_maad_for_addresses(
-            task['maad_bin'],
-            set(task['destination_addresses']),
-            maad_backend=str(task.get('maad_backend', 'subprocess')),
-            timeout_seconds=timeout_seconds,
-        )
-    except MaadTimeoutError as error:
-        raise MaadTimeoutError(
-            'MAAD timed out for '
-            f"{task['source_id']} {task['granularity']} {bucket_label} "
-            f'destination addresses={destination_count} timeout={timeout_seconds}s'
-        ) from error
-    return build_maad_v2_rows(
-        source_id=task['source_id'],
-        granularity=task['granularity'],
-        bucket_start=task['bucket_start'],
-        bucket_end=task['bucket_end'],
-        ip_version=4,
-        source_result=source_result,
-        destination_result=destination_result,
-    )
-
-
-def build_maad_rows_for_raw_bucket(
-    raw_bucket: dict,
-    granularity: str,
-    maad_bin: str | Path,
-    maad_backend: str = 'subprocess',
-) -> dict[str, dict]:
-    """Run MAAD for one raw bucket payload."""
-    bucket_seconds = 300 if granularity == '5m' else dict(AGGREGATE_GRANULARITY_SECONDS)[granularity]
-    return process_maad_row_task(
-        {
-            'maad_bin': str(maad_bin),
-            'maad_backend': maad_backend,
-            'source_id': raw_bucket['source_id'],
-            'granularity': granularity,
-            'bucket_start': raw_bucket['bucket_start'],
-            'bucket_end': next_bucket_start(raw_bucket['bucket_start'], bucket_seconds),
-            'source_addresses': raw_bucket['maad_source_ipv4'],
-            'destination_addresses': raw_bucket['maad_destination_ipv4'],
-            'log_progress': False,
-        }
     )
 
 
@@ -3303,14 +2908,6 @@ def maad_timeout_seconds(granularity: str) -> int:
 def aggregate_maad_worker_count(max_workers: int) -> int:
     """Bound aggregate MAAD concurrency to reduce timeout risk from contention."""
     return max(1, min(max_workers, DEFAULT_AGGREGATE_MAAD_MAX_WORKERS))
-
-
-def process_maad_tasks(tasks: list[dict], maad_workers: int) -> list[dict[str, dict]]:
-    """Process MAAD tasks serially or with a bounded worker pool."""
-    if maad_workers > 1 and len(tasks) > 1:
-        with Pool(processes=maad_workers) as pool:
-            return list(pool.imap_unordered(process_maad_row_task, tasks, chunksize=1))
-    return [process_maad_row_task(task) for task in tasks]
 
 
 def run_maad_for_addresses(
@@ -3390,69 +2987,29 @@ def build_nfcapd_gap_payload(
     *,
     run_maad: bool = True,
 ) -> dict:
-    """Build zero-valued v2 rows for one bounded missing nfcapd bucket."""
+    """Build zero-valued canonical rows for one bounded missing nfcapd bucket."""
     bucket_end = bucket_start + FIVE_MINUTE_SECONDS
-    netflow_rows = [
-        new_netflow_bucket_from_values(
-            source_id=source_id,
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-            ip_version=ip_version,
-        )
-        for ip_version in (4, 6)
-    ]
-    traffic_v3_rows = [
-        empty_traffic_stats_v3_row(
-            source_id=source_id,
-            granularity='5m',
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-            ip_version=ip_version,
-            src_visibility='all',
-            dst_visibility='all',
-        )
-        for ip_version in (4, 6)
-    ]
-    protocol_v3_sets = [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': 'all',
-            'dst_visibility': 'all',
-            'protocols': [],
-        }
-        for ip_version in (4, 6)
-    ]
-    address_v3_sets = [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': 'all',
-            'dst_visibility': 'all',
-            'address_side': address_side,
-            'addresses': [],
-        }
-        for ip_version in (4, 6)
-        for address_side in ('source', 'destination')
-    ]
+    traffic_v3_rows = empty_traffic_stats_rows(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
+    protocol_v3_sets = empty_protocol_set_entries(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
+    address_v3_sets = empty_address_set_entries(
+        source_id=source_id,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
     raw_bucket = {
         'source_id': source_id,
         'bucket_start': bucket_start,
-        'source_ipv4': [],
-        'destination_ipv4': [],
-        'source_ipv6': [],
-        'destination_ipv6': [],
-        'protocols_ipv4': [],
-        'protocols_ipv6': [],
-        'maad_source_ipv4': [],
-        'maad_destination_ipv4': [],
-        'netflow_rows': [dict(row) for row in netflow_rows],
         'traffic_v3_rows': traffic_v3_rows,
         'protocol_v3_sets': protocol_v3_sets,
         'address_v3_sets': address_v3_sets,
@@ -3467,37 +3024,9 @@ def build_nfcapd_gap_payload(
                 'bucket_end': bucket_end,
             }
         ],
-        'netflow_rows': netflow_rows,
-        'ip_rows': [
-            {
-                'source_id': source_id,
-                'granularity': '5m',
-                'bucket_start': bucket_start,
-                'bucket_end': bucket_end,
-                'sa_ipv4_count': 0,
-                'da_ipv4_count': 0,
-                'sa_ipv6_count': 0,
-                'da_ipv6_count': 0,
-            }
-        ],
-        'protocol_rows': [
-            {
-                'source_id': source_id,
-                'granularity': '5m',
-                'bucket_start': bucket_start,
-                'bucket_end': bucket_end,
-                'unique_protocols_count_ipv4': 0,
-                'unique_protocols_count_ipv6': 0,
-                'protocols_list_ipv4': '',
-                'protocols_list_ipv6': '',
-            }
-        ],
         'traffic_v3_rows': traffic_v3_rows,
         'protocol_v3_rows': protocol_set_entries_to_rows(protocol_v3_sets),
         'address_count_v3_rows': address_set_entries_to_count_rows(address_v3_sets),
-        'maad_rows': [build_maad_rows_for_raw_bucket(raw_bucket, '5m', '', maad_backend='python')]
-        if run_maad
-        else [],
         'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
             [raw_bucket],
             '',
@@ -3533,71 +3062,6 @@ def add_row_to_bucket(
         ),
     )
     bucket.add(row)
-
-
-def new_netflow_bucket(row: NormalizedRow) -> dict:
-    """Create an empty netflow_stats_v2 row accumulator."""
-    return new_netflow_bucket_from_values(
-        source_id=row.source_id,
-        bucket_start=row.bucket_start,
-        bucket_end=row.bucket_end,
-        ip_version=row.ip_version,
-    )
-
-
-def new_netflow_bucket_from_values(
-    *,
-    source_id: str,
-    bucket_start: int,
-    bucket_end: int,
-    ip_version: int,
-) -> dict:
-    """Create an empty netflow_stats_v2 row accumulator from primitive values."""
-    return {
-        'source_id': source_id,
-        'granularity': '5m',
-        'bucket_start': bucket_start,
-        'bucket_end': bucket_end,
-        'ip_version': ip_version,
-        'flows': 0,
-        'flows_tcp': 0,
-        'flows_udp': 0,
-        'flows_icmp': 0,
-        'flows_other': 0,
-        'packets': 0,
-        'packets_tcp': 0,
-        'packets_udp': 0,
-        'packets_icmp': 0,
-        'packets_other': 0,
-        'bytes': 0,
-        'bytes_tcp': 0,
-        'bytes_udp': 0,
-        'bytes_icmp': 0,
-        'bytes_other': 0,
-    }
-
-
-def build_maad_payload_rows(
-    buckets: dict[tuple[str, int, int], BucketAccumulator],
-    maad_bin: str | Path,
-    maad_backend: str = 'subprocess',
-    maad_workers: int = 1,
-) -> list[dict[str, dict]]:
-    """Run MAAD for each v2 bucket and return structure/spectrum/dimension rows."""
-    tasks = [
-        {
-            'maad_bin': str(maad_bin),
-            'maad_backend': maad_backend,
-            'source_id': bucket.source_id,
-            'granularity': '5m',
-            'bucket_start': bucket.bucket_start,
-            'bucket_end': bucket.bucket_end,
-            'source_addresses': sorted(bucket.maad_source_ipv4),
-            'destination_addresses': sorted(bucket.maad_destination_ipv4),
-        }
-        for bucket in buckets.values()
-    ]
-    return process_maad_tasks(tasks, maad_workers)
 
 
 def iter_nfdump_rows(path: str, source_id: str) -> Iterable[NormalizedRow]:

@@ -1,9 +1,251 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "122188b8-e45a-4366-b850-4f989c8ff4ac",
+	"id": "d3e904a8-3649-4f00-8d26-357f5fdd217a",
 	"prevId": "00000000-0000-0000-0000-000000000000",
 	"tables": {
+		"address_count_stats": {
+			"name": "address_count_stats",
+			"columns": {
+				"source_id": {
+					"name": "source_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"granularity": {
+					"name": "granularity",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_start": {
+					"name": "bucket_start",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_end": {
+					"name": "bucket_end",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"ip_version": {
+					"name": "ip_version",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"src_visibility": {
+					"name": "src_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"dst_visibility": {
+					"name": "dst_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"address_side": {
+					"name": "address_side",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"unique_address_count": {
+					"name": "unique_address_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"processed_at": {
+					"name": "processed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false,
+					"default": "CURRENT_TIMESTAMP"
+				}
+			},
+			"indexes": {
+				"idx_address_count_stats_query": {
+					"name": "idx_address_count_stats_query",
+					"columns": [
+						"granularity",
+						"bucket_start",
+						"source_id",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"address_side"
+					],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"address_count_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_address_side_pk": {
+					"columns": [
+						"source_id",
+						"granularity",
+						"bucket_start",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"address_side"
+					],
+					"name": "address_count_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_address_side_pk"
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraints": {
+				"address_count_stats_ip_version_check": {
+					"name": "address_count_stats_ip_version_check",
+					"value": "\"address_count_stats\".\"ip_version\" IN (4, 6)"
+				}
+			}
+		},
+		"address_structure_stats": {
+			"name": "address_structure_stats",
+			"columns": {
+				"source_id": {
+					"name": "source_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"granularity": {
+					"name": "granularity",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_start": {
+					"name": "bucket_start",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_end": {
+					"name": "bucket_end",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"ip_version": {
+					"name": "ip_version",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"src_visibility": {
+					"name": "src_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"dst_visibility": {
+					"name": "dst_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"address_side": {
+					"name": "address_side",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"structure_kind": {
+					"name": "structure_kind",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"values_json": {
+					"name": "values_json",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"metadata_json": {
+					"name": "metadata_json",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"processed_at": {
+					"name": "processed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false,
+					"default": "CURRENT_TIMESTAMP"
+				}
+			},
+			"indexes": {
+				"idx_address_structure_stats_query": {
+					"name": "idx_address_structure_stats_query",
+					"columns": [
+						"granularity",
+						"bucket_start",
+						"source_id",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"address_side",
+						"structure_kind"
+					],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"address_structure_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_address_side_structure_kind_pk": {
+					"columns": [
+						"source_id",
+						"granularity",
+						"bucket_start",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"address_side",
+						"structure_kind"
+					],
+					"name": "address_structure_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_address_side_structure_kind_pk"
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraints": {
+				"address_structure_stats_ip_version_check": {
+					"name": "address_structure_stats_ip_version_check",
+					"value": "\"address_structure_stats\".\"ip_version\" IN (4, 6)"
+				}
+			}
+		},
 		"datasets": {
 			"name": "datasets",
 			"columns": {
@@ -59,18 +301,25 @@
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
-		"dimension_stats_v2": {
-			"name": "dimension_stats_v2",
+		"processed_inputs": {
+			"name": "processed_inputs",
 			"columns": {
-				"source_id": {
-					"name": "source_id",
+				"input_kind": {
+					"name": "input_kind",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
 					"autoincrement": false
 				},
-				"granularity": {
-					"name": "granularity",
+				"input_locator": {
+					"name": "input_locator",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"source_id": {
+					"name": "source_id",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
@@ -90,159 +339,56 @@
 					"notNull": true,
 					"autoincrement": false
 				},
-				"ip_version": {
-					"name": "ip_version",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"dimensions_json_sa": {
-					"name": "dimensions_json_sa",
+				"status": {
+					"name": "status",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
-					"autoincrement": false
+					"autoincrement": false,
+					"default": "'pending'"
 				},
-				"dimensions_json_da": {
-					"name": "dimensions_json_da",
+				"error_message": {
+					"name": "error_message",
 					"type": "text",
 					"primaryKey": false,
-					"notNull": true,
+					"notNull": false,
 					"autoincrement": false
 				},
-				"metadata_json_sa": {
-					"name": "metadata_json_sa",
+				"discovered_at": {
+					"name": "discovered_at",
 					"type": "text",
 					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"metadata_json_da": {
-					"name": "metadata_json_da",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
+					"notNull": false,
+					"autoincrement": false,
+					"default": "CURRENT_TIMESTAMP"
 				},
 				"processed_at": {
 					"name": "processed_at",
 					"type": "text",
 					"primaryKey": false,
 					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
+					"autoincrement": false
 				}
 			},
 			"indexes": {
-				"idx_dimension_stats_v2_granularity_bucket_source": {
-					"name": "idx_dimension_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id", "ip_version"],
+				"idx_processed_inputs_source_bucket": {
+					"name": "idx_processed_inputs_source_bucket",
+					"columns": ["source_id", "bucket_start"],
 					"isUnique": false
 				}
 			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {
-				"dimension_stats_v2_source_id_granularity_bucket_start_ip_version_pk": {
-					"columns": ["source_id", "granularity", "bucket_start", "ip_version"],
-					"name": "dimension_stats_v2_source_id_granularity_bucket_start_ip_version_pk"
-				}
-			},
-			"uniqueConstraints": {},
-			"checkConstraints": {
-				"dimension_stats_v2_ip_version_check": {
-					"name": "dimension_stats_v2_ip_version_check",
-					"value": "\"dimension_stats_v2\".\"ip_version\" IN (4, 6)"
-				}
-			}
-		},
-		"ip_stats_v2": {
-			"name": "ip_stats_v2",
-			"columns": {
-				"source_id": {
-					"name": "source_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"granularity": {
-					"name": "granularity",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_start": {
-					"name": "bucket_start",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_end": {
-					"name": "bucket_end",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"sa_ipv4_count": {
-					"name": "sa_ipv4_count",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"da_ipv4_count": {
-					"name": "da_ipv4_count",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"sa_ipv6_count": {
-					"name": "sa_ipv6_count",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"da_ipv6_count": {
-					"name": "da_ipv6_count",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"processed_at": {
-					"name": "processed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
-				}
-			},
-			"indexes": {
-				"idx_ip_stats_v2_granularity_bucket_source": {
-					"name": "idx_ip_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"ip_stats_v2_source_id_granularity_bucket_start_pk": {
-					"columns": ["source_id", "granularity", "bucket_start"],
-					"name": "ip_stats_v2_source_id_granularity_bucket_start_pk"
+				"processed_inputs_input_kind_input_locator_source_id_bucket_start_pk": {
+					"columns": ["input_kind", "input_locator", "source_id", "bucket_start"],
+					"name": "processed_inputs_input_kind_input_locator_source_id_bucket_start_pk"
 				}
 			},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
 		},
-		"netflow_stats_v2": {
-			"name": "netflow_stats_v2",
+		"protocol_stats": {
+			"name": "protocol_stats",
 			"columns": {
 				"source_id": {
 					"name": "source_id",
@@ -275,6 +421,167 @@
 				"ip_version": {
 					"name": "ip_version",
 					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"src_visibility": {
+					"name": "src_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"dst_visibility": {
+					"name": "dst_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"unique_protocols_count": {
+					"name": "unique_protocols_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"protocols_list": {
+					"name": "protocols_list",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"processed_at": {
+					"name": "processed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false,
+					"default": "CURRENT_TIMESTAMP"
+				}
+			},
+			"indexes": {
+				"idx_protocol_stats_query": {
+					"name": "idx_protocol_stats_query",
+					"columns": [
+						"granularity",
+						"bucket_start",
+						"source_id",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility"
+					],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"protocol_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_pk": {
+					"columns": [
+						"source_id",
+						"granularity",
+						"bucket_start",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility"
+					],
+					"name": "protocol_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_pk"
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraints": {
+				"protocol_stats_ip_version_check": {
+					"name": "protocol_stats_ip_version_check",
+					"value": "\"protocol_stats\".\"ip_version\" IN (4, 6)"
+				}
+			}
+		},
+		"source_members": {
+			"name": "source_members",
+			"columns": {
+				"dataset_id": {
+					"name": "dataset_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"source_id": {
+					"name": "source_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"member_id": {
+					"name": "member_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				}
+			},
+			"indexes": {},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"source_members_dataset_id_source_id_member_id_pk": {
+					"columns": ["dataset_id", "source_id", "member_id"],
+					"name": "source_members_dataset_id_source_id_member_id_pk"
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraints": {}
+		},
+		"traffic_stats": {
+			"name": "traffic_stats",
+			"columns": {
+				"source_id": {
+					"name": "source_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"granularity": {
+					"name": "granularity",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_start": {
+					"name": "bucket_start",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_end": {
+					"name": "bucket_end",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"ip_version": {
+					"name": "ip_version",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"src_visibility": {
+					"name": "src_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"dst_visibility": {
+					"name": "dst_visibility",
+					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
 					"autoincrement": false
@@ -394,389 +701,38 @@
 				}
 			},
 			"indexes": {
-				"idx_netflow_stats_v2_granularity_bucket_source": {
-					"name": "idx_netflow_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id", "ip_version"],
+				"idx_traffic_stats_query": {
+					"name": "idx_traffic_stats_query",
+					"columns": [
+						"granularity",
+						"bucket_start",
+						"source_id",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility"
+					],
 					"isUnique": false
 				}
 			},
 			"foreignKeys": {},
 			"compositePrimaryKeys": {
-				"netflow_stats_v2_source_id_granularity_bucket_start_ip_version_pk": {
-					"columns": ["source_id", "granularity", "bucket_start", "ip_version"],
-					"name": "netflow_stats_v2_source_id_granularity_bucket_start_ip_version_pk"
+				"traffic_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_pk": {
+					"columns": [
+						"source_id",
+						"granularity",
+						"bucket_start",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility"
+					],
+					"name": "traffic_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_pk"
 				}
 			},
 			"uniqueConstraints": {},
 			"checkConstraints": {
-				"netflow_stats_v2_ip_version_check": {
-					"name": "netflow_stats_v2_ip_version_check",
-					"value": "\"netflow_stats_v2\".\"ip_version\" IN (4, 6)"
-				}
-			}
-		},
-		"processed_inputs_v2": {
-			"name": "processed_inputs_v2",
-			"columns": {
-				"input_kind": {
-					"name": "input_kind",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"input_locator": {
-					"name": "input_locator",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"source_id": {
-					"name": "source_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_start": {
-					"name": "bucket_start",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_end": {
-					"name": "bucket_end",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"status": {
-					"name": "status",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false,
-					"default": "'pending'"
-				},
-				"error_message": {
-					"name": "error_message",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				},
-				"discovered_at": {
-					"name": "discovered_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
-				},
-				"processed_at": {
-					"name": "processed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false
-				}
-			},
-			"indexes": {
-				"idx_processed_inputs_v2_source_bucket": {
-					"name": "idx_processed_inputs_v2_source_bucket",
-					"columns": ["source_id", "bucket_start"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"processed_inputs_v2_input_kind_input_locator_source_id_bucket_start_pk": {
-					"columns": ["input_kind", "input_locator", "source_id", "bucket_start"],
-					"name": "processed_inputs_v2_input_kind_input_locator_source_id_bucket_start_pk"
-				}
-			},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"protocol_stats_v2": {
-			"name": "protocol_stats_v2",
-			"columns": {
-				"source_id": {
-					"name": "source_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"granularity": {
-					"name": "granularity",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_start": {
-					"name": "bucket_start",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_end": {
-					"name": "bucket_end",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"unique_protocols_count_ipv4": {
-					"name": "unique_protocols_count_ipv4",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"unique_protocols_count_ipv6": {
-					"name": "unique_protocols_count_ipv6",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"protocols_list_ipv4": {
-					"name": "protocols_list_ipv4",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"protocols_list_ipv6": {
-					"name": "protocols_list_ipv6",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"processed_at": {
-					"name": "processed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
-				}
-			},
-			"indexes": {
-				"idx_protocol_stats_v2_granularity_bucket_source": {
-					"name": "idx_protocol_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"protocol_stats_v2_source_id_granularity_bucket_start_pk": {
-					"columns": ["source_id", "granularity", "bucket_start"],
-					"name": "protocol_stats_v2_source_id_granularity_bucket_start_pk"
-				}
-			},
-			"uniqueConstraints": {},
-			"checkConstraints": {}
-		},
-		"spectrum_stats_v2": {
-			"name": "spectrum_stats_v2",
-			"columns": {
-				"source_id": {
-					"name": "source_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"granularity": {
-					"name": "granularity",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_start": {
-					"name": "bucket_start",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_end": {
-					"name": "bucket_end",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"ip_version": {
-					"name": "ip_version",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"spectrum_json_sa": {
-					"name": "spectrum_json_sa",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"spectrum_json_da": {
-					"name": "spectrum_json_da",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"metadata_json_sa": {
-					"name": "metadata_json_sa",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"metadata_json_da": {
-					"name": "metadata_json_da",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"processed_at": {
-					"name": "processed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
-				}
-			},
-			"indexes": {
-				"idx_spectrum_stats_v2_granularity_bucket_source": {
-					"name": "idx_spectrum_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id", "ip_version"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"spectrum_stats_v2_source_id_granularity_bucket_start_ip_version_pk": {
-					"columns": ["source_id", "granularity", "bucket_start", "ip_version"],
-					"name": "spectrum_stats_v2_source_id_granularity_bucket_start_ip_version_pk"
-				}
-			},
-			"uniqueConstraints": {},
-			"checkConstraints": {
-				"spectrum_stats_v2_ip_version_check": {
-					"name": "spectrum_stats_v2_ip_version_check",
-					"value": "\"spectrum_stats_v2\".\"ip_version\" IN (4, 6)"
-				}
-			}
-		},
-		"structure_stats_v2": {
-			"name": "structure_stats_v2",
-			"columns": {
-				"source_id": {
-					"name": "source_id",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"granularity": {
-					"name": "granularity",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_start": {
-					"name": "bucket_start",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"bucket_end": {
-					"name": "bucket_end",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"ip_version": {
-					"name": "ip_version",
-					"type": "integer",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"structure_json_sa": {
-					"name": "structure_json_sa",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"structure_json_da": {
-					"name": "structure_json_da",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"metadata_json_sa": {
-					"name": "metadata_json_sa",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"metadata_json_da": {
-					"name": "metadata_json_da",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": true,
-					"autoincrement": false
-				},
-				"processed_at": {
-					"name": "processed_at",
-					"type": "text",
-					"primaryKey": false,
-					"notNull": false,
-					"autoincrement": false,
-					"default": "CURRENT_TIMESTAMP"
-				}
-			},
-			"indexes": {
-				"idx_structure_stats_v2_granularity_bucket_source": {
-					"name": "idx_structure_stats_v2_granularity_bucket_source",
-					"columns": ["granularity", "bucket_start", "source_id", "ip_version"],
-					"isUnique": false
-				}
-			},
-			"foreignKeys": {},
-			"compositePrimaryKeys": {
-				"structure_stats_v2_source_id_granularity_bucket_start_ip_version_pk": {
-					"columns": ["source_id", "granularity", "bucket_start", "ip_version"],
-					"name": "structure_stats_v2_source_id_granularity_bucket_start_ip_version_pk"
-				}
-			},
-			"uniqueConstraints": {},
-			"checkConstraints": {
-				"structure_stats_v2_ip_version_check": {
-					"name": "structure_stats_v2_ip_version_check",
-					"value": "\"structure_stats_v2\".\"ip_version\" IN (4, 6)"
+				"traffic_stats_ip_version_check": {
+					"name": "traffic_stats_ip_version_check",
+					"value": "\"traffic_stats\".\"ip_version\" IN (4, 6)"
 				}
 			}
 		}

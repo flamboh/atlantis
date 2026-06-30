@@ -46,7 +46,7 @@ export async function getNetflowFilePath(
 	}
 
 	const query = `
-		SELECT input_locator FROM processed_inputs_v2
+		SELECT input_locator FROM processed_inputs
 		WHERE source_id = ? AND bucket_start = ? AND input_kind = 'nfcapd'
 		LIMIT 1
 	`;

@@ -144,7 +144,7 @@ describe('/api/netflow/stats GET', () => {
 			],
 			availableIpFamilies: ['all', 'ipv4', 'ipv6']
 		});
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats'), [
 			'r1',
 			'r2',
 			'1h',
@@ -180,7 +180,7 @@ describe('/api/netflow/stats GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats'), [
 			'r1',
 			'5m',
 			'all',
@@ -209,7 +209,7 @@ describe('/api/netflow/stats GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats'), [
 			'uoregon_all',
 			'1h',
 			'all',

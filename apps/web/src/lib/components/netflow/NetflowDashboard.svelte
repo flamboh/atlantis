@@ -229,7 +229,10 @@
 	}
 
 	function handleNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset);
+		void navigateToNetflowFile(goto, slug, props.dataset, {
+			srcVisibility: props.srcVisibility,
+			dstVisibility: props.dstVisibility
+		});
 	}
 
 	function handleChartTypeChange(newChartType: ChartTypeOption) {

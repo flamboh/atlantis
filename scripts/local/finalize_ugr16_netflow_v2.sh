@@ -56,7 +56,7 @@ cd "$ROOT_DIR"
 verify_db() {
   local db_path="$1"
   ./scripts/run-with-nix-if-available.sh uv run python \
-    tools/netflow-db/verify_web_compatible_v2.py \
+    tools/netflow-db/verify_web_compatible.py \
     "$db_path" \
     --source-id ugr16 \
     --require-data \

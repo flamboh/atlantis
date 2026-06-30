@@ -18,7 +18,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'protocol_stats_v3';
+		const tableName = 'protocol_stats';
 		const sourceColumn = 'source_id';
 		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 

@@ -1,10 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { parseFlowScopeParams } from '$lib/server/netflow-v3';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
 
 const FIVE_MINUTES = '5m';
-const DEFAULT_SRC_VISIBILITY = 'all';
-const DEFAULT_DST_VISIBILITY = 'all';
 
 type IpCountRow = {
 	saIpv4Count: number;
@@ -18,6 +17,11 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const dataset = await getDatasetFromRequest(url, platform);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
+	const flowScope = parseFlowScopeParams(url);
+
+	if ('error' in flowScope) {
+		return json({ error: flowScope.error }, { status: flowScope.status });
+	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
 		return json({ error: 'Invalid slug format' }, { status: 400 });
@@ -49,14 +53,14 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
-			FROM address_count_stats_v3
+			FROM address_count_stats
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?
 				AND src_visibility = ?
 				AND dst_visibility = ?
 			GROUP BY source_id, bucket_start`,
-			[router, FIVE_MINUTES, bucketStart, DEFAULT_SRC_VISIBILITY, DEFAULT_DST_VISIBILITY]
+			[router, FIVE_MINUTES, bucketStart, flowScope.srcVisibility, flowScope.dstVisibility]
 		);
 
 		if (!row) {

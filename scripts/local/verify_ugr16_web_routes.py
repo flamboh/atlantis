@@ -49,20 +49,29 @@ def select_verification_window(db_path: Path, source_id: str) -> VerificationWin
     with sqlite3.connect(db_path) as conn:
         detail_row = conn.execute(
             """
-            SELECT ns.bucket_start
-            FROM netflow_stats_v2 ns
-            JOIN structure_stats_v2 st
-              ON st.source_id = ns.source_id
+            SELECT ts.bucket_start
+            FROM traffic_stats ts
+            JOIN address_structure_stats st
+              ON st.source_id = ts.source_id
              AND st.granularity = '5m'
-             AND st.bucket_start = ns.bucket_start
+             AND st.bucket_start = ts.bucket_start
              AND st.ip_version = 4
-            JOIN spectrum_stats_v2 sp
-              ON sp.source_id = ns.source_id
+             AND st.src_visibility = 'all'
+             AND st.dst_visibility = 'all'
+             AND st.structure_kind = 'structure'
+            JOIN address_structure_stats sp
+              ON sp.source_id = ts.source_id
              AND sp.granularity = '5m'
-             AND sp.bucket_start = ns.bucket_start
+             AND sp.bucket_start = ts.bucket_start
              AND sp.ip_version = 4
-            WHERE ns.source_id = ?
-            ORDER BY ns.bucket_start
+             AND sp.src_visibility = 'all'
+             AND sp.dst_visibility = 'all'
+             AND sp.structure_kind = 'spectrum'
+            WHERE ts.source_id = ?
+              AND ts.granularity = '5m'
+              AND ts.src_visibility = 'all'
+              AND ts.dst_visibility = 'all'
+            ORDER BY ts.bucket_start
             LIMIT 1
             """,
             (source_id,),

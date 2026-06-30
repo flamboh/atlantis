@@ -13,6 +13,27 @@ describe('buildNetflowFileHref', () => {
 		expect(buildNetflowFileSearch('my dataset')).toBe('?dataset=my%20dataset');
 	});
 
+	it('includes non-all visibility scope when provided', async () => {
+		const { buildNetflowFileHref, buildNetflowFileSearch } =
+			await import('$lib/utils/netflow-file-navigation');
+		const flowScope = { srcVisibility: 'literal', dstVisibility: 'anonymized' } as const;
+
+		expect(buildNetflowFileSearch('uoregon', flowScope)).toBe(
+			'?dataset=uoregon&srcVisibility=literal&dstVisibility=anonymized'
+		);
+		expect(buildNetflowFileHref('202506192010', 'uoregon', flowScope)).toBe(
+			'/netflow/files/202506192010?dataset=uoregon&srcVisibility=literal&dstVisibility=anonymized'
+		);
+	});
+
+	it('omits all/all visibility scope', async () => {
+		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
+
+		expect(buildNetflowFileSearch('uoregon', { srcVisibility: 'all', dstVisibility: 'all' })).toBe(
+			'?dataset=uoregon'
+		);
+	});
+
 	it('includes dataset query when provided', async () => {
 		const { buildNetflowFileHref } = await import('$lib/utils/netflow-file-navigation');
 
@@ -44,8 +65,13 @@ describe('buildNetflowFileHref', () => {
 
 		expect(navigate).toHaveBeenCalledWith('/netflow/files/202506192010?dataset=uoregon');
 
-		await navigateToNetflowFile(navigate, '202506192010', 'my dataset');
+		await navigateToNetflowFile(navigate, '202506192010', 'my dataset', {
+			srcVisibility: 'anonymized',
+			dstVisibility: 'literal'
+		});
 
-		expect(navigate).toHaveBeenLastCalledWith('/netflow/files/202506192010?dataset=my%20dataset');
+		expect(navigate).toHaveBeenLastCalledWith(
+			'/netflow/files/202506192010?dataset=my%20dataset&srcVisibility=anonymized&dstVisibility=literal'
+		);
 	});
 });
