@@ -42,7 +42,7 @@ export const localSchemaSql = `
 		PRIMARY KEY(source_id, granularity, bucket_start)
 	);
 
-	CREATE TABLE IF NOT EXISTS netflow_stats_aggregate_v2 (
+	CREATE TABLE IF NOT EXISTS netflow_stats_v2 (
 		source_id TEXT NOT NULL,
 		granularity TEXT NOT NULL,
 		bucket_start INTEGER NOT NULL,
@@ -65,30 +65,6 @@ export const localSchemaSql = `
 		bytes_other INTEGER NOT NULL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY(source_id, granularity, bucket_start, ip_version)
-	);
-
-	CREATE TABLE IF NOT EXISTS netflow_stats_v2 (
-		source_id TEXT NOT NULL,
-		bucket_start INTEGER NOT NULL,
-		bucket_end INTEGER NOT NULL,
-		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		flows INTEGER NOT NULL,
-		flows_tcp INTEGER NOT NULL,
-		flows_udp INTEGER NOT NULL,
-		flows_icmp INTEGER NOT NULL,
-		flows_other INTEGER NOT NULL,
-		packets INTEGER NOT NULL,
-		packets_tcp INTEGER NOT NULL,
-		packets_udp INTEGER NOT NULL,
-		packets_icmp INTEGER NOT NULL,
-		packets_other INTEGER NOT NULL,
-		bytes INTEGER NOT NULL,
-		bytes_tcp INTEGER NOT NULL,
-		bytes_udp INTEGER NOT NULL,
-		bytes_icmp INTEGER NOT NULL,
-		bytes_other INTEGER NOT NULL,
-		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY(source_id, bucket_start, ip_version)
 	);
 
 	CREATE TABLE IF NOT EXISTS processed_inputs_v2 (
@@ -149,10 +125,8 @@ export const localSchemaSql = `
 		ON dimension_stats_v2 (granularity, bucket_start, source_id, ip_version);
 	CREATE INDEX IF NOT EXISTS idx_ip_stats_v2_granularity_bucket_source
 		ON ip_stats_v2 (granularity, bucket_start, source_id);
-	CREATE INDEX IF NOT EXISTS idx_netflow_stats_aggregate_v2_granularity_bucket_source
-		ON netflow_stats_aggregate_v2 (granularity, bucket_start, source_id, ip_version);
-	CREATE INDEX IF NOT EXISTS idx_netflow_stats_v2_bucket_source
-		ON netflow_stats_v2 (bucket_start, source_id, ip_version);
+	CREATE INDEX IF NOT EXISTS idx_netflow_stats_v2_granularity_bucket_source
+		ON netflow_stats_v2 (granularity, bucket_start, source_id, ip_version);
 	CREATE INDEX IF NOT EXISTS idx_processed_inputs_v2_source_bucket
 		ON processed_inputs_v2 (source_id, bucket_start);
 	CREATE INDEX IF NOT EXISTS idx_protocol_stats_v2_granularity_bucket_source

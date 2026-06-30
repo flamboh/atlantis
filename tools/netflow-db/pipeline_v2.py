@@ -73,7 +73,6 @@ from stats_v2 import (
     init_netflow_stats_v2_table,
     init_protocol_stats_v2_table,
     insert_ip_stats_v2_rows,
-    insert_netflow_stats_aggregate_v2_rows,
     insert_netflow_stats_v2_rows,
     insert_protocol_stats_v2_rows,
     protocol_metric_keys,
@@ -2323,7 +2322,7 @@ def flush_streaming_aggregate_buckets(
         else []
     )
     with conn:
-        insert_netflow_stats_aggregate_v2_rows(conn, netflow_rows)
+        insert_netflow_stats_v2_rows(conn, netflow_rows)
         insert_ip_stats_v2_rows(conn, ip_rows)
         insert_protocol_stats_v2_rows(conn, protocol_rows)
         for rows in maad_rows:
@@ -2331,7 +2330,7 @@ def flush_streaming_aggregate_buckets(
 
 
 def build_streaming_aggregate_netflow_rows(bucket: dict) -> list[dict]:
-    """Build aggregate netflow_stats_aggregate_v2 rows from streaming state."""
+    """Build aggregate netflow_stats_v2 rows from streaming state."""
     return [
         bucket['netflow_by_version'][ip_version]
         for ip_version in sorted(bucket['netflow_by_version'])
@@ -2523,16 +2522,10 @@ def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start:
         'spectrum_stats_v2',
         'dimension_stats_v2',
     ):
-        if table_name == 'netflow_stats_v2':
-            conn.execute(
-                f'DELETE FROM {table_name} WHERE source_id = ? AND bucket_start = ?',
-                (source_id, bucket_start),
-            )
-        else:
-            conn.execute(
-                f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
-                (source_id, bucket_start),
-            )
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
+            (source_id, bucket_start),
+        )
 
 
 def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
@@ -2573,7 +2566,7 @@ def write_aggregate_rows(
     with conn:
         if delete_existing:
             delete_aggregate_outputs_for_raw_buckets(conn, raw_buckets)
-        insert_netflow_stats_aggregate_v2_rows(conn, netflow_rows)
+        insert_netflow_stats_v2_rows(conn, netflow_rows)
         insert_ip_stats_v2_rows(conn, ip_rows)
         insert_protocol_stats_v2_rows(conn, protocol_rows)
         for rows in maad_rows:
@@ -2589,7 +2582,7 @@ def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_bucke
 
     for source_id, granularity, bucket_start in sorted(keys):
         for table_name in (
-            'netflow_stats_aggregate_v2',
+            'netflow_stats_v2',
             'ip_stats_v2',
             'protocol_stats_v2',
             'structure_stats_v2',
@@ -3029,6 +3022,7 @@ def new_netflow_bucket_from_values(
     """Create an empty netflow_stats_v2 row accumulator from primitive values."""
     return {
         'source_id': source_id,
+        'granularity': '5m',
         'bucket_start': bucket_start,
         'bucket_end': bucket_end,
         'ip_version': ip_version,

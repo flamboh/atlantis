@@ -28,49 +28,13 @@ NETFLOW_METRIC_COLUMNS = (
     'bytes_icmp',
     'bytes_other',
 )
-NETFLOW_AGGREGATE_GRANULARITIES = ('30m', '1h', '1d')
-
-
 def init_netflow_stats_v2_table(conn: sqlite3.Connection) -> None:
-    """Create netflow v2 5m and rollup tables if they do not exist."""
+    """Create the netflow_stats_v2 table if it does not exist."""
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS netflow_stats_v2 (
             source_id TEXT NOT NULL,
-            bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
-            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            flows INTEGER NOT NULL,
-            flows_tcp INTEGER NOT NULL,
-            flows_udp INTEGER NOT NULL,
-            flows_icmp INTEGER NOT NULL,
-            flows_other INTEGER NOT NULL,
-            packets INTEGER NOT NULL,
-            packets_tcp INTEGER NOT NULL,
-            packets_udp INTEGER NOT NULL,
-            packets_icmp INTEGER NOT NULL,
-            packets_other INTEGER NOT NULL,
-            bytes INTEGER NOT NULL,
-            bytes_tcp INTEGER NOT NULL,
-            bytes_udp INTEGER NOT NULL,
-            bytes_icmp INTEGER NOT NULL,
-            bytes_other INTEGER NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, bucket_start, ip_version)
-        ) WITHOUT ROWID
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_netflow_stats_v2_bucket_source
-        ON netflow_stats_v2(bucket_start, source_id, ip_version)
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS netflow_stats_aggregate_v2 (
-            source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -96,8 +60,8 @@ def init_netflow_stats_v2_table(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_netflow_stats_aggregate_v2_granularity_bucket_source
-        ON netflow_stats_aggregate_v2(granularity, bucket_start, source_id, ip_version)
+        CREATE INDEX IF NOT EXISTS idx_netflow_stats_v2_granularity_bucket_source
+        ON netflow_stats_v2(granularity, bucket_start, source_id, ip_version)
         """
     )
     conn.commit()
@@ -169,6 +133,7 @@ def build_netflow_stats_v2_rows(rows: list[NormalizedRow]) -> list[dict]:
             key,
             {
                 'source_id': row.source_id,
+                'granularity': '5m',
                 'bucket_start': row.bucket_start,
                 'bucket_end': row.bucket_end,
                 'ip_version': ip_version,
@@ -275,44 +240,6 @@ def insert_netflow_stats_v2_rows(conn: sqlite3.Connection, rows: list[dict]) -> 
     conn.executemany(
         """
         INSERT OR REPLACE INTO netflow_stats_v2 (
-            source_id, bucket_start, bucket_end, ip_version,
-            flows, flows_tcp, flows_udp, flows_icmp, flows_other,
-            packets, packets_tcp, packets_udp, packets_icmp, packets_other,
-            bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                row['source_id'],
-                row['bucket_start'],
-                row['bucket_end'],
-                row['ip_version'],
-                row['flows'],
-                row['flows_tcp'],
-                row['flows_udp'],
-                row['flows_icmp'],
-                row['flows_other'],
-                row['packets'],
-                row['packets_tcp'],
-                row['packets_udp'],
-                row['packets_icmp'],
-                row['packets_other'],
-                row['bytes'],
-                row['bytes_tcp'],
-                row['bytes_udp'],
-                row['bytes_icmp'],
-                row['bytes_other'],
-            )
-            for row in rows
-        ],
-    )
-
-
-def insert_netflow_stats_aggregate_v2_rows(conn: sqlite3.Connection, rows: list[dict]) -> None:
-    """Insert or replace coarser netflow_stats_aggregate_v2 rows without committing."""
-    conn.executemany(
-        """
-        INSERT OR REPLACE INTO netflow_stats_aggregate_v2 (
             source_id, granularity, bucket_start, bucket_end, ip_version,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
             packets, packets_tcp, packets_udp, packets_icmp, packets_other,
@@ -347,11 +274,11 @@ def insert_netflow_stats_aggregate_v2_rows(conn: sqlite3.Connection, rows: list[
     )
 
 
-def backfill_netflow_stats_aggregate_v2_rows(conn: sqlite3.Connection) -> None:
+def backfill_netflow_stats_v2_rollup_rows(conn: sqlite3.Connection) -> None:
     """Backfill netflow rollups from existing 5m rows and the aggregate calendar."""
     conn.execute(
         """
-        INSERT OR REPLACE INTO netflow_stats_aggregate_v2 (
+        INSERT OR REPLACE INTO netflow_stats_v2 (
             source_id, granularity, bucket_start, bucket_end, ip_version,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
             packets, packets_tcp, packets_udp, packets_icmp, packets_other,
@@ -375,6 +302,7 @@ def backfill_netflow_stats_aggregate_v2_rows(conn: sqlite3.Connection) -> None:
           ON ns.source_id = calendar.source_id
          AND ns.bucket_start >= calendar.bucket_start
          AND ns.bucket_start < calendar.bucket_end
+         AND ns.granularity = '5m'
         GROUP BY calendar.source_id, calendar.granularity, calendar.bucket_start, calendar.bucket_end, ns.ip_version
         """
     )

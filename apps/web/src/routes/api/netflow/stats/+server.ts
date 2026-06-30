@@ -129,14 +129,13 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			routers
 		);
 		const granularity = groupByToGranularity(groupBy);
-		const useAggregate = granularity !== '5m';
 		const timeColumn = 'bucket_start';
 		const sourceColumn = 'source_id';
-		const tableName = useAggregate ? 'netflow_stats_aggregate_v2' : 'netflow_stats_v2';
-		const bucketStartQuery = useAggregate ? timeColumn : getBucketStartQuery(timeColumn, groupBy);
+		const tableName = 'netflow_stats_v2';
+		const bucketStartQuery =
+			granularity === '5m' ? getBucketStartQuery(timeColumn, groupBy) : timeColumn;
 		const metricSelects = getBaseMetricSelects();
 		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
-		const granularityClause = useAggregate ? 'AND granularity = ?' : '';
 
 		const query = `
 			SELECT 
@@ -144,16 +143,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				${metricSelects.join(',\n\t\t\t\t')}
 			FROM ${tableName} 
 			WHERE ${sourceColumn} IN (${placeholders(resolvedSources)})
-			${granularityClause}
+			AND granularity = ?
 			AND ${timeColumn} >= ? 
 			AND ${timeColumn} < ?
 			GROUP BY bucketStart
 			ORDER BY bucketStart
 		`;
 
-		const params = useAggregate
-			? [...resolvedSources, granularity, start, end]
-			: [...resolvedSources, start, end];
+		const params = [...resolvedSources, granularity, start, end];
 
 		const rows = await db.all<Record<string, number | null>>(query, params);
 		const result = rows.map(normalizeRow);

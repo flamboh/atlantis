@@ -73,6 +73,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert payload['netflow_rows'] == [
         {
             'source_id': 'oh_ir1_gw',
+            'granularity': '5m',
             'bucket_start': 1744700700,
             'bucket_end': 1744701000,
             'ip_version': 4,
@@ -94,6 +95,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
         },
         {
             'source_id': 'oh_ir1_gw',
+            'granularity': '5m',
             'bucket_start': 1744700700,
             'bucket_end': 1744701000,
             'ip_version': 6,

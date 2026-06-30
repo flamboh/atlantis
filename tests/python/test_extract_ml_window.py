@@ -40,28 +40,29 @@ def make_v2_source_db(path: Path) -> sqlite3.Connection:
         """
         CREATE TABLE netflow_stats_v2 (
             source_id TEXT NOT NULL,
+            granularity TEXT NOT NULL,
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL,
             flows INTEGER NOT NULL,
-            PRIMARY KEY (source_id, bucket_start, ip_version)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version)
         ) WITHOUT ROWID
         """
     )
     conn.execute(
-        'CREATE INDEX idx_netflow_stats_v2_bucket_source ON netflow_stats_v2(bucket_start, source_id, ip_version)'
+        'CREATE INDEX idx_netflow_stats_v2_granularity_bucket_source ON netflow_stats_v2(granularity, bucket_start, source_id, ip_version)'
     )
     conn.execute(
         'INSERT INTO datasets (id, label, default_start_date) VALUES (?, ?, ?)',
         ('uoregon', 'UONet-in v2', '2025-02-01'),
     )
     conn.executemany(
-        'INSERT INTO netflow_stats_v2 (source_id, bucket_start, bucket_end, ip_version, flows) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO netflow_stats_v2 (source_id, granularity, bucket_start, bucket_end, ip_version, flows) VALUES (?, ?, ?, ?, ?, ?)',
         [
-            ('r1', 100, 400, 4, 10),
-            ('r1', 200, 500, 6, 20),
-            ('r2', 200, 500, 4, 30),
-            ('r1', 500, 800, 4, 50),
+            ('r1', '5m', 100, 400, 4, 10),
+            ('r1', '5m', 200, 500, 6, 20),
+            ('r2', '5m', 200, 500, 4, 30),
+            ('r1', '5m', 500, 800, 4, 50),
         ],
     )
     conn.commit()
@@ -141,9 +142,9 @@ def test_copy_v2_table_filters_by_source_id(tmp_path: Path) -> None:
 
     assert inserted == 1
     rows = dest_conn.execute(
-        'SELECT source_id, bucket_start, ip_version, flows FROM netflow_stats_v2'
+        'SELECT source_id, granularity, bucket_start, ip_version, flows FROM netflow_stats_v2'
     ).fetchall()
-    assert [tuple(row) for row in rows] == [('r1', 200, 6, 20)]
+    assert [tuple(row) for row in rows] == [('r1', '5m', 200, 6, 20)]
 
 
 def test_copy_static_metadata_table_without_time_filter(tmp_path: Path) -> None:

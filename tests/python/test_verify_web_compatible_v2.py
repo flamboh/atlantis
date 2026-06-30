@@ -91,9 +91,9 @@ def test_verify_web_compatible_v2_requires_netflow_rollup_rows(tmp_path: Path) -
     pipeline_v2, verifier = load_modules()
     db_path = build_two_flow_csv_db(tmp_path, pipeline_v2)
     with sqlite3.connect(db_path) as conn:
-        conn.execute('DELETE FROM netflow_stats_aggregate_v2')
+        conn.execute("DELETE FROM netflow_stats_v2 WHERE granularity != '5m'")
 
-    with pytest.raises(SystemExit, match='netflow_stats_aggregate_v2 has no rows'):
+    with pytest.raises(SystemExit, match='netflow_stats_v2 has no rollup rows'):
         verifier.verify_database(
             db_path,
             source_id='ugr16',
@@ -107,13 +107,13 @@ def test_verify_web_compatible_v2_rejects_netflow_rollup_mismatch(tmp_path: Path
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
-            UPDATE netflow_stats_aggregate_v2
+            UPDATE netflow_stats_v2
             SET flows = flows + 1
             WHERE granularity = '1h'
             """
         )
 
-    with pytest.raises(SystemExit, match='netflow_stats_aggregate_v2 parity failed'):
+    with pytest.raises(SystemExit, match='netflow_stats_v2 rollup parity failed'):
         verifier.verify_database(
             db_path,
             source_id='ugr16',
