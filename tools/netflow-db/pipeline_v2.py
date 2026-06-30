@@ -78,6 +78,20 @@ from stats_v2 import (
     protocol_metric_keys,
     validate_ip_version,
 )
+from stats_v3 import (
+    add_traffic_metrics_v3,
+    address_set_entries_to_count_rows,
+    aggregate_raw_v3_entries,
+    build_address_structure_stats_v3_rows,
+    empty_traffic_stats_v3_row,
+    init_stats_v3_tables,
+    insert_address_count_stats_v3_rows,
+    insert_address_structure_stats_v3_rows,
+    insert_protocol_stats_v3_rows,
+    insert_traffic_stats_v3_rows,
+    protocol_set_entries_to_rows,
+    visibility_pairs_for_row,
+)
 
 
 DEFAULT_MAAD_BIN = Path(__file__).resolve().parent / 'maad_fast'
@@ -128,6 +142,9 @@ class BucketAccumulator:
     protocols_ipv6: set[str] = field(default_factory=set)
     maad_source_ipv4: set[str] = field(default_factory=set)
     maad_destination_ipv4: set[str] = field(default_factory=set)
+    traffic_v3_by_scope: dict[tuple[int, str, str], dict] = field(default_factory=dict)
+    protocol_v3_by_scope: dict[tuple[int, str, str], set[str]] = field(default_factory=dict)
+    address_v3_by_scope: dict[tuple[int, str, str, str], set[str]] = field(default_factory=dict)
 
     def add(self, row: NormalizedRow) -> None:
         """Accumulate one normalized row."""
@@ -138,6 +155,7 @@ class BucketAccumulator:
             protocol=row.protocol,
             packets=row.packets,
             bytes_count=row.bytes,
+            src_tos=row.src_tos,
         )
 
     def add_flow(
@@ -149,6 +167,7 @@ class BucketAccumulator:
         protocol: int,
         packets: int,
         bytes_count: int,
+        src_tos: int = 0,
     ) -> None:
         """Accumulate one flow row without constructing a NormalizedRow."""
         self.add_netflow_metrics(
@@ -169,6 +188,16 @@ class BucketAccumulator:
             self.source_ipv6.add(src_ip)
             self.destination_ipv6.add(dst_ip)
             self.protocols_ipv6.add(str(protocol))
+
+        self.add_v3_flow(
+            ip_version=ip_version,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            protocol=protocol,
+            packets=packets,
+            bytes_count=bytes_count,
+            src_tos=src_tos,
+        )
 
     def add_netflow_metrics(
         self,
@@ -201,6 +230,44 @@ class BucketAccumulator:
             self.protocols_ipv4.add(str(protocol))
         elif ip_version == 6:
             self.protocols_ipv6.add(str(protocol))
+
+    def add_v3_flow(
+        self,
+        *,
+        ip_version: int,
+        src_ip: str,
+        dst_ip: str,
+        protocol: int,
+        packets: int,
+        bytes_count: int,
+        src_tos: int,
+    ) -> None:
+        """Accumulate exact and all/all v3 visibility rows."""
+        ip_version = validate_ip_version(ip_version)
+        for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
+            key = (ip_version, src_visibility, dst_visibility)
+            traffic = self.traffic_v3_by_scope.setdefault(
+                key,
+                empty_traffic_stats_v3_row(
+                    source_id=self.source_id,
+                    granularity='5m',
+                    bucket_start=self.bucket_start,
+                    bucket_end=self.bucket_end,
+                    ip_version=ip_version,
+                    src_visibility=src_visibility,
+                    dst_visibility=dst_visibility,
+                ),
+            )
+            add_traffic_metrics_v3(
+                traffic,
+                protocol=protocol,
+                flows=1,
+                packets=packets,
+                bytes_count=bytes_count,
+            )
+            self.protocol_v3_by_scope.setdefault(key, set()).add(str(protocol))
+            self.address_v3_by_scope.setdefault((*key, 'source'), set()).add(src_ip)
+            self.address_v3_by_scope.setdefault((*key, 'destination'), set()).add(dst_ip)
 
     def netflow_rows(self) -> list[dict]:
         """Return netflow_stats_v2 rows for this bucket."""
@@ -246,7 +313,58 @@ class BucketAccumulator:
             'maad_source_ipv4': sorted(self.maad_source_ipv4),
             'maad_destination_ipv4': sorted(self.maad_destination_ipv4),
             'netflow_rows': [dict(row) for row in self.netflow_rows()],
+            'traffic_v3_rows': [dict(row) for row in self.traffic_v3_rows()],
+            'protocol_v3_sets': self.protocol_v3_set_entries(),
+            'address_v3_sets': self.address_v3_set_entries(),
         }
+
+    def traffic_v3_rows(self) -> list[dict]:
+        """Return v3 traffic rows for this bucket."""
+        return [
+            self.traffic_v3_by_scope[key]
+            for key in sorted(self.traffic_v3_by_scope)
+        ]
+
+    def protocol_v3_set_entries(self) -> list[dict]:
+        """Return raw protocol sets for v3 rows and aggregates."""
+        return [
+            {
+                'source_id': self.source_id,
+                'granularity': '5m',
+                'bucket_start': self.bucket_start,
+                'bucket_end': self.bucket_end,
+                'ip_version': key[0],
+                'src_visibility': key[1],
+                'dst_visibility': key[2],
+                'protocols': sorted(protocols),
+            }
+            for key, protocols in sorted(self.protocol_v3_by_scope.items())
+        ]
+
+    def address_v3_set_entries(self) -> list[dict]:
+        """Return raw address sets for v3 rows and aggregates."""
+        return [
+            {
+                'source_id': self.source_id,
+                'granularity': '5m',
+                'bucket_start': self.bucket_start,
+                'bucket_end': self.bucket_end,
+                'ip_version': key[0],
+                'src_visibility': key[1],
+                'dst_visibility': key[2],
+                'address_side': key[3],
+                'addresses': sorted(addresses),
+            }
+            for key, addresses in sorted(self.address_v3_by_scope.items())
+        ]
+
+    def protocol_v3_rows(self) -> list[dict]:
+        """Return protocol_stats_v3 rows for this bucket."""
+        return protocol_set_entries_to_rows(self.protocol_v3_set_entries())
+
+    def address_count_v3_rows(self) -> list[dict]:
+        """Return address_count_stats_v3 rows for this bucket."""
+        return address_set_entries_to_count_rows(self.address_v3_set_entries())
 
 
 @dataclass(frozen=True)
@@ -341,6 +459,9 @@ def process_nfcapd_tree_spec(
     )
     zero_fill_gaps = bool(spec.get('zero_fill_gaps', True))
     source_bounds = discover_nfcapd_source_bounds(root_path, member_ids) if zero_fill_gaps else {}
+    start_bucket = parse_optional_config_time(spec.get('start_time'))
+    end_bucket = parse_optional_config_time(spec.get('end_time'))
+    force = bool(spec.get('force', False))
 
     for day in iter_days(start_date, end_date):
         member_specs = discover_nfcapd_tree_specs(
@@ -349,10 +470,16 @@ def process_nfcapd_tree_spec(
             day,
             source_bounds=source_bounds,
         )
+        if start_bucket is not None or end_bucket is not None:
+            member_specs = filter_input_specs_by_bucket_window(
+                member_specs,
+                start_bucket=start_bucket,
+                end_bucket=end_bucket,
+            )
         if not member_specs:
             LOGGER.info('No nfcapd files found for %s', day.strftime('%Y-%m-%d'))
             continue
-        jobs = build_nfcapd_logical_bucket_jobs(conn, sources, member_specs)
+        jobs = build_nfcapd_logical_bucket_jobs(conn, sources, member_specs, force=force)
         if not jobs:
             print(f"[pipeline_v2] Skip {day.strftime('%Y-%m-%d')}: {len(member_specs)} already processed")
             continue
@@ -583,6 +710,8 @@ def build_nfcapd_logical_bucket_jobs(
     conn: sqlite3.Connection,
     sources: list[SourceDefinition],
     member_specs: list[dict],
+    *,
+    force: bool = False,
 ) -> list[dict]:
     """Build unprocessed logical source buckets from physical member specs."""
     specs_by_member_bucket: dict[tuple[str, int], list[dict]] = defaultdict(list)
@@ -606,7 +735,7 @@ def build_nfcapd_logical_bucket_jobs(
                 if present_specs
                 else [logical_nfcapd_gap_locator(source.source_id, bucket_start)]
             )
-            if not nfcapd_logical_bucket_processed(conn, source.source_id, bucket_start, locators):
+            if force or not nfcapd_logical_bucket_processed(conn, source.source_id, bucket_start, locators):
                 needs_processing = True
             jobs.append(
                 {
@@ -747,6 +876,38 @@ def parse_config_date(raw_value: str) -> datetime:
         raise ValueError(f'Invalid date {raw_value!r}; expected YYYY-MM-DD') from error
 
 
+def parse_optional_config_time(raw_value: object) -> int | None:
+    """Parse an optional local timestamp string to epoch seconds."""
+    if raw_value in (None, ''):
+        return None
+    raw_text = str(raw_value)
+    for datetime_format in ('%Y-%m-%dT%H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S'):
+        try:
+            parsed = datetime.strptime(raw_text, datetime_format)
+            return int(parsed.replace(tzinfo=PIPELINE_TIMEZONE).timestamp())
+        except ValueError:
+            continue
+    raise ValueError(f'Invalid time {raw_text!r}; expected YYYY-MM-DDTHH:MM.')
+
+
+def filter_input_specs_by_bucket_window(
+    input_specs: list[dict],
+    *,
+    start_bucket: int | None,
+    end_bucket: int | None,
+) -> list[dict]:
+    """Filter nfcapd specs to a half-open bucket window."""
+    filtered = []
+    for spec in input_specs:
+        bucket_start = int(spec.get('bucket_start') or parse_nfcapd_bucket_start(str(spec['path'])))
+        if start_bucket is not None and bucket_start < start_bucket:
+            continue
+        if end_bucket is not None and bucket_start >= end_bucket:
+            continue
+        filtered.append(spec)
+    return filtered
+
+
 def build_dataset_tree_config(
     *,
     dataset_id: str,
@@ -755,6 +916,9 @@ def build_dataset_tree_config(
     database_path: str | Path | None = None,
     maad_bin: str | Path = DEFAULT_MAAD_BIN,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    force: bool = False,
 ) -> dict:
     """Build a v2 nfcapd_tree config from datasets.json."""
     from common import get_dataset_config, list_dataset_sources
@@ -776,6 +940,12 @@ def build_dataset_tree_config(
         tree_input['source_ids'] = list_dataset_sources(dataset_id)
     if end_date is not None:
         tree_input['end_date'] = end_date
+    if start_time is not None:
+        tree_input['start_time'] = start_time
+    if end_time is not None:
+        tree_input['end_time'] = end_time
+    if force:
+        tree_input['force'] = True
     return {
         'database_path': str(db_path),
         'maad_bin': str(maad_bin),
@@ -801,6 +971,7 @@ def process_input_specs(
     init_ip_stats_v2_table(conn)
     init_protocol_stats_v2_table(conn)
     init_maad_v2_tables(conn)
+    init_stats_v3_tables(conn)
 
     if max_workers == 1 and should_stream_csv_input_specs(input_specs):
         process_csv_input_specs_streaming(
@@ -903,6 +1074,7 @@ def process_nfcapd_logical_bucket_jobs(
     init_ip_stats_v2_table(conn)
     init_protocol_stats_v2_table(conn)
     init_maad_v2_tables(conn)
+    init_stats_v3_tables(conn)
 
     member_specs_by_locator = {}
     for job in jobs:
@@ -939,9 +1111,16 @@ def process_nfcapd_logical_bucket_jobs(
             maad_backend,
             maad_workers,
         )
+        address_structure_v3_rows = build_address_structure_v3_rows_from_raw_buckets(
+            raw_buckets,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
         with conn:
             for rows in maad_rows:
                 insert_maad_v2_rows(conn, rows)
+            insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
 
     write_aggregate_rows(
         conn,
@@ -1024,9 +1203,20 @@ def build_logical_nfcapd_bucket_payload(
         'netflow_rows': raw_bucket['netflow_rows'],
         'ip_rows': [ip_row_from_raw_bucket(raw_bucket)],
         'protocol_rows': [protocol_row_from_raw_bucket(raw_bucket)],
+        'traffic_v3_rows': raw_bucket['traffic_v3_rows'],
+        'protocol_v3_rows': protocol_set_entries_to_rows(raw_bucket['protocol_v3_sets']),
+        'address_count_v3_rows': address_set_entries_to_count_rows(raw_bucket['address_v3_sets']),
         'maad_rows': [
             build_maad_rows_for_raw_bucket(raw_bucket, '5m', maad_bin, maad_backend)
         ]
+        if run_maad
+        else [],
+        'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
+            [raw_bucket],
+            maad_bin,
+            maad_backend,
+            1,
+        )
         if run_maad
         else [],
         'raw_buckets': [raw_bucket],
@@ -1053,6 +1243,9 @@ def merge_raw_buckets_for_source(
         'maad_source_ipv4': set(),
         'maad_destination_ipv4': set(),
         'netflow_by_version': {},
+        'traffic_v3_rows': [],
+        'protocol_v3_sets': [],
+        'address_v3_sets': [],
     }
     for raw in raw_buckets:
         merged['source_ipv4'].update(raw['source_ipv4'])
@@ -1063,6 +1256,9 @@ def merge_raw_buckets_for_source(
         merged['protocols_ipv6'].update(raw['protocols_ipv6'])
         merged['maad_source_ipv4'].update(raw['maad_source_ipv4'])
         merged['maad_destination_ipv4'].update(raw['maad_destination_ipv4'])
+        merged['traffic_v3_rows'].extend(raw.get('traffic_v3_rows', []))
+        merged['protocol_v3_sets'].extend(raw.get('protocol_v3_sets', []))
+        merged['address_v3_sets'].extend(raw.get('address_v3_sets', []))
         for row in raw['netflow_rows']:
             ip_version = validate_ip_version(row['ip_version'])
             target = merged['netflow_by_version'].setdefault(
@@ -1077,6 +1273,16 @@ def merge_raw_buckets_for_source(
             for column in NETFLOW_METRIC_COLUMNS:
                 target[column] += row[column]
 
+    retargeted_v3_raw_buckets = [
+        retarget_raw_bucket_v3(raw, source_id, bucket_start, bucket_end)
+        for raw in raw_buckets
+    ]
+    v3_payload = aggregate_raw_v3_entries(
+        retargeted_v3_raw_buckets,
+        granularity='5m',
+        bucket_start=bucket_start,
+        bucket_end=bucket_end,
+    )
     return {
         'source_id': source_id,
         'bucket_start': bucket_start,
@@ -1092,7 +1298,43 @@ def merge_raw_buckets_for_source(
             merged['netflow_by_version'][ip_version]
             for ip_version in sorted(merged['netflow_by_version'])
         ],
+        'traffic_v3_rows': v3_payload['traffic_v3_rows'],
+        'protocol_v3_sets': v3_payload['protocol_v3_sets'],
+        'address_v3_sets': v3_payload['address_v3_sets'],
     }
+
+
+def retarget_raw_bucket_v3(
+    raw: dict,
+    source_id: str,
+    bucket_start: int,
+    bucket_end: int,
+) -> dict:
+    """Copy v3 raw entries from a physical member onto a logical source bucket."""
+    def retarget(entry: dict) -> dict:
+        return {
+            **entry,
+            'source_id': source_id,
+            'granularity': '5m',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_end,
+        }
+
+    return {
+        'source_id': source_id,
+        'bucket_start': bucket_start,
+        'traffic_v3_rows': [retarget(row) for row in raw.get('traffic_v3_rows', [])],
+        'protocol_v3_sets': [retarget(entry) for entry in raw.get('protocol_v3_sets', [])],
+        'address_v3_sets': [retarget(entry) for entry in raw.get('address_v3_sets', [])],
+    }
+
+
+def ensure_raw_bucket_v3_defaults(raw_bucket: dict) -> dict:
+    """Ensure older test/raw payloads have v3 keys."""
+    raw_bucket.setdefault('traffic_v3_rows', [])
+    raw_bucket.setdefault('protocol_v3_sets', [])
+    raw_bucket.setdefault('address_v3_sets', [])
+    return raw_bucket
 
 
 def ip_row_from_raw_bucket(raw_bucket: dict) -> dict:
@@ -1947,6 +2189,7 @@ def add_csv_values_to_bucket(
     protocol = extract_csv_value_protocol(values, config, field_indexes)
     packets = extract_csv_value_int(values, config, field_indexes, 'packets')
     bytes_count = extract_csv_value_int(values, config, field_indexes, 'bytes')
+    src_tos = extract_csv_value_int(values, config, field_indexes, 'src_tos')
 
     key = (source_id, bucket_start, bucket_end)
     bucket = buckets.setdefault(
@@ -1964,6 +2207,7 @@ def add_csv_values_to_bucket(
         protocol=protocol,
         packets=packets,
         bytes_count=bytes_count,
+        src_tos=src_tos,
     )
 
 
@@ -2206,6 +2450,7 @@ def build_bucket_payload_from_values(
     run_maad: bool,
 ) -> dict:
     """Build DB insert payloads from completed bucket accumulators."""
+    raw_buckets = [bucket.raw_bucket_row() for bucket in bucket_values]
     return {
         'processed_buckets': [
             {
@@ -2220,6 +2465,9 @@ def build_bucket_payload_from_values(
         'netflow_rows': [row for bucket in bucket_values for row in bucket.netflow_rows()],
         'ip_rows': [bucket.ip_row() for bucket in bucket_values],
         'protocol_rows': [bucket.protocol_row() for bucket in bucket_values],
+        'traffic_v3_rows': [row for bucket in bucket_values for row in bucket.traffic_v3_rows()],
+        'protocol_v3_rows': [row for bucket in bucket_values for row in bucket.protocol_v3_rows()],
+        'address_count_v3_rows': [row for bucket in bucket_values for row in bucket.address_count_v3_rows()],
         'maad_rows': build_maad_payload_rows(
             {
                 (bucket.source_id, bucket.bucket_start, bucket.bucket_end): bucket
@@ -2231,7 +2479,15 @@ def build_bucket_payload_from_values(
         )
         if run_maad
         else [],
-        'raw_buckets': [bucket.raw_bucket_row() for bucket in bucket_values],
+        'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
+            raw_buckets,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        if run_maad
+        else [],
+        'raw_buckets': raw_buckets,
     }
 
 
@@ -2240,6 +2496,7 @@ def add_raw_bucket_to_streaming_aggregates(
     raw_bucket: dict,
 ) -> None:
     """Merge one completed 5m bucket into bounded aggregate state."""
+    ensure_raw_bucket_v3_defaults(raw_bucket)
     for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
         bucket_start = floor_bucket_start(raw_bucket['bucket_start'], seconds)
         key = (raw_bucket['source_id'], granularity, bucket_start)
@@ -2255,6 +2512,7 @@ def add_raw_bucket_to_streaming_aggregates(
         aggregate['protocols_ipv6'].update(raw_bucket['protocols_ipv6'])
         aggregate['maad_source_ipv4'].update(raw_bucket['maad_source_ipv4'])
         aggregate['maad_destination_ipv4'].update(raw_bucket['maad_destination_ipv4'])
+        aggregate['raw_v3_buckets'].append(raw_bucket)
         for row in raw_bucket['netflow_rows']:
             add_netflow_row_to_aggregate(aggregate, row)
 
@@ -2276,6 +2534,7 @@ def new_streaming_aggregate_bucket(source_id: str, granularity: str, bucket_star
         'maad_source_ipv4': set(),
         'maad_destination_ipv4': set(),
         'netflow_by_version': {},
+        'raw_v3_buckets': [],
     }
 
 
@@ -2321,10 +2580,48 @@ def flush_streaming_aggregate_buckets(
         if run_maad
         else []
     )
+    v3_payloads = [
+        aggregate_raw_v3_entries(
+            bucket['raw_v3_buckets'],
+            granularity=bucket['granularity'],
+            bucket_start=bucket['bucket_start'],
+            bucket_end=bucket['bucket_end'],
+        )
+        for bucket in buckets
+    ]
+    traffic_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['traffic_v3_rows']
+    ]
+    protocol_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['protocol_v3_rows']
+    ]
+    address_count_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['address_count_v3_rows']
+    ]
+    address_structure_v3_rows = (
+        build_address_structure_v3_rows_from_payloads(
+            v3_payloads,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        if run_maad
+        else []
+    )
     with conn:
         insert_netflow_stats_v2_rows(conn, netflow_rows)
         insert_ip_stats_v2_rows(conn, ip_rows)
         insert_protocol_stats_v2_rows(conn, protocol_rows)
+        insert_traffic_stats_v3_rows(conn, traffic_v3_rows)
+        insert_protocol_stats_v3_rows(conn, protocol_v3_rows)
+        insert_address_count_stats_v3_rows(conn, address_count_v3_rows)
+        insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
         for rows in maad_rows:
             insert_maad_v2_rows(conn, rows)
 
@@ -2424,14 +2721,24 @@ def build_input_payload(
                 run_maad=run_maad,
             )
         nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
+        raw_bucket = ensure_raw_bucket_v3_defaults(nfcapd_payload['raw_bucket'])
         return {
             'processed_buckets': [nfcapd_payload['processed_bucket']],
             'netflow_rows': nfcapd_payload['netflow_rows'],
             'ip_rows': [nfcapd_payload['ip_row']],
             'protocol_rows': [nfcapd_payload['protocol_row']],
+            'traffic_v3_rows': nfcapd_payload.get('traffic_v3_rows', raw_bucket['traffic_v3_rows']),
+            'protocol_v3_rows': nfcapd_payload.get(
+                'protocol_v3_rows',
+                protocol_set_entries_to_rows(raw_bucket['protocol_v3_sets']),
+            ),
+            'address_count_v3_rows': nfcapd_payload.get(
+                'address_count_v3_rows',
+                address_set_entries_to_count_rows(raw_bucket['address_v3_sets']),
+            ),
             'maad_rows': [
                 build_maad_rows_for_raw_bucket(
-                    nfcapd_payload['raw_bucket'],
+                    raw_bucket,
                     '5m',
                     maad_bin,
                     maad_backend,
@@ -2439,7 +2746,15 @@ def build_input_payload(
             ]
             if run_maad
             else [],
-            'raw_buckets': [nfcapd_payload['raw_bucket']],
+            'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
+                [raw_bucket],
+                maad_bin,
+                maad_backend,
+                maad_workers,
+            )
+            if run_maad
+            else [],
+            'raw_buckets': [raw_bucket],
         }
 
     buckets = accumulate_input_buckets(iter_input_rows(spec))
@@ -2459,7 +2774,18 @@ def build_input_payload(
         'netflow_rows': [row for bucket in bucket_values for row in bucket.netflow_rows()],
         'ip_rows': [bucket.ip_row() for bucket in bucket_values],
         'protocol_rows': [bucket.protocol_row() for bucket in bucket_values],
+        'traffic_v3_rows': [row for bucket in bucket_values for row in bucket.traffic_v3_rows()],
+        'protocol_v3_rows': [row for bucket in bucket_values for row in bucket.protocol_v3_rows()],
+        'address_count_v3_rows': [row for bucket in bucket_values for row in bucket.address_count_v3_rows()],
         'maad_rows': build_maad_payload_rows(buckets, maad_bin, maad_backend, maad_workers) if run_maad else [],
+        'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
+            [bucket.raw_bucket_row() for bucket in bucket_values],
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        if run_maad
+        else [],
         'raw_buckets': [bucket.raw_bucket_row() for bucket in bucket_values],
     }
 
@@ -2475,6 +2801,8 @@ def write_input_payload(
     processed_buckets = payload['processed_buckets']
     if not processed_buckets:
         return
+    for raw_bucket in payload.get('raw_buckets', []):
+        ensure_raw_bucket_v3_defaults(raw_bucket)
 
     with conn:
         if delete_existing:
@@ -2486,9 +2814,13 @@ def write_input_payload(
         insert_netflow_stats_v2_rows(conn, payload['netflow_rows'])
         insert_ip_stats_v2_rows(conn, payload['ip_rows'])
         insert_protocol_stats_v2_rows(conn, payload['protocol_rows'])
+        insert_traffic_stats_v3_rows(conn, payload.get('traffic_v3_rows', []))
+        insert_protocol_stats_v3_rows(conn, payload.get('protocol_v3_rows', []))
+        insert_address_count_stats_v3_rows(conn, payload.get('address_count_v3_rows', []))
 
         for rows in payload['maad_rows']:
             insert_maad_v2_rows(conn, rows)
+        insert_address_structure_stats_v3_rows(conn, payload.get('address_structure_v3_rows', []))
 
         if mark_processed:
             mark_processed_buckets(conn, processed_buckets)
@@ -2521,6 +2853,10 @@ def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start:
         'structure_stats_v2',
         'spectrum_stats_v2',
         'dimension_stats_v2',
+        'traffic_stats_v3',
+        'protocol_stats_v3',
+        'address_count_stats_v3',
+        'address_structure_stats_v3',
     ):
         conn.execute(
             f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
@@ -2563,12 +2899,42 @@ def write_aggregate_rows(
         if run_maad
         else []
     )
+    v3_payloads = build_aggregate_stats_v3_payloads(raw_buckets)
+    traffic_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['traffic_v3_rows']
+    ]
+    protocol_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['protocol_v3_rows']
+    ]
+    address_count_v3_rows = [
+        row
+        for payload in v3_payloads
+        for row in payload['address_count_v3_rows']
+    ]
+    address_structure_v3_rows = (
+        build_address_structure_v3_rows_from_payloads(
+            v3_payloads,
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        if run_maad
+        else []
+    )
     with conn:
         if delete_existing:
             delete_aggregate_outputs_for_raw_buckets(conn, raw_buckets)
         insert_netflow_stats_v2_rows(conn, netflow_rows)
         insert_ip_stats_v2_rows(conn, ip_rows)
         insert_protocol_stats_v2_rows(conn, protocol_rows)
+        insert_traffic_stats_v3_rows(conn, traffic_v3_rows)
+        insert_protocol_stats_v3_rows(conn, protocol_v3_rows)
+        insert_address_count_stats_v3_rows(conn, address_count_v3_rows)
+        insert_address_structure_stats_v3_rows(conn, address_structure_v3_rows)
         for rows in maad_rows:
             insert_maad_v2_rows(conn, rows)
 
@@ -2588,6 +2954,10 @@ def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_bucke
             'structure_stats_v2',
             'spectrum_stats_v2',
             'dimension_stats_v2',
+            'traffic_stats_v3',
+            'protocol_stats_v3',
+            'address_count_stats_v3',
+            'address_structure_stats_v3',
         ):
             conn.execute(
                 f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
@@ -2689,6 +3059,26 @@ def build_aggregate_protocol_rows(raw_buckets: list[dict]) -> list[dict]:
     return rows
 
 
+def build_aggregate_stats_v3_payloads(raw_buckets: list[dict]) -> list[dict]:
+    """Build v3 aggregate payloads for every affected granularity bucket."""
+    buckets = defaultdict(list)
+    for raw in raw_buckets:
+        for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
+            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
+            bucket_end = next_bucket_start(bucket_start, seconds)
+            buckets[(raw['source_id'], granularity, bucket_start, bucket_end)].append(raw)
+
+    return [
+        aggregate_raw_v3_entries(
+            bucket_raws,
+            granularity=granularity,
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+        )
+        for (_source_id, granularity, bucket_start, bucket_end), bucket_raws in sorted(buckets.items())
+    ]
+
+
 def build_aggregate_maad_rows(
     raw_buckets: list[dict],
     maad_bin: str | Path,
@@ -2738,6 +3128,95 @@ def build_aggregate_maad_tasks(
             }
         )
     return tasks
+
+
+def build_address_structure_v3_rows_from_payloads(
+    payloads: list[dict],
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+) -> list[dict]:
+    """Build address_structure_stats_v3 rows from v3 raw address-set payloads."""
+    entries = [
+        entry
+        for payload in payloads
+        for entry in payload['address_v3_sets']
+        if entry['ip_version'] == 4
+    ]
+    return build_address_structure_v3_rows_from_address_sets(
+        entries,
+        maad_bin,
+        maad_backend,
+        maad_workers,
+    )
+
+
+def build_address_structure_v3_rows_from_raw_buckets(
+    raw_buckets: list[dict],
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+) -> list[dict]:
+    """Build 5m address_structure_stats_v3 rows from raw bucket address sets."""
+    entries = [
+        entry
+        for raw_bucket in raw_buckets
+        for entry in raw_bucket.get('address_v3_sets', [])
+        if entry['ip_version'] == 4
+    ]
+    return build_address_structure_v3_rows_from_address_sets(
+        entries,
+        maad_bin,
+        maad_backend,
+        maad_workers,
+    )
+
+
+def build_address_structure_v3_rows_from_address_sets(
+    entries: list[dict],
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+) -> list[dict]:
+    """Run MAAD for v3 address-set entries."""
+    tasks = [
+        {
+            'maad_bin': str(maad_bin),
+            'maad_backend': maad_backend,
+            **entry,
+        }
+        for entry in entries
+    ]
+    if not tasks:
+        return []
+    if maad_workers > 1 and len(tasks) > 1:
+        with Pool(processes=maad_workers) as pool:
+            results = list(pool.imap_unordered(process_address_structure_v3_task, tasks, chunksize=1))
+    else:
+        results = [process_address_structure_v3_task(task) for task in tasks]
+    return [row for rows in results for row in rows]
+
+
+def process_address_structure_v3_task(task: dict) -> list[dict]:
+    """Run MAAD for one v3 address set."""
+    timeout_seconds = maad_timeout_seconds(str(task['granularity']))
+    result = run_maad_for_addresses(
+        task['maad_bin'],
+        set(task['addresses']),
+        maad_backend=str(task.get('maad_backend', 'subprocess')),
+        timeout_seconds=timeout_seconds,
+    )
+    return build_address_structure_stats_v3_rows(
+        source_id=task['source_id'],
+        granularity=task['granularity'],
+        bucket_start=task['bucket_start'],
+        bucket_end=task['bucket_end'],
+        ip_version=task['ip_version'],
+        src_visibility=task['src_visibility'],
+        dst_visibility=task['dst_visibility'],
+        address_side=task['address_side'],
+        result=result,
+    )
 
 
 def process_maad_row_task(task: dict) -> dict[str, dict]:
@@ -2922,6 +3401,46 @@ def build_nfcapd_gap_payload(
         )
         for ip_version in (4, 6)
     ]
+    traffic_v3_rows = [
+        empty_traffic_stats_v3_row(
+            source_id=source_id,
+            granularity='5m',
+            bucket_start=bucket_start,
+            bucket_end=bucket_end,
+            ip_version=ip_version,
+            src_visibility='all',
+            dst_visibility='all',
+        )
+        for ip_version in (4, 6)
+    ]
+    protocol_v3_sets = [
+        {
+            'source_id': source_id,
+            'granularity': '5m',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_end,
+            'ip_version': ip_version,
+            'src_visibility': 'all',
+            'dst_visibility': 'all',
+            'protocols': [],
+        }
+        for ip_version in (4, 6)
+    ]
+    address_v3_sets = [
+        {
+            'source_id': source_id,
+            'granularity': '5m',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_end,
+            'ip_version': ip_version,
+            'src_visibility': 'all',
+            'dst_visibility': 'all',
+            'address_side': address_side,
+            'addresses': [],
+        }
+        for ip_version in (4, 6)
+        for address_side in ('source', 'destination')
+    ]
     raw_bucket = {
         'source_id': source_id,
         'bucket_start': bucket_start,
@@ -2934,6 +3453,9 @@ def build_nfcapd_gap_payload(
         'maad_source_ipv4': [],
         'maad_destination_ipv4': [],
         'netflow_rows': [dict(row) for row in netflow_rows],
+        'traffic_v3_rows': traffic_v3_rows,
+        'protocol_v3_sets': protocol_v3_sets,
+        'address_v3_sets': address_v3_sets,
     }
     return {
         'processed_buckets': [
@@ -2970,7 +3492,18 @@ def build_nfcapd_gap_payload(
                 'protocols_list_ipv6': '',
             }
         ],
+        'traffic_v3_rows': traffic_v3_rows,
+        'protocol_v3_rows': protocol_set_entries_to_rows(protocol_v3_sets),
+        'address_count_v3_rows': address_set_entries_to_count_rows(address_v3_sets),
         'maad_rows': [build_maad_rows_for_raw_bucket(raw_bucket, '5m', '', maad_backend='python')]
+        if run_maad
+        else [],
+        'address_structure_v3_rows': build_address_structure_v3_rows_from_raw_buckets(
+            [raw_bucket],
+            '',
+            'python',
+            1,
+        )
         if run_maad
         else [],
         'raw_buckets': [raw_bucket],
@@ -3104,9 +3637,12 @@ def main() -> None:
     parser.add_argument('--dataset', help='Dataset id from datasets.json for canonical nfcapd tree input.')
     parser.add_argument('--start-date', help='Start date for --dataset, inclusive, YYYY-MM-DD.')
     parser.add_argument('--end-date', help='End date for --dataset, inclusive, YYYY-MM-DD. Defaults to latest nfcapd day.')
+    parser.add_argument('--start-time', help='Optional local half-open window start, YYYY-MM-DDTHH:MM.')
+    parser.add_argument('--end-time', help='Optional local half-open window end, YYYY-MM-DDTHH:MM.')
     parser.add_argument('--database-path', help='Override v2 SQLite output path.')
     parser.add_argument('--maad-bin', default=str(DEFAULT_MAAD_BIN), help='Path to MAAD binary.')
     parser.add_argument('--max-workers', type=int, default=DEFAULT_MAX_WORKERS, help='Worker process count.')
+    parser.add_argument('--force', action='store_true', help='Rewrite selected nfcapd buckets even when marked processed.')
     args = parser.parse_args()
 
     if args.config:
@@ -3123,6 +3659,9 @@ def main() -> None:
             database_path=args.database_path,
             maad_bin=args.maad_bin,
             max_workers=args.max_workers,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            force=args.force,
         )
 
     db_path = Path(config['database_path'])
