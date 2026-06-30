@@ -3,6 +3,8 @@ import type { RequestHandler } from './$types';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
 
 const FIVE_MINUTES = '5m';
+const DEFAULT_SRC_VISIBILITY = 'all';
+const DEFAULT_DST_VISIBILITY = 'all';
 
 type IpCountRow = {
 	saIpv4Count: number;
@@ -43,16 +45,18 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		const db = await getDb(dataset, platform);
 		const row = await db.get<IpCountRow>(
 			`SELECT
-				sa_ipv4_count AS saIpv4Count,
-				da_ipv4_count AS daIpv4Count,
-				sa_ipv6_count AS saIpv6Count,
-				da_ipv6_count AS daIpv6Count
-			FROM ip_stats_v2
+				SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
+				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
+				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
+				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
+			FROM address_count_stats_v3
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?
-			LIMIT 1`,
-			[router, FIVE_MINUTES, bucketStart]
+				AND src_visibility = ?
+				AND dst_visibility = ?
+			GROUP BY source_id, bucket_start`,
+			[router, FIVE_MINUTES, bucketStart, DEFAULT_SRC_VISIBILITY, DEFAULT_DST_VISIBILITY]
 		);
 
 		if (!row) {

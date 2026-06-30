@@ -1,4 +1,9 @@
-import { IP_GRANULARITIES, type IpGranularity } from '$lib/types/types';
+import {
+	FLOW_VISIBILITIES,
+	IP_GRANULARITIES,
+	type FlowVisibility,
+	type IpGranularity
+} from '$lib/types/types';
 import type { SourceDefinition } from '$lib/server/datasets';
 import type { StructureFunctionPoint } from '$lib/types/types';
 type RawStructureFunctionPoint = {
@@ -14,6 +19,8 @@ export interface AggregateStatsParams {
 	granularity: IpGranularity;
 	start: number;
 	end: number;
+	srcVisibility: FlowVisibility;
+	dstVisibility: FlowVisibility;
 }
 
 export interface RequestValidationError {
@@ -23,16 +30,17 @@ export interface RequestValidationError {
 
 export const FIVE_MINUTE_GRANULARITY: IpGranularity = '5m';
 export const DEFAULT_IP_GRANULARITY: IpGranularity = '1h';
-export type NetflowSchemaVersion = 'v2';
+export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
+const VALID_FLOW_VISIBILITIES = new Set<string>(FLOW_VISIBILITIES);
 
-export function assertNetflowV2Database(): void {
+export function assertNetflowV3Database(): void {
 	return;
 }
 
 export function getNetflowSchemaVersion(): NetflowSchemaVersion {
-	return 'v2';
+	return 'v3';
 }
 
 export function parseSourceIds(param: string | null): string[] {
@@ -61,11 +69,21 @@ export function parseIpGranularityOrDefault(param: string | null): IpGranularity
 	return parseIpGranularity(param) ?? DEFAULT_IP_GRANULARITY;
 }
 
+export function parseFlowVisibility(param: string | null): FlowVisibility {
+	if (!param) {
+		return 'all';
+	}
+
+	return VALID_FLOW_VISIBILITIES.has(param) ? (param as FlowVisibility) : 'all';
+}
+
 export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
 	const routers = parseSourceIds(url.searchParams.get('routers'));
 	const granularity = parseIpGranularityOrDefault(url.searchParams.get('granularity'));
 	const start = parseTimestamp(url.searchParams.get('startDate'));
 	const end = parseTimestamp(url.searchParams.get('endDate'));
+	const srcVisibility = parseFlowVisibility(url.searchParams.get('srcVisibility'));
+	const dstVisibility = parseFlowVisibility(url.searchParams.get('dstVisibility'));
 
 	if (routers.length === 0) {
 		return { error: 'No routers selected', status: 400 };
@@ -79,7 +97,7 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		return { error: 'Start time must be before end time', status: 400 };
 	}
 
-	return { routers, granularity, start, end };
+	return { routers, granularity, start, end, srcVisibility, dstVisibility };
 }
 
 export function placeholders(values: unknown[]): string {

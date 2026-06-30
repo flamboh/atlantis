@@ -8,6 +8,7 @@
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import {
+		type FlowVisibility,
 		IP_METRIC_OPTIONS,
 		type IpGranularity,
 		type IpMetricKey,
@@ -76,6 +77,8 @@
 		granularity?: IpGranularity;
 		routers?: RouterConfig;
 		activeMetrics?: IpMetricKey[];
+		srcVisibility?: FlowVisibility;
+		dstVisibility?: FlowVisibility;
 	}>();
 	const today = new Date();
 	const formatDate = (date: Date): string => formatDateAsPSTDateString(date);
@@ -617,6 +620,8 @@
 		endDate: string;
 		granularity: IpGranularity;
 		routers: string[];
+		srcVisibility: FlowVisibility;
+		dstVisibility: FlowVisibility;
 	};
 
 	let lastFiltersKey = '';
@@ -635,7 +640,9 @@
 			chart: CHART_ID,
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
-			routers: filters.routers
+			routers: filters.routers,
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 	}
 
@@ -651,7 +658,9 @@
 		const params = new URLSearchParams({
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
-			routers: filters.routers.join(',')
+			routers: filters.routers.join(','),
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 
 		try {
@@ -737,7 +746,9 @@
 			startDate: getStartDate(),
 			endDate: getEndDate(),
 			granularity: getGranularity(),
-			routers: selectedRouters
+			routers: selectedRouters,
+			srcVisibility: props.srcVisibility ?? 'all',
+			dstVisibility: props.dstVisibility ?? 'all'
 		};
 
 		currentGranularity = filters.granularity;

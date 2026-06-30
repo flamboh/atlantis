@@ -4,6 +4,7 @@
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
 	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '$lib/types/types';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;
@@ -22,6 +23,7 @@
 		endDate: string;
 		groupBy: GroupByOption;
 		routers: RouterConfig;
+		flowScope: FlowScopeKey;
 		groupByOptions?: GroupBySelectOption[];
 	}>();
 
@@ -30,6 +32,7 @@
 		endDateChange: { endDate: string };
 		groupByChange: { groupBy: GroupByOption };
 		routersChange: { routers: RouterConfig };
+		scopeChange: { scope: FlowScopeKey };
 		resetView: Record<string, never>;
 	}>();
 
@@ -43,6 +46,11 @@
 
 	function handleRoutersChange(nextRouters: RouterConfig) {
 		dispatch('routersChange', { routers: nextRouters });
+	}
+
+	function handleScopeChange(event: Event) {
+		const target = event.currentTarget as HTMLSelectElement;
+		dispatch('scopeChange', { scope: target.value as FlowScopeKey });
 	}
 
 	function handleResetView() {
@@ -144,6 +152,19 @@
 		<div class="dark:bg-dark-border hidden h-6 w-px bg-gray-200 sm:block" aria-hidden="true"></div>
 
 		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
+
+		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
+			<span class="text-sm font-medium text-gray-700 dark:text-gray-300">Scope:</span>
+			<select
+				value={props.flowScope}
+				onchange={handleScopeChange}
+				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+			>
+				{#each FLOW_SCOPE_OPTIONS as option (option.key)}
+					<option value={option.key}>{option.label}</option>
+				{/each}
+			</select>
+		</label>
 
 		<button
 			type="button"

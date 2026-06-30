@@ -29,7 +29,7 @@ export const sourceMembers = sqliteTable(
 	]
 );
 
-export const processedInputsV2 = sqliteTable(
+export const processedInputs = sqliteTable(
 	'processed_inputs_v2',
 	{
 		inputKind: text('input_kind', { enum: ['nfcapd', 'csv'] }).notNull(),
@@ -71,77 +71,6 @@ function netflowMetricColumns() {
 		bytesOther: integer('bytes_other').notNull()
 	};
 }
-
-export const netflowStatsV2 = sqliteTable(
-	'netflow_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		ipVersion: integer('ip_version').notNull(),
-		...netflowMetricColumns(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({
-			columns: [table.sourceId, table.granularity, table.bucketStart, table.ipVersion]
-		}),
-		index('idx_netflow_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId,
-			table.ipVersion
-		),
-		check('netflow_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
-	]
-);
-
-export const ipStatsV2 = sqliteTable(
-	'ip_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		saIpv4Count: integer('sa_ipv4_count').notNull(),
-		daIpv4Count: integer('da_ipv4_count').notNull(),
-		saIpv6Count: integer('sa_ipv6_count').notNull(),
-		daIpv6Count: integer('da_ipv6_count').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({ columns: [table.sourceId, table.granularity, table.bucketStart] }),
-		index('idx_ip_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId
-		)
-	]
-);
-
-export const protocolStatsV2 = sqliteTable(
-	'protocol_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		uniqueProtocolsCountIpv4: integer('unique_protocols_count_ipv4').notNull(),
-		uniqueProtocolsCountIpv6: integer('unique_protocols_count_ipv6').notNull(),
-		protocolsListIpv4: text('protocols_list_ipv4').notNull(),
-		protocolsListIpv6: text('protocols_list_ipv6').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({ columns: [table.sourceId, table.granularity, table.bucketStart] }),
-		index('idx_protocol_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId
-		)
-	]
-);
 
 export const trafficStatsV3 = sqliteTable(
 	'traffic_stats_v3',
@@ -297,89 +226,5 @@ export const addressStructureStatsV3 = sqliteTable(
 			table.structureKind
 		),
 		check('address_structure_stats_v3_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
-	]
-);
-
-export const structureStatsV2 = sqliteTable(
-	'structure_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		ipVersion: integer('ip_version').notNull(),
-		structureJsonSa: text('structure_json_sa').notNull(),
-		structureJsonDa: text('structure_json_da').notNull(),
-		metadataJsonSa: text('metadata_json_sa').notNull(),
-		metadataJsonDa: text('metadata_json_da').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({
-			columns: [table.sourceId, table.granularity, table.bucketStart, table.ipVersion]
-		}),
-		index('idx_structure_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId,
-			table.ipVersion
-		),
-		check('structure_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
-	]
-);
-
-export const spectrumStatsV2 = sqliteTable(
-	'spectrum_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		ipVersion: integer('ip_version').notNull(),
-		spectrumJsonSa: text('spectrum_json_sa').notNull(),
-		spectrumJsonDa: text('spectrum_json_da').notNull(),
-		metadataJsonSa: text('metadata_json_sa').notNull(),
-		metadataJsonDa: text('metadata_json_da').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({
-			columns: [table.sourceId, table.granularity, table.bucketStart, table.ipVersion]
-		}),
-		index('idx_spectrum_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId,
-			table.ipVersion
-		),
-		check('spectrum_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
-	]
-);
-
-export const dimensionStatsV2 = sqliteTable(
-	'dimension_stats_v2',
-	{
-		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
-		bucketStart: integer('bucket_start').notNull(),
-		bucketEnd: integer('bucket_end').notNull(),
-		ipVersion: integer('ip_version').notNull(),
-		dimensionsJsonSa: text('dimensions_json_sa').notNull(),
-		dimensionsJsonDa: text('dimensions_json_da').notNull(),
-		metadataJsonSa: text('metadata_json_sa').notNull(),
-		metadataJsonDa: text('metadata_json_da').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
-	},
-	(table) => [
-		primaryKey({
-			columns: [table.sourceId, table.granularity, table.bucketStart, table.ipVersion]
-		}),
-		index('idx_dimension_stats_v2_granularity_bucket_source').on(
-			table.granularity,
-			table.bucketStart,
-			table.sourceId,
-			table.ipVersion
-		),
-		check('dimension_stats_v2_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );

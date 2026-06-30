@@ -2,70 +2,77 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumPoint, SpectrumStatsBucket, SpectrumStatsResponse } from '$lib/types/types';
 import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v2';
+import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
 		return json({ error: params.error }, { status: params.status });
 	}
-	const { routers, granularity, start, end } = params;
+	const { routers, granularity, start, end, srcVisibility, dstVisibility } = params;
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'spectrum_stats_v2';
+		const tableName = 'address_structure_stats_v3';
 		const sourceColumn = 'source_id';
-		const params = [granularity, ...routers, start, end];
+		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 
 		const query = `
 			SELECT
 				${sourceColumn} AS router,
 				bucket_start AS bucketStart,
-				spectrum_json_sa AS spectrumJsonSa,
-				spectrum_json_da AS spectrumJsonDa
+				address_side AS addressSide,
+				values_json AS valuesJson
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
+				AND src_visibility = ?
+				AND dst_visibility = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
 				AND ip_version = 4
+				AND structure_kind = 'spectrum'
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
 		const rows = await db.all<{
 			router: string;
 			bucketStart: number;
-			spectrumJsonSa: string;
-			spectrumJsonDa: string;
-		}>(query, params);
-		const buckets: SpectrumStatsBucket[] = rows.map((row) => {
-			let spectrumSa: SpectrumPoint[] = [];
-			let spectrumDa: SpectrumPoint[] = [];
+			addressSide: 'source' | 'destination';
+			valuesJson: string;
+		}>(query, queryParams);
+		const bucketsByKey = new Map<string, SpectrumStatsBucket>();
 
+		for (const row of rows) {
+			const key = `${row.router}:${row.bucketStart}`;
+			const bucket =
+				bucketsByKey.get(key) ??
+				({
+					bucketStart: row.bucketStart,
+					router: row.router,
+					spectrumSa: [],
+					spectrumDa: []
+				} satisfies SpectrumStatsBucket);
+			let points: SpectrumPoint[] = [];
 			try {
-				if (row.spectrumJsonSa) {
-					spectrumSa = JSON.parse(row.spectrumJsonSa) as SpectrumPoint[];
-				}
+				points = JSON.parse(row.valuesJson) as SpectrumPoint[];
 			} catch (e) {
-				console.error('Failed to parse spectrum_json_sa:', e);
+				console.error('Failed to parse spectrum values_json:', e);
 			}
 
-			try {
-				if (row.spectrumJsonDa) {
-					spectrumDa = JSON.parse(row.spectrumJsonDa) as SpectrumPoint[];
-				}
-			} catch (e) {
-				console.error('Failed to parse spectrum_json_da:', e);
+			if (row.addressSide === 'source') {
+				bucket.spectrumSa = points;
+			} else {
+				bucket.spectrumDa = points;
 			}
+			bucketsByKey.set(key, bucket);
+		}
 
-			return {
-				bucketStart: row.bucketStart,
-				router: row.router,
-				spectrumSa,
-				spectrumDa
-			};
-		});
+		const buckets = [...bucketsByKey.values()].sort(
+			(left, right) =>
+				left.router.localeCompare(right.router) || left.bucketStart - right.bucketStart
+		);
 
 		const response: SpectrumStatsResponse = {
 			buckets,

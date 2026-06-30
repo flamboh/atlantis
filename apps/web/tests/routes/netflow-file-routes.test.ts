@@ -50,12 +50,10 @@ describe('netflow file helpers and routes', () => {
 				daIpv6Count: 4
 			})
 			.mockResolvedValueOnce({
-				spectrumJsonSa: '[{"alpha":1,"f":2}]',
-				spectrumJsonDa: '[{"alpha":3,"f":4}]'
+				valuesJson: '[{"alpha":3,"f":4}]'
 			})
 			.mockResolvedValueOnce({
-				structureJsonSa: '[{"q":1,"tauTilde":2,"sd":0.5}]',
-				structureJsonDa: '[{"q":3,"tauTilde":4,"sd":0.75}]'
+				valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]'
 			});
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(getDatasetDb).mockResolvedValue({

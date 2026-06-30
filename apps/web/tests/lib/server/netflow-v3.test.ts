@@ -10,11 +10,11 @@ import {
 	parseSourceIds,
 	parseTimestamp,
 	resolveSourceIds
-} from '../../../src/lib/server/netflow-v2';
+} from '../../../src/lib/server/netflow-v3';
 
-describe('netflow v2 helpers', () => {
-	it('is v2-only', () => {
-		expect(getNetflowSchemaVersion()).toBe('v2');
+describe('netflow v3 helpers', () => {
+	it('is v3-only', () => {
+		expect(getNetflowSchemaVersion()).toBe('v3');
 	});
 
 	it('parses request primitives', () => {
@@ -42,7 +42,14 @@ describe('netflow v2 helpers', () => {
 			parseAggregateStatsParams(
 				new URL('http://localhost/api/test?routers=r1,r2&granularity=30m&startDate=100&endDate=200')
 			)
-		).toEqual({ routers: ['r1', 'r2'], granularity: '30m', start: 100, end: 200 });
+		).toEqual({
+			routers: ['r1', 'r2'],
+			granularity: '30m',
+			start: 100,
+			end: 200,
+			srcVisibility: 'all',
+			dstVisibility: 'all'
+		});
 
 		expect(
 			parseAggregateStatsParams(new URL('http://localhost/api/test?startDate=100&endDate=200'))

@@ -9,7 +9,9 @@
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
+		FLOW_SCOPE_OPTIONS,
 		IP_METRIC_OPTIONS,
+		type FlowScopeKey,
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
@@ -42,13 +44,14 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
+	let flowScopeKey = $state<FlowScopeKey>('all');
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
 	type ChartCardId = 'dashboard' | 'ip' | 'protocol' | 'spectrum';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = ['dashboard', 'ip', 'protocol', 'spectrum'];
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v1';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v3';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
@@ -62,6 +65,11 @@
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
+	const flowScope = $derived(
+		FLOW_SCOPE_OPTIONS.find((option) => option.key === flowScopeKey) ?? FLOW_SCOPE_OPTIONS[0]
+	);
+	const srcVisibility = $derived(flowScope.srcVisibility);
+	const dstVisibility = $derived(flowScope.dstVisibility);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -311,6 +319,10 @@
 		ipMetrics = event.detail.metrics;
 	}
 
+	function handleScopeChange(event: CustomEvent<{ scope: FlowScopeKey }>) {
+		flowScopeKey = event.detail.scope;
+	}
+
 	function handleResetView() {
 		const today = new Date().toJSON().slice(0, 10);
 		selectedGroupBy = 'date';
@@ -335,10 +347,12 @@
 		{endDate}
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
+		flowScope={flowScopeKey}
 		on:startDateChange={handleStartDateChange}
 		on:endDateChange={handleEndDateChange}
 		on:groupByChange={handleGroupByChange}
 		on:routersChange={handleRoutersChange}
+		on:scopeChange={handleScopeChange}
 		on:resetView={handleResetView}
 	/>
 
@@ -371,6 +385,8 @@
 						routers={selectedRouters}
 						{routersLoaded}
 						{dataOptions}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:dataOptionsChange={handleDataOptionsChange}
@@ -383,6 +399,8 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={ipMetrics}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:metricsChange={handleIpMetricsChange}
@@ -395,6 +413,8 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={protocolMetrics}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:metricsChange={(event) => {
@@ -410,6 +430,8 @@
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
 						availableRouters={availableSpectrumRouters}
+						{srcVisibility}
+						{dstVisibility}
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:routerChange={(event) => {

@@ -140,6 +140,53 @@ export interface NetflowFileDetailsResponse {
 export const IP_GRANULARITIES = ['5m', '30m', '1h', '1d'] as const;
 
 export type IpGranularity = (typeof IP_GRANULARITIES)[number];
+export const FLOW_VISIBILITIES = ['all', 'literal', 'anonymized'] as const;
+export type FlowVisibility = (typeof FLOW_VISIBILITIES)[number];
+
+export interface FlowScope {
+	srcVisibility: FlowVisibility;
+	dstVisibility: FlowVisibility;
+}
+
+export type FlowScopeKey =
+	| 'all'
+	| 'literal_to_literal'
+	| 'literal_to_anonymized'
+	| 'anonymized_to_literal'
+	| 'anonymized_to_anonymized';
+
+export interface FlowScopeOption extends FlowScope {
+	key: FlowScopeKey;
+	label: string;
+}
+
+export const FLOW_SCOPE_OPTIONS: FlowScopeOption[] = [
+	{ key: 'all', label: 'all', srcVisibility: 'all', dstVisibility: 'all' },
+	{
+		key: 'literal_to_literal',
+		label: 'literal to literal',
+		srcVisibility: 'literal',
+		dstVisibility: 'literal'
+	},
+	{
+		key: 'literal_to_anonymized',
+		label: 'literal to anonymized',
+		srcVisibility: 'literal',
+		dstVisibility: 'anonymized'
+	},
+	{
+		key: 'anonymized_to_literal',
+		label: 'anonymized to literal',
+		srcVisibility: 'anonymized',
+		dstVisibility: 'literal'
+	},
+	{
+		key: 'anonymized_to_anonymized',
+		label: 'anonymized to anonymized',
+		srcVisibility: 'anonymized',
+		dstVisibility: 'anonymized'
+	}
+];
 
 export type IpMetricKey = 'saIpv4Count' | 'daIpv4Count' | 'saIpv6Count' | 'daIpv6Count';
 

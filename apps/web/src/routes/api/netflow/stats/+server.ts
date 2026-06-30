@@ -14,15 +14,15 @@ import {
 } from '$lib/server/datasets';
 import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
 import {
-	getBucketStartQuery,
 	groupByToGranularity,
 	parseSourceIds,
 	parseTimestamp,
+	parseFlowVisibility,
 	placeholders,
 	resolveSourceIds
-} from '$lib/server/netflow-v2';
+} from '$lib/server/netflow-v3';
 
-const V2_IP_VERSION_BY_FAMILY: Record<Exclude<NetflowIpFamily, 'all'>, 4 | 6> = {
+const IP_VERSION_BY_FAMILY: Record<Exclude<NetflowIpFamily, 'all'>, 4 | 6> = {
 	ipv4: 4,
 	ipv6: 6
 };
@@ -35,7 +35,7 @@ function getBaseMetricSelects(): string[] {
 }
 
 function getFamilyMetricSelects(family: Exclude<NetflowIpFamily, 'all'>): string[] {
-	const ipVersion = V2_IP_VERSION_BY_FAMILY[family];
+	const ipVersion = IP_VERSION_BY_FAMILY[family];
 	const suffix = family === 'ipv4' ? 'Ipv4' : 'Ipv6';
 	return NETFLOW_DATA_OPTION_FIELDS.map((field) => {
 		const columnName = field.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`).toLowerCase();
@@ -131,26 +131,28 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		const granularity = groupByToGranularity(groupBy);
 		const timeColumn = 'bucket_start';
 		const sourceColumn = 'source_id';
-		const tableName = 'netflow_stats_v2';
-		const bucketStartQuery =
-			granularity === '5m' ? getBucketStartQuery(timeColumn, groupBy) : timeColumn;
+		const tableName = 'traffic_stats_v3';
 		const metricSelects = getBaseMetricSelects();
 		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
+		const srcVisibility = parseFlowVisibility(url.searchParams.get('srcVisibility'));
+		const dstVisibility = parseFlowVisibility(url.searchParams.get('dstVisibility'));
 
 		const query = `
 			SELECT 
-				${bucketStartQuery} as bucketStart,
+				${timeColumn} as bucketStart,
 				${metricSelects.join(',\n\t\t\t\t')}
 			FROM ${tableName} 
 			WHERE ${sourceColumn} IN (${placeholders(resolvedSources)})
 			AND granularity = ?
+			AND src_visibility = ?
+			AND dst_visibility = ?
 			AND ${timeColumn} >= ? 
 			AND ${timeColumn} < ?
 			GROUP BY bucketStart
 			ORDER BY bucketStart
 		`;
 
-		const params = [...resolvedSources, granularity, start, end];
+		const params = [...resolvedSources, granularity, srcVisibility, dstVisibility, start, end];
 
 		const rows = await db.all<Record<string, number | null>>(query, params);
 		const result = rows.map(normalizeRow);

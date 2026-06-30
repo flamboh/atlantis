@@ -20,6 +20,7 @@
 		RouterConfig
 	} from './types.ts';
 	import type {
+		FlowVisibility,
 		NetflowIpFamily,
 		NetflowMetricTotals,
 		NetflowStatsResponse,
@@ -34,6 +35,8 @@
 		routers: RouterConfig;
 		routersLoaded: boolean;
 		dataOptions: DataOption[];
+		srcVisibility: FlowVisibility;
+		dstVisibility: FlowVisibility;
 	}>();
 
 	const dispatch = createEventDispatcher<{
@@ -100,6 +103,8 @@
 		endDate: string;
 		groupBy: GroupByOption;
 		routers: RouterConfig;
+		srcVisibility: FlowVisibility;
+		dstVisibility: FlowVisibility;
 	};
 
 	let lastFiltersKey = '';
@@ -126,7 +131,9 @@
 			chart: 'netflow',
 			dataset: props.dataset,
 			groupBy: filters.groupBy,
-			routers: selectedRouters
+			routers: selectedRouters,
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 	}
 
@@ -161,7 +168,9 @@
 		const params = new URLSearchParams({
 			dataset: props.dataset,
 			routers: selectedRouters.join(','),
-			groupBy: filters.groupBy
+			groupBy: filters.groupBy,
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 
 		try {
@@ -236,7 +245,9 @@
 			startDate: props.startDate,
 			endDate: props.endDate,
 			groupBy: props.groupBy,
-			routers: props.routers
+			routers: props.routers,
+			srcVisibility: props.srcVisibility,
+			dstVisibility: props.dstVisibility
 		};
 
 		const selectedRouters = deriveSelectedRouters(filters.routers);
@@ -260,7 +271,9 @@
 			startDate: filters.startDate,
 			endDate: filters.endDate,
 			groupBy: filters.groupBy,
-			routers: selectedRouters
+			routers: selectedRouters,
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
 		});
 
 		if (nextKey === lastFiltersKey) {

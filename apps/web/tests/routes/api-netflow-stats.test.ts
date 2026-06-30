@@ -144,10 +144,12 @@ describe('/api/netflow/stats GET', () => {
 			],
 			availableIpFamilies: ['all', 'ipv4', 'ipv6']
 		});
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
 			'r1',
 			'r2',
 			'1h',
+			'all',
+			'all',
 			1,
 			2
 		]);
@@ -161,7 +163,7 @@ describe('/api/netflow/stats GET', () => {
 		);
 	});
 
-	it('uses raw v2 stats for 5-minute requests', async () => {
+	it('uses v3 5-minute stats for 5-minute requests', async () => {
 		const all = vi.fn().mockResolvedValue([{ bucketStart: 100, flows: 1 }]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
@@ -178,9 +180,11 @@ describe('/api/netflow/stats GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
 			'r1',
 			'5m',
+			'all',
+			'all',
 			1,
 			2
 		]);
@@ -205,9 +209,11 @@ describe('/api/netflow/stats GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM netflow_stats_v2'), [
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM traffic_stats_v3'), [
 			'uoregon_all',
 			'1h',
+			'all',
+			'all',
 			1,
 			2
 		]);

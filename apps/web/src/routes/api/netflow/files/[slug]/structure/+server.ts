@@ -2,13 +2,14 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { StructureFunctionData, StructureFunctionPoint } from '$lib/types/types';
 import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
-import { normalizeStructurePoints } from '$lib/server/netflow-v2';
+import { normalizeStructurePoints } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
+const DEFAULT_SRC_VISIBILITY = 'all';
+const DEFAULT_DST_VISIBILITY = 'all';
 
 type StructureRow = {
-	structureJsonSa: string | null;
-	structureJsonDa: string | null;
+	valuesJson: string | null;
 };
 
 export const GET: RequestHandler = async ({ params, url, platform }) => {
@@ -43,15 +44,25 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		const db = await getDb(dataset, platform);
 		const row = await db.get<StructureRow>(
 			`SELECT
-				structure_json_sa AS structureJsonSa,
-				structure_json_da AS structureJsonDa
-			FROM structure_stats_v2
+				values_json AS valuesJson
+			FROM address_structure_stats_v3
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?
 				AND ip_version = 4
+				AND src_visibility = ?
+				AND dst_visibility = ?
+				AND address_side = ?
+				AND structure_kind = 'structure'
 			LIMIT 1`,
-			[router, FIVE_MINUTES, bucketStart]
+			[
+				router,
+				FIVE_MINUTES,
+				bucketStart,
+				DEFAULT_SRC_VISIBILITY,
+				DEFAULT_DST_VISIBILITY,
+				isSource ? 'source' : 'destination'
+			]
 		);
 
 		if (!row) {
@@ -61,7 +72,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			);
 		}
 
-		const rawStructure = isSource ? row.structureJsonSa : row.structureJsonDa;
+		const rawStructure = row.valuesJson;
 		if (!rawStructure) {
 			return json(
 				{ error: `Structure statistics not found for router ${router} at ${slug}` },
