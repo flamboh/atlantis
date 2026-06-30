@@ -15,6 +15,20 @@ export const datasets = sqliteTable('datasets', {
 	sortOrder: integer('sort_order').notNull().default(0)
 });
 
+export const sourceMembers = sqliteTable(
+	'source_members',
+	{
+		datasetId: text('dataset_id').notNull(),
+		sourceId: text('source_id').notNull(),
+		memberId: text('member_id').notNull()
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.datasetId, table.sourceId, table.memberId]
+		})
+	]
+);
+
 export const processedInputsV2 = sqliteTable(
 	'processed_inputs_v2',
 	{
