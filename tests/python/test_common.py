@@ -84,30 +84,6 @@ def test_load_dataset_registry_rejects_duplicate_ids(tmp_path: Path, monkeypatch
         common.load_dataset_registry()
 
 
-def test_build_legacy_dataset_registry_uses_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    common = load_common()
-    monkeypatch.setenv('NETFLOW_DATA_PATH', '/captures')
-    monkeypatch.setenv('AVAILABLE_ROUTERS', 'r2, r1 ,,')
-    monkeypatch.setenv('DATABASE_PATH', 'data/legacy.sqlite')
-    monkeypatch.setenv('DEFAULT_DATASET', 'legacy')
-
-    registry = common.build_legacy_dataset_registry()
-
-    assert registry == [
-        {
-            'dataset_id': 'legacy',
-            'label': 'Legacy',
-            'root_path': '/captures',
-            'db_path': str((common.REPO_ROOT / 'data/legacy.sqlite').resolve()),
-            'default_start_date': '',
-            'source_mode': 'subdirs',
-            'discovery_mode': 'live',
-            'source_ids': ['r2', 'r1'],
-            'sources': [],
-        }
-    ]
-
-
 def test_get_dataset_start_date_rejects_bad_format(monkeypatch: pytest.MonkeyPatch) -> None:
     common = load_common()
     monkeypatch.setattr(

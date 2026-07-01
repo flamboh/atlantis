@@ -5,8 +5,8 @@ import pytest
 
 
 def load_module():
-    nfdump_stats_v2 = importlib.import_module('nfdump_stats_v2')
-    return importlib.reload(nfdump_stats_v2)
+    nfdump_stats = importlib.import_module('nfdump_stats')
+    return importlib.reload(nfdump_stats)
 
 
 def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) -> None:
@@ -106,11 +106,11 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert 'ip_row' not in payload
     assert 'protocol_row' not in payload
     assert 'maad_source_ipv4' not in payload['raw_bucket']
-    assert payload['traffic_v3_rows'][0]['src_visibility'] == 'all'
-    assert payload['traffic_v3_rows'][0]['dst_visibility'] == 'all'
+    assert payload['traffic_rows'][0]['src_visibility'] == 'all'
+    assert payload['traffic_rows'][0]['dst_visibility'] == 'all'
     address_counts = {
         (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['address_side'], row['unique_address_count'])
-        for row in payload['address_count_v3_rows']
+        for row in payload['address_count_rows']
     }
     expected_address_counts = {
         (ip_version, src_visibility, dst_visibility, address_side, 0)

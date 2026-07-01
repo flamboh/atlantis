@@ -1,7 +1,7 @@
 """
-Input tracking table for pipeline v2.
+Input tracking table for pipeline.
 
-Tracks logical bucket-level inputs independently of legacy file-only assumptions.
+Tracks logical bucket-level inputs across nfcapd and CSV sources.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def mark_input_bucket_status(
 ) -> None:
     """Mark one input bucket status without committing."""
     if status not in VALID_INPUT_STATUSES:
-        raise ValueError(f'Unsupported v2 input status: {status}')
+        raise ValueError(f'Unsupported input status: {status}')
     conn.execute(
         """
         UPDATE processed_inputs

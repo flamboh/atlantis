@@ -224,7 +224,7 @@ def assert_schema(conn: sqlite3.Connection) -> None:
 
     legacy_tables = sorted(set(LEGACY_TABLES) & tables)
     if legacy_tables:
-        raise SystemExit(f'Legacy v2 tables still present: {", ".join(legacy_tables)}')
+        raise SystemExit(f'Legacy tables still present: {", ".join(legacy_tables)}')
 
     for table_name, required_columns in REQUIRED_COLUMNS.items():
         columns = {

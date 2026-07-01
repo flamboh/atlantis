@@ -1,4 +1,4 @@
-"""Dimensioned v3 aggregate tables with address visibility scope."""
+"""Dimensioned aggregate tables with address visibility scope."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Iterable
 
-from maad_v2 import MaadJsonResult
+from maad import MaadJsonResult
 
 
 GRANULARITIES = ('5m', '30m', '1h', '1d')
@@ -59,8 +59,8 @@ def validate_ip_version(ip_version: int) -> int:
     return ip_version
 
 
-def init_stats_v3_tables(conn: sqlite3.Connection) -> None:
-    """Create all v3 stats tables and indexes."""
+def init_stats_tables(conn: sqlite3.Connection) -> None:
+    """Create all stats tables and indexes."""
     init_traffic_stats_table(conn)
     init_protocol_stats_table(conn)
     init_address_count_stats_table(conn)
@@ -232,7 +232,7 @@ def empty_traffic_stats_row(
     src_visibility: str,
     dst_visibility: str,
 ) -> dict:
-    """Create an empty v3 traffic metric row."""
+    """Create an empty scoped traffic metric row."""
     validate_ip_version(ip_version)
     return {
         'source_id': source_id,
@@ -319,7 +319,7 @@ def empty_address_set_entries(
     ]
 
 
-def add_traffic_metrics_v3(
+def add_traffic_metrics(
     row: dict,
     *,
     protocol: int,
@@ -327,7 +327,7 @@ def add_traffic_metrics_v3(
     packets: int,
     bytes_count: int,
 ) -> None:
-    """Add already-grouped traffic metrics to a v3 row."""
+    """Add already-grouped traffic metrics to a row."""
     row['flows'] += flows
     row['packets'] += packets
     row['bytes'] += bytes_count
@@ -396,7 +396,7 @@ def address_set_entries_to_count_rows(entries: Iterable[dict]) -> list[dict]:
 
 
 def merge_traffic_rows(rows: Iterable[dict]) -> list[dict]:
-    """Merge additive v3 traffic rows."""
+    """Merge additive scoped traffic rows."""
     merged = {}
     for row in rows:
         key = traffic_key(row)
@@ -418,12 +418,12 @@ def merge_traffic_rows(rows: Iterable[dict]) -> list[dict]:
 
 
 def merge_protocol_set_entries(entries: Iterable[dict]) -> list[dict]:
-    """Union protocol sets by v3 dimensions."""
+    """Union protocol sets by dimensions."""
     return protocol_set_entries_to_rows(merge_protocol_set_entries_raw(entries))
 
 
 def merge_protocol_set_entries_raw(entries: Iterable[dict]) -> list[dict]:
-    """Union protocol sets by v3 dimensions and keep raw set entries."""
+    """Union protocol sets by dimensions and keep raw set entries."""
     merged = {}
     metadata = {}
     for entry in entries:
@@ -447,7 +447,7 @@ def merge_protocol_set_entries_raw(entries: Iterable[dict]) -> list[dict]:
 
 
 def merge_address_set_entries(entries: Iterable[dict]) -> list[dict]:
-    """Union address sets by v3 dimensions."""
+    """Union address sets by dimensions."""
     merged = {}
     metadata = {}
     for entry in entries:
@@ -471,20 +471,20 @@ def merge_address_set_entries(entries: Iterable[dict]) -> list[dict]:
     ]
 
 
-def aggregate_raw_v3_entries(
+def aggregate_raw_entries(
     raw_buckets: list[dict],
     *,
     granularity: str,
     bucket_start: int,
     bucket_end: int,
 ) -> dict:
-    """Build raw v3 aggregate rows/sets from raw 5m buckets."""
+    """Build raw aggregate rows/sets from raw 5m buckets."""
     traffic_rows = []
     protocol_entries = []
     address_entries = []
 
     for raw in raw_buckets:
-        for row in raw['traffic_v3_rows']:
+        for row in raw['traffic_rows']:
             traffic_rows.append(
                 {
                     **row,
@@ -493,7 +493,7 @@ def aggregate_raw_v3_entries(
                     'bucket_end': bucket_end,
                 }
             )
-        for entry in raw['protocol_v3_sets']:
+        for entry in raw['protocol_sets']:
             protocol_entries.append(
                 {
                     **entry,
@@ -502,7 +502,7 @@ def aggregate_raw_v3_entries(
                     'bucket_end': bucket_end,
                 }
             )
-        for entry in raw['address_v3_sets']:
+        for entry in raw['address_sets']:
             address_entries.append(
                 {
                     **entry,
@@ -515,11 +515,11 @@ def aggregate_raw_v3_entries(
     merged_protocol_entries = merge_protocol_set_entries_raw(protocol_entries)
     merged_address_entries = merge_address_set_entries(address_entries)
     return {
-        'traffic_v3_rows': merge_traffic_rows(traffic_rows),
-        'protocol_v3_rows': protocol_set_entries_to_rows(merged_protocol_entries),
-        'protocol_v3_sets': merged_protocol_entries,
-        'address_count_v3_rows': address_set_entries_to_count_rows(merged_address_entries),
-        'address_v3_sets': merged_address_entries,
+        'traffic_rows': merge_traffic_rows(traffic_rows),
+        'protocol_rows': protocol_set_entries_to_rows(merged_protocol_entries),
+        'protocol_sets': merged_protocol_entries,
+        'address_count_rows': address_set_entries_to_count_rows(merged_address_entries),
+        'address_sets': merged_address_entries,
     }
 
 
@@ -535,7 +535,7 @@ def build_address_structure_stats_rows(
     address_side: str,
     result: MaadJsonResult,
 ) -> list[dict]:
-    """Build structure/spectrum/dimension v3 rows for one address set."""
+    """Build structure/spectrum/dimension rows for one address set."""
     base = {
         'source_id': source_id,
         'granularity': granularity,

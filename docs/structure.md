@@ -2,17 +2,17 @@
 
 ## Packages
 
-| Path               | Role                                                 |
-| ------------------ | ---------------------------------------------------- |
-| `apps/web`         | SvelteKit visualization dashboard                    |
-| `apps/web/drizzle` | Canonical D1 migration files for the web app         |
-| `apps/landing`     | Marketing/SEO landing page                           |
-| `tools/netflow-db` | Python ingestion pipeline + DB schema                |
-| `vendor/*`         | Optional analyzer submodules and local build outputs |
-| `scripts/`         | One-off migration scripts                            |
-| `docs/`            | Project documentation                                |
-| `plans/`           | Generated implementation plans                       |
-| `data/`            | SQLite databases (gitignored)                        |
+| Path               | Role                                         |
+| ------------------ | -------------------------------------------- |
+| `apps/web`         | SvelteKit visualization dashboard            |
+| `apps/web/drizzle` | Canonical D1 migration files for the web app |
+| `apps/landing`     | Marketing/SEO landing page                   |
+| `tools/netflow-db` | Python ingestion pipeline + DB schema        |
+| `vendor/*`         | Optional third-party analysis submodules     |
+| `scripts/`         | Local workflow and build helper scripts      |
+| `docs/`            | Project documentation                        |
+| `plans/`           | Generated implementation plans               |
+| `data/`            | SQLite databases (gitignored)                |
 
 ## Stack
 
@@ -34,12 +34,10 @@ bun run test:db      # pytest (pipeline tests)
 bun run test:e2e     # Playwright
 ```
 
-Vendor compile helpers:
+MAAD compile helper:
 
 ```bash
-./vendor/scripts/compile-burstify.sh
-./vendor/scripts/compile-maad.sh
-./vendor/scripts/compile-all.sh
+./scripts/build_maad_fast.sh
 ```
 
 Python sanity check after editing pipeline code:
