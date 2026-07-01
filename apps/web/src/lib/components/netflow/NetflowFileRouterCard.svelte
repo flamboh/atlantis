@@ -1,21 +1,14 @@
 <script lang="ts">
 	import NetflowFileRouterAnalysisSection from './NetflowFileRouterAnalysisSection.svelte';
 	import NetflowFileRouterSummary from './NetflowFileRouterSummary.svelte';
-	import NetflowFileSingularitiesSection from './NetflowFileSingularitiesSection.svelte';
 	import type { NetflowFileRouterRow } from './file-detail-loader.svelte';
 
 	let {
 		row,
-		dataset,
-		slug,
-		showSingularities,
 		formatCount,
 		formatTimestampAsPST
 	}: {
 		row: NetflowFileRouterRow;
-		dataset: string;
-		slug: string;
-		showSingularities: boolean;
 		formatCount: (value: number | null | undefined) => string;
 		formatTimestampAsPST: (timestamp: number) => string;
 	} = $props();
@@ -51,9 +44,6 @@
 				source={row.source.spectrum}
 				destination={row.destination.spectrum}
 			/>
-			{#if showSingularities}
-				<NetflowFileSingularitiesSection {dataset} {slug} router={row.router} />
-			{/if}
 		</div>
 	</div>
 </div>

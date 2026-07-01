@@ -18,7 +18,6 @@
 		slug: string;
 		srcVisibility: FlowVisibility;
 		dstVisibility: FlowVisibility;
-		showSingularities: boolean;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -117,14 +116,7 @@
 				/>
 			{/if}
 			{#each loader.rows as row (row.key)}
-				<NetflowFileRouterCard
-					{row}
-					dataset={data.dataset}
-					slug={data.slug}
-					showSingularities={data.showSingularities}
-					{formatCount}
-					{formatTimestampAsPST}
-				/>
+				<NetflowFileRouterCard {row} {formatCount} {formatTimestampAsPST} />
 			{/each}
 		</div>
 	{/if}

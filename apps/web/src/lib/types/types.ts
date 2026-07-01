@@ -273,28 +273,6 @@ export interface SpectrumData {
 	};
 }
 
-export interface Singularity {
-	rank: string;
-	address: string;
-	alpha: number;
-	intercept: number;
-	r2: number;
-	nPls: number;
-}
-
-export interface SingularitiesData {
-	slug: string;
-	router: string;
-	filename: string;
-	singularities: Singularity[];
-	metadata: {
-		dataSource: string;
-		uniqueIPCount?: number;
-		pointCount: number;
-		addressType: string;
-	};
-}
-
 export interface StructureFunctionPoint {
 	q: number;
 	tau: number;

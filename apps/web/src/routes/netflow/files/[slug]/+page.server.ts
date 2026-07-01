@@ -35,7 +35,6 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 		slug,
 		srcVisibility: flowScope.srcVisibility,
 		dstVisibility: flowScope.dstVisibility,
-		showSingularities: false,
 		fileInfo: {
 			year,
 			month,
