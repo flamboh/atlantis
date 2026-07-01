@@ -1,8 +1,8 @@
 """
-Normalized row utilities for pipeline v2.
+Normalized row utilities for pipeline.
 
 Adapters map raw input rows into a shared, bucketed row contract that powers
-the v2 aggregate tables.
+the aggregate tables.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
-from csv_ingest_v2 import (
+from csv_ingest import (
     TIMESTAMP_KEYS,
     CsvSourceConfig,
     CsvSourceConfigError,
@@ -120,7 +120,7 @@ def normalize_nfdump_port(raw_value: str) -> str:
 
 
 def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> NormalizedRow:
-    """Normalize a mapped CSV row into the shared v2 row contract."""
+    """Normalize a mapped CSV row into the shared row contract."""
     source_id = resolve_source_id(row, config)
     timestamps = extract_timestamps(row, config)
     bucket_start = resolve_bucket_start_from_timestamps(timestamps)

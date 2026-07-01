@@ -7,8 +7,8 @@ import pytest
 
 
 def load_module():
-    maad_v2 = importlib.import_module('maad_v2')
-    return importlib.reload(maad_v2)
+    maad = importlib.import_module('maad')
+    return importlib.reload(maad)
 
 
 def sample_payload(total_addrs: int = 42) -> str:
@@ -29,9 +29,9 @@ def sample_payload(total_addrs: int = 42) -> str:
 
 
 def test_parse_maad_json_accepts_demo_contract() -> None:
-    maad_v2 = load_module()
+    maad = load_module()
 
-    result = maad_v2.parse_maad_json(sample_payload())
+    result = maad.parse_maad_json(sample_payload())
 
     assert result.schema_version == 1
     assert result.metadata == {
@@ -46,7 +46,7 @@ def test_parse_maad_json_accepts_demo_contract() -> None:
 
 
 def test_run_maad_json_uses_explicit_timeout(monkeypatch) -> None:
-    maad_v2 = load_module()
+    maad = load_module()
     captured = {}
 
     def fake_run(command, *, input, capture_output, text, timeout):
@@ -55,9 +55,9 @@ def test_run_maad_json_uses_explicit_timeout(monkeypatch) -> None:
         captured['timeout'] = timeout
         return subprocess.CompletedProcess(command, 0, stdout=sample_payload(3), stderr='')
 
-    monkeypatch.setattr(maad_v2.subprocess, 'run', fake_run)
+    monkeypatch.setattr(maad.subprocess, 'run', fake_run)
 
-    result = maad_v2.run_maad_json('/tmp/MAAD', {'198.51.100.1', '192.0.2.1'}, timeout_seconds=900)
+    result = maad.run_maad_json('/tmp/MAAD', {'198.51.100.1', '192.0.2.1'}, timeout_seconds=900)
 
     assert result.metadata['totalAddrs'] == 3
     assert captured['command'][:2] == ['/tmp/MAAD', '--input']
@@ -66,23 +66,23 @@ def test_run_maad_json_uses_explicit_timeout(monkeypatch) -> None:
 
 
 def test_run_maad_json_wraps_timeout_with_address_count(monkeypatch) -> None:
-    maad_v2 = load_module()
+    maad = load_module()
 
     def fake_run(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs['timeout'])
 
-    monkeypatch.setattr(maad_v2.subprocess, 'run', fake_run)
+    monkeypatch.setattr(maad.subprocess, 'run', fake_run)
 
-    with pytest.raises(maad_v2.MaadTimeoutError, match='after 600s for 2 addresses'):
-        maad_v2.run_maad_json('/tmp/MAAD', {'198.51.100.1', '192.0.2.1'}, timeout_seconds=600)
+    with pytest.raises(maad.MaadTimeoutError, match='after 600s for 2 addresses'):
+        maad.run_maad_json('/tmp/MAAD', {'198.51.100.1', '192.0.2.1'}, timeout_seconds=600)
 
 
 def test_compute_maad_json_returns_full_contract() -> None:
-    maad_v2 = load_module()
+    maad = load_module()
     addresses = {f'10.0.{third_octet}.{fourth_octet}' for third_octet in range(2) for fourth_octet in range(256)}
     addresses.add('192.0.2.1')
 
-    result = maad_v2.compute_maad_json(addresses)
+    result = maad.compute_maad_json(addresses)
 
     assert result.metadata['totalAddrs'] == len(addresses)
     assert isinstance(result.metadata['minPrefixLength'], int)
@@ -93,15 +93,15 @@ def test_compute_maad_json_returns_full_contract() -> None:
 
 
 def test_compute_maad_json_matches_binary_metadata() -> None:
-    maad_v2 = load_module()
+    maad = load_module()
     maad_bin = Path(__file__).resolve().parents[2] / 'vendor' / 'maad' / 'MAAD'
     if not maad_bin.is_file():
         pytest.skip('MAAD binary is not built')
     addresses = {f'10.0.{third_octet}.{fourth_octet}' for third_octet in range(2) for fourth_octet in range(256)}
     addresses.add('192.0.2.1')
 
-    python_result = maad_v2.compute_maad_json(addresses)
-    binary_result = maad_v2.run_maad_json(maad_bin, addresses)
+    python_result = maad.compute_maad_json(addresses)
+    binary_result = maad.run_maad_json(maad_bin, addresses)
 
     assert python_result.metadata == binary_result.metadata
     assert python_result.structure[0] == pytest.approx(binary_result.structure[0])

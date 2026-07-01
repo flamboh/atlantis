@@ -8,13 +8,12 @@ Network telemetry visualization platform for analyzing large-scale NetFlow data.
 bun install
 cp .env.example .env
 cp datasets.json.example datasets.json   # configure your dataset paths
-python tools/netflow-db/pipeline.py      # populate the database
+python tools/netflow-db/pipeline.py --dataset uoregon --start-date 2025-02-11
 bun run dev                              # start the web app
 ```
 
-For real NetFlow ingest, initialize the optional analyzer submodules, then run
-`./vendor/scripts/compile-burstify.sh` for `structure_stats` and
-`./vendor/scripts/compile-maad.sh` for `spectrum_stats`.
+For real NetFlow ingest with MAAD-backed address structure stats, build the
+helper with `./scripts/build_maad_fast.sh`.
 
 ## Documentation
 

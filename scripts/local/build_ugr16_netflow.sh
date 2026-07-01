@@ -5,15 +5,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DATABASE_PATH="$ROOT_DIR/data/ugr16/netflow.sqlite"
 LOG_PATH="$ROOT_DIR/data/ugr16/netflow.build.log"
 PID_PATH="$ROOT_DIR/data/ugr16/netflow.build.pid"
-CONFIG_PATH="$ROOT_DIR/scripts/local/ugr16-csv.pipeline-v2.json"
+CONFIG_PATH="$ROOT_DIR/scripts/local/ugr16-csv.pipeline.json"
 DETACH=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/local/build_ugr16_netflow_v2.sh [--detach] [--config PATH] [--database PATH] [--log PATH] [--pid PATH]
+Usage: scripts/local/build_ugr16_netflow.sh [--detach] [--config PATH] [--database PATH] [--log PATH] [--pid PATH]
 
-Build the UGR'16 pipeline-v2 SQLite database from a local CSV config.
-Create scripts/local/ugr16-csv.pipeline-v2.json, or pass --config PATH.
+Build the UGR'16 pipeline SQLite database from a local CSV config.
+Create scripts/local/ugr16-csv.pipeline.json, or pass --config PATH.
 USAGE
 }
 
@@ -57,12 +57,12 @@ run_build() {
   cd "$ROOT_DIR"
   if [[ ! -f "$CONFIG_PATH" ]]; then
     echo "missing local pipeline config: $CONFIG_PATH" >&2
-    echo "create scripts/local/ugr16-csv.pipeline-v2.json or pass --config PATH" >&2
+    echo "create scripts/local/ugr16-csv.pipeline.json or pass --config PATH" >&2
     exit 1
   fi
   ./scripts/build_maad_fast.sh
   exec ./scripts/run-with-nix-if-available.sh uv run python -u \
-    tools/netflow-db/pipeline_v2.py \
+    tools/netflow-db/pipeline.py \
     --config "$CONFIG_PATH" \
     --database-path "$DATABASE_PATH"
 }

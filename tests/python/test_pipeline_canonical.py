@@ -3,9 +3,11 @@ import json
 import sqlite3
 from datetime import datetime
 
+import pytest
+
 
 def load_module():
-    pipeline = importlib.import_module('pipeline_v2')
+    pipeline = importlib.import_module('pipeline')
     return importlib.reload(pipeline)
 
 
@@ -32,8 +34,158 @@ def make_raw_bucket(pipeline, source_id: str, bucket_start: int) -> dict:
         protocol=6,
         packets=10,
         bytes_count=1000,
+        src_tos=0,
     )
     return bucket.raw_bucket_row()
+
+
+def test_dataset_tree_config_uses_dataset_db_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = load_module()
+    common = importlib.import_module('common')
+    dataset = {
+        'dataset_id': 'alpha',
+        'root_path': '/captures/alpha',
+        'db_path': '/data/custom/alpha.sqlite',
+        'sources': [{'source_id': 'r1', 'members': ['r1']}],
+    }
+    monkeypatch.setattr(common, 'get_dataset_config', lambda dataset_id: dataset)
+
+    config = pipeline.build_dataset_tree_config(dataset_id='alpha', start_date='2025-02-11')
+    override = pipeline.build_dataset_tree_config(
+        dataset_id='alpha',
+        start_date='2025-02-11',
+        database_path='/tmp/override.sqlite',
+    )
+
+    assert config['database_path'] == '/data/custom/alpha.sqlite'
+    assert override['database_path'] == '/tmp/override.sqlite'
+
+
+def test_apply_cli_config_overrides_updates_loaded_config() -> None:
+    pipeline = load_module()
+    config = {
+        'database_path': '/old.sqlite',
+        'maad_bin': '/old-maad',
+        'max_workers': 1,
+        'inputs': [{'input_kind': 'nfcapd_tree'}],
+    }
+
+    pipeline.apply_cli_config_overrides(
+        config,
+        database_path='/new.sqlite',
+        maad_bin='/new-maad',
+        max_workers=4,
+        force=True,
+    )
+
+    assert config['database_path'] == '/new.sqlite'
+    assert config['maad_bin'] == '/new-maad'
+    assert config['max_workers'] == 4
+    assert config['inputs'][0]['force'] is True
+
+
+def test_force_config_override_requires_nfcapd_tree_input() -> None:
+    pipeline = load_module()
+
+    with pytest.raises(ValueError, match='nfcapd_tree'):
+        pipeline.apply_cli_config_overrides({'inputs': [{'input_kind': 'csv'}]}, force=True)
+
+
+def test_force_config_override_rejects_multiple_nfcapd_tree_inputs() -> None:
+    pipeline = load_module()
+
+    with pytest.raises(ValueError, match='exactly one'):
+        pipeline.apply_cli_config_overrides(
+            {
+                'inputs': [
+                    {'input_kind': 'nfcapd_tree'},
+                    {'input_kind': 'nfcapd_tree'},
+                ]
+            },
+            force=True,
+        )
+
+
+def test_worker_count_overrides_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = load_module()
+    common = importlib.import_module('common')
+    dataset = {
+        'dataset_id': 'alpha',
+        'root_path': '/captures/alpha',
+        'db_path': '/data/custom/alpha.sqlite',
+        'sources': [{'source_id': 'r1', 'members': ['r1']}],
+    }
+    monkeypatch.setattr(common, 'get_dataset_config', lambda dataset_id: dataset)
+
+    with pytest.raises(ValueError, match='max_workers'):
+        pipeline.apply_cli_config_overrides({'inputs': []}, max_workers=0)
+    with pytest.raises(ValueError, match='max_workers'):
+        pipeline.build_dataset_tree_config(
+            dataset_id='alpha',
+            start_date='2025-02-11',
+            max_workers=0,
+        )
+
+
+def test_time_window_must_align_to_aggregate_boundaries() -> None:
+    pipeline = load_module()
+    aligned = pipeline.parse_optional_config_time('2025-02-11T00:00')
+    partial = pipeline.parse_optional_config_time('2025-02-11T00:05')
+    hour = pipeline.parse_optional_config_time('2025-02-11T01:00')
+    start_date = pipeline.parse_config_date('2025-02-11')
+    end_date = pipeline.parse_config_date('2025-02-11')
+
+    pipeline.validate_aggregate_safe_time_window(
+        aligned,
+        pipeline.local_midnight_epoch(end_date + pipeline.timedelta(days=1)),
+        start_date=start_date,
+        end_date=end_date,
+    )
+    with pytest.raises(ValueError, match='30m boundary'):
+        pipeline.validate_aggregate_safe_time_window(
+            partial,
+            None,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    with pytest.raises(ValueError, match='1d boundary'):
+        pipeline.validate_aggregate_safe_time_window(
+            hour,
+            None,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+
+def test_time_window_must_be_non_empty_and_within_selected_dates() -> None:
+    pipeline = load_module()
+    day_start = pipeline.parse_optional_config_time('2025-02-11T00:00')
+    next_day_start = pipeline.parse_optional_config_time('2025-02-12T00:00')
+    previous_day_start = pipeline.parse_optional_config_time('2025-02-10T00:00')
+    start_date = pipeline.parse_config_date('2025-02-11')
+    end_date = pipeline.parse_config_date('2025-02-11')
+
+    with pytest.raises(ValueError, match='non-empty'):
+        pipeline.validate_aggregate_safe_time_window(
+            day_start,
+            day_start,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    with pytest.raises(ValueError, match='on or after'):
+        pipeline.validate_aggregate_safe_time_window(
+            previous_day_start,
+            next_day_start,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    with pytest.raises(ValueError, match='on or before'):
+        pipeline.validate_aggregate_safe_time_window(
+            day_start,
+            pipeline.parse_optional_config_time('2025-02-13T00:00'),
+            start_date=start_date,
+            end_date=end_date,
+        )
 
 
 def test_headerless_timestamp_ordered_csv_accumulates_src_tos_with_arrow(tmp_path) -> None:
@@ -352,7 +504,7 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
         make_raw_bucket(pipeline, 'r1', base_bucket + offset * pipeline.FIVE_MINUTE_SECONDS)
         for offset in range(6)
     ]
-    pipeline.init_stats_v3_tables(conn)
+    pipeline.init_stats_tables(conn)
     pipeline.write_aggregate_rows(
         conn,
         raw_buckets,

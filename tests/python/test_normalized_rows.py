@@ -5,13 +5,13 @@ import pytest
 
 
 def load_modules():
-    csv_ingest_v2 = importlib.import_module('csv_ingest_v2')
-    normalized_rows_v2 = importlib.import_module('normalized_rows_v2')
-    return importlib.reload(csv_ingest_v2), importlib.reload(normalized_rows_v2)
+    csv_ingest = importlib.import_module('csv_ingest')
+    normalized_rows = importlib.import_module('normalized_rows')
+    return importlib.reload(csv_ingest), importlib.reload(normalized_rows)
 
 
 def test_normalize_csv_row_uses_time_received_and_infers_ipv4(tmp_path: Path) -> None:
-    csv_ingest_v2, normalized_rows_v2 = load_modules()
+    csv_ingest, normalized_rows = load_modules()
     config_path = tmp_path / 'mapping.json'
     config_path.write_text(
         """
@@ -36,9 +36,9 @@ def test_normalize_csv_row_uses_time_received_and_infers_ipv4(tmp_path: Path) ->
         """,
         encoding='utf-8',
     )
-    config = csv_ingest_v2.load_csv_source_config(config_path)
+    config = csv_ingest.load_csv_source_config(config_path)
 
-    row = normalized_rows_v2.normalize_csv_row(
+    row = normalized_rows.normalize_csv_row(
         {
             'received_at': '1744733279',
             'ended_at': '1744733000',
@@ -70,7 +70,7 @@ def test_normalize_csv_row_uses_time_received_and_infers_ipv4(tmp_path: Path) ->
 
 
 def test_normalize_csv_row_infers_ipv6_and_defaults_optional_fields(tmp_path: Path) -> None:
-    csv_ingest_v2, normalized_rows_v2 = load_modules()
+    csv_ingest, normalized_rows = load_modules()
     config_path = tmp_path / 'mapping.json'
     config_path.write_text(
         """
@@ -86,9 +86,9 @@ def test_normalize_csv_row_infers_ipv6_and_defaults_optional_fields(tmp_path: Pa
         """,
         encoding='utf-8',
     )
-    config = csv_ingest_v2.load_csv_source_config(config_path)
+    config = csv_ingest.load_csv_source_config(config_path)
 
-    row = normalized_rows_v2.normalize_csv_row(
+    row = normalized_rows.normalize_csv_row(
         {
             'ended_at': '1744733000',
             'src': '2001:db8::1',
@@ -111,7 +111,7 @@ def test_normalize_csv_row_infers_ipv6_and_defaults_optional_fields(tmp_path: Pa
 
 
 def test_normalize_csv_row_wraps_invalid_ip_as_config_error(tmp_path: Path) -> None:
-    csv_ingest_v2, normalized_rows_v2 = load_modules()
+    csv_ingest, normalized_rows = load_modules()
     config_path = tmp_path / 'mapping.json'
     config_path.write_text(
         """
@@ -127,10 +127,10 @@ def test_normalize_csv_row_wraps_invalid_ip_as_config_error(tmp_path: Path) -> N
         """,
         encoding='utf-8',
     )
-    config = csv_ingest_v2.load_csv_source_config(config_path)
+    config = csv_ingest.load_csv_source_config(config_path)
 
-    with pytest.raises(csv_ingest_v2.CsvSourceConfigError, match='Invalid IP address'):
-        normalized_rows_v2.normalize_csv_row(
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='Invalid IP address'):
+        normalized_rows.normalize_csv_row(
             {
                 'received_at': '1744733279',
                 'src': 'not-an-ip',
@@ -139,8 +139,8 @@ def test_normalize_csv_row_wraps_invalid_ip_as_config_error(tmp_path: Path) -> N
             config,
         )
 
-    with pytest.raises(csv_ingest_v2.CsvSourceConfigError, match='Invalid IP address'):
-        normalized_rows_v2.normalize_csv_row(
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='Invalid IP address'):
+        normalized_rows.normalize_csv_row(
             {
                 'received_at': '1744733279',
                 'src': '999.999.999.999',
@@ -151,7 +151,7 @@ def test_normalize_csv_row_wraps_invalid_ip_as_config_error(tmp_path: Path) -> N
 
 
 def test_normalize_csv_row_rejects_whitespace_required_values(tmp_path: Path) -> None:
-    csv_ingest_v2, normalized_rows_v2 = load_modules()
+    csv_ingest, normalized_rows = load_modules()
     config_path = tmp_path / 'mapping.json'
     config_path.write_text(
         """
@@ -167,10 +167,10 @@ def test_normalize_csv_row_rejects_whitespace_required_values(tmp_path: Path) ->
         """,
         encoding='utf-8',
     )
-    config = csv_ingest_v2.load_csv_source_config(config_path)
+    config = csv_ingest.load_csv_source_config(config_path)
 
-    with pytest.raises(csv_ingest_v2.CsvSourceConfigError, match='src'):
-        normalized_rows_v2.normalize_csv_row(
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='src'):
+        normalized_rows.normalize_csv_row(
             {
                 'received_at': '1744733279',
                 'src': '   ',
@@ -181,9 +181,9 @@ def test_normalize_csv_row_rejects_whitespace_required_values(tmp_path: Path) ->
 
 
 def test_build_nfdump_csv_command_uses_time_received_and_family_filter() -> None:
-    _, normalized_rows_v2 = load_modules()
+    _, normalized_rows = load_modules()
 
-    command = normalized_rows_v2.build_nfdump_csv_command(
+    command = normalized_rows.build_nfdump_csv_command(
         '/captures/r1/2025/04/15/nfcapd.202504150000',
         ip_version=6,
     )
@@ -194,9 +194,9 @@ def test_build_nfdump_csv_command_uses_time_received_and_family_filter() -> None
 
 
 def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
-    _, normalized_rows_v2 = load_modules()
+    _, normalized_rows = load_modules()
 
-    row = normalized_rows_v2.normalize_nfdump_csv_values(
+    row = normalized_rows.normalize_nfdump_csv_values(
         [
             '1744733279.999',
             '1744733000.001',
@@ -223,9 +223,9 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
 
 
 def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
-    _, normalized_rows_v2 = load_modules()
+    _, normalized_rows = load_modules()
 
-    row = normalized_rows_v2.normalize_nfdump_csv_values(
+    row = normalized_rows.normalize_nfdump_csv_values(
         [
             '1744733279.000',
             '1744733000.000',
@@ -247,7 +247,7 @@ def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
 
 
 def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
-    csv_ingest_v2, normalized_rows_v2 = load_modules()
+    csv_ingest, normalized_rows = load_modules()
     config_path = tmp_path / 'mapping.json'
     config_path.write_text(
         """
@@ -270,9 +270,9 @@ def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
         """,
         encoding='utf-8',
     )
-    config = csv_ingest_v2.load_csv_source_config(config_path)
+    config = csv_ingest.load_csv_source_config(config_path)
 
-    row = normalized_rows_v2.normalize_csv_row(
+    row = normalized_rows.normalize_csv_row(
         {
             'te': '2016-07-27 13:43:30',
             'src': '42.219.154.107',

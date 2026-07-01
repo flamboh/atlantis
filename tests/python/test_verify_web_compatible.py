@@ -5,22 +5,22 @@ from pathlib import Path
 
 def load_modules():
     verifier = importlib.import_module('verify_web_compatible')
-    stats_v3 = importlib.import_module('stats_v3')
+    stats = importlib.import_module('stats')
     processed_inputs = importlib.import_module('processed_inputs')
     return (
         importlib.reload(verifier),
-        importlib.reload(stats_v3),
+        importlib.reload(stats),
         importlib.reload(processed_inputs),
     )
 
 
 def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> None:
-    verifier, stats_v3, processed_inputs = load_modules()
+    verifier, stats, processed_inputs = load_modules()
     db_path = tmp_path / 'canonical.sqlite'
     bucket_start = 1744700700
 
     with sqlite3.connect(db_path) as conn:
-        stats_v3.init_stats_v3_tables(conn)
+        stats.init_stats_tables(conn)
         processed_inputs.init_processed_inputs_table(conn)
         processed_inputs.upsert_input_bucket(
             conn,
@@ -38,21 +38,21 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
             bucket_start=bucket_start,
             status='processed',
         )
-        stats_v3.insert_traffic_stats_rows(
+        stats.insert_traffic_stats_rows(
             conn,
             [
-                traffic_row(stats_v3, '5m', bucket_start, bucket_start + 300),
-                traffic_row(stats_v3, '1h', bucket_start, bucket_start + 3600),
+                traffic_row(stats, '5m', bucket_start, bucket_start + 300),
+                traffic_row(stats, '1h', bucket_start, bucket_start + 3600),
             ],
         )
-        stats_v3.insert_protocol_stats_rows(
+        stats.insert_protocol_stats_rows(
             conn,
             [
                 protocol_row('5m', bucket_start, bucket_start + 300),
                 protocol_row('1h', bucket_start, bucket_start + 3600),
             ],
         )
-        stats_v3.insert_address_count_stats_rows(
+        stats.insert_address_count_stats_rows(
             conn,
             [
                 address_count_row('5m', bucket_start, bucket_start + 300, 'source'),
@@ -72,8 +72,8 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
     )
 
 
-def traffic_row(stats_v3, granularity: str, bucket_start: int, bucket_end: int) -> dict:
-    row = stats_v3.empty_traffic_stats_row(
+def traffic_row(stats, granularity: str, bucket_start: int, bucket_end: int) -> dict:
+    row = stats.empty_traffic_stats_row(
         source_id='ugr16',
         granularity=granularity,
         bucket_start=bucket_start,
@@ -82,7 +82,7 @@ def traffic_row(stats_v3, granularity: str, bucket_start: int, bucket_end: int) 
         src_visibility='all',
         dst_visibility='all',
     )
-    stats_v3.add_traffic_metrics_v3(row, protocol=6, flows=1, packets=10, bytes_count=1000)
+    stats.add_traffic_metrics(row, protocol=6, flows=1, packets=10, bytes_count=1000)
     return row
 
 

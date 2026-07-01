@@ -73,36 +73,6 @@ def resolve_repo_path(path_value: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
-def build_legacy_dataset_registry() -> list[dict[str, Any]]:
-    """Build a single-dataset registry from legacy env vars when no JSON exists."""
-    netflow_data_path = get_optional_env('NETFLOW_DATA_PATH')
-    available_routers = [
-        router.strip()
-        for router in get_optional_env('AVAILABLE_ROUTERS').split(',')
-        if router.strip()
-    ]
-
-    if not netflow_data_path:
-        return []
-
-    database_path = get_optional_env('DATABASE_PATH', './data/uoregon/netflow.sqlite')
-    dataset_id = get_optional_env('DEFAULT_DATASET', 'uoregon')
-
-    return [
-        {
-            'dataset_id': dataset_id,
-            'label': dataset_id.replace('_', ' ').title(),
-            'root_path': str(Path(netflow_data_path).expanduser()),
-            'db_path': str(resolve_repo_path(database_path)),
-            'default_start_date': '2025-02-11' if dataset_id == 'uoregon' else '',
-            'source_mode': 'subdirs',
-            'discovery_mode': 'live',
-            'source_ids': available_routers,
-            'sources': [],
-        }
-    ]
-
-
 def load_dataset_registry() -> list[dict[str, Any]]:
     """Load and normalize the dataset registry."""
     config_path = Path(
@@ -110,9 +80,6 @@ def load_dataset_registry() -> list[dict[str, Any]]:
     ).expanduser()
 
     if not config_path.exists():
-        legacy = build_legacy_dataset_registry()
-        if legacy:
-            return legacy
         raise ConfigurationError(
             f"Dataset registry '{config_path}' not found. Configure DATASETS_CONFIG_PATH or create datasets.json."
         )
@@ -373,128 +340,3 @@ def get_db_connection(wal_mode: bool = True, db_path: Optional[str | Path] = Non
     finally:
         conn.close()
 
-
-def construct_file_path(router: str, timestamp: datetime) -> str:
-    """
-    Construct the expected file path for a NetFlow capture file.
-    
-    Args:
-        router: Router name (e.g., 'cc-ir1-gw')
-        timestamp: Datetime object for the capture time
-        
-    Returns:
-        Full path to the expected nfcapd file
-    """
-    timestamp_str = timestamp.strftime('%Y%m%d%H%M')
-    year = timestamp.strftime('%Y')
-    month = timestamp.strftime('%m')
-    day = timestamp.strftime('%d')
-    
-    return f"{NETFLOW_DATA_PATH}/{router}/{year}/{month}/{day}/nfcapd.{timestamp_str}"
-
-
-def parse_file_path(file_path: str) -> tuple[str, datetime]:
-    """
-    Parse a NetFlow file path to extract router and timestamp.
-    
-    Args:
-        file_path: Full path to an nfcapd file
-        
-    Returns:
-        Tuple of (router_name, timestamp_datetime)
-        
-    Raises:
-        ValueError: If the file path cannot be parsed
-    """
-    path = Path(file_path)
-    filename = path.name  # e.g., 'nfcapd.202403010000'
-    
-    if not filename.startswith('nfcapd.'):
-        raise ValueError(f"Invalid NetFlow filename: {filename}")
-    
-    timestamp_str = filename.split('.')[1]  # '202403010000'
-    
-    if len(timestamp_str) != 12:
-        raise ValueError(f"Invalid timestamp format in filename: {filename}")
-    
-    year = int(timestamp_str[0:4])
-    month = int(timestamp_str[4:6])
-    day = int(timestamp_str[6:8])
-    hour = int(timestamp_str[8:10])
-    minute = int(timestamp_str[10:12])
-    
-    timestamp = datetime(year, month, day, hour, minute)
-    
-    # Extract router from path: .../router/year/month/day/nfcapd.timestamp
-    # Path parts: ['', 'path', 'to', 'netflow', 'router', 'year', 'month', 'day', 'nfcapd.xxx']
-    parts = file_path.split('/')
-    # Router is 4 levels up from the filename
-    router_idx = len(parts) - 5
-    if router_idx < 0:
-        raise ValueError(f"Cannot extract router from path: {file_path}")
-    
-    router = parts[router_idx]
-    
-    return router, timestamp
-
-
-def timestamp_to_unix(dt: datetime) -> int:
-    """Convert datetime to Unix timestamp."""
-    return int(dt.timestamp())
-
-
-def unix_to_timestamp(unix_ts: int) -> datetime:
-    """Convert Unix timestamp to datetime."""
-    return datetime.fromtimestamp(unix_ts)
-
-
-def init_processed_files_table(conn: sqlite3.Connection) -> None:
-    """
-    Create the processed_files table if it doesn't exist.
-    
-    This table centralizes tracking of all NetFlow files (both existing and gap placeholders).
-    """
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS processed_files (
-            file_path TEXT PRIMARY KEY,
-            router TEXT NOT NULL,
-            timestamp INTEGER NOT NULL,
-            file_exists INTEGER NOT NULL DEFAULT 1,
-            discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            processed_at DATETIME,
-            
-            flow_stats_status INTEGER,
-            ip_stats_status INTEGER,
-            protocol_stats_status INTEGER,
-            spectrum_stats_status INTEGER,
-            structure_stats_status INTEGER
-        )
-    """)
-    
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_processed_files_timestamp 
-        ON processed_files(timestamp)
-    """)
-    
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_processed_files_router_timestamp 
-        ON processed_files(router, timestamp)
-    """)
-
-    try:
-        cursor.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_processed_files_router_timestamp_unique 
-            ON processed_files(router, timestamp)
-        """)
-    except sqlite3.IntegrityError:
-        print("Warning: processed_files has duplicate router/timestamp rows; "
-              "skipping unique index creation until repaired")
-
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_processed_files_pending 
-        ON processed_files(processed_at) 
-        WHERE processed_at IS NULL
-    """)
-    
-    conn.commit()

@@ -1,5 +1,5 @@
 """
-CSV ingest contract for pipeline v2.
+CSV ingest contract for pipeline.
 
 Strictly validates user-provided CSV mapping json and resolves the bucket/source
 dimensions needed by downstream aggregators.
@@ -46,7 +46,7 @@ class CsvSourceConfig:
 
 
 def load_csv_source_config(path: str | Path) -> CsvSourceConfig:
-    """Load and validate a v2 CSV source mapping file."""
+    """Load and validate a CSV source mapping file."""
     config_path = Path(path)
     with open(config_path, 'r', encoding='utf-8') as handle:
         payload = json.load(handle)

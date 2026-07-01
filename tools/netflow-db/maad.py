@@ -1,5 +1,5 @@
 """
-MAAD integration helpers for pipeline v2.
+MAAD integration helpers for pipeline.
 
 Consumes the MAAD JSON stdout contract:
 MAAD --input - --output - --format json --structure --spectrum --dimensions

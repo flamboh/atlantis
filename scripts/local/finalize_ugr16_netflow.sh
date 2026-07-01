@@ -10,9 +10,9 @@ SKIP_WEB=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/local/finalize_ugr16_netflow_v2.sh [--candidate PATH] [--target PATH] [--promote] [--web-base-url URL] [--skip-web]
+Usage: scripts/local/finalize_ugr16_netflow.sh [--candidate PATH] [--target PATH] [--promote] [--web-base-url URL] [--skip-web]
 
-Verify a complete UGR'16 pipeline-v2 candidate. With --promote, atomically
+Verify a complete UGR'16 pipeline candidate. With --promote, atomically
 replace the web-facing netflow.sqlite after verification passes.
 USAGE
 }
