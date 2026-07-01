@@ -3,8 +3,7 @@
   "devDependencies": {
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.10",
-    "husky": "^9.1.7",
-    "tsx": "^4.21.0"
+    "husky": "^9.1.7"
   },
   "packageManager": "bun@1.2.16",
   "private": true,
@@ -21,7 +20,7 @@
     "typecheck": "bun run --cwd apps/web typecheck",
     "format": "bunx prettier --write .",
     "format:check": "bunx prettier --check .",
-    "test:": "bun run test:web && bun run test:db",
+    "test": "bun run test:web && bun run test:db",
     "test:all": "bun run test:web && bun run test:db && bun run test:e2e",
     "test:web": "bun run --cwd apps/web test",
     "test:db": "./scripts/run-with-nix-if-available.sh uv run --extra test pytest tests/python",
