@@ -1,14 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { load } from '../../src/routes/netflow/files/[slug]/+page.server';
 
 describe('/netflow/files/[slug] page load', () => {
-	afterEach(() => {
-		vi.unstubAllEnvs();
-	});
-
-	it('returns page props with stored-stat singularities disabled', async () => {
-		vi.stubEnv('SHOW_SINGULARITIES', 'true');
-
+	it('returns page props for stored file stats', async () => {
 		const fetch = vi.fn().mockResolvedValue({
 			ok: true,
 			status: 200,
@@ -41,7 +35,6 @@ describe('/netflow/files/[slug] page load', () => {
 			slug: '202503010005',
 			srcVisibility: 'literal',
 			dstVisibility: 'anonymized',
-			showSingularities: false,
 			fileInfo: {
 				year: '2025',
 				month: '03',

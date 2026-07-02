@@ -9,7 +9,6 @@ import { GET as getIpCounts } from '../../src/routes/api/netflow/files/[slug]/ip
 import { GET as getSpectrum } from '../../src/routes/api/netflow/files/[slug]/spectrum/+server';
 import { GET as getStructure } from '../../src/routes/api/netflow/files/[slug]/structure/+server';
 import { GET as getDetails } from '../../src/routes/api/netflow/files/[slug]/details/+server';
-import { GET as getSingularities } from '../../src/routes/api/netflow/files/[slug]/singularities/+server';
 import { getRequestedDataset, getDatasetDb } from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
@@ -294,51 +293,5 @@ describe('netflow file helpers and routes', () => {
 			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized'
 		});
 		expect(getDatasetDb).not.toHaveBeenCalledWith('alpha', undefined);
-	});
-
-	it('handles singularities validation and missing-file failures', async () => {
-		const originalShowSingularities = process.env.SHOW_SINGULARITIES;
-
-		try {
-			process.env.SHOW_SINGULARITIES = 'true';
-			const badResponse = await getSingularities({
-				params: { slug: '202503010005' },
-				url: new URL('http://localhost/api/netflow/files/x/singularities?router=r1&source=maybe')
-			} as never);
-			const missingFileResponse = await getSingularities({
-				params: { slug: '202503010005' },
-				url: new URL('http://localhost/api/netflow/files/x/singularities?router=r1&source=true')
-			} as never);
-
-			expect(badResponse.status).toBe(410);
-			expect(missingFileResponse.status).toBe(410);
-		} finally {
-			if (originalShowSingularities === undefined) {
-				delete process.env.SHOW_SINGULARITIES;
-			} else {
-				process.env.SHOW_SINGULARITIES = originalShowSingularities;
-			}
-		}
-	});
-
-	it('hides singularities route unless SHOW_SINGULARITIES is true', async () => {
-		const originalShowSingularities = process.env.SHOW_SINGULARITIES;
-
-		try {
-			process.env.SHOW_SINGULARITIES = 'false';
-
-			const response = await getSingularities({
-				params: { slug: '202503010005' },
-				url: new URL('http://localhost/api/netflow/files/x/singularities?router=r1&source=true')
-			} as never);
-
-			expect(response.status).toBe(410);
-		} finally {
-			if (originalShowSingularities === undefined) {
-				delete process.env.SHOW_SINGULARITIES;
-			} else {
-				process.env.SHOW_SINGULARITIES = originalShowSingularities;
-			}
-		}
 	});
 });
