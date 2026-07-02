@@ -6,7 +6,7 @@ import pytest
 
 
 def load_module():
-    module = importlib.import_module('csv_ingest_v2')
+    module = importlib.import_module('csv_ingest')
     return importlib.reload(module)
 
 

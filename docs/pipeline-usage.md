@@ -2,157 +2,57 @@
 
 The pipeline lives in `tools/netflow-db/pipeline.py`.
 
-It does two things:
+It processes explicit CSV inputs or prepared nfcapd trees into the canonical
+SQLite stats tables.
 
-- discovers files and recent gaps
-- processes pending data into the stats tables
+## Dataset run
 
-There are two separate windows:
-
-- `--discovery-window-days`: how far back the filesystem scan looks for real files
-- `--reprocess-window-days`: how far back the pipeline is willing to act on discovered data in that run
-
-If you do not pass `--discovery-window-days`, it defaults to the same value as `--reprocess-window-days`.
-
-## Normal run
-
-The pipeline resolves the repo-level `.env` relative to the script location, so
-you can run it either from the repo root or from `tools/netflow-db/`.
-
-With the multi-dataset setup:
-
-- `datasets.json` is the source of truth for dataset roots and per-dataset DB paths
-- `.env` holds runtime defaults such as `DEFAULT_DATASET`, worker counts, and tool paths
-- if you do not pass `--dataset`, the pipeline uses `DEFAULT_DATASET` from `.env`
-- each dataset writes to its own SQLite database, typically `./data/<dataset>/netflow.sqlite`
-
-`structure_stats` requires a compiled burstify `StructureFunction` binary.
-Build it with `./vendor/scripts/compile-burstify.sh`.
-
-`spectrum_stats` requires a compiled MAAD `Spectrum` binary.
-Build it with `./vendor/scripts/compile-maad.sh`.
+Use `datasets.json` for dataset roots and output paths, then run a bounded
+nfcapd tree ingest:
 
 ```bash
-python tools/netflow-db/pipeline.py
+python tools/netflow-db/pipeline.py \
+  --dataset uoregon \
+  --start-date 2025-02-11 \
+  --end-date 2025-02-12
 ```
 
-or
+Useful flags:
+
+- `--database-path`: override the SQLite output path
+- `--start-time` / `--end-time`: limit a half-open local time window. These must
+  align to aggregate bucket boundaries so coarse rows stay complete.
+- `--maad-bin`: path to the MAAD helper binary
+- `--max-workers`: worker process count
+- `--force`: rewrite selected nfcapd buckets even when marked processed
+
+## Config run
+
+For CSV imports or mixed inputs, pass a pipeline config:
 
 ```bash
-cd tools/netflow-db
-python pipeline.py
+python tools/netflow-db/pipeline.py \
+  --config scripts/local/ugr16-csv.pipeline.json \
+  --database-path data/ugr16/netflow.sqlite
 ```
 
-That uses the default reprocessing window of 30 days.
-
-To target a specific dataset explicitly:
+Local helper:
 
 ```bash
-python tools/netflow-db/pipeline.py --dataset uoregon
-python tools/netflow-db/pipeline.py --dataset ugr16
+scripts/local/build_ugr16_netflow.sh --config scripts/local/ugr16-csv.pipeline.json
 ```
 
-In practice, that means:
+## Compile helpers
 
-- recent missing data can still be discovered and filled in
-- recent stale days can be reopened and rebuilt
-- older history stays recorded in `processed_files`, but is not automatically revisited in that run
-
-## Common flags
-
-Only do discovery:
+The canonical MAAD helper is built with:
 
 ```bash
-python tools/netflow-db/pipeline.py --discover-only
-python tools/netflow-db/pipeline.py --dataset ugr16 --discover-only
+scripts/build_maad_fast.sh
 ```
 
-Only do processing:
-
-```bash
-python tools/netflow-db/pipeline.py --process-only
-python tools/netflow-db/pipeline.py --dataset uoregon --process-only
-```
-
-Only run specific tables:
-
-```bash
-python tools/netflow-db/pipeline.py --tables flow_stats,ip_stats
-```
-
-Limit how much work is done per table:
-
-```bash
-python tools/netflow-db/pipeline.py --limit 500
-```
-
-Use a separate discovery window:
-
-```bash
-python tools/netflow-db/pipeline.py --discovery-window-days 30 --reprocess-window-days 14
-```
-
-Disable log-file output:
-
-```bash
-python tools/netflow-db/pipeline.py --no-log
-```
-
-## Legacy fallback mode
-
-If `datasets.json` is absent, the backend can still fall back to the older
-single-dataset env keys:
-
-- `NETFLOW_DATA_PATH`
-- `AVAILABLE_ROUTERS`
-- `DATABASE_PATH`
-
-That path is only kept for backward compatibility.
-
-## Delayed uploads
-
-If data showed up late and you need to revisit older days, widen the reprocessing window.
-
-Example: look back 90 days
-
-```bash
-python tools/netflow-db/pipeline.py --reprocess-window-days 90
-```
-
-Example: full historical reconciliation
-
-```bash
-python tools/netflow-db/pipeline.py --reprocess-window-days 0
-```
-
-`0` means unlimited.
-
-The selected window is the control knob for that run:
-
-- files outside the window are left alone
-- stale days inside the window can be reopened and rebuilt
-
-A practical pattern is:
-
-- weekly: run a 14-day window
-- monthly: run a wider window like 90 days
-
-That gives you regular recent updates plus a periodic deeper reconciliation pass.
-
-## Important detail about aggregates
-
-`flow_stats` can be updated file by file.
-
-The aggregate-heavy tables work at the day level:
-
-- `ip_stats`
-- `protocol_stats`
-- `spectrum_stats`
-- `structure_stats`
-
-If any file in a day needs to be revisited for one of those tables, the pipeline reopens and rebuilds that whole day for that table.
-
-So if you know delayed uploads affected older history, use a larger `--reprocess-window-days` value when you rerun the pipeline.
+`nfdump` must be on `PATH` for nfcapd inputs. Use
+`scripts/run-with-nix-if-available.sh` when the local environment needs Nix
+tooling.
 
 ## Sanity check
 

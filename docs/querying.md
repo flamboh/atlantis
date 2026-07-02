@@ -1,6 +1,6 @@
 # Querying the Database
 
-Each dataset has its own SQLite database at `data/<dataset>/netflow.sqlite`.
+Each dataset has its own SQLite database at the dataset's configured `db_path`.
 
 ## Direct Access
 
@@ -12,26 +12,27 @@ Useful SQLite commands:
 
 ```text
 .tables
-.schema netflow_stats
-.schema ip_stats
+.schema traffic_stats
+.schema protocol_stats
+.schema address_count_stats
+.schema address_structure_stats
 ```
 
 ## Schema Overview
 
-**`netflow_stats`** — per-router flow/packet/byte counts, bucketed by file timestamp:
+**`traffic_stats`** — per-source flow/packet/byte counts:
 
-- `file_path`, `router`, `timestamp` (Unix timestamp)
-- `flows`, `flows_tcp`, `flows_udp`, `flows_icmp`, `flows_other`
-- `packets`, `packets_tcp`, `packets_udp`, `packets_icmp`, `packets_other`
-- `bytes`, `bytes_tcp`, `bytes_udp`, `bytes_icmp`, `bytes_other`
-- `first_timestamp`, `last_timestamp`, `msec_first`, `msec_last`
-- Indexed for efficient router/time-range queries
+- `source_id`, `granularity`, `bucket_start`, `bucket_end`
+- `ip_version`, `src_visibility`, `dst_visibility`
+- `flows`, `packets`, `bytes`
 
-**`ip_stats`** — unique source/destination IP counts per router per time bucket:
+**`protocol_stats`** — unique protocol counts per source/time bucket.
 
-- `router`, `granularity`, `bucket_start`, `bucket_end`
-- `granularity` is one of `5m`, `30m`, `1h`, `1d`
-- `sa_ipv4_count`, `da_ipv4_count`, `sa_ipv6_count`, `da_ipv6_count`
+**`address_count_stats`** — unique source/destination address counts per source/time bucket.
+
+**`address_structure_stats`** — MAAD-backed address structure rows per source/time bucket.
+
+`granularity` is one of `5m`, `30m`, `1h`, `1d`.
 
 ## Example Queries
 
@@ -39,40 +40,47 @@ Daily flow/packet summary for a time window:
 
 ```sql
 SELECT
-    DATE(timestamp, 'unixepoch') AS day,
-    router,
+    DATE(bucket_start, 'unixepoch') AS day,
+    source_id,
     SUM(flows) AS flows,
     SUM(packets) AS packets,
     SUM(bytes) AS bytes
-FROM netflow_stats
-WHERE router IN ('router1', 'router2')
-  AND timestamp BETWEEN strftime('%s', '2025-01-01') AND strftime('%s', '2025-01-08')
-GROUP BY day, router
-ORDER BY day, router;
+FROM traffic_stats
+WHERE source_id IN ('source1', 'source2')
+  AND granularity = '1d'
+  AND src_visibility = 'all'
+  AND dst_visibility = 'all'
+  AND bucket_start BETWEEN strftime('%s', '2025-01-01') AND strftime('%s', '2025-01-08')
+GROUP BY day, source_id
+ORDER BY day, source_id;
 ```
 
 30-minute protocol breakdown for a single day:
 
 ```sql
 SELECT
-    strftime('%Y-%m-%d %H:%M', timestamp - (timestamp % 1800), 'unixepoch') AS bucket,
-    SUM(flows_tcp) AS flows_tcp,
-    SUM(flows_udp) AS flows_udp,
-    SUM(flows_icmp) AS flows_icmp
-FROM netflow_stats
-WHERE router = 'router1'
-  AND timestamp BETWEEN strftime('%s', '2025-01-03') AND strftime('%s', '2025-01-04')
-GROUP BY timestamp - (timestamp % 1800)
-ORDER BY timestamp - (timestamp % 1800);
+    datetime(bucket_start, 'unixepoch') AS bucket,
+    protocol,
+    protocol_count
+FROM protocol_stats
+WHERE source_id = 'source1'
+  AND granularity = '30m'
+  AND ip_version = 4
+  AND src_visibility = 'all'
+  AND dst_visibility = 'all'
+  AND bucket_start BETWEEN strftime('%s', '2025-01-03') AND strftime('%s', '2025-01-04')
+ORDER BY bucket_start, protocol;
 ```
 
-Per-router IP counts:
+Per-source address counts:
 
 ```sql
-SELECT router, bucket_start, sa_ipv4_count, da_ipv4_count, sa_ipv6_count, da_ipv6_count
-FROM ip_stats
+SELECT source_id, bucket_start, ip_version, address_side, address_count
+FROM address_count_stats
 WHERE granularity = '1h'
-  AND router IN ('router1', 'router2')
+  AND source_id IN ('source1', 'source2')
+  AND src_visibility = 'all'
+  AND dst_visibility = 'all'
   AND bucket_start BETWEEN strftime('%s', '2025-01-01') AND strftime('%s', '2025-01-02')
-ORDER BY router, bucket_start;
+ORDER BY source_id, bucket_start, ip_version, address_side;
 ```

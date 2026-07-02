@@ -1,5 +1,5 @@
 """
-Grouped nfdump readers for pipeline v2 nfcapd inputs.
+Grouped nfdump readers for pipeline nfcapd inputs.
 
 This avoids materializing every flow row in Python for native nfcapd files.
 External CSV inputs still use the normalized row path.
@@ -17,9 +17,9 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from stats_v3 import (
+from stats import (
     ZERO_FILL_VISIBILITY_PAIRS,
-    add_traffic_metrics_v3,
+    add_traffic_metrics,
     address_set_entries_to_count_rows,
     empty_address_set_entries,
     empty_protocol_set_entries,
@@ -39,12 +39,12 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
     """Build 5m stats and raw aggregate sets for one nfcapd file."""
     bucket_start = parse_nfcapd_bucket_start(path)
     bucket_end = bucket_start + 300
-    address_v3_sets = read_address_sets_v3(path, source_id, bucket_start, bucket_end)
+    address_sets = read_scoped_address_sets(path, source_id, bucket_start, bucket_end)
     scoped_counters_by_version = {
         4: read_scoped_protocol_counters(path, 4),
         6: read_scoped_protocol_counters(path, 6),
     }
-    traffic_v3_rows, protocol_v3_sets = traffic_stats_rows_from_scoped_counters(
+    traffic_rows, protocol_sets = traffic_stats_rows_from_scoped_counters(
         scoped_counters_by_version,
         source_id,
         bucket_start,
@@ -59,15 +59,15 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
             'bucket_start': bucket_start,
             'bucket_end': bucket_end,
         },
-        'traffic_v3_rows': traffic_v3_rows,
-        'protocol_v3_rows': protocol_set_entries_to_rows(protocol_v3_sets),
-        'address_count_v3_rows': address_set_entries_to_count_rows(address_v3_sets),
+        'traffic_rows': traffic_rows,
+        'protocol_rows': protocol_set_entries_to_rows(protocol_sets),
+        'address_count_rows': address_set_entries_to_count_rows(address_sets),
         'raw_bucket': {
             'source_id': source_id,
             'bucket_start': bucket_start,
-            'traffic_v3_rows': traffic_v3_rows,
-            'protocol_v3_sets': protocol_v3_sets,
-            'address_v3_sets': address_v3_sets,
+            'traffic_rows': traffic_rows,
+            'protocol_sets': protocol_sets,
+            'address_sets': address_sets,
         },
     }
 
@@ -112,7 +112,7 @@ def read_traffic_stats_rows(
     bucket_start: int,
     bucket_end: int,
 ) -> tuple[list[dict], list[dict]]:
-    """Read scoped v3 traffic rows and protocol sets from grouped nfdump CSV."""
+    """Read scoped scoped traffic rows and protocol sets from grouped nfdump CSV."""
     return traffic_stats_rows_from_scoped_counters(
         {
             4: read_scoped_protocol_counters(path, 4),
@@ -130,7 +130,7 @@ def traffic_stats_rows_from_scoped_counters(
     bucket_start: int,
     bucket_end: int,
 ) -> tuple[list[dict], list[dict]]:
-    """Build scoped v3 traffic rows from grouped protocol counters."""
+    """Build scoped scoped traffic rows from grouped protocol counters."""
     rows_by_key: dict[tuple[int, str, str], dict] = {
         (row['ip_version'], row['src_visibility'], row['dst_visibility']): row
         for row in empty_traffic_stats_rows(
@@ -155,7 +155,7 @@ def traffic_stats_rows_from_scoped_counters(
             for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
                 key = (ip_version, src_visibility, dst_visibility)
                 row = rows_by_key[key]
-                add_traffic_metrics_v3(
+                add_traffic_metrics(
                     row,
                     protocol=protocol,
                     flows=flows,
@@ -335,13 +335,13 @@ def read_address_sets_by_version(path: str) -> tuple[set[str], set[str], set[str
     return source_ipv4, destination_ipv4, source_ipv6, destination_ipv6
 
 
-def read_address_sets_v3(
+def read_scoped_address_sets(
     path: str,
     source_id: str,
     bucket_start: int,
     bucket_end: int,
 ) -> list[dict]:
-    """Read scoped address sets for v3 address counts and structures."""
+    """Read scoped address sets for address counts and structures."""
     result = run_nfdump(
         [
             'nfdump',

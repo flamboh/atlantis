@@ -7,14 +7,12 @@
 - `nfdump` available on your PATH (or via Nix — see `shell.nix`)
 - SSH access to the research host if using live ONRG data
 
-### For Multifractal Analysis
+### For MAAD-Backed Address Structure Stats
 
-Only needed if you want the vendor analyzer binaries:
+Only needed if you want MAAD-backed address structure stats:
 
-- `ghc` plus the Haskell packages listed in `vendor/maad/shell.nix` for `vendor/maad`
-- `zig` for `vendor/burstify`
-- `pkg-config` and `libpcap` if you also want the full burstify toolchain, not just `StructureFunction`
-- or `nix-shell`, then use the compile scripts under `vendor/scripts/`
+- a C++ compiler for `tools/netflow-db/maad_fast.cpp`
+- or `nix-shell`, then use `scripts/build_maad_fast.sh`
 
 ## Install
 
@@ -47,12 +45,12 @@ cp .env.example .env
 At minimum, make sure `DEFAULT_DATASET` matches one of the dataset ids in
 `datasets.json`.
 
-Optional overrides: `DATASETS_CONFIG_PATH`, `NETFLOW_DATA_PATH`, `DATABASE_PATH`.
+Optional overrides: `DATASETS_CONFIG_PATH`, `MAX_WORKERS`, `AGGREGATE_MAAD_MAX_WORKERS`.
 
 ## Populate the Database
 
 ```bash
-python tools/netflow-db/pipeline.py
+python tools/netflow-db/pipeline.py --dataset uoregon --start-date 2025-02-11
 ```
 
 This discovers and processes NetFlow files into SQLite.
@@ -79,26 +77,17 @@ these files, rebaseline `apps/web/drizzle` when the schema changes. After a D1
 database has applied a migration, add a new migration instead of editing the
 applied file.
 
-## Optional: Compile Vendor Analyzers
+## Optional: Compile MAAD Helper
 
-If you need `spectrum_stats` / `structure_stats` for real captures, initialize
-the analyzer submodules and compile the vendor binaries:
+If you need MAAD-backed address structure stats for real captures, build the
+fast MAAD helper:
 
 ```bash
 git submodule update --init --recursive
-./vendor/scripts/compile-maad.sh
-./vendor/scripts/compile-burstify.sh
-# or: ./vendor/scripts/compile-all.sh
+./scripts/build_maad_fast.sh
 ```
 
-`compile-burstify.sh` builds `vendor/burstify/zig-out/bin/StructureFunction`,
-which `structure_stats` uses. If `libpcap` is also available, it additionally
-builds the rest of burstify.
-
-`compile-maad.sh` builds `vendor/maad/Spectrum` and related Haskell executables
-used by `spectrum_stats`.
-
-Those binaries are not required for the no-data setup verification flow above.
+This helper is not required for the no-data setup verification flow above.
 
 ## Run the App
 

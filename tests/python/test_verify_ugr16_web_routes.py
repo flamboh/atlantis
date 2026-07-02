@@ -20,7 +20,7 @@ def test_dataset_summaries_accepts_apps_web_data_response() -> None:
     ]
 
 
-def test_dataset_summaries_accepts_legacy_shapes() -> None:
+def test_dataset_summaries_accepts_existing_shapes() -> None:
     verifier = load_verifier()
 
     assert verifier.dataset_summaries([{'datasetId': 'ugr16'}]) == [{'datasetId': 'ugr16'}]

@@ -1,4 +1,4 @@
-"""CSV file and archive readers for pipeline v2."""
+"""CSV file and archive readers for pipeline."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from csv_ingest_v2 import CsvSourceConfig, CsvSourceConfigError, load_csv_source_config
-from normalized_rows_v2 import NormalizedRow, normalize_csv_row, normalize_csv_values
+from csv_ingest import CsvSourceConfig, CsvSourceConfigError, load_csv_source_config
+from normalized_rows import NormalizedRow, normalize_csv_row, normalize_csv_values
 
 
 @dataclass(frozen=True, slots=True)
