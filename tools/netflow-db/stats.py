@@ -7,20 +7,10 @@ import sqlite3
 from typing import Iterable
 
 from maad import MaadJsonResult
+from statistical_bucket import CanonicalBucket
 
 
-GRANULARITIES = ('5m', '30m', '1h', '1d')
-VISIBILITIES = ('all', 'literal', 'anonymized')
-ADDRESS_SIDES = ('source', 'destination')
 STRUCTURE_KINDS = ('structure', 'spectrum', 'dimension')
-ALL_VISIBILITY = ('all', 'all')
-EXACT_VISIBILITY_PAIRS = (
-    ('anonymized', 'anonymized'),
-    ('anonymized', 'literal'),
-    ('literal', 'anonymized'),
-    ('literal', 'literal'),
-)
-ZERO_FILL_VISIBILITY_PAIRS = (ALL_VISIBILITY, *EXACT_VISIBILITY_PAIRS)
 NETFLOW_METRIC_COLUMNS = (
     'flows',
     'flows_tcp',
@@ -40,23 +30,62 @@ NETFLOW_METRIC_COLUMNS = (
 )
 
 
-def protocol_metric_keys(protocol: int | str) -> tuple[str, str, str]:
-    protocol_value = int(protocol)
-    if protocol_value == 6:
-        suffix = 'tcp'
-    elif protocol_value == 17:
-        suffix = 'udp'
-    elif protocol_value in (1, 58):
-        suffix = 'icmp'
-    else:
-        suffix = 'other'
-    return f'flows_{suffix}', f'packets_{suffix}', f'bytes_{suffix}'
-
-
-def validate_ip_version(ip_version: int) -> int:
-    if ip_version not in (4, 6):
-        raise ValueError(f'Unsupported ip_version: {ip_version!r}')
-    return ip_version
+def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
+    """Render an immutable canonical bucket for the SQLite and MAAD adapters."""
+    base = {
+        'source_id': bucket.key.source_id,
+        'granularity': bucket.key.granularity,
+        'bucket_start': bucket.key.bucket_start,
+        'bucket_end': bucket.key.bucket_end,
+    }
+    traffic_rows = [
+        {
+            **base,
+            'ip_version': entry.scope.ip_version,
+            'src_visibility': entry.scope.src_visibility,
+            'dst_visibility': entry.scope.dst_visibility,
+            **{
+                column: getattr(entry.metrics, column)
+                for column in NETFLOW_METRIC_COLUMNS
+            },
+        }
+        for entry in bucket.traffic
+    ]
+    protocol_rows = [
+        {
+            **base,
+            'ip_version': entry.scope.ip_version,
+            'src_visibility': entry.scope.src_visibility,
+            'dst_visibility': entry.scope.dst_visibility,
+            'unique_protocols_count': len(entry.protocols),
+            'protocols_list': ','.join(entry.protocols),
+        }
+        for entry in bucket.protocols
+    ]
+    address_sets = [
+        {
+            **base,
+            'ip_version': entry.scope.ip_version,
+            'src_visibility': entry.scope.src_visibility,
+            'dst_visibility': entry.scope.dst_visibility,
+            'address_side': entry.address_side,
+            'addresses': list(entry.addresses),
+        }
+        for entry in bucket.addresses
+    ]
+    address_count_rows = [
+        {
+            **{key: value for key, value in entry.items() if key != 'addresses'},
+            'unique_address_count': len(entry['addresses']),
+        }
+        for entry in address_sets
+    ]
+    return {
+        'traffic_rows': traffic_rows,
+        'protocol_rows': protocol_rows,
+        'address_count_rows': address_count_rows,
+        'address_sets': address_sets,
+    }
 
 
 def init_stats_tables(conn: sqlite3.Connection) -> None:
@@ -208,314 +237,6 @@ def init_address_structure_stats_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
-
-
-def visibility_pair_from_tos(src_tos: int) -> tuple[str, str]:
-    """Decode UO anonymization low bits from source ToS."""
-    src_visibility = 'anonymized' if src_tos & 2 else 'literal'
-    dst_visibility = 'anonymized' if src_tos & 1 else 'literal'
-    return src_visibility, dst_visibility
-
-
-def visibility_pairs_for_row(src_tos: int) -> tuple[tuple[str, str], tuple[str, str]]:
-    """Return all-traffic and exact visibility pairs for one flow row."""
-    return ALL_VISIBILITY, visibility_pair_from_tos(src_tos)
-
-
-def empty_traffic_stats_row(
-    *,
-    source_id: str,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-    ip_version: int,
-    src_visibility: str,
-    dst_visibility: str,
-) -> dict:
-    """Create an empty scoped traffic metric row."""
-    validate_ip_version(ip_version)
-    return {
-        'source_id': source_id,
-        'granularity': granularity,
-        'bucket_start': bucket_start,
-        'bucket_end': bucket_end,
-        'ip_version': ip_version,
-        'src_visibility': src_visibility,
-        'dst_visibility': dst_visibility,
-        **{column: 0 for column in NETFLOW_METRIC_COLUMNS},
-    }
-
-
-def empty_traffic_stats_rows(
-    *,
-    source_id: str,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> list[dict]:
-    """Create zero traffic rows for every query visibility scope."""
-    return [
-        empty_traffic_stats_row(
-            source_id=source_id,
-            granularity=granularity,
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-            ip_version=ip_version,
-            src_visibility=src_visibility,
-            dst_visibility=dst_visibility,
-        )
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
-    ]
-
-
-def empty_protocol_set_entries(
-    *,
-    source_id: str,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> list[dict]:
-    """Create empty protocol sets for every query visibility scope."""
-    return [
-        {
-            'source_id': source_id,
-            'granularity': granularity,
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': src_visibility,
-            'dst_visibility': dst_visibility,
-            'protocols': [],
-        }
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
-    ]
-
-
-def empty_address_set_entries(
-    *,
-    source_id: str,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> list[dict]:
-    """Create empty address sets for every query visibility scope and side."""
-    return [
-        {
-            'source_id': source_id,
-            'granularity': granularity,
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': ip_version,
-            'src_visibility': src_visibility,
-            'dst_visibility': dst_visibility,
-            'address_side': address_side,
-            'addresses': [],
-        }
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in ZERO_FILL_VISIBILITY_PAIRS
-        for address_side in ADDRESS_SIDES
-    ]
-
-
-def add_traffic_metrics(
-    row: dict,
-    *,
-    protocol: int,
-    flows: int,
-    packets: int,
-    bytes_count: int,
-) -> None:
-    """Add already-grouped traffic metrics to a row."""
-    row['flows'] += flows
-    row['packets'] += packets
-    row['bytes'] += bytes_count
-    flow_key, packets_key, bytes_key = protocol_metric_keys(protocol)
-    row[flow_key] += flows
-    row[packets_key] += packets
-    row[bytes_key] += bytes_count
-
-
-def traffic_key(row: dict) -> tuple:
-    return (
-        row['source_id'],
-        row['granularity'],
-        row['bucket_start'],
-        row['ip_version'],
-        row['src_visibility'],
-        row['dst_visibility'],
-    )
-
-
-def protocol_set_entries_to_rows(entries: Iterable[dict]) -> list[dict]:
-    """Turn raw protocol-set entries into protocol_stats rows."""
-    rows = []
-    for entry in entries:
-        protocols = sorted(str(protocol) for protocol in entry['protocols'])
-        rows.append(
-            {
-                'source_id': entry['source_id'],
-                'granularity': entry['granularity'],
-                'bucket_start': entry['bucket_start'],
-                'bucket_end': entry['bucket_end'],
-                'ip_version': entry['ip_version'],
-                'src_visibility': entry['src_visibility'],
-                'dst_visibility': entry['dst_visibility'],
-                'unique_protocols_count': len(protocols),
-                'protocols_list': ','.join(protocols),
-            }
-        )
-    return sorted(rows, key=traffic_key)
-
-
-def address_set_entries_to_count_rows(entries: Iterable[dict]) -> list[dict]:
-    """Turn raw address-set entries into address_count_stats rows."""
-    rows = []
-    for entry in entries:
-        rows.append(
-            {
-                'source_id': entry['source_id'],
-                'granularity': entry['granularity'],
-                'bucket_start': entry['bucket_start'],
-                'bucket_end': entry['bucket_end'],
-                'ip_version': entry['ip_version'],
-                'src_visibility': entry['src_visibility'],
-                'dst_visibility': entry['dst_visibility'],
-                'address_side': entry['address_side'],
-                'unique_address_count': len(entry['addresses']),
-            }
-        )
-    return sorted(
-        rows,
-        key=lambda row: (
-            *traffic_key(row),
-            row['address_side'],
-        ),
-    )
-
-
-def merge_traffic_rows(rows: Iterable[dict]) -> list[dict]:
-    """Merge additive scoped traffic rows."""
-    merged = {}
-    for row in rows:
-        key = traffic_key(row)
-        target = merged.setdefault(
-            key,
-            empty_traffic_stats_row(
-                source_id=row['source_id'],
-                granularity=row['granularity'],
-                bucket_start=row['bucket_start'],
-                bucket_end=row['bucket_end'],
-                ip_version=row['ip_version'],
-                src_visibility=row['src_visibility'],
-                dst_visibility=row['dst_visibility'],
-            ),
-        )
-        for column in NETFLOW_METRIC_COLUMNS:
-            target[column] += row[column]
-    return [merged[key] for key in sorted(merged)]
-
-
-def merge_protocol_set_entries_raw(entries: Iterable[dict]) -> list[dict]:
-    """Union protocol sets by dimensions and keep raw set entries."""
-    merged = {}
-    metadata = {}
-    for entry in entries:
-        key = (
-            entry['source_id'],
-            entry['granularity'],
-            entry['bucket_start'],
-            entry['ip_version'],
-            entry['src_visibility'],
-            entry['dst_visibility'],
-        )
-        merged.setdefault(key, set()).update(str(protocol) for protocol in entry['protocols'])
-        metadata[key] = entry
-    return [
-        {
-            **metadata[key],
-            'protocols': sorted(protocols),
-        }
-        for key, protocols in merged.items()
-    ]
-
-
-def merge_address_set_entries(entries: Iterable[dict]) -> list[dict]:
-    """Union address sets by dimensions."""
-    merged = {}
-    metadata = {}
-    for entry in entries:
-        key = (
-            entry['source_id'],
-            entry['granularity'],
-            entry['bucket_start'],
-            entry['ip_version'],
-            entry['src_visibility'],
-            entry['dst_visibility'],
-            entry['address_side'],
-        )
-        merged.setdefault(key, set()).update(entry['addresses'])
-        metadata[key] = entry
-    return [
-        {
-            **metadata[key],
-            'addresses': sorted(addresses),
-        }
-        for key, addresses in sorted(merged.items())
-    ]
-
-
-def aggregate_raw_entries(
-    raw_buckets: list[dict],
-    *,
-    granularity: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> dict:
-    """Build raw aggregate rows/sets from raw 5m buckets."""
-    traffic_rows = []
-    protocol_entries = []
-    address_entries = []
-
-    for raw in raw_buckets:
-        for row in raw['traffic_rows']:
-            traffic_rows.append(
-                {
-                    **row,
-                    'granularity': granularity,
-                    'bucket_start': bucket_start,
-                    'bucket_end': bucket_end,
-                }
-            )
-        for entry in raw['protocol_sets']:
-            protocol_entries.append(
-                {
-                    **entry,
-                    'granularity': granularity,
-                    'bucket_start': bucket_start,
-                    'bucket_end': bucket_end,
-                }
-            )
-        for entry in raw['address_sets']:
-            address_entries.append(
-                {
-                    **entry,
-                    'granularity': granularity,
-                    'bucket_start': bucket_start,
-                    'bucket_end': bucket_end,
-                }
-            )
-
-    merged_protocol_entries = merge_protocol_set_entries_raw(protocol_entries)
-    merged_address_entries = merge_address_set_entries(address_entries)
-    return {
-        'traffic_rows': merge_traffic_rows(traffic_rows),
-        'protocol_rows': protocol_set_entries_to_rows(merged_protocol_entries),
-        'protocol_sets': merged_protocol_entries,
-        'address_count_rows': address_set_entries_to_count_rows(merged_address_entries),
-        'address_sets': merged_address_entries,
-    }
 
 
 def build_address_structure_stats_rows(

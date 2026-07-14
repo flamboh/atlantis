@@ -12,6 +12,7 @@ def load_module():
 def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) -> None:
     monkeypatch.setenv('NETFLOW_TIMEZONE', 'America/Los_Angeles')
     module = load_module()
+    statistical_bucket = importlib.import_module('statistical_bucket')
     commands = []
 
     def fake_run(command, capture_output, text, timeout):
@@ -71,7 +72,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     assert 'netflow_rows' not in payload
     assert 'ip_row' not in payload
     assert 'protocol_row' not in payload
-    assert 'maad_source_ipv4' not in payload['raw_bucket']
+    assert payload['canonical_bucket'].key.source_id == 'oh_ir1_gw'
     assert payload['traffic_rows'][0]['src_visibility'] == 'all'
     assert payload['traffic_rows'][0]['dst_visibility'] == 'all'
     address_counts = {
@@ -81,7 +82,7 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
     expected_address_counts = {
         (ip_version, src_visibility, dst_visibility, address_side, 0)
         for ip_version in (4, 6)
-        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
         for address_side in ('source', 'destination')
     }
     expected_address_counts -= {
@@ -152,28 +153,27 @@ def test_read_scoped_protocol_counters_treats_no_matching_flows_as_empty(monkeyp
 
 
 def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> None:
-    module = load_module()
-
-    traffic_rows, protocol_sets = module.traffic_stats_rows_from_scoped_counters(
-        {4: [], 6: []},
-        'r1',
-        1744700700,
-        1744701000,
-    )
+    statistical_bucket = importlib.import_module('statistical_bucket')
+    stats = importlib.import_module('stats')
+    bucket = statistical_bucket.StatisticalBucket(
+        statistical_bucket.BucketKey('r1', '5m', 1744700700, 1744701000),
+        dense=True,
+    ).finish()
+    rows = stats.canonical_bucket_rows(bucket)
 
     assert {
         (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['flows'])
-        for row in traffic_rows
+        for row in rows['traffic_rows']
     } == {
         (ip_version, src_visibility, dst_visibility, 0)
         for ip_version in (4, 6)
-        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
     }
     assert {
-        (row['ip_version'], row['src_visibility'], row['dst_visibility'], tuple(row['protocols']))
-        for row in protocol_sets
+        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['protocols_list'])
+        for row in rows['protocol_rows']
     } == {
-        (ip_version, src_visibility, dst_visibility, ())
+        (ip_version, src_visibility, dst_visibility, '')
         for ip_version in (4, 6)
-        for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
+        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
     }

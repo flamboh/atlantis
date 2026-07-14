@@ -17,16 +17,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from stats import (
-    ZERO_FILL_VISIBILITY_PAIRS,
-    add_traffic_metrics,
-    address_set_entries_to_count_rows,
-    empty_address_set_entries,
-    empty_protocol_set_entries,
-    empty_traffic_stats_rows,
-    protocol_set_entries_to_rows,
-    visibility_pairs_for_row,
+from statistical_bucket import (
+    BucketKey,
+    GroupedTrafficFact,
+    Scope,
+    ScopedAddressesFact,
+    StatisticalBucket,
+    visibility_pair_from_tos,
 )
+from stats import canonical_bucket_rows
 
 
 NFDUMP_TIMEOUT_SECONDS = 300
@@ -39,17 +38,30 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
     """Build 5m stats and raw aggregate sets for one nfcapd file."""
     bucket_start = parse_nfcapd_bucket_start(path)
     bucket_end = bucket_start + 300
-    address_sets = read_scoped_address_sets(path, source_id, bucket_start, bucket_end)
+    bucket = StatisticalBucket(
+        BucketKey(source_id, '5m', bucket_start, bucket_end),
+        dense=True,
+    )
+    for fact in read_scoped_address_facts(path):
+        bucket.add(fact)
     scoped_counters_by_version = {
         4: read_scoped_protocol_counters(path, 4),
         6: read_scoped_protocol_counters(path, 6),
     }
-    traffic_rows, protocol_sets = traffic_stats_rows_from_scoped_counters(
-        scoped_counters_by_version,
-        source_id,
-        bucket_start,
-        bucket_end,
-    )
+    for ip_version in (4, 6):
+        for protocol, src_tos, packets, bytes_value, flows in scoped_counters_by_version[ip_version]:
+            bucket.add(
+                GroupedTrafficFact(
+                    ip_version=ip_version,
+                    protocol=protocol,
+                    src_tos=src_tos,
+                    flows=flows,
+                    packets=packets,
+                    bytes_count=bytes_value,
+                )
+            )
+    canonical_bucket = bucket.finish()
+    rows = canonical_bucket_rows(canonical_bucket)
 
     return {
         'processed_bucket': {
@@ -59,81 +71,16 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
             'bucket_start': bucket_start,
             'bucket_end': bucket_end,
         },
-        'traffic_rows': traffic_rows,
-        'protocol_rows': protocol_set_entries_to_rows(protocol_sets),
-        'address_count_rows': address_set_entries_to_count_rows(address_sets),
-        'raw_bucket': {
-            'source_id': source_id,
-            'bucket_start': bucket_start,
-            'traffic_rows': traffic_rows,
-            'protocol_sets': protocol_sets,
-            'address_sets': address_sets,
-        },
+        'traffic_rows': rows['traffic_rows'],
+        'protocol_rows': rows['protocol_rows'],
+        'address_count_rows': rows['address_count_rows'],
+        'canonical_bucket': canonical_bucket,
     }
 
 
 def is_nfcapd_bucket_filename(name: str) -> bool:
     """Return true for canonical nfcapd bucket filenames."""
     return NFCAPD_FILENAME_RE.fullmatch(name) is not None
-
-
-def traffic_stats_rows_from_scoped_counters(
-    scoped_counters_by_version: dict[int, list[tuple[int, int, int, int, int]]],
-    source_id: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> tuple[list[dict], list[dict]]:
-    """Build scoped scoped traffic rows from grouped protocol counters."""
-    rows_by_key: dict[tuple[int, str, str], dict] = {
-        (row['ip_version'], row['src_visibility'], row['dst_visibility']): row
-        for row in empty_traffic_stats_rows(
-            source_id=source_id,
-            granularity='5m',
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        )
-    }
-    protocols_by_key: dict[tuple[int, str, str], set[str]] = {
-        (entry['ip_version'], entry['src_visibility'], entry['dst_visibility']): set()
-        for entry in empty_protocol_set_entries(
-            source_id=source_id,
-            granularity='5m',
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        )
-    }
-
-    for ip_version in (4, 6):
-        for protocol, src_tos, packets, bytes_value, flows in scoped_counters_by_version[ip_version]:
-            for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
-                key = (ip_version, src_visibility, dst_visibility)
-                row = rows_by_key[key]
-                add_traffic_metrics(
-                    row,
-                    protocol=protocol,
-                    flows=flows,
-                    packets=packets,
-                    bytes_count=bytes_value,
-                )
-                protocols_by_key[key].add(str(protocol))
-
-    protocol_entries = [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': key[0],
-            'src_visibility': key[1],
-            'dst_visibility': key[2],
-            'protocols': sorted(protocols),
-        }
-        for key, protocols in protocols_by_key.items()
-    ]
-    return (
-        [rows_by_key[key] for key in sorted(rows_by_key)],
-        sorted(protocol_entries, key=lambda row: (row['ip_version'], row['src_visibility'], row['dst_visibility'])),
-    )
 
 
 def read_scoped_protocol_counters(path: str, ip_version: int) -> list[tuple[int, int, int, int, int]]:
@@ -206,13 +153,8 @@ def is_no_matching_flows_row(row: dict[str, str | None]) -> bool:
     )
 
 
-def read_scoped_address_sets(
-    path: str,
-    source_id: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> list[dict]:
-    """Read scoped address sets for address counts and structures."""
+def read_scoped_address_facts(path: str) -> list[ScopedAddressesFact]:
+    """Read typed scoped address facts for one nfcapd input."""
     result = run_nfdump(
         [
             'nfdump',
@@ -226,20 +168,7 @@ def read_scoped_address_sets(
             'csv:%sa,%da,%stos',
         ]
     )
-    sets_by_key: dict[tuple[int, str, str, str], set] = {
-        (
-            entry['ip_version'],
-            entry['src_visibility'],
-            entry['dst_visibility'],
-            entry['address_side'],
-        ): set()
-        for entry in empty_address_set_entries(
-            source_id=source_id,
-            granularity='5m',
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        )
-    }
+    sets_by_key: dict[tuple[Scope, str], set[str | int]] = {}
     for row in csv.DictReader(result.stdout.splitlines()):
         source_ip = (row.get('srcAddr') or '').strip()
         destination_ip = (row.get('dstAddr') or '').strip()
@@ -266,29 +195,15 @@ def read_scoped_address_sets(
         else:
             continue
 
-        for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
-            sets_by_key.setdefault(
-                (ip_version, src_visibility, dst_visibility, 'source'),
-                set(),
-            ).add(source_value)
-            sets_by_key.setdefault(
-                (ip_version, src_visibility, dst_visibility, 'destination'),
-                set(),
-            ).add(destination_value)
+        exact_visibility = visibility_pair_from_tos(src_tos)
+        for src_visibility, dst_visibility in (('all', 'all'), exact_visibility):
+            scope = Scope(ip_version, src_visibility, dst_visibility)
+            sets_by_key.setdefault((scope, 'source'), set()).add(source_value)
+            sets_by_key.setdefault((scope, 'destination'), set()).add(destination_value)
 
     return [
-        {
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-            'ip_version': key[0],
-            'src_visibility': key[1],
-            'dst_visibility': key[2],
-            'address_side': key[3],
-            'addresses': sorted(addresses),
-        }
-        for key, addresses in sorted(sets_by_key.items())
+        ScopedAddressesFact(scope, address_side, addresses)
+        for (scope, address_side), addresses in sorted(sets_by_key.items())
     ]
 
 

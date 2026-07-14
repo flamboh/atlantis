@@ -73,17 +73,21 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
 
 
 def traffic_row(stats, granularity: str, bucket_start: int, bucket_end: int) -> dict:
-    row = stats.empty_traffic_stats_row(
-        source_id='ugr16',
-        granularity=granularity,
-        bucket_start=bucket_start,
-        bucket_end=bucket_end,
-        ip_version=4,
-        src_visibility='all',
-        dst_visibility='all',
+    bucket_module = importlib.import_module('statistical_bucket')
+    bucket = bucket_module.StatisticalBucket(
+        bucket_module.BucketKey('ugr16', granularity, bucket_start, bucket_end)
     )
-    stats.add_traffic_metrics(row, protocol=6, flows=1, packets=10, bytes_count=1000)
-    return row
+    bucket.add(
+        bucket_module.GroupedTrafficFact(
+            ip_version=4,
+            protocol=6,
+            src_tos=0,
+            flows=1,
+            packets=10,
+            bytes_count=1000,
+        )
+    )
+    return stats.canonical_bucket_rows(bucket.finish())['traffic_rows'][0]
 
 
 def protocol_row(granularity: str, bucket_start: int, bucket_end: int) -> dict:

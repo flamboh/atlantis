@@ -16,7 +16,7 @@ import sqlite3
 import subprocess
 import tarfile
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
 from multiprocessing import Pool
@@ -57,26 +57,21 @@ from processed_inputs import (
     mark_input_bucket_status,
     upsert_input_bucket,
 )
+from statistical_bucket import (
+    BucketKey,
+    CanonicalBucket,
+    FlowFact,
+    StatisticalBucket,
+    ZERO_FILL_VISIBILITY_PAIRS,
+)
 from stats import (
-    NETFLOW_METRIC_COLUMNS,
-    add_traffic_metrics,
-    address_set_entries_to_count_rows,
-    aggregate_raw_entries,
     build_address_structure_stats_rows,
-    empty_address_set_entries,
-    empty_protocol_set_entries,
-    empty_traffic_stats_row,
-    empty_traffic_stats_rows,
+    canonical_bucket_rows,
     init_stats_tables,
     insert_address_count_stats_rows,
     insert_address_structure_stats_rows,
     insert_protocol_stats_rows,
     insert_traffic_stats_rows,
-    protocol_metric_keys,
-    protocol_set_entries_to_rows,
-    validate_ip_version,
-    visibility_pairs_for_row,
-    ZERO_FILL_VISIBILITY_PAIRS,
 )
 
 
@@ -119,126 +114,6 @@ CSV_ARROW_REQUIRED_COLUMN_KEYS = (
     'bytes',
     'src_tos',
 )
-
-
-@dataclass
-class BucketAccumulator:
-    """Per-source 5-minute accumulator for canonical stats."""
-
-    source_id: str
-    bucket_start: int
-    bucket_end: int
-    traffic_by_scope: dict[tuple[int, str, str], dict] = field(default_factory=dict)
-    protocol_by_scope: dict[tuple[int, str, str], set[str]] = field(default_factory=dict)
-    address_by_scope: dict[tuple[int, str, str, str], set[str]] = field(default_factory=dict)
-
-    def add(self, row: NormalizedRow) -> None:
-        """Accumulate one normalized row."""
-        self.add_flow(
-            ip_version=row.ip_version,
-            src_ip=row.src_ip,
-            dst_ip=row.dst_ip,
-            protocol=row.protocol,
-            packets=row.packets,
-            bytes_count=row.bytes,
-            src_tos=row.src_tos,
-        )
-
-    def add_flow(
-        self,
-        *,
-        ip_version: int,
-        src_ip: str,
-        dst_ip: str,
-        protocol: int,
-        packets: int,
-        bytes_count: int,
-        src_tos: int,
-    ) -> None:
-        """Accumulate exact and all/all visibility rows."""
-        ip_version = validate_ip_version(ip_version)
-        for src_visibility, dst_visibility in visibility_pairs_for_row(src_tos):
-            key = (ip_version, src_visibility, dst_visibility)
-            traffic = self.traffic_by_scope.setdefault(
-                key,
-                empty_traffic_stats_row(
-                    source_id=self.source_id,
-                    granularity='5m',
-                    bucket_start=self.bucket_start,
-                    bucket_end=self.bucket_end,
-                    ip_version=ip_version,
-                    src_visibility=src_visibility,
-                    dst_visibility=dst_visibility,
-                ),
-            )
-            add_traffic_metrics(
-                traffic,
-                protocol=protocol,
-                flows=1,
-                packets=packets,
-                bytes_count=bytes_count,
-            )
-            self.protocol_by_scope.setdefault(key, set()).add(str(protocol))
-            self.address_by_scope.setdefault((*key, 'source'), set()).add(src_ip)
-            self.address_by_scope.setdefault((*key, 'destination'), set()).add(dst_ip)
-
-    def raw_bucket_row(self) -> dict:
-        """Return raw set payloads needed for cross-bucket aggregate rows."""
-        return {
-            'source_id': self.source_id,
-            'bucket_start': self.bucket_start,
-            'traffic_rows': [dict(row) for row in self.traffic_rows()],
-            'protocol_sets': self.protocol_set_entries(),
-            'address_sets': self.address_set_entries(),
-        }
-
-    def traffic_rows(self) -> list[dict]:
-        """Return traffic rows for this bucket."""
-        return [
-            self.traffic_by_scope[key]
-            for key in sorted(self.traffic_by_scope)
-        ]
-
-    def protocol_set_entries(self) -> list[dict]:
-        """Return raw protocol sets for rows and aggregates."""
-        return [
-            {
-                'source_id': self.source_id,
-                'granularity': '5m',
-                'bucket_start': self.bucket_start,
-                'bucket_end': self.bucket_end,
-                'ip_version': key[0],
-                'src_visibility': key[1],
-                'dst_visibility': key[2],
-                'protocols': sorted(protocols),
-            }
-            for key, protocols in sorted(self.protocol_by_scope.items())
-        ]
-
-    def address_set_entries(self) -> list[dict]:
-        """Return raw address sets for rows and aggregates."""
-        return [
-            {
-                'source_id': self.source_id,
-                'granularity': '5m',
-                'bucket_start': self.bucket_start,
-                'bucket_end': self.bucket_end,
-                'ip_version': key[0],
-                'src_visibility': key[1],
-                'dst_visibility': key[2],
-                'address_side': key[3],
-                'addresses': sorted(addresses),
-            }
-            for key, addresses in sorted(self.address_by_scope.items())
-        ]
-
-    def protocol_rows(self) -> list[dict]:
-        """Return protocol_stats rows for this bucket."""
-        return protocol_set_entries_to_rows(self.protocol_set_entries())
-
-    def address_count_rows(self) -> list[dict]:
-        """Return address_count_stats rows for this bucket."""
-        return address_set_entries_to_count_rows(self.address_set_entries())
 
 
 @dataclass(frozen=True)
@@ -988,16 +863,16 @@ def process_input_specs(
 
     tasks = [(spec, str(maad_bin), maad_backend, maad_workers, run_maad) for spec in input_specs]
     processed_buckets = []
-    raw_buckets = []
+    canonical_buckets = []
 
     for payload in iter_input_payloads(tasks, max_workers):
         write_input_payload(conn, payload, mark_processed=False)
         processed_buckets.extend(payload['processed_buckets'])
-        raw_buckets.extend(payload.get('raw_buckets', []))
+        canonical_buckets.extend(payload.get('canonical_buckets', []))
 
     write_aggregate_rows(
         conn,
-        raw_buckets,
+        canonical_buckets,
         maad_bin,
         max_workers,
         maad_backend=maad_backend,
@@ -1026,12 +901,12 @@ def process_nfcapd_input_specs_streaming_aggregates(
     """Process nfcapd inputs without retaining every raw 5m address payload."""
     tasks = [(spec, str(maad_bin), maad_backend, maad_workers, run_maad) for spec in input_specs]
     processed_buckets = []
-    aggregate_buckets: dict[tuple[str, str, int], dict] = {}
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
 
     for payload in iter_input_payloads(tasks, max_workers):
         write_input_payload(conn, payload, mark_processed=False)
         processed_buckets.extend(payload['processed_buckets'])
-        for raw_bucket in payload.get('raw_buckets', []):
+        for raw_bucket in payload.get('canonical_buckets', []):
             add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
 
     aggregate_workers = aggregate_maad_worker_count(max(max_workers, maad_workers))
@@ -1064,7 +939,7 @@ def process_nfcapd_logical_bucket_jobs(
 
     jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
     processed_buckets = []
-    aggregate_buckets: dict[tuple[str, str, int], dict] = {}
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
     pending_structure_raw_buckets = []
     structure_batch_size = max(1, maad_workers) * 4
     bucket_window_size = max(1, max_workers // 2)
@@ -1101,7 +976,7 @@ def process_nfcapd_logical_bucket_jobs(
                     pending_structure_raw_buckets.clear()
         aggregate_cutoff = max(int(job['bucket_start']) for job in window_jobs)
         ready_aggregate_keys = [
-            key for key, bucket in aggregate_buckets.items() if bucket['bucket_end'] <= aggregate_cutoff
+            key for key, bucket in aggregate_buckets.items() if bucket.key.bucket_end <= aggregate_cutoff
         ]
         flush_streaming_aggregate_buckets(
             conn,
@@ -1159,7 +1034,7 @@ def build_member_raw_buckets_for_jobs(
     maad_backend: str,
     maad_workers: int,
     max_workers: int,
-) -> dict[str, dict]:
+) -> dict[str, CanonicalBucket]:
     """Build physical member raw buckets needed by a bounded logical job window."""
     member_specs_by_locator = {}
     for job in jobs:
@@ -1172,21 +1047,21 @@ def build_member_raw_buckets_for_jobs(
     member_raw_buckets = {}
     for payload in iter_input_payloads(tasks, max_workers):
         processed_bucket = payload['processed_buckets'][0]
-        member_raw_buckets[processed_bucket['input_locator']] = payload['raw_buckets'][0]
+        member_raw_buckets[processed_bucket['input_locator']] = payload['canonical_buckets'][0]
     return member_raw_buckets
 
 
 def process_logical_nfcapd_job(
     conn: sqlite3.Connection,
     job: dict,
-    member_raw_buckets: dict[str, dict],
+    member_raw_buckets: dict[str, CanonicalBucket],
     *,
     maad_bin: str | Path,
     maad_backend: str,
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     processed_buckets: list[dict],
     delete_existing: bool,
-) -> dict:
+) -> CanonicalBucket:
     """Write one logical nfcapd job and feed streaming aggregates."""
     payload = build_logical_nfcapd_bucket_payload(
         job,
@@ -1197,14 +1072,14 @@ def process_logical_nfcapd_job(
     )
     write_input_payload(conn, payload, mark_processed=False, delete_existing=delete_existing)
     processed_buckets.extend(payload['processed_buckets'])
-    raw_bucket = payload['raw_buckets'][0]
+    raw_bucket = payload['canonical_buckets'][0]
     add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
     return raw_bucket
 
 
 def flush_5m_address_structure_raw_buckets(
     conn: sqlite3.Connection,
-    raw_buckets: list[dict],
+    raw_buckets: list[CanonicalBucket],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
@@ -1224,7 +1099,7 @@ def flush_5m_address_structure_raw_buckets(
 
 def build_logical_nfcapd_bucket_payload(
     job: dict,
-    member_raw_buckets: dict[str, dict],
+    member_raw_buckets: dict[str, CanonicalBucket],
     *,
     maad_bin: str | Path,
     maad_backend: str,
@@ -1245,12 +1120,13 @@ def build_logical_nfcapd_bucket_payload(
             bucket_start,
             run_maad=run_maad,
         )
-    raw_bucket = merge_raw_buckets_for_source(
+    canonical_bucket = merge_raw_buckets_for_source(
         source_id=source_id,
         bucket_start=bucket_start,
         bucket_end=bucket_end,
         raw_buckets=raw_buckets,
     )
+    rows = canonical_bucket_rows(canonical_bucket)
     return {
         'processed_buckets': [
             {
@@ -1262,18 +1138,18 @@ def build_logical_nfcapd_bucket_payload(
             }
             for spec in job['member_specs']
         ],
-        'traffic_rows': raw_bucket['traffic_rows'],
-        'protocol_rows': protocol_set_entries_to_rows(raw_bucket['protocol_sets']),
-        'address_count_rows': address_set_entries_to_count_rows(raw_bucket['address_sets']),
+        'traffic_rows': rows['traffic_rows'],
+        'protocol_rows': rows['protocol_rows'],
+        'address_count_rows': rows['address_count_rows'],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            [raw_bucket],
+            [canonical_bucket],
             maad_bin,
             maad_backend,
             1,
         )
         if run_maad
         else [],
-        'raw_buckets': [raw_bucket],
+        'canonical_buckets': [canonical_bucket],
     }
 
 
@@ -1282,59 +1158,13 @@ def merge_raw_buckets_for_source(
     source_id: str,
     bucket_start: int,
     bucket_end: int,
-    raw_buckets: list[dict],
-) -> dict:
-    """Merge physical member raw buckets into one logical source raw bucket."""
-    retargeted_raw_buckets = [
-        retarget_raw_bucket(raw, source_id, bucket_start, bucket_end)
-        for raw in raw_buckets
-    ]
-    stats_payload = aggregate_raw_entries(
-        retargeted_raw_buckets,
-        granularity='5m',
-        bucket_start=bucket_start,
-        bucket_end=bucket_end,
-    )
-    return {
-        'source_id': source_id,
-        'bucket_start': bucket_start,
-        'traffic_rows': stats_payload['traffic_rows'],
-        'protocol_sets': stats_payload['protocol_sets'],
-        'address_sets': stats_payload['address_sets'],
-    }
-
-
-def retarget_raw_bucket(
-    raw: dict,
-    source_id: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> dict:
-    """Copy raw entries from a physical member onto a logical source bucket."""
-    def retarget(entry: dict) -> dict:
-        return {
-            **entry,
-            'source_id': source_id,
-            'granularity': '5m',
-            'bucket_start': bucket_start,
-            'bucket_end': bucket_end,
-        }
-
-    return {
-        'source_id': source_id,
-        'bucket_start': bucket_start,
-        'traffic_rows': [retarget(row) for row in raw.get('traffic_rows', [])],
-        'protocol_sets': [retarget(entry) for entry in raw.get('protocol_sets', [])],
-        'address_sets': [retarget(entry) for entry in raw.get('address_sets', [])],
-    }
-
-
-def ensure_raw_bucket_defaults(raw_bucket: dict) -> dict:
-    """Ensure raw payloads have canonical keys."""
-    raw_bucket.setdefault('traffic_rows', [])
-    raw_bucket.setdefault('protocol_sets', [])
-    raw_bucket.setdefault('address_sets', [])
-    return raw_bucket
+    raw_buckets: list[CanonicalBucket],
+) -> CanonicalBucket:
+    """Merge physical member buckets while retargeting their logical source."""
+    bucket = StatisticalBucket(BucketKey(source_id, '5m', bucket_start, bucket_end))
+    for raw_bucket in raw_buckets:
+        bucket.include(raw_bucket)
+    return bucket.finish()
 
 
 def should_stream_csv_input_specs(input_specs: list[dict]) -> bool:
@@ -1394,7 +1224,7 @@ def process_csv_input_specs_streaming(
             continue
 
         print(f'[pipeline] CSV start: {input_locator}')
-        active_buckets: dict[tuple[str, int, int], BucketAccumulator] = {}
+        active_buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
         max_bucket_start: int | None = None
         rows_seen = 0
 
@@ -1540,7 +1370,7 @@ def process_csv_input_spec_arrow_streaming(
     maad_workers: int,
     run_maad: bool,
     processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
 ) -> None:
     """Stream a headerless CSV input through PyArrow grouped batches."""
     input_locator = str(spec['path'])
@@ -1781,7 +1611,7 @@ def flush_csv_arrow_buckets(
     maad_workers: int,
     run_maad: bool,
     processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     aggregate_cutoff: int,
 ) -> None:
     """Build and flush completed PyArrow-backed CSV buckets."""
@@ -1817,25 +1647,23 @@ def build_bucket_accumulator_from_arrow_tables(
     bucket_start: int,
     tables: list,
     config: CsvSourceConfig,
-) -> BucketAccumulator:
-    """Build a BucketAccumulator from Arrow chunks for one 5-minute bucket."""
+) -> StatisticalBucket:
+    """Build a statistical bucket from Arrow chunks for one 5-minute interval."""
     import pyarrow as pa
 
     table = pa.concat_tables(tables)
-    bucket = BucketAccumulator(
-        source_id=source_id,
-        bucket_start=bucket_start,
-        bucket_end=bucket_start + 300,
-    )
+    bucket = StatisticalBucket(BucketKey(source_id, '5m', bucket_start, bucket_start + 300))
     for row in table.to_pylist():
-        bucket.add_flow(
-            ip_version=int(row['ip_version']),
-            src_ip=row['src_ip'],
-            dst_ip=row['dst_ip'],
-            protocol=parse_arrow_protocol(row['protocol'], config),
-            packets=int(row['packets']),
-            bytes_count=int(row['bytes']),
-            src_tos=int(row['src_tos']),
+        bucket.add(
+            FlowFact(
+                ip_version=int(row['ip_version']),
+                src_ip=row['src_ip'],
+                dst_ip=row['dst_ip'],
+                protocol=parse_arrow_protocol(row['protocol'], config),
+                packets=int(row['packets']),
+                bytes_count=int(row['bytes']),
+                src_tos=int(row['src_tos']),
+            )
         )
     return bucket
 
@@ -1876,12 +1704,12 @@ def process_csv_input_spec_values_streaming(
     maad_workers: int,
     run_maad: bool,
     processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
 ) -> None:
     """Stream a headerless CSV input directly into bucket accumulators."""
     input_locator = str(spec['path'])
     field_indexes = build_field_indexes(config, input_locator)
-    active_buckets: dict[tuple[str, int, int], BucketAccumulator] = {}
+    active_buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
     max_bucket_start: int | None = None
     rows_seen = 0
 
@@ -2003,7 +1831,7 @@ def parse_datetime_5m_bucket(raw_text: str, timestamp_timezone: str, datetime_fo
 
 
 def add_csv_values_to_bucket(
-    buckets: dict[tuple[str, int, int], BucketAccumulator],
+    buckets: dict[tuple[str, int, int], StatisticalBucket],
     values: list[str],
     config: CsvSourceConfig,
     field_indexes: dict[str, int],
@@ -2023,20 +1851,18 @@ def add_csv_values_to_bucket(
     key = (source_id, bucket_start, bucket_end)
     bucket = buckets.setdefault(
         key,
-        BucketAccumulator(
-            source_id=source_id,
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        ),
+        StatisticalBucket(BucketKey(source_id, '5m', bucket_start, bucket_end)),
     )
-    bucket.add_flow(
-        ip_version=ip_version,
-        src_ip=src_ip,
-        dst_ip=dst_ip,
-        protocol=protocol,
-        packets=packets,
-        bytes_count=bytes_count,
-        src_tos=src_tos,
+    bucket.add(
+        FlowFact(
+            ip_version=ip_version,
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            protocol=protocol,
+            packets=packets,
+            bytes_count=bytes_count,
+            src_tos=src_tos,
+        )
     )
 
 
@@ -2107,14 +1933,14 @@ def extract_csv_value_protocol(
 def flush_csv_buckets(
     conn: sqlite3.Connection,
     spec: dict,
-    active_buckets: dict[tuple[str, int, int], BucketAccumulator],
+    active_buckets: dict[tuple[str, int, int], StatisticalBucket],
     keys: list[tuple[str, int, int]],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
     run_maad: bool,
     processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     aggregate_cutoff: int,
 ) -> None:
     """Flush selected active CSV buckets to SQLite."""
@@ -2138,13 +1964,13 @@ def flush_csv_buckets(
 def flush_csv_bucket_values(
     conn: sqlite3.Connection,
     spec: dict,
-    bucket_values: list[BucketAccumulator],
+    bucket_values: list[StatisticalBucket],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
     run_maad: bool,
     processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     aggregate_cutoff: int,
 ) -> None:
     """Flush completed CSV bucket accumulators to SQLite."""
@@ -2164,10 +1990,10 @@ def flush_csv_bucket_values(
     )
     write_input_payload(conn, payload, mark_processed=False)
     processed_buckets.extend(payload['processed_buckets'])
-    for raw_bucket in payload['raw_buckets']:
+    for raw_bucket in payload['canonical_buckets']:
         add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
     ready_aggregate_keys = [
-        key for key, bucket in aggregate_buckets.items() if bucket['bucket_end'] <= aggregate_cutoff
+        key for key, bucket in aggregate_buckets.items() if bucket.key.bucket_end <= aggregate_cutoff
     ]
     flush_streaming_aggregate_buckets(
         conn,
@@ -2184,8 +2010,8 @@ def flush_csv_bucket_values(
 def skip_processed_csv_bucket_values(
     conn: sqlite3.Connection,
     input_locator: str,
-    bucket_values: list[BucketAccumulator],
-) -> list[BucketAccumulator]:
+    bucket_values: list[StatisticalBucket],
+) -> list[StatisticalBucket]:
     """Drop CSV buckets already marked processed during a retry."""
     processed_keys = {
         (row[0], row[1])
@@ -2205,7 +2031,7 @@ def skip_processed_csv_bucket_values(
     return [
         bucket
         for bucket in bucket_values
-        if (bucket.source_id, bucket.bucket_start) not in processed_keys
+        if (bucket.key.source_id, bucket.key.bucket_start) not in processed_keys
     ]
 
 
@@ -2272,119 +2098,66 @@ def build_bucket_payload_from_values(
     *,
     input_kind: str,
     input_locator: str,
-    bucket_values: list[BucketAccumulator],
+    bucket_values: list[StatisticalBucket],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
     run_maad: bool,
 ) -> dict:
     """Build DB insert payloads from completed bucket accumulators."""
-    raw_buckets = [bucket.raw_bucket_row() for bucket in bucket_values]
+    canonical_buckets = [bucket.finish() for bucket in bucket_values]
+    rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
     return {
         'processed_buckets': [
             {
                 'input_kind': input_kind,
                 'input_locator': input_locator,
-                'source_id': bucket.source_id,
-                'bucket_start': bucket.bucket_start,
-                'bucket_end': bucket.bucket_end,
+                'source_id': bucket.key.source_id,
+                'bucket_start': bucket.key.bucket_start,
+                'bucket_end': bucket.key.bucket_end,
             }
             for bucket in bucket_values
         ],
-        'traffic_rows': [row for bucket in bucket_values for row in bucket.traffic_rows()],
-        'protocol_rows': [row for bucket in bucket_values for row in bucket.protocol_rows()],
-        'address_count_rows': [row for bucket in bucket_values for row in bucket.address_count_rows()],
+        'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
+        'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
+        'address_count_rows': [row for payload in rows for row in payload['address_count_rows']],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            raw_buckets,
+            canonical_buckets,
             maad_bin,
             maad_backend,
             maad_workers,
         )
         if run_maad
         else [],
-        'raw_buckets': raw_buckets,
+        'canonical_buckets': canonical_buckets,
     }
 
 
 def add_raw_bucket_to_streaming_aggregates(
-    aggregate_buckets: dict[tuple[str, str, int], dict],
-    raw_bucket: dict,
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
+    raw_bucket: CanonicalBucket,
 ) -> None:
-    """Merge one completed 5m bucket into bounded aggregate state."""
-    ensure_raw_bucket_defaults(raw_bucket)
+    """Include one completed 5m bucket in bounded aggregate builders."""
     for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-        bucket_start = floor_bucket_start(raw_bucket['bucket_start'], seconds)
-        key = (raw_bucket['source_id'], granularity, bucket_start)
+        bucket_start = floor_bucket_start(raw_bucket.key.bucket_start, seconds)
+        key = (raw_bucket.key.source_id, granularity, bucket_start)
         aggregate = aggregate_buckets.setdefault(
             key,
-            new_streaming_aggregate_bucket(raw_bucket['source_id'], granularity, bucket_start),
-        )
-        add_raw_bucket_to_streaming_aggregate(aggregate, raw_bucket)
-
-
-def new_streaming_aggregate_bucket(source_id: str, granularity: str, bucket_start: int) -> dict:
-    """Create an aggregate bucket backed by mutable sets."""
-    bucket_seconds = dict(AGGREGATE_GRANULARITY_SECONDS)[granularity]
-    return {
-        'source_id': source_id,
-        'granularity': granularity,
-        'bucket_start': bucket_start,
-        'bucket_end': next_bucket_start(bucket_start, bucket_seconds),
-        'traffic_by_key': {},
-        'protocol_by_key': defaultdict(set),
-        'address_by_key': defaultdict(set),
-        'address_all_by_key': defaultdict(set),
-        'bucket_starts': set(),
-    }
-
-
-def add_raw_bucket_to_streaming_aggregate(bucket: dict, raw_bucket: dict) -> None:
-    """Merge one raw bucket's sets into a streaming aggregate bucket."""
-    bucket['bucket_starts'].add(raw_bucket['bucket_start'])
-    for row in raw_bucket.get('traffic_rows', []):
-        key = (
-            row['ip_version'],
-            row['src_visibility'],
-            row['dst_visibility'],
-        )
-        target = bucket['traffic_by_key'].setdefault(
-            key,
-            empty_traffic_stats_row(
-                source_id=bucket['source_id'],
-                granularity=bucket['granularity'],
-                bucket_start=bucket['bucket_start'],
-                bucket_end=bucket['bucket_end'],
-                ip_version=row['ip_version'],
-                src_visibility=row['src_visibility'],
-                dst_visibility=row['dst_visibility'],
+            StatisticalBucket(
+                BucketKey(
+                    raw_bucket.key.source_id,
+                    granularity,
+                    bucket_start,
+                    next_bucket_start(bucket_start, seconds),
+                )
             ),
         )
-        for column in NETFLOW_METRIC_COLUMNS:
-            target[column] += row[column]
-
-    for entry in raw_bucket.get('protocol_sets', []):
-        key = (
-            entry['ip_version'],
-            entry['src_visibility'],
-            entry['dst_visibility'],
-        )
-        bucket['protocol_by_key'][key].update(str(protocol) for protocol in entry['protocols'])
-
-    for entry in raw_bucket.get('address_sets', []):
-        key = (
-            entry['ip_version'],
-            entry['src_visibility'],
-            entry['dst_visibility'],
-            entry['address_side'],
-        )
-        bucket['address_by_key'][key].update(entry['addresses'])
-        if entry['src_visibility'] == 'all' and entry['dst_visibility'] == 'all':
-            bucket['address_all_by_key'][(entry['ip_version'], entry['address_side'])].update(entry['addresses'])
+        aggregate.include(raw_bucket)
 
 
 def flush_streaming_aggregate_buckets(
     conn: sqlite3.Connection,
-    aggregate_buckets: dict[tuple[str, str, int], dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     keys: list[tuple[str, str, int]],
     maad_bin: str | Path,
     maad_backend: str,
@@ -2395,12 +2168,12 @@ def flush_streaming_aggregate_buckets(
     """Write and discard aggregate buckets that cannot receive more rows."""
     if not keys:
         return
-    buckets = [aggregate_buckets.pop(key) for key in sorted(keys)]
+    buckets = [aggregate_buckets.pop(key).finish() for key in sorted(keys)]
     if delete_existing:
-        buckets = [bucket for bucket in buckets if streaming_aggregate_bucket_is_complete(bucket)]
+        buckets = [bucket for bucket in buckets if bucket.has_complete_five_minute_coverage]
         if not buckets:
             return
-    stats_payloads = [build_streaming_aggregate_payload(bucket) for bucket in buckets]
+    stats_payloads = [canonical_bucket_rows(bucket) for bucket in buckets]
     traffic_rows = [
         row
         for payload in stats_payloads
@@ -2435,47 +2208,10 @@ def flush_streaming_aggregate_buckets(
         insert_address_structure_stats_rows(conn, address_structure_rows)
 
 
-def build_streaming_aggregate_payload(bucket: dict) -> dict:
-    """Build aggregate rows from streaming aggregate state."""
-    protocol_entries = [
-        {
-            'source_id': bucket['source_id'],
-            'granularity': bucket['granularity'],
-            'bucket_start': bucket['bucket_start'],
-            'bucket_end': bucket['bucket_end'],
-            'ip_version': key[0],
-            'src_visibility': key[1],
-            'dst_visibility': key[2],
-            'protocols': sorted(protocols),
-        }
-        for key, protocols in bucket['protocol_by_key'].items()
-    ]
-    address_entries = [
-        {
-            'source_id': bucket['source_id'],
-            'granularity': bucket['granularity'],
-            'bucket_start': bucket['bucket_start'],
-            'bucket_end': bucket['bucket_end'],
-            'ip_version': key[0],
-            'src_visibility': key[1],
-            'dst_visibility': key[2],
-            'address_side': key[3],
-            'addresses': sorted(addresses),
-        }
-        for key, addresses in bucket['address_by_key'].items()
-    ]
-    return {
-        'traffic_rows': [
-            bucket['traffic_by_key'][key]
-            for key in sorted(bucket['traffic_by_key'])
-        ],
-        'protocol_rows': protocol_set_entries_to_rows(protocol_entries),
-        'address_count_rows': address_set_entries_to_count_rows(address_entries),
-        'address_sets': address_entries,
-    }
-
-
-def delete_aggregate_outputs_for_streaming_buckets(conn: sqlite3.Connection, buckets: list[dict]) -> None:
+def delete_aggregate_outputs_for_streaming_buckets(
+    conn: sqlite3.Connection,
+    buckets: list[CanonicalBucket],
+) -> None:
     """Delete stale aggregate rows for streaming aggregate buckets before rewrite."""
     for bucket in buckets:
         for table_name in (
@@ -2486,14 +2222,8 @@ def delete_aggregate_outputs_for_streaming_buckets(conn: sqlite3.Connection, buc
         ):
             conn.execute(
                 f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
-                (bucket['source_id'], bucket['granularity'], bucket['bucket_start']),
+                (bucket.key.source_id, bucket.key.granularity, bucket.key.bucket_start),
             )
-
-
-def streaming_aggregate_bucket_is_complete(bucket: dict) -> bool:
-    """Return true when a rewrite covers every 5-minute slice in a coarse bucket."""
-    expected_count = (int(bucket['bucket_end']) - int(bucket['bucket_start'])) // FIVE_MINUTE_SECONDS
-    return len(bucket.get('bucket_starts', set())) == expected_count
 
 
 def iter_input_payloads(tasks: list[tuple[dict, str, str, int, bool]], max_workers: int) -> Iterable[dict]:
@@ -2532,32 +2262,28 @@ def build_input_payload(
                 run_maad=run_maad,
             )
         nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
-        raw_bucket = ensure_raw_bucket_defaults(nfcapd_payload['raw_bucket'])
+        canonical_bucket = nfcapd_payload['canonical_bucket']
         return {
             'processed_buckets': [nfcapd_payload['processed_bucket']],
-            'traffic_rows': nfcapd_payload.get('traffic_rows', raw_bucket['traffic_rows']),
-            'protocol_rows': nfcapd_payload.get(
-                'protocol_rows',
-                protocol_set_entries_to_rows(raw_bucket['protocol_sets']),
-            ),
-            'address_count_rows': nfcapd_payload.get(
-                'address_count_rows',
-                address_set_entries_to_count_rows(raw_bucket['address_sets']),
-            ),
+            'traffic_rows': nfcapd_payload['traffic_rows'],
+            'protocol_rows': nfcapd_payload['protocol_rows'],
+            'address_count_rows': nfcapd_payload['address_count_rows'],
             'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-                [raw_bucket],
+                [canonical_bucket],
                 maad_bin,
                 maad_backend,
                 maad_workers,
             )
             if run_maad
             else [],
-            'raw_buckets': [raw_bucket],
+            'canonical_buckets': [canonical_bucket],
         }
 
     buckets = accumulate_input_buckets(iter_input_rows(spec))
     bucket_values = [buckets[key] for key in sorted(buckets)]
 
+    canonical_buckets = [bucket.finish() for bucket in bucket_values]
+    rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
     return {
         'processed_buckets': [
             {
@@ -2569,18 +2295,18 @@ def build_input_payload(
             }
             for source_id, bucket_start, bucket_end in sorted(buckets)
         ],
-        'traffic_rows': [row for bucket in bucket_values for row in bucket.traffic_rows()],
-        'protocol_rows': [row for bucket in bucket_values for row in bucket.protocol_rows()],
-        'address_count_rows': [row for bucket in bucket_values for row in bucket.address_count_rows()],
+        'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
+        'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
+        'address_count_rows': [row for payload in rows for row in payload['address_count_rows']],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            [bucket.raw_bucket_row() for bucket in bucket_values],
+            canonical_buckets,
             maad_bin,
             maad_backend,
             maad_workers,
         )
         if run_maad
         else [],
-        'raw_buckets': [bucket.raw_bucket_row() for bucket in bucket_values],
+        'canonical_buckets': canonical_buckets,
     }
 
 
@@ -2595,9 +2321,6 @@ def write_input_payload(
     processed_buckets = payload['processed_buckets']
     if not processed_buckets:
         return
-    for raw_bucket in payload.get('raw_buckets', []):
-        ensure_raw_bucket_defaults(raw_bucket)
-
     with conn:
         if delete_existing:
             delete_5m_outputs_for_processed_buckets(conn, processed_buckets)
@@ -2661,7 +2384,7 @@ def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dic
 
 def write_aggregate_rows(
     conn: sqlite3.Connection,
-    raw_buckets: list[dict],
+    raw_buckets: list[CanonicalBucket],
     maad_bin: str | Path,
     max_workers: int,
     *,
@@ -2670,7 +2393,7 @@ def write_aggregate_rows(
     run_maad: bool = True,
     delete_existing: bool = False,
 ) -> None:
-    """Write 30m, 1h, and 1d aggregate rows from raw bucket sets."""
+    """Write 30m, 1h, and 1d aggregate rows from canonical 5m buckets."""
     if not raw_buckets:
         return
     stats_payloads = build_aggregate_stats_payloads(raw_buckets)
@@ -2708,12 +2431,21 @@ def write_aggregate_rows(
         insert_address_structure_stats_rows(conn, address_structure_rows)
 
 
-def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_buckets: list[dict]) -> None:
+def delete_aggregate_outputs_for_raw_buckets(
+    conn: sqlite3.Connection,
+    raw_buckets: list[CanonicalBucket],
+) -> None:
     """Delete stale aggregate rows affected by rewritten raw buckets."""
     keys = set()
     for raw in raw_buckets:
         for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            keys.add((raw['source_id'], granularity, floor_bucket_start(raw['bucket_start'], seconds)))
+            keys.add(
+                (
+                    raw.key.source_id,
+                    granularity,
+                    floor_bucket_start(raw.key.bucket_start, seconds),
+                )
+            )
 
     for source_id, granularity, bucket_start in sorted(keys):
         for table_name in (
@@ -2728,24 +2460,22 @@ def delete_aggregate_outputs_for_raw_buckets(conn: sqlite3.Connection, raw_bucke
             )
 
 
-def build_aggregate_stats_payloads(raw_buckets: list[dict]) -> list[dict]:
+def build_aggregate_stats_payloads(raw_buckets: list[CanonicalBucket]) -> list[dict]:
     """Build aggregate payloads for every affected granularity bucket."""
     buckets = defaultdict(list)
     for raw in raw_buckets:
         for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS:
-            bucket_start = floor_bucket_start(raw['bucket_start'], seconds)
+            bucket_start = floor_bucket_start(raw.key.bucket_start, seconds)
             bucket_end = next_bucket_start(bucket_start, seconds)
-            buckets[(raw['source_id'], granularity, bucket_start, bucket_end)].append(raw)
+            buckets[(raw.key.source_id, granularity, bucket_start, bucket_end)].append(raw)
 
-    return [
-        aggregate_raw_entries(
-            bucket_raws,
-            granularity=granularity,
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        )
-        for (_source_id, granularity, bucket_start, bucket_end), bucket_raws in sorted(buckets.items())
-    ]
+    payloads = []
+    for (source_id, granularity, bucket_start, bucket_end), children in sorted(buckets.items()):
+        aggregate = StatisticalBucket(BucketKey(source_id, granularity, bucket_start, bucket_end))
+        for child in children:
+            aggregate.include(child)
+        payloads.append(canonical_bucket_rows(aggregate.finish()))
+    return payloads
 
 
 def build_address_structure_rows_from_payloads(
@@ -2770,7 +2500,7 @@ def build_address_structure_rows_from_payloads(
 
 
 def build_address_structure_rows_from_raw_buckets(
-    raw_buckets: list[dict],
+    raw_buckets: list[CanonicalBucket],
     maad_bin: str | Path,
     maad_backend: str,
     maad_workers: int,
@@ -2779,7 +2509,7 @@ def build_address_structure_rows_from_raw_buckets(
     entries = [
         entry
         for raw_bucket in raw_buckets
-        for entry in raw_bucket.get('address_sets', [])
+        for entry in canonical_bucket_rows(raw_bucket)['address_sets']
         if entry['ip_version'] == 4
     ]
     return build_address_structure_rows_from_address_sets(
@@ -2929,31 +2659,11 @@ def build_nfcapd_gap_payload(
 ) -> dict:
     """Build zero-valued canonical rows for one bounded missing nfcapd bucket."""
     bucket_end = bucket_start + FIVE_MINUTE_SECONDS
-    traffic_rows = empty_traffic_stats_rows(
-        source_id=source_id,
-        granularity='5m',
-        bucket_start=bucket_start,
-        bucket_end=bucket_end,
-    )
-    protocol_sets = empty_protocol_set_entries(
-        source_id=source_id,
-        granularity='5m',
-        bucket_start=bucket_start,
-        bucket_end=bucket_end,
-    )
-    address_sets = empty_address_set_entries(
-        source_id=source_id,
-        granularity='5m',
-        bucket_start=bucket_start,
-        bucket_end=bucket_end,
-    )
-    raw_bucket = {
-        'source_id': source_id,
-        'bucket_start': bucket_start,
-        'traffic_rows': traffic_rows,
-        'protocol_sets': protocol_sets,
-        'address_sets': address_sets,
-    }
+    canonical_bucket = StatisticalBucket(
+        BucketKey(source_id, '5m', bucket_start, bucket_end),
+        dense=True,
+    ).finish()
+    rows = canonical_bucket_rows(canonical_bucket)
     return {
         'processed_buckets': [
             {
@@ -2964,44 +2674,50 @@ def build_nfcapd_gap_payload(
                 'bucket_end': bucket_end,
             }
         ],
-        'traffic_rows': traffic_rows,
-        'protocol_rows': protocol_set_entries_to_rows(protocol_sets),
-        'address_count_rows': address_set_entries_to_count_rows(address_sets),
+        'traffic_rows': rows['traffic_rows'],
+        'protocol_rows': rows['protocol_rows'],
+        'address_count_rows': rows['address_count_rows'],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            [raw_bucket],
+            [canonical_bucket],
             '',
             'python',
             1,
         )
         if run_maad
         else [],
-        'raw_buckets': [raw_bucket],
+        'canonical_buckets': [canonical_bucket],
     }
 
 
-def accumulate_input_buckets(rows: Iterable[NormalizedRow]) -> dict[tuple[str, int, int], BucketAccumulator]:
+def accumulate_input_buckets(rows: Iterable[NormalizedRow]) -> dict[tuple[str, int, int], StatisticalBucket]:
     """Accumulate normalized rows by source and 5-minute bucket."""
-    buckets: dict[tuple[str, int, int], BucketAccumulator] = {}
+    buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
     for row in rows:
         add_row_to_bucket(buckets, row)
     return buckets
 
 
 def add_row_to_bucket(
-    buckets: dict[tuple[str, int, int], BucketAccumulator],
+    buckets: dict[tuple[str, int, int], StatisticalBucket],
     row: NormalizedRow,
 ) -> None:
     """Accumulate one normalized row into a bucket map."""
     key = (row.source_id, row.bucket_start, row.bucket_end)
     bucket = buckets.setdefault(
         key,
-        BucketAccumulator(
-            source_id=row.source_id,
-            bucket_start=row.bucket_start,
-            bucket_end=row.bucket_end,
-        ),
+        StatisticalBucket(BucketKey(row.source_id, '5m', row.bucket_start, row.bucket_end)),
     )
-    bucket.add(row)
+    bucket.add(
+        FlowFact(
+            ip_version=row.ip_version,
+            src_ip=row.src_ip,
+            dst_ip=row.dst_ip,
+            protocol=row.protocol,
+            packets=row.packets,
+            bytes_count=row.bytes,
+            src_tos=row.src_tos,
+        )
+    )
 
 
 def iter_nfdump_rows(path: str, source_id: str) -> Iterable[NormalizedRow]:

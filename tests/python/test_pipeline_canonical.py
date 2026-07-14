@@ -21,22 +21,27 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     )
 
 
-def make_raw_bucket(pipeline, source_id: str, bucket_start: int) -> dict:
-    bucket = pipeline.BucketAccumulator(
-        source_id=source_id,
-        bucket_start=bucket_start,
-        bucket_end=bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+def make_raw_bucket(pipeline, source_id: str, bucket_start: int):
+    bucket = pipeline.StatisticalBucket(
+        pipeline.BucketKey(
+            source_id,
+            '5m',
+            bucket_start,
+            bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+        )
     )
-    bucket.add_flow(
-        ip_version=4,
-        src_ip='192.0.2.1',
-        dst_ip='198.51.100.1',
-        protocol=6,
-        packets=10,
-        bytes_count=1000,
-        src_tos=0,
+    bucket.add(
+        pipeline.FlowFact(
+            ip_version=4,
+            src_ip='192.0.2.1',
+            dst_ip='198.51.100.1',
+            protocol=6,
+            packets=10,
+            bytes_count=1000,
+            src_tos=0,
+        )
     )
-    return bucket.raw_bucket_row()
+    return bucket.finish()
 
 
 def test_dataset_tree_config_uses_dataset_db_path(monkeypatch: pytest.MonkeyPatch) -> None:
