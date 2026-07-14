@@ -206,6 +206,18 @@ def test_parse_datetime_timestamp_uses_configured_format(tmp_path: Path) -> None
     assert bucket == 1744720200
 
 
+@pytest.mark.parametrize('value', ['nan', 'inf', '-inf', '1e999'])
+@pytest.mark.parametrize('timestamp_format', ['unix', 'unix_ms'])
+def test_numeric_timestamp_rejects_non_finite_and_overflow_values(
+    value: str,
+    timestamp_format: str,
+) -> None:
+    module = load_module()
+
+    with pytest.raises(module.CsvSourceConfigError, match='timestamp'):
+        module.parse_numeric_timestamp(value, timestamp_format)
+
+
 def test_resolve_source_id_uses_constant_or_row_column(tmp_path: Path) -> None:
     module = load_module()
     constant_config = module.load_csv_source_config(

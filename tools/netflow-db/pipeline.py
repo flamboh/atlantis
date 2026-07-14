@@ -14,30 +14,16 @@ import logging
 import os
 import sqlite3
 import subprocess
-import tarfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import lru_cache
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from csv_ingest import (
-    TIMESTAMP_KEYS,
-    CsvSourceConfig,
-    CsvSourceConfigError,
-    load_csv_source_config,
-    parse_timestamp,
-)
-from csv_inputs import (
-    build_field_indexes,
-    discover_csv_specs,
-    iter_csv_rows,
-    iter_headerless_csv_values,
-    is_tar_archive,
-)
+from csv_inputs import discover_csv_specs
+from csv_scan import CsvBucketReady, CsvScanComplete, scan_csv
 from datasets_metadata import init_datasets_table, upsert_dataset_metadata
 from maad import (
     MaadTimeoutError,
@@ -51,16 +37,18 @@ from nfdump_stats import (
     parse_nfcapd_bucket_start,
 )
 from normalized_rows import NormalizedRow, build_nfdump_csv_command, normalize_nfdump_csv_values
-from normalized_rows import infer_ip_version
 from processed_inputs import (
+    InputBucketRef,
+    clear_incomplete_input_scan,
+    complete_input_scan,
     init_processed_inputs_table,
+    input_scan_fully_processed,
     mark_input_bucket_status,
     upsert_input_bucket,
 )
 from statistical_bucket import (
     BucketKey,
     CanonicalBucket,
-    FlowFact,
     StatisticalBucket,
     ZERO_FILL_VISIBILITY_PAIRS,
 )
@@ -80,13 +68,6 @@ DEFAULT_MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '8'))
 DEFAULT_AGGREGATE_MAAD_MAX_WORKERS = int(os.environ.get('AGGREGATE_MAAD_MAX_WORKERS', '4'))
 PIPELINE_TIMEZONE = ZoneInfo(os.environ.get('NETFLOW_TIMEZONE', 'America/Los_Angeles'))
 FIVE_MINUTE_SECONDS = 300
-ARROW_IPV4_REGEX = (
-    r'^(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
-    r'(?:\.(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}$'
-)
-CSV_STREAM_PROGRESS_ROWS = int(os.environ.get('CSV_STREAM_PROGRESS_ROWS', '1000000'))
-CSV_ARROW_BLOCK_BYTES = int(os.environ.get('CSV_ARROW_BLOCK_BYTES', str(64 * 1024 * 1024)))
-CSV_MAAD_BATCH_BUCKETS = int(os.environ.get('CSV_MAAD_BATCH_BUCKETS', '8'))
 LOGGER = logging.getLogger(__name__)
 
 AGGREGATE_GRANULARITY_SECONDS = (('30m', 1800), ('1h', 3600), ('1d', 86400))
@@ -105,15 +86,6 @@ NFDUMP_HEADER_FIRST_VALUES = {
     'time received',
     'received',
 }
-CSV_ARROW_REQUIRED_COLUMN_KEYS = (
-    'time_end',
-    'src_ip',
-    'dst_ip',
-    'protocol',
-    'packets',
-    'bytes',
-    'src_tos',
-)
 
 
 @dataclass(frozen=True)
@@ -838,16 +810,19 @@ def process_input_specs(
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
 
-    if max_workers == 1 and should_stream_csv_input_specs(input_specs):
+    csv_specs = [spec for spec in input_specs if str(spec['input_kind']) == 'csv']
+    if csv_specs:
         process_csv_input_specs_streaming(
             conn,
-            input_specs,
+            csv_specs,
             maad_bin=maad_bin,
             maad_backend=maad_backend,
             maad_workers=maad_workers,
             run_maad=run_maad,
         )
-        return
+        input_specs = [spec for spec in input_specs if str(spec['input_kind']) != 'csv']
+        if not input_specs:
+            return
 
     if should_stream_nfcapd_input_specs(input_specs):
         process_nfcapd_input_specs_streaming_aggregates(
@@ -902,12 +877,26 @@ def process_nfcapd_input_specs_streaming_aggregates(
     tasks = [(spec, str(maad_bin), maad_backend, maad_workers, run_maad) for spec in input_specs]
     processed_buckets = []
     aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
+    current_run_keys: set[tuple[str, int]] = set()
 
     for payload in iter_input_payloads(tasks, max_workers):
+        raw_buckets = payload.get('canonical_buckets', [])
+        allowed_input_owners = {
+            (str(item['input_kind']), str(item['input_locator']))
+            for item in payload['processed_buckets']
+        }
+        for raw_bucket in raw_buckets:
+            reject_overlapping_canonical_bucket(
+                conn,
+                raw_bucket,
+                allowed_input_owners=allowed_input_owners,
+            )
+            reject_incomplete_persisted_aggregate(conn, raw_bucket, current_run_keys)
         write_input_payload(conn, payload, mark_processed=False)
         processed_buckets.extend(payload['processed_buckets'])
-        for raw_bucket in payload.get('canonical_buckets', []):
+        for raw_bucket in raw_buckets:
             add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
+            current_run_keys.add((raw_bucket.key.source_id, raw_bucket.key.bucket_start))
 
     aggregate_workers = aggregate_maad_worker_count(max(max_workers, maad_workers))
     flush_streaming_aggregate_buckets(
@@ -941,6 +930,7 @@ def process_nfcapd_logical_bucket_jobs(
     processed_buckets = []
     aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
     pending_structure_raw_buckets = []
+    current_run_keys: set[tuple[str, int]] = set()
     structure_batch_size = max(1, maad_workers) * 4
     bucket_window_size = max(1, max_workers // 2)
 
@@ -961,6 +951,7 @@ def process_nfcapd_logical_bucket_jobs(
                 maad_backend=maad_backend,
                 aggregate_buckets=aggregate_buckets,
                 processed_buckets=processed_buckets,
+                current_run_keys=current_run_keys,
                 delete_existing=True,
             )
             if run_maad:
@@ -1060,6 +1051,7 @@ def process_logical_nfcapd_job(
     maad_backend: str,
     aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     processed_buckets: list[dict],
+    current_run_keys: set[tuple[str, int]],
     delete_existing: bool,
 ) -> CanonicalBucket:
     """Write one logical nfcapd job and feed streaming aggregates."""
@@ -1070,10 +1062,20 @@ def process_logical_nfcapd_job(
         maad_backend=maad_backend,
         run_maad=False,
     )
+    raw_bucket = payload['canonical_buckets'][0]
+    reject_overlapping_canonical_bucket(
+        conn,
+        raw_bucket,
+        allowed_input_owners={
+            (str(item['input_kind']), str(item['input_locator']))
+            for item in payload['processed_buckets']
+        },
+    )
+    reject_incomplete_persisted_aggregate(conn, raw_bucket, current_run_keys)
     write_input_payload(conn, payload, mark_processed=False, delete_existing=delete_existing)
     processed_buckets.extend(payload['processed_buckets'])
-    raw_bucket = payload['canonical_buckets'][0]
     add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
+    current_run_keys.add((raw_bucket.key.source_id, raw_bucket.key.bucket_start))
     return raw_bucket
 
 
@@ -1167,16 +1169,6 @@ def merge_raw_buckets_for_source(
     return bucket.finish()
 
 
-def should_stream_csv_input_specs(input_specs: list[dict]) -> bool:
-    """Return true when CSV specs are safe for bounded ordered streaming."""
-    if not input_specs or not all(str(spec['input_kind']) == 'csv' for spec in input_specs):
-        return False
-    return all(
-        load_csv_source_config(spec['mapping_path']).input_order == 'timestamp_ascending'
-        for spec in input_specs
-    )
-
-
 def process_csv_input_specs_streaming(
     conn: sqlite3.Connection,
     input_specs: list[dict],
@@ -1186,814 +1178,209 @@ def process_csv_input_specs_streaming(
     maad_workers: int,
     run_maad: bool,
 ) -> None:
-    """Process CSV inputs with bounded active bucket memory and visible progress."""
+    """Consume the deep CSV scan interface and publish its canonical buckets."""
     processed_buckets = []
-    aggregate_buckets = {}
-    for spec in input_specs:
-        config = load_csv_source_config(spec['mapping_path'])
-        input_locator = str(spec['path'])
-        if csv_input_fully_processed(conn, input_locator):
-            print(f'[pipeline] Skip CSV input already processed: {input_locator}')
-            continue
-        if should_accumulate_csv_with_arrow(config):
-            process_csv_input_spec_arrow_streaming(
-                conn,
-                spec,
-                config,
-                maad_bin=maad_bin,
-                maad_backend=maad_backend,
-                maad_workers=maad_workers,
-                run_maad=run_maad,
-                processed_buckets=processed_buckets,
-                aggregate_buckets=aggregate_buckets,
-            )
-            continue
-
-        if should_accumulate_csv_values_directly(config):
-            process_csv_input_spec_values_streaming(
-                conn,
-                spec,
-                config,
-                maad_bin=maad_bin,
-                maad_backend=maad_backend,
-                maad_workers=maad_workers,
-                run_maad=run_maad,
-                processed_buckets=processed_buckets,
-                aggregate_buckets=aggregate_buckets,
-            )
-            continue
-
-        print(f'[pipeline] CSV start: {input_locator}')
-        active_buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
-        max_bucket_start: int | None = None
-        rows_seen = 0
-
-        for row in iter_input_rows(spec):
-            rows_seen += 1
-            max_bucket_start = (
-                row.bucket_start
-                if max_bucket_start is None
-                else max(max_bucket_start, row.bucket_start)
-            )
-            cutoff = max_bucket_start - (config.out_of_order_lag_buckets * 300)
-            if row.bucket_start < cutoff:
-                raise ValueError(
-                    f'CSV input is not ordered enough for streaming: {input_locator} row bucket '
-                    f'{row.bucket_start} arrived after flush cutoff {cutoff}. Set '
-                    '"input_order": "unsorted" to use full-file aggregation.'
-                )
-            add_row_to_bucket(active_buckets, row)
-
-            if rows_seen % CSV_STREAM_PROGRESS_ROWS == 0:
-                print(
-                    f'[pipeline] CSV rows={rows_seen} active_buckets={len(active_buckets)} '
-                    f'input={input_locator}'
-                )
-
-            ready_keys = [key for key in active_buckets if key[1] < cutoff]
-            if ready_keys:
-                flush_csv_buckets(
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
+    completion_events: list[CsvScanComplete] = []
+    published_through: dict[str, int] = {}
+    current_run_keys: set[tuple[str, int]] = set()
+    started_scans: list[str] = []
+    try:
+        # Cross-file order is not a publication contract. A stable scan order
+        # normalizes callers that discover the same files in a different order.
+        for spec in sorted(input_specs, key=lambda item: str(item['path'])):
+            scan_locator = str(spec['path'])
+            if csv_input_fully_processed(conn, scan_locator):
+                print(f'[pipeline] Skip CSV input already processed: {scan_locator}')
+                continue
+            prepare_csv_scan_retry(conn, scan_locator)
+            started_scans.append(scan_locator)
+            print(f'[pipeline] CSV start: {scan_locator}')
+            bucket_count = 0
+            for event in scan_csv(spec):
+                if isinstance(event, CsvScanComplete):
+                    completion_events.append(event)
+                    continue
+                publish_csv_bucket_ready(
                     conn,
-                    spec,
-                    active_buckets,
-                    ready_keys,
-                    maad_bin,
-                    maad_backend,
-                    maad_workers,
-                    run_maad,
-                    processed_buckets,
-                    aggregate_buckets,
-                    cutoff,
+                    event,
+                    maad_bin=maad_bin,
+                    maad_backend=maad_backend,
+                    maad_workers=maad_workers,
+                    run_maad=run_maad,
+                    processed_buckets=processed_buckets,
+                    aggregate_buckets=aggregate_buckets,
+                    published_through=published_through,
+                    current_run_keys=current_run_keys,
                 )
-
-        flush_csv_buckets(
+                bucket_count += 1
+            print(
+                f'[pipeline] CSV scanned: buckets={bucket_count} input={scan_locator}'
+            )
+        flush_streaming_aggregate_buckets(
             conn,
-            spec,
-            active_buckets,
-            list(active_buckets),
+            aggregate_buckets,
+            list(aggregate_buckets),
             maad_bin,
             maad_backend,
             maad_workers,
             run_maad,
-            processed_buckets,
-            aggregate_buckets,
-            max_bucket_start if max_bucket_start is not None else 0,
         )
-        print(
-            f'[pipeline] CSV complete: rows={rows_seen} buckets={len(processed_buckets)} '
-            f'input={input_locator}'
-        )
-    flush_streaming_aggregate_buckets(
-        conn,
-        aggregate_buckets,
-        list(aggregate_buckets),
-        maad_bin,
-        maad_backend,
-        maad_workers,
-        run_maad,
-    )
-    with conn:
-        mark_processed_buckets(conn, processed_buckets)
-
-
-def should_accumulate_csv_values_directly(config: CsvSourceConfig) -> bool:
-    """Return true when CSV rows can be accumulated from indexed values."""
-    return getattr(config, 'has_header', True) is False and getattr(config, 'fieldnames', None) is not None
+        complete_csv_scans(conn, processed_buckets, completion_events)
+    except Exception as error:
+        for scan_locator in reversed(started_scans):
+            try:
+                prepare_csv_scan_retry(conn, scan_locator)
+            except Exception as cleanup_error:
+                error.add_note(
+                    f'Cleanup of incomplete CSV scan {scan_locator!r} also failed: '
+                    f'{cleanup_error!r}'
+                )
+        raise
 
 
 def csv_input_fully_processed(conn: sqlite3.Connection, input_locator: str) -> bool:
-    """Return true when a CSV input has only processed bucket records."""
-    init_processed_inputs_table(conn)
-    rows = conn.execute(
-        """
-        SELECT status, COUNT(*)
-        FROM processed_inputs
-        WHERE input_kind = 'csv' AND input_locator = ?
-        GROUP BY status
-        """,
-        (input_locator,),
-    ).fetchall()
-    if not rows:
-        return False
-    status_counts = {status: count for status, count in rows}
-    return status_counts.get('processed', 0) > 0 and sum(
-        count for status, count in status_counts.items() if status != 'processed'
-    ) == 0
-
-
-def should_accumulate_csv_with_arrow(config: CsvSourceConfig) -> bool:
-    """Return true when PyArrow can vectorize the mapped CSV stream."""
-    if getattr(config, 'has_header', True) is not False or getattr(config, 'fieldnames', None) is None:
-        return False
-    if config.delimiter != ',' or config.source_id_value is None:
-        return False
-    if config.timestamp_format != 'datetime' or config.datetime_format != '%Y-%m-%d %H:%M:%S':
-        return False
-    return set(CSV_ARROW_REQUIRED_COLUMN_KEYS).issubset(config.columns)
-
-
-def arrow_ipv4_address_mask(values):
-    """Return a PyArrow boolean mask for dotted-quad IPv4 strings."""
-    import pyarrow.compute as pc
-
-    return pc.match_substring_regex(values, ARROW_IPV4_REGEX)
-
-
-def arrow_ipv4_pair_mask(batch, src_column: str, dst_column: str):
-    """Return a PyArrow mask for rows with two valid IPv4 endpoints."""
-    import pyarrow.compute as pc
-
-    return pc.and_(
-        arrow_ipv4_address_mask(batch[src_column]),
-        arrow_ipv4_address_mask(batch[dst_column]),
-    )
-
-
-def arrow_valid_ip_pair_mask(batch, src_column: str, dst_column: str):
-    """Return a PyArrow mask for rows with same-family endpoints."""
-    import pyarrow.compute as pc
-
-    src_has_colon = pc.match_substring(batch[src_column], ':')
-    dst_has_colon = pc.match_substring(batch[dst_column], ':')
-    ipv4_pair = arrow_ipv4_pair_mask(batch, src_column, dst_column)
-    ipv6_pair = pc.and_(src_has_colon, dst_has_colon)
-    return pc.or_(ipv4_pair, ipv6_pair)
-
-
-def process_csv_input_spec_arrow_streaming(
-    conn: sqlite3.Connection,
-    spec: dict,
-    config: CsvSourceConfig,
-    *,
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-    processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
-) -> None:
-    """Stream a headerless CSV input through PyArrow grouped batches."""
-    input_locator = str(spec['path'])
-    active_arrow_buckets: dict[int, list] = {}
-    max_bucket_start: int | None = None
-    rows_seen = 0
-
-    print(f'[pipeline] CSV start: {input_locator}')
-    for batch in iter_csv_arrow_batches(input_locator, config):
-        rows_seen += batch.num_rows
-        max_bucket_start = merge_arrow_batch_into_table_buckets(
-            active_arrow_buckets,
-            batch,
-            config,
-            max_bucket_start,
-        )
-        if max_bucket_start is None:
-            continue
-
-        cutoff = max_bucket_start - (config.out_of_order_lag_buckets * 300)
-        if rows_seen % CSV_STREAM_PROGRESS_ROWS < batch.num_rows:
-            print(
-                f'[pipeline] CSV rows={rows_seen} active_buckets={len(active_arrow_buckets)} '
-                f'input={input_locator}'
-            )
-
-        ready_bucket_starts = [bucket_start for bucket_start in active_arrow_buckets if bucket_start < cutoff]
-        if run_maad and len(ready_bucket_starts) < CSV_MAAD_BATCH_BUCKETS:
-            continue
-        if ready_bucket_starts:
-            flush_csv_arrow_buckets(
-                conn,
-                spec,
-                active_arrow_buckets,
-                ready_bucket_starts,
-                config,
-                maad_bin,
-                maad_backend,
-                maad_workers,
-                run_maad,
-                processed_buckets,
-                aggregate_buckets,
-                cutoff,
-            )
-
-    flush_csv_arrow_buckets(
+    """Return true only after a successful CSV scan and all scoped publication."""
+    return input_scan_fully_processed(
         conn,
-        spec,
-        active_arrow_buckets,
-        list(active_arrow_buckets),
-        config,
-        maad_bin,
-        maad_backend,
-        maad_workers,
-        run_maad,
-        processed_buckets,
-        aggregate_buckets,
-        max_bucket_start if max_bucket_start is not None else 0,
-    )
-    print(
-        f'[pipeline] CSV complete: rows={rows_seen} buckets={len(processed_buckets)} '
-        f'input={input_locator}'
-    )
-
-
-def iter_csv_arrow_batches(input_locator: str, config: CsvSourceConfig):
-    """Yield PyArrow record batches for one configured headerless CSV input."""
-    import pyarrow as pa
-    import pyarrow.csv as arrow_csv
-
-    include_columns = [config.columns[key] for key in CSV_ARROW_REQUIRED_COLUMN_KEYS]
-    column_types = {column_name: pa.string() for column_name in include_columns}
-
-    def invalid_row_handler(_row):
-        return 'skip' if config.skip_bad_column_count else 'error'
-
-    read_options = arrow_csv.ReadOptions(
-        column_names=config.fieldnames,
-        block_size=CSV_ARROW_BLOCK_BYTES,
-    )
-    parse_options = arrow_csv.ParseOptions(
-        delimiter=config.delimiter,
-        invalid_row_handler=invalid_row_handler,
-    )
-    convert_options = arrow_csv.ConvertOptions(
-        include_columns=include_columns,
-        column_types=column_types,
-    )
-
-    input_path = Path(input_locator)
-    if is_tar_archive(input_path):
-        with tarfile.open(input_path, mode='r:*') as archive:
-            for member in archive:
-                if not member.isfile():
-                    continue
-                if config.archive_member_contains and config.archive_member_contains not in member.name:
-                    continue
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    continue
-                with extracted:
-                    yield from iter_csv_arrow_reader_batches(
-                        extracted,
-                        read_options,
-                        parse_options,
-                        convert_options,
-                    )
-        return
-
-    with open(input_path, 'rb') as handle:
-        yield from iter_csv_arrow_reader_batches(
-            handle,
-            read_options,
-            parse_options,
-            convert_options,
-        )
-
-
-def iter_csv_arrow_reader_batches(handle, read_options, parse_options, convert_options):
-    """Yield batches from a PyArrow CSV reader and close it deterministically."""
-    import pyarrow.csv as arrow_csv
-
-    reader = arrow_csv.open_csv(
-        handle,
-        read_options=read_options,
-        parse_options=parse_options,
-        convert_options=convert_options,
-    )
-    try:
-        while True:
-            try:
-                yield reader.read_next_batch()
-            except StopIteration:
-                break
-    finally:
-        reader.close()
-
-
-def merge_arrow_batch_into_table_buckets(
-    active_arrow_buckets: dict[int, list],
-    batch,
-    config: CsvSourceConfig,
-    max_bucket_start: int | None,
-) -> int | None:
-    """Split one PyArrow batch into active 5-minute table chunks."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
-    time_column = config.columns['time_end']
-    src_column = config.columns['src_ip']
-    dst_column = config.columns['dst_ip']
-    protocol_column = config.columns['protocol']
-    packets_column = config.columns['packets']
-    bytes_column = config.columns['bytes']
-    src_tos_column = config.columns['src_tos']
-    batch = filter_arrow_valid_flow_rows(
-        batch,
-        config=config,
-        time_column=time_column,
-        src_column=src_column,
-        dst_column=dst_column,
-        protocol_column=protocol_column,
-        packets_column=packets_column,
-        bytes_column=bytes_column,
-    )
-    if batch.num_rows == 0:
-        return max_bucket_start
-
-    minute = pc.utf8_slice_codeunits(batch[time_column], 0, 16)
-    src_is_ipv6 = pc.match_substring(batch[src_column], ':')
-    ip_version = pc.if_else(src_is_ipv6, pa.scalar(6, pa.int8()), pa.scalar(4, pa.int8()))
-    table = pa.table(
-        {
-            'minute': minute,
-            'ip_version': ip_version,
-            'src_ip': batch[src_column],
-            'dst_ip': batch[dst_column],
-            'protocol': batch[protocol_column],
-            'packets': pc.cast(batch[packets_column], pa.int64()),
-            'bytes': pc.cast(batch[bytes_column], pa.int64()),
-            'src_tos': pc.cast(batch[src_tos_column], pa.int64()),
-        }
-    )
-
-    for raw_minute in pc.unique(minute).to_pylist():
-        bucket_start = parse_arrow_minute_bucket(raw_minute, config)
-        max_bucket_start = (
-            bucket_start if max_bucket_start is None else max(max_bucket_start, bucket_start)
-        )
-        minute_table = table.filter(pc.equal(table['minute'], raw_minute)).drop(['minute'])
-        active_arrow_buckets.setdefault(bucket_start, []).append(minute_table)
-    return max_bucket_start
-
-
-def filter_arrow_valid_flow_rows(
-    batch,
-    *,
-    config: CsvSourceConfig,
-    time_column: str,
-    src_column: str,
-    dst_column: str,
-    protocol_column: str,
-    packets_column: str,
-    bytes_column: str,
-):
-    """Drop malformed high-volume CSV rows before vectorized casts."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
-    mask = pc.and_(
-        pc.match_substring_regex(
-            batch[time_column],
-            r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$',
-        ),
-        pc.match_substring_regex(batch[packets_column], r'^\d+$'),
-    )
-    mask = pc.and_(mask, pc.match_substring_regex(batch[bytes_column], r'^\d+$'))
-    protocol_numeric_or_empty = pc.match_substring_regex(batch[protocol_column], r'^\d*$')
-    protocol_known_name = pc.is_in(
-        batch[protocol_column],
-        value_set=pa.array(sorted(config.protocol_map)),
-    )
-    mask = pc.and_(mask, pc.or_(protocol_numeric_or_empty, protocol_known_name))
-    mask = pc.and_(mask, pc.not_equal(batch[src_column], ''))
-    mask = pc.and_(mask, pc.not_equal(batch[dst_column], ''))
-    mask = pc.and_(mask, arrow_valid_ip_pair_mask(batch, src_column, dst_column))
-    return batch.filter(mask)
-
-
-def flush_csv_arrow_buckets(
-    conn: sqlite3.Connection,
-    spec: dict,
-    active_arrow_buckets: dict[int, list],
-    bucket_starts: list[int],
-    config: CsvSourceConfig,
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-    processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
-    aggregate_cutoff: int,
-) -> None:
-    """Build and flush completed PyArrow-backed CSV buckets."""
-    if not bucket_starts:
-        return
-    assert config.source_id_value is not None
-    bucket_values = [
-        build_bucket_accumulator_from_arrow_tables(
-            source_id=config.source_id_value,
-            bucket_start=bucket_start,
-            tables=active_arrow_buckets.pop(bucket_start),
-            config=config,
-        )
-        for bucket_start in sorted(bucket_starts)
-    ]
-    flush_csv_bucket_values(
-        conn,
-        spec,
-        bucket_values,
-        maad_bin,
-        maad_backend,
-        maad_workers,
-        run_maad,
-        processed_buckets,
-        aggregate_buckets,
-        aggregate_cutoff,
-    )
-
-
-def build_bucket_accumulator_from_arrow_tables(
-    *,
-    source_id: str,
-    bucket_start: int,
-    tables: list,
-    config: CsvSourceConfig,
-) -> StatisticalBucket:
-    """Build a statistical bucket from Arrow chunks for one 5-minute interval."""
-    import pyarrow as pa
-
-    table = pa.concat_tables(tables)
-    bucket = StatisticalBucket(BucketKey(source_id, '5m', bucket_start, bucket_start + 300))
-    for row in table.to_pylist():
-        bucket.add(
-            FlowFact(
-                ip_version=int(row['ip_version']),
-                src_ip=row['src_ip'],
-                dst_ip=row['dst_ip'],
-                protocol=parse_arrow_protocol(row['protocol'], config),
-                packets=int(row['packets']),
-                bytes_count=int(row['bytes']),
-                src_tos=int(row['src_tos']),
-            )
-        )
-    return bucket
-
-
-def parse_arrow_minute_bucket(raw_minute: str, config: CsvSourceConfig) -> int:
-    """Parse a YYYY-MM-DD HH:MM minute string to a configured 5-minute bucket."""
-    raw_text = f'{raw_minute}:00'
-    return parse_datetime_5m_bucket(
-        raw_text,
-        config.timestamp_timezone,
-        config.datetime_format,
-    )
-
-
-def parse_arrow_protocol(raw_value: str, config: CsvSourceConfig) -> int:
-    """Parse a protocol value from PyArrow grouped output."""
-    raw_text = raw_value.strip()
-    if raw_text == '':
-        return 0
-    protocol = config.protocol_map.get(raw_text.upper())
-    if protocol is not None:
-        return protocol
-    try:
-        return int(raw_text)
-    except ValueError as error:
-        raise CsvSourceConfigError(
-            f"Invalid protocol value '{raw_text}' for column '{config.columns['protocol']}'."
-        ) from error
-
-
-def process_csv_input_spec_values_streaming(
-    conn: sqlite3.Connection,
-    spec: dict,
-    config: CsvSourceConfig,
-    *,
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-    processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
-) -> None:
-    """Stream a headerless CSV input directly into bucket accumulators."""
-    input_locator = str(spec['path'])
-    field_indexes = build_field_indexes(config, input_locator)
-    active_buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
-    max_bucket_start: int | None = None
-    rows_seen = 0
-
-    print(f'[pipeline] CSV start: {input_locator}')
-    for csv_row in iter_headerless_csv_values(input_locator, config):
-        rows_seen += 1
-        try:
-            bucket_start = resolve_csv_value_bucket_start(csv_row.values, config, field_indexes)
-            max_bucket_start = (
-                bucket_start if max_bucket_start is None else max(max_bucket_start, bucket_start)
-            )
-            cutoff = max_bucket_start - (config.out_of_order_lag_buckets * 300)
-            if bucket_start < cutoff:
-                raise ValueError(
-                    f'CSV input is not ordered enough for streaming: {input_locator} row bucket '
-                    f'{bucket_start} arrived after flush cutoff {cutoff}. Set '
-                    '"input_order": "unsorted" to use full-file aggregation.'
-                )
-            add_csv_values_to_bucket(active_buckets, csv_row.values, config, field_indexes, bucket_start)
-        except CsvSourceConfigError as error:
-            raise CsvSourceConfigError(
-                f'{csv_row.locator}:{csv_row.line_number}: {error}'
-            ) from error
-
-        if rows_seen % CSV_STREAM_PROGRESS_ROWS == 0:
-            print(
-                f'[pipeline] CSV rows={rows_seen} active_buckets={len(active_buckets)} '
-                f'input={input_locator}'
-            )
-
-        ready_keys = [key for key in active_buckets if key[1] < cutoff]
-        if ready_keys:
-            flush_csv_buckets(
-                conn,
-                spec,
-                active_buckets,
-                ready_keys,
-                maad_bin,
-                maad_backend,
-                maad_workers,
-                run_maad,
-                processed_buckets,
-                aggregate_buckets,
-                cutoff,
-            )
-
-    flush_csv_buckets(
-        conn,
-        spec,
-        active_buckets,
-        list(active_buckets),
-        maad_bin,
-        maad_backend,
-        maad_workers,
-        run_maad,
-        processed_buckets,
-        aggregate_buckets,
-        max_bucket_start if max_bucket_start is not None else 0,
-    )
-    print(
-        f'[pipeline] CSV complete: rows={rows_seen} buckets={len(processed_buckets)} '
-        f'input={input_locator}'
-    )
-
-
-def resolve_csv_value_bucket_start(
-    values: list[str],
-    config: CsvSourceConfig,
-    field_indexes: dict[str, int],
-) -> int:
-    """Resolve a CSV value row timestamp directly to its 5-minute bucket."""
-    for logical_key in TIMESTAMP_KEYS:
-        column_name = config.columns.get(logical_key)
-        if column_name is None:
-            continue
-        raw_value = values[field_indexes[column_name]].strip()
-        if raw_value == '':
-            continue
-        if config.timestamp_format == 'datetime':
-            return parse_datetime_5m_bucket(
-                raw_value,
-                config.timestamp_timezone,
-                config.datetime_format,
-            )
-        unix_ts = parse_timestamp(
-            raw_value,
-            config.timestamp_format,
-            config.timestamp_timezone,
-            config.datetime_format,
-        )
-        return unix_ts - (unix_ts % 300)
-
-    raise CsvSourceConfigError(
-        'CSV row did not contain any usable timestamp value for the configured precedence.'
-    )
-
-
-@lru_cache(maxsize=200_000)
-def parse_datetime_5m_bucket(raw_text: str, timestamp_timezone: str, datetime_format: str) -> int:
-    """Parse a datetime string directly to a 5-minute bucket start."""
-    if datetime_format == '%Y-%m-%d %H:%M:%S' and len(raw_text) >= 19:
-        try:
-            minute = int(raw_text[14:16])
-            floored_minute = minute - (minute % 5)
-            parsed = datetime(
-                int(raw_text[0:4]),
-                int(raw_text[5:7]),
-                int(raw_text[8:10]),
-                int(raw_text[11:13]),
-                floored_minute,
-                tzinfo=ZoneInfo(timestamp_timezone),
-            )
-        except ValueError as error:
-            raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
-        return int(parsed.timestamp())
-
-    unix_ts = parse_timestamp(raw_text, 'datetime', timestamp_timezone, datetime_format)
-    return unix_ts - (unix_ts % 300)
-
-
-def add_csv_values_to_bucket(
-    buckets: dict[tuple[str, int, int], StatisticalBucket],
-    values: list[str],
-    config: CsvSourceConfig,
-    field_indexes: dict[str, int],
-    bucket_start: int,
-) -> None:
-    """Accumulate one indexed CSV row into a bucket map."""
-    bucket_end = bucket_start + 300
-    source_id = resolve_csv_value_source_id(values, config, field_indexes)
-    src_ip = require_csv_value(values, field_indexes[config.columns['src_ip']], config.columns['src_ip'])
-    dst_ip = require_csv_value(values, field_indexes[config.columns['dst_ip']], config.columns['dst_ip'])
-    ip_version = infer_ip_version(src_ip, dst_ip)
-    protocol = extract_csv_value_protocol(values, config, field_indexes)
-    packets = extract_csv_value_int(values, config, field_indexes, 'packets')
-    bytes_count = extract_csv_value_int(values, config, field_indexes, 'bytes')
-    src_tos = extract_csv_value_int(values, config, field_indexes, 'src_tos')
-
-    key = (source_id, bucket_start, bucket_end)
-    bucket = buckets.setdefault(
-        key,
-        StatisticalBucket(BucketKey(source_id, '5m', bucket_start, bucket_end)),
-    )
-    bucket.add(
-        FlowFact(
-            ip_version=ip_version,
-            src_ip=src_ip,
-            dst_ip=dst_ip,
-            protocol=protocol,
-            packets=packets,
-            bytes_count=bytes_count,
-            src_tos=src_tos,
-        )
-    )
-
-
-def resolve_csv_value_source_id(
-    values: list[str],
-    config: CsvSourceConfig,
-    field_indexes: dict[str, int],
-) -> str:
-    """Resolve source_id from indexed CSV values."""
-    if config.source_id_value is not None:
-        return config.source_id_value
-    assert config.source_id_column is not None
-    return require_csv_value(values, field_indexes[config.source_id_column], config.source_id_column)
-
-
-def require_csv_value(values: list[str], index: int, column_name: str) -> str:
-    """Return a stripped required CSV value."""
-    value = values[index].strip()
-    if value == '':
-        raise CsvSourceConfigError(f"CSV row is missing required value for column '{column_name}'.")
-    return value
-
-
-def extract_csv_value_int(
-    values: list[str],
-    config: CsvSourceConfig,
-    field_indexes: dict[str, int],
-    logical_key: str,
-) -> int:
-    """Extract an integer from indexed CSV values."""
-    column_name = config.columns.get(logical_key)
-    if column_name is None:
-        return 0
-    raw_text = values[field_indexes[column_name]].strip()
-    if raw_text == '':
-        return 0
-    try:
-        return int(raw_text)
-    except ValueError as error:
-        raise CsvSourceConfigError(
-            f"Invalid integer value '{raw_text}' for column '{column_name}'."
-        ) from error
-
-
-def extract_csv_value_protocol(
-    values: list[str],
-    config: CsvSourceConfig,
-    field_indexes: dict[str, int],
-) -> int:
-    """Extract protocol from indexed CSV values."""
-    column_name = config.columns.get('protocol')
-    if column_name is None:
-        return 0
-    raw_text = values[field_indexes[column_name]].strip()
-    if raw_text == '':
-        return 0
-    protocol = config.protocol_map.get(raw_text.upper())
-    if protocol is not None:
-        return protocol
-    try:
-        return int(raw_text)
-    except ValueError as error:
-        raise CsvSourceConfigError(
-            f"Invalid protocol value '{raw_text}' for column '{column_name}'."
-        ) from error
-
-
-def flush_csv_buckets(
-    conn: sqlite3.Connection,
-    spec: dict,
-    active_buckets: dict[tuple[str, int, int], StatisticalBucket],
-    keys: list[tuple[str, int, int]],
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-    processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
-    aggregate_cutoff: int,
-) -> None:
-    """Flush selected active CSV buckets to SQLite."""
-    if not keys:
-        return
-    bucket_values = [active_buckets.pop(key) for key in sorted(keys)]
-    flush_csv_bucket_values(
-        conn,
-        spec,
-        bucket_values,
-        maad_bin,
-        maad_backend,
-        maad_workers,
-        run_maad,
-        processed_buckets,
-        aggregate_buckets,
-        aggregate_cutoff,
-    )
-
-
-def flush_csv_bucket_values(
-    conn: sqlite3.Connection,
-    spec: dict,
-    bucket_values: list[StatisticalBucket],
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-    processed_buckets: list[dict],
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
-    aggregate_cutoff: int,
-) -> None:
-    """Flush completed CSV bucket accumulators to SQLite."""
-    if not bucket_values:
-        return
-    bucket_values = skip_processed_csv_bucket_values(conn, str(spec['path']), bucket_values)
-    if not bucket_values:
-        return
-    payload = build_bucket_payload_from_values(
         input_kind='csv',
-        input_locator=str(spec['path']),
-        bucket_values=bucket_values,
-        maad_bin=maad_bin,
-        maad_backend=maad_backend,
-        maad_workers=maad_workers,
-        run_maad=run_maad,
+        scan_locator=input_locator,
     )
+
+
+class AggregatePublicationConflict(ValueError):
+    """A cross-input conflict that must not leave partial aggregate publication visible."""
+
+
+def prepare_csv_scan_retry(
+    conn: sqlite3.Connection,
+    scan_locator: str,
+) -> list[InputBucketRef]:
+    """Remove an incomplete scan attempt and every statistical row it could have affected."""
+    with conn:
+        stale_buckets = clear_incomplete_input_scan(
+            conn,
+            input_kind='csv',
+            scan_locator=scan_locator,
+        )
+        five_minute_keys = sorted(
+            (bucket.source_id, bucket.bucket_start)
+            for bucket in stale_buckets
+        )
+        aggregate_keys = sorted(
+            {
+                (
+                    bucket.source_id,
+                    granularity,
+                    floor_bucket_start(bucket.bucket_start, seconds),
+                )
+                for bucket in stale_buckets
+                for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS
+            }
+        )
+        for table_name in (
+            'traffic_stats',
+            'protocol_stats',
+            'address_count_stats',
+            'address_structure_stats',
+        ):
+            conn.executemany(
+                f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' "
+                'AND bucket_start = ?',
+                five_minute_keys,
+            )
+            conn.executemany(
+                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? '
+                'AND bucket_start = ?',
+                aggregate_keys,
+            )
+    return stale_buckets
+
+
+def publish_csv_bucket_ready(
+    conn: sqlite3.Connection,
+    event: CsvBucketReady,
+    *,
+    maad_bin: str | Path,
+    maad_backend: str,
+    maad_workers: int,
+    run_maad: bool,
+    processed_buckets: list[dict],
+    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
+    published_through: dict[str, int],
+    current_run_keys: set[tuple[str, int]],
+) -> None:
+    """Publish one scanned CSV bucket while preserving scan ownership and provenance."""
+    bucket = event.bucket
+    previous_start = published_through.get(bucket.key.source_id)
+    if previous_start is not None and bucket.key.bucket_start < previous_start:
+        raise AggregatePublicationConflict(
+            'CSV buckets moved backwards across input scans: '
+            f'source={bucket.key.source_id!r} bucket_start={bucket.key.bucket_start} '
+            f'is older than already-published bucket {previous_start}. '
+            'Rename or configure split inputs so their stable path order is chronological.'
+        )
+    reject_overlapping_canonical_bucket(
+        conn,
+        bucket,
+        allowed_csv_scans={event.scan_locator},
+    )
+    reject_incomplete_persisted_aggregate(conn, bucket, current_run_keys)
+    already_processed = conn.execute(
+        """
+        SELECT 1
+        FROM processed_inputs
+        WHERE input_kind = 'csv'
+          AND input_locator = ?
+          AND scan_locator = ?
+          AND source_id = ?
+          AND bucket_start = ?
+          AND status = 'processed'
+        """,
+        (
+            event.input_locator,
+            event.scan_locator,
+            bucket.key.source_id,
+            bucket.key.bucket_start,
+        ),
+    ).fetchone()
+    if already_processed is not None:
+        return
+
+    rows = canonical_bucket_rows(bucket)
+    processed_bucket = {
+        'input_kind': 'csv',
+        'input_locator': event.input_locator,
+        'scan_locator': event.scan_locator,
+        'source_id': bucket.key.source_id,
+        'bucket_start': bucket.key.bucket_start,
+        'bucket_end': bucket.key.bucket_end,
+    }
+    payload = {
+        'processed_buckets': [processed_bucket],
+        'traffic_rows': rows['traffic_rows'],
+        'protocol_rows': rows['protocol_rows'],
+        'address_count_rows': rows['address_count_rows'],
+        'address_structure_rows': build_address_structure_rows_from_raw_buckets(
+            [bucket],
+            maad_bin,
+            maad_backend,
+            maad_workers,
+        )
+        if run_maad
+        else [],
+        'canonical_buckets': [bucket],
+    }
     write_input_payload(conn, payload, mark_processed=False)
-    processed_buckets.extend(payload['processed_buckets'])
-    for raw_bucket in payload['canonical_buckets']:
-        add_raw_bucket_to_streaming_aggregates(aggregate_buckets, raw_bucket)
+    processed_buckets.append(processed_bucket)
+    add_raw_bucket_to_streaming_aggregates(aggregate_buckets, bucket)
+    published_through[bucket.key.source_id] = bucket.key.bucket_start
+    current_run_keys.add((bucket.key.source_id, bucket.key.bucket_start))
     ready_aggregate_keys = [
-        key for key, bucket in aggregate_buckets.items() if bucket.key.bucket_end <= aggregate_cutoff
+        key
+        for key, aggregate in aggregate_buckets.items()
+        if key[0] == bucket.key.source_id
+        and aggregate.key.bucket_end <= bucket.key.bucket_start
     ]
     flush_streaming_aggregate_buckets(
         conn,
@@ -2004,135 +1391,105 @@ def flush_csv_bucket_values(
         maad_workers,
         run_maad,
     )
-    mark_csv_buckets_with_flushed_aggregates(conn, processed_buckets, aggregate_cutoff)
 
 
-def skip_processed_csv_bucket_values(
+def reject_incomplete_persisted_aggregate(
     conn: sqlite3.Connection,
-    input_locator: str,
-    bucket_values: list[StatisticalBucket],
-) -> list[StatisticalBucket]:
-    """Drop CSV buckets already marked processed during a retry."""
-    processed_keys = {
-        (row[0], row[1])
+    bucket: CanonicalBucket,
+    current_run_keys: set[tuple[str, int]],
+) -> None:
+    """Reject reopening a coarse interval whose exact address union is unavailable."""
+    day_start = floor_bucket_start(bucket.key.bucket_start, 86400)
+    day_end = next_bucket_start(day_start, 86400)
+    persisted_starts = {
+        int(row[0])
         for row in conn.execute(
             """
-            SELECT source_id, bucket_start
-            FROM processed_inputs
-            WHERE input_kind = 'csv'
-              AND input_locator = ?
-              AND status = 'processed'
+            SELECT DISTINCT bucket_start
+            FROM traffic_stats
+            WHERE source_id = ?
+              AND granularity = '5m'
+              AND bucket_start >= ?
+              AND bucket_start < ?
             """,
-            (input_locator,),
+            (bucket.key.source_id, day_start, day_end),
         ).fetchall()
     }
-    if not processed_keys:
-        return bucket_values
-    return [
-        bucket
-        for bucket in bucket_values
-        if (bucket.key.source_id, bucket.key.bucket_start) not in processed_keys
-    ]
-
-
-def mark_csv_buckets_with_flushed_aggregates(
-    conn: sqlite3.Connection,
-    processed_buckets: list[dict],
-    aggregate_cutoff: int,
-) -> None:
-    """Mark CSV buckets processed after all enclosing aggregate buckets flushed."""
-    ready = ready_csv_buckets_for_processed_mark(conn, aggregate_cutoff)
-    if not ready:
+    external_starts = sorted(
+        bucket_start
+        for bucket_start in persisted_starts
+        if bucket_start != bucket.key.bucket_start
+        and (bucket.key.source_id, bucket_start) not in current_run_keys
+    )
+    if not external_starts:
         return
-    ready_ids = {
-        (bucket['input_kind'], bucket['input_locator'], bucket['source_id'], bucket['bucket_start'])
-        for bucket in ready
-    }
-    with conn:
-        mark_processed_buckets(conn, ready)
-    processed_buckets[:] = [
-        bucket
-        for bucket in processed_buckets
-        if (
-            bucket['input_kind'],
-            bucket['input_locator'],
-            bucket['source_id'],
-            bucket['bucket_start'],
-        )
-        not in ready_ids
-    ]
-
-
-def ready_csv_buckets_for_processed_mark(conn: sqlite3.Connection, aggregate_cutoff: int) -> list[dict]:
-    """Return pending CSV buckets whose aggregate outputs are closed."""
-    rows = conn.execute(
-        """
-        SELECT input_kind, input_locator, source_id, bucket_start, bucket_end
-        FROM processed_inputs
-        WHERE input_kind = 'csv' AND status != 'processed'
-        ORDER BY bucket_start, input_locator, source_id
-        """
-    ).fetchall()
-    return [
-        {
-            'input_kind': row[0],
-            'input_locator': row[1],
-            'source_id': row[2],
-            'bucket_start': row[3],
-            'bucket_end': row[4],
-        }
-        for row in rows
-        if csv_bucket_aggregate_outputs_flushed(int(row[3]), aggregate_cutoff)
-    ]
-
-
-def csv_bucket_aggregate_outputs_flushed(bucket_start: int, aggregate_cutoff: int) -> bool:
-    """Return true when every aggregate granularity containing a 5m bucket is closed."""
-    return all(
-        next_bucket_start(floor_bucket_start(bucket_start, seconds), seconds) <= aggregate_cutoff
-        for _, seconds in AGGREGATE_GRANULARITY_SECONDS
+    raise AggregatePublicationConflict(
+        'Cannot reopen a persisted aggregate interval exactly: '
+        f'source={bucket.key.source_id!r} bucket_start={bucket.key.bucket_start} '
+        f'shares its local day with persisted 5m bucket {external_starts[0]} from another run. '
+        'Persisted address counts and MAAD output do not retain the address identities '
+        'required to rebuild exact unique-address rollups.'
     )
 
 
-def build_bucket_payload_from_values(
+def reject_overlapping_canonical_bucket(
+    conn: sqlite3.Connection,
+    bucket: CanonicalBucket,
     *,
-    input_kind: str,
-    input_locator: str,
-    bucket_values: list[StatisticalBucket],
-    maad_bin: str | Path,
-    maad_backend: str,
-    maad_workers: int,
-    run_maad: bool,
-) -> dict:
-    """Build DB insert payloads from completed bucket accumulators."""
-    processed_buckets = [
-        {
-            'input_kind': input_kind,
-            'input_locator': input_locator,
-            'source_id': bucket.key.source_id,
-            'bucket_start': bucket.key.bucket_start,
-            'bucket_end': bucket.key.bucket_end,
-        }
-        for bucket in bucket_values
-    ]
-    canonical_buckets = [bucket.finish() for bucket in bucket_values]
-    bucket_values.clear()
-    rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
-    return {
-        'processed_buckets': processed_buckets,
-        'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
-        'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
-        'address_count_rows': [row for payload in rows for row in payload['address_count_rows']],
-        'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            canonical_buckets,
-            maad_bin,
-            maad_backend,
-            maad_workers,
+    allowed_csv_scans: set[str] | None = None,
+    allowed_input_owners: set[tuple[str, str]] | None = None,
+) -> None:
+    """Reject a canonical 5m bucket already claimed by another logical owner."""
+    allowed_csv_scans = set() if allowed_csv_scans is None else allowed_csv_scans
+    allowed_input_owners = set() if allowed_input_owners is None else allowed_input_owners
+    owners = conn.execute(
+        """
+        SELECT input_kind, input_locator, scan_locator
+        FROM processed_inputs
+        WHERE source_id = ?
+          AND bucket_start = ?
+        ORDER BY input_kind, input_locator, scan_locator
+        """,
+        (bucket.key.source_id, bucket.key.bucket_start),
+    ).fetchall()
+    conflicting_owners = [
+        (input_kind, input_locator, scan_locator)
+        for input_kind, input_locator, scan_locator in owners
+        if not (
+            (input_kind == 'csv' and scan_locator in allowed_csv_scans)
+            or (input_kind, input_locator) in allowed_input_owners
         )
-        if run_maad
-        else [],
-        'canonical_buckets': canonical_buckets,
-    }
+    ]
+    if not conflicting_owners:
+        return
+    owner_text = ', '.join(
+        f'{input_kind}:{input_locator}'
+        for input_kind, input_locator, _scan_locator in conflicting_owners
+    )
+    raise AggregatePublicationConflict(
+        'Overlapping canonical 5m input is not allowed: '
+        f'source={bucket.key.source_id!r} bucket_start={bucket.key.bucket_start} '
+        f'conflicts with {owner_text}.'
+    )
+
+
+def complete_csv_scans(
+    conn: sqlite3.Connection,
+    processed_buckets: list[dict],
+    completion_events: list[CsvScanComplete],
+) -> None:
+    """Atomically mark remaining buckets and successful CSV scans complete."""
+    completions_by_locator = {event.scan_locator: event for event in completion_events}
+    with conn:
+        mark_processed_buckets(conn, processed_buckets)
+        for scan_locator, event in sorted(completions_by_locator.items()):
+            complete_input_scan(
+                conn,
+                input_kind='csv',
+                scan_locator=scan_locator,
+                rejected_rows=event.rejected_rows,
+                skipped_bad_column_count=event.skipped_bad_column_count,
+            )
 
 
 def add_raw_bucket_to_streaming_aggregates(
@@ -2281,38 +1638,7 @@ def build_input_payload(
             'canonical_buckets': [canonical_bucket],
         }
 
-    buckets = accumulate_input_buckets(iter_input_rows(spec))
-    bucket_values = [buckets[key] for key in sorted(buckets)]
-    processed_bucket_keys = sorted(buckets)
-
-    canonical_buckets = [bucket.finish() for bucket in bucket_values]
-    buckets.clear()
-    bucket_values.clear()
-    rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
-    return {
-        'processed_buckets': [
-            {
-                'input_kind': input_kind,
-                'input_locator': input_locator,
-                'source_id': source_id,
-                'bucket_start': bucket_start,
-                'bucket_end': bucket_end,
-            }
-            for source_id, bucket_start, bucket_end in processed_bucket_keys
-        ],
-        'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
-        'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
-        'address_count_rows': [row for payload in rows for row in payload['address_count_rows']],
-        'address_structure_rows': build_address_structure_rows_from_raw_buckets(
-            canonical_buckets,
-            maad_bin,
-            maad_backend,
-            maad_workers,
-        )
-        if run_maad
-        else [],
-        'canonical_buckets': canonical_buckets,
-    }
+    raise ValueError(f'Unsupported worker input_kind: {input_kind}')
 
 
 def write_input_payload(
@@ -2641,18 +1967,14 @@ def next_bucket_start(bucket_start: int, bucket_seconds: int) -> int:
 
 
 def iter_input_rows(spec: dict) -> Iterable[NormalizedRow]:
-    """Yield normalized rows for one explicit input spec."""
+    """Yield normalized rows from one nfcapd input spec."""
     input_kind = str(spec['input_kind'])
     input_path = str(spec['path'])
-    if input_kind == 'csv':
-        mapping_path = str(spec['mapping_path'])
-        yield from iter_csv_rows(input_path, mapping_path)
-        return
     if input_kind == 'nfcapd':
         source_id = str(spec['source_id'])
         yield from iter_nfdump_rows(input_path, source_id)
         return
-    raise ValueError(f'Unsupported input_kind: {input_kind}')
+    raise ValueError(f'Unsupported row input_kind: {input_kind}')
 
 
 def build_nfcapd_gap_payload(
@@ -2692,37 +2014,6 @@ def build_nfcapd_gap_payload(
         else [],
         'canonical_buckets': [canonical_bucket],
     }
-
-
-def accumulate_input_buckets(rows: Iterable[NormalizedRow]) -> dict[tuple[str, int, int], StatisticalBucket]:
-    """Accumulate normalized rows by source and 5-minute bucket."""
-    buckets: dict[tuple[str, int, int], StatisticalBucket] = {}
-    for row in rows:
-        add_row_to_bucket(buckets, row)
-    return buckets
-
-
-def add_row_to_bucket(
-    buckets: dict[tuple[str, int, int], StatisticalBucket],
-    row: NormalizedRow,
-) -> None:
-    """Accumulate one normalized row into a bucket map."""
-    key = (row.source_id, row.bucket_start, row.bucket_end)
-    bucket = buckets.setdefault(
-        key,
-        StatisticalBucket(BucketKey(row.source_id, '5m', row.bucket_start, row.bucket_end)),
-    )
-    bucket.add(
-        FlowFact(
-            ip_version=row.ip_version,
-            src_ip=row.src_ip,
-            dst_ip=row.dst_ip,
-            protocol=row.protocol,
-            packets=row.packets,
-            bytes_count=row.bytes,
-            src_tos=row.src_tos,
-        )
-    )
 
 
 def iter_nfdump_rows(path: str, source_id: str) -> Iterable[NormalizedRow]:

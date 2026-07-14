@@ -23,12 +23,21 @@ REQUIRED_COLUMNS = {
     'processed_inputs': [
         'input_kind',
         'input_locator',
+        'scan_locator',
         'source_id',
         'bucket_start',
         'bucket_end',
         'status',
         'error_message',
         'discovered_at',
+        'processed_at',
+    ],
+    'processed_input_scans': [
+        'input_kind',
+        'input_locator',
+        'status',
+        'rejected_rows',
+        'skipped_bad_column_count',
         'processed_at',
     ],
     'traffic_stats': [
@@ -189,11 +198,7 @@ def verify_database(
             raise SystemExit('address_structure_stats has no rows.')
 
         if require_processed:
-            pending_count = conn.execute(
-                "SELECT COUNT(*) FROM processed_inputs WHERE status != 'processed'"
-            ).fetchone()[0]
-            if pending_count:
-                raise SystemExit(f'processed_inputs has {pending_count} unprocessed rows.')
+            assert_processed_inputs_complete(conn)
 
         if require_processed or require_rollup_parity:
             assert_traffic_rollup_parity(conn)
@@ -211,6 +216,31 @@ def verify_database(
     print(f'window={bucket_start}..{bucket_end}')
     for table_name, count in row_counts.items():
         print(f'{table_name}={count}')
+
+
+def assert_processed_inputs_complete(conn: sqlite3.Connection) -> None:
+    """Reject unfinished buckets and CSV scans lacking terminal completion."""
+    pending_count = conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status != 'processed'"
+    ).fetchone()[0]
+    if pending_count:
+        raise SystemExit(f'processed_inputs has {pending_count} unprocessed rows.')
+    incomplete_csv_scans = conn.execute(
+        """
+        SELECT COUNT(DISTINCT buckets.scan_locator)
+        FROM processed_inputs AS buckets
+        LEFT JOIN processed_input_scans AS scans
+          ON scans.input_kind = buckets.input_kind
+         AND scans.input_locator = buckets.scan_locator
+         AND scans.status = 'processed'
+        WHERE buckets.input_kind = 'csv'
+          AND scans.input_locator IS NULL
+        """
+    ).fetchone()[0]
+    if incomplete_csv_scans:
+        raise SystemExit(
+            f'processed_inputs has {incomplete_csv_scans} incomplete CSV scan(s).'
+        )
 
 
 def assert_schema(conn: sqlite3.Connection) -> None:

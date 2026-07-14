@@ -2,6 +2,8 @@ import importlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 
 def load_modules():
     verifier = importlib.import_module('verify_web_compatible')
@@ -70,6 +72,32 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
         require_processed=True,
         require_no_raw_ip=True,
     )
+
+
+def test_require_processed_rejects_processed_csv_buckets_without_terminal_scan() -> None:
+    verifier, _stats, processed_inputs = load_modules()
+    conn = sqlite3.connect(':memory:')
+    processed_inputs.init_processed_inputs_table(conn)
+    processed_inputs.upsert_input_bucket(
+        conn,
+        input_kind='csv',
+        input_locator='/csv/fatal.csv',
+        scan_locator='/csv/fatal.csv',
+        source_id='ugr16',
+        bucket_start=1744700700,
+        bucket_end=1744701000,
+    )
+    processed_inputs.mark_input_bucket_status(
+        conn,
+        input_kind='csv',
+        input_locator='/csv/fatal.csv',
+        source_id='ugr16',
+        bucket_start=1744700700,
+        status='processed',
+    )
+
+    with pytest.raises(SystemExit, match='1 incomplete CSV scan'):
+        verifier.assert_processed_inputs_complete(conn)
 
 
 def traffic_row(stats, granularity: str, bucket_start: int, bucket_end: int) -> dict:

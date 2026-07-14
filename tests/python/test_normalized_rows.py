@@ -279,7 +279,7 @@ def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
             'dst': '143.72.8.137',
             'sp': '59212',
             'dp': '53',
-            'pr': 'UDP',
+            'pr': '  uDp  ',
             'pkt': '1',
             'byt': '72',
         },
@@ -290,3 +290,100 @@ def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
     assert row.protocol == 17
     assert row.packets == 1
     assert row.bytes == 72
+
+
+@pytest.mark.parametrize(
+    ('column', 'value'),
+    [
+        ('pr', '-1'),
+        ('pr', '256'),
+        ('pkt', '-1'),
+        ('pkt', str(1 << 63)),
+        ('byt', '-1'),
+        ('byt', str(1 << 63)),
+        ('stos', '-1'),
+        ('stos', '256'),
+        ('dtos', '-1'),
+        ('dtos', '256'),
+    ],
+)
+def test_normalize_csv_row_rejects_out_of_range_flow_values(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    csv_ingest, normalized_rows = load_modules()
+    config_path = tmp_path / 'mapping.json'
+    config_path.write_text(
+        """
+        {
+          "timestamp_format": "unix",
+          "columns": {
+            "time_end": "te",
+            "src_ip": "src",
+            "dst_ip": "dst",
+            "protocol": "pr",
+            "packets": "pkt",
+            "bytes": "byt",
+            "src_tos": "stos",
+            "dst_tos": "dtos"
+          },
+          "source_id": { "value": "feed" }
+        }
+        """,
+        encoding='utf-8',
+    )
+    config = csv_ingest.load_csv_source_config(config_path)
+    row = {
+        'te': '1744733279',
+        'src': '192.0.2.1',
+        'dst': '198.51.100.1',
+        'pr': '6',
+        'pkt': '1',
+        'byt': '1',
+        'stos': '0',
+        'dtos': '0',
+    }
+    row[column] = value
+
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='must be'):
+        normalized_rows.normalize_csv_row(row, config)
+
+
+def test_normalize_csv_row_strips_optional_numeric_whitespace(tmp_path: Path) -> None:
+    csv_ingest, normalized_rows = load_modules()
+    config_path = tmp_path / 'mapping.json'
+    config_path.write_text(
+        """
+        {
+          "timestamp_format": "unix",
+          "columns": {
+            "time_end": "te",
+            "src_ip": "src",
+            "dst_ip": "dst",
+            "protocol": "pr",
+            "packets": "pkt",
+            "bytes": "byt",
+            "src_tos": "stos"
+          },
+          "source_id": { "value": "feed" }
+        }
+        """,
+        encoding='utf-8',
+    )
+    config = csv_ingest.load_csv_source_config(config_path)
+
+    row = normalized_rows.normalize_csv_row(
+        {
+            'te': ' 1744733279 ',
+            'src': ' 192.0.2.1 ',
+            'dst': ' 198.51.100.1 ',
+            'pr': ' 6 ',
+            'pkt': ' 1 ',
+            'byt': ' 2 ',
+            'stos': ' 3 ',
+        },
+        config,
+    )
+
+    assert (row.protocol, row.packets, row.bytes, row.src_tos) == (6, 1, 2, 3)
