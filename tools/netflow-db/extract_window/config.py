@@ -22,10 +22,8 @@ DEFAULT_DATASET_ID = "uoregon"
 DEFAULT_START = "2025-06-01"
 DEFAULT_END_EXCLUSIVE = "2026-06-01"
 DEFAULT_OUTPUT_DIR_TEMPLATE = "data/{dataset}/extracts/{start}_to_{end}"
-DEFAULT_OUTPUT_DIR = DEFAULT_OUTPUT_DIR_TEMPLATE
 DEFAULT_TIMEZONE = os.environ.get("NETFLOW_TIMEZONE", "America/Los_Angeles")
 SQLITE_FILENAME = "netflow.sqlite"
-SQL_FILENAME = SQLITE_FILENAME
 MANIFEST_FILENAME = "manifest.json"
 OUTPUT_CHOICES = ("sqlite", "parquet")
 DEFAULT_OUTPUTS = ("sqlite",)
@@ -138,10 +136,6 @@ def resolve_default_output_dir(
     if source_id is not None:
         window = f"{window}_source-{slug_path_part(source_id)}"
     return str(Path("data") / slug_path_part(dataset) / "extracts" / window)
-
-
-def default_output_dir(dataset_id: str, start: str, end: str) -> str:
-    return resolve_default_output_dir(dataset=dataset_id, start=start, end_exclusive=end, source_id=None)
 
 
 def parse_boundary(value: str, timezone: str) -> datetime:

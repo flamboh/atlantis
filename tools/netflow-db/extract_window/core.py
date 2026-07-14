@@ -6,7 +6,7 @@ import argparse
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,24 +109,6 @@ def collect_table_summary(
         "source_min_time": row["min_time"],
         "source_max_time": row["max_time"],
     }
-
-
-def print_dry_run(
-    *,
-    source_db: Path,
-    output_dir: Path,
-    sqlite_output_path: Path | None,
-    parquet_dir: Path | None,
-    start: str,
-    end: str,
-    tables: Sequence[str],
-) -> None:
-    print(f"[extract] source_db={source_db}")
-    print(f"[extract] output_dir={output_dir}")
-    print(f"[extract] sqlite_path={sqlite_output_path}")
-    print(f"[extract] parquet_dir={parquet_dir}")
-    print(f"[extract] window={start}..{end}")
-    print(f"[extract] tables={', '.join(tables)}")
 
 
 def print_table_summary(table: str, manifest: TableManifest) -> None:

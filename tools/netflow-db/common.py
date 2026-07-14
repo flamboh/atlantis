@@ -7,11 +7,9 @@ path utilities.
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Optional
-from contextlib import contextmanager
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,16 +46,6 @@ def load_env_file(env_path: Optional[str] = None) -> None:
         raise ConfigurationError(
             f"Environment file '{env_file}' not found. Please copy .env.example to .env and configure your settings."
         )
-
-
-def get_required_env(key: str) -> str:
-    """Get required environment variable or exit with error."""
-    value = os.environ.get(key)
-    if not value:
-        raise ConfigurationError(
-            f"Required environment variable '{key}' is not set. Please check your .env file configuration."
-        )
-    return value
 
 
 def get_optional_env(key: str, default: str = '') -> str:
@@ -162,11 +150,6 @@ def normalize_dataset_sources(entry: dict[str, Any], dataset_id: str) -> list[di
         seen_source_ids.add(source_id)
         normalized.append({'source_id': source_id, 'members': normalized_members})
     return normalized
-
-
-def list_dataset_configs() -> list[dict[str, Any]]:
-    """Return all configured datasets."""
-    return DATASET_REGISTRY
 
 
 def get_default_dataset_id() -> str:
@@ -312,31 +295,3 @@ def initialize_runtime(env_path: Optional[str] = None) -> None:
 
 if get_optional_env('NETFLOW_DB_SKIP_AUTO_INIT') != '1':
     initialize_runtime()
-
-
-@contextmanager
-def get_db_connection(wal_mode: bool = True, db_path: Optional[str | Path] = None):
-    """
-    Context manager for database connections with optional WAL mode.
-    
-    Args:
-        wal_mode: If True, enables WAL journal mode and sets busy timeout.
-                  Recommended for concurrent access.
-        db_path: Optional path to the SQLite database. Defaults to DATABASE_PATH.
-    
-    Yields:
-        sqlite3.Connection object
-    """
-    # Use autocommit mode so transaction boundaries are fully explicit.
-    # Processor modules call BEGIN/COMMIT/ROLLBACK manually.
-    db_file = Path(db_path) if db_path is not None else Path(DATABASE_PATH)
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_file, isolation_level=None)
-    try:
-        if wal_mode:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=60000;")
-        yield conn
-    finally:
-        conn.close()
-

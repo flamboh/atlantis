@@ -38,27 +38,6 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
                 stdout='proto,srcTos,packets,bytes,flows\n58,0,3,300,1\n',
                 stderr='',
             )
-        if '-A proto' in command_text and 'ipv4' in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=(
-                    'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
-                    '2025-01-01 00:00:00.000,1.0,6,10,1000,0,0,2\n'
-                    '2025-01-01 00:00:00.000,1.0,17,5,500,0,0,1\n'
-                ),
-                stderr='',
-            )
-        if '-A proto' in command_text and 'ipv6' in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=(
-                    'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
-                    '2025-01-01 00:00:00.000,1.0,58,3,300,0,0,1\n'
-                ),
-                stderr='',
-            )
         if '-A srcip,dstip,srctos' in command_text:
             assert 'ipv4' not in command
             assert 'ipv6' not in command
@@ -70,19 +49,6 @@ def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) ->
                     '192.0.2.1,198.51.100.1,2\n'
                     '192.0.2.2,198.51.100.2,1\n'
                     '2001:db8::1,2001:db8::2,0\n'
-                ),
-                stderr='',
-            )
-        if '-A srcip,dstip' in command_text:
-            assert 'ipv4' not in command
-            assert 'ipv6' not in command
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=(
-                    '192.0.2.1,198.51.100.1\n'
-                    '192.0.2.2,198.51.100.2\n'
-                    '2001:db8::1,2001:db8::2\n'
                 ),
                 stderr='',
             )
@@ -163,6 +129,28 @@ def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
         module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115.tmp')
 
 
+def test_read_scoped_protocol_counters_treats_no_matching_flows_as_empty(monkeypatch, caplog) -> None:
+    module = load_module()
+
+    def fake_run(command, capture_output, text, timeout):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
+                'No matching flows\n'
+            ),
+            stderr='',
+        )
+
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+
+    rows = module.read_scoped_protocol_counters('/captures/nfcapd.202508190500', 6)
+
+    assert rows == []
+    assert 'Skipping malformed nfdump scoped protocol row' not in caplog.text
+
+
 def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> None:
     module = load_module()
 
@@ -189,77 +177,3 @@ def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> N
         for ip_version in (4, 6)
         for src_visibility, dst_visibility in module.ZERO_FILL_VISIBILITY_PAIRS
     }
-
-
-def test_read_address_sets_by_version_uses_fast_ipv4_path(monkeypatch) -> None:
-    module = load_module()
-
-    def fake_run(command, capture_output, text, timeout):
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                '192.0.2.1,198.51.100.1\n'
-                'source,destination\n'
-                '2001:0db8::1,2001:0db8::2\n'
-                'not-ip,198.51.100.2\n'
-            ),
-            stderr='',
-        )
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
-
-    source_ipv4, destination_ipv4, source_ipv6, destination_ipv6 = module.read_address_sets_by_version(
-        '/captures/nfcapd.202508190500'
-    )
-
-    assert source_ipv4 == {3221225985}
-    assert destination_ipv4 == {3325256705}
-    assert source_ipv6 == {'2001:db8::1'}
-    assert destination_ipv6 == {'2001:db8::2'}
-
-
-def test_read_protocol_counters_skips_sparse_nfdump_rows(monkeypatch, caplog) -> None:
-    module = load_module()
-
-    def fake_run(command, capture_output, text, timeout):
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
-                '2025-01-01 00:00:00.000,1.0,58,3,300,0,0,1\n'
-                '2025-01-01 00:00:00.000,1.0,,3,300,0,0,1\n'
-                'Summary,,,,,,,\n'
-            ),
-            stderr='',
-        )
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
-
-    rows = module.read_protocol_counters('/captures/nfcapd.202508190000', 6)
-
-    assert rows == [(58, 3, 300, 1)]
-    assert 'Skipping malformed nfdump protocol row' in caplog.text
-
-
-def test_read_protocol_counters_treats_no_matching_flows_as_empty(monkeypatch, caplog) -> None:
-    module = load_module()
-
-    def fake_run(command, capture_output, text, timeout):
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
-                'No matching flows\n'
-            ),
-            stderr='',
-        )
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
-
-    rows = module.read_protocol_counters('/captures/nfcapd.202508190500', 6)
-
-    assert rows == []
-    assert 'Skipping malformed nfdump protocol row' not in caplog.text

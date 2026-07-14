@@ -668,29 +668,6 @@ def build_nfcapd_gap_spec(root: Path, source_id: str, bucket_start: int) -> dict
     }
 
 
-def all_tree_specs_processed(conn: sqlite3.Connection, input_specs: list[dict]) -> bool:
-    """Return true when every discovered file has processed status."""
-    if not input_specs:
-        return False
-    init_processed_inputs_table(conn)
-    locators = [spec['path'] for spec in input_specs]
-    processed = set()
-    for batch in chunked(locators, 900):
-        placeholders = ','.join('?' for _ in batch)
-        rows = conn.execute(
-            f"""
-            SELECT input_locator
-            FROM processed_inputs
-            WHERE input_kind = 'nfcapd'
-              AND status = 'processed'
-              AND input_locator IN ({placeholders})
-            """,
-            batch,
-        ).fetchall()
-        processed.update(row[0] for row in rows)
-    return processed == set(locators)
-
-
 def build_nfcapd_logical_bucket_jobs(
     conn: sqlite3.Connection,
     sources: list[SourceDefinition],
@@ -1863,24 +1840,6 @@ def build_bucket_accumulator_from_arrow_tables(
     return bucket
 
 
-def get_primitive_bucket(
-    buckets: dict[tuple[str, int, int], BucketAccumulator],
-    source_id: str,
-    bucket_start: int,
-) -> BucketAccumulator:
-    """Return an active bucket for primitive aggregate paths."""
-    bucket_end = bucket_start + 300
-    key = (source_id, bucket_start, bucket_end)
-    return buckets.setdefault(
-        key,
-        BucketAccumulator(
-            source_id=source_id,
-            bucket_start=bucket_start,
-            bucket_end=bucket_end,
-        ),
-    )
-
-
 def parse_arrow_minute_bucket(raw_minute: str, config: CsvSourceConfig) -> int:
     """Parse a YYYY-MM-DD HH:MM minute string to a configured 5-minute bucket."""
     raw_text = f'{raw_minute}:00'
@@ -2535,16 +2494,6 @@ def streaming_aggregate_bucket_is_complete(bucket: dict) -> bool:
     """Return true when a rewrite covers every 5-minute slice in a coarse bucket."""
     expected_count = (int(bucket['bucket_end']) - int(bucket['bucket_start'])) // FIVE_MINUTE_SECONDS
     return len(bucket.get('bucket_starts', set())) == expected_count
-
-
-def streaming_address_set(bucket: dict, ip_version: int, address_side: str) -> set:
-    """Return an aggregate all/all address set from streaming state."""
-    return bucket['address_all_by_key'].get((ip_version, address_side), set())
-
-
-def streaming_protocol_set(bucket: dict, ip_version: int) -> set:
-    """Return an aggregate all/all protocol set from streaming state."""
-    return bucket['protocol_by_key'].get((ip_version, 'all', 'all'), set())
 
 
 def iter_input_payloads(tasks: list[tuple[dict, str, str, int, bool]], max_workers: int) -> Iterable[dict]:

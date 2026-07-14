@@ -77,53 +77,6 @@ def is_nfcapd_bucket_filename(name: str) -> bool:
     return NFCAPD_FILENAME_RE.fullmatch(name) is not None
 
 
-def read_protocol_counters(path: str, ip_version: int) -> list[tuple[int, int, int, int]]:
-    """Return `(protocol, packets, bytes, flows)` rows from grouped nfdump CSV."""
-    result = run_nfdump(
-        [
-            'nfdump',
-            '-r',
-            path,
-            '-q',
-            '-a',
-            '-A',
-            'proto',
-            '-o',
-            'csv',
-            *family_filter(ip_version),
-            '-N',
-        ]
-    )
-    rows = []
-    for row in csv.DictReader(result.stdout.splitlines()):
-        if not row:
-            continue
-        if is_no_matching_flows_row(row):
-            continue
-        parsed = parse_protocol_counter_row(row, path=path, ip_version=ip_version)
-        if parsed is not None:
-            rows.append(parsed)
-    return rows
-
-
-def read_traffic_stats_rows(
-    path: str,
-    source_id: str,
-    bucket_start: int,
-    bucket_end: int,
-) -> tuple[list[dict], list[dict]]:
-    """Read scoped scoped traffic rows and protocol sets from grouped nfdump CSV."""
-    return traffic_stats_rows_from_scoped_counters(
-        {
-            4: read_scoped_protocol_counters(path, 4),
-            6: read_scoped_protocol_counters(path, 6),
-        },
-        source_id,
-        bucket_start,
-        bucket_end,
-    )
-
-
 def traffic_stats_rows_from_scoped_counters(
     scoped_counters_by_version: dict[int, list[tuple[int, int, int, int, int]]],
     source_id: str,
@@ -253,88 +206,6 @@ def is_no_matching_flows_row(row: dict[str, str | None]) -> bool:
     )
 
 
-def parse_protocol_counter_row(
-    row: dict[str, str | None],
-    *,
-    path: str,
-    ip_version: int,
-) -> tuple[int, int, int, int] | None:
-    """Parse one grouped protocol row, skipping sparse nfdump output rows."""
-    values: list[str] = []
-    for key in ('proto', 'packets', 'bytes', 'flows'):
-        raw_value = row.get(key)
-        if raw_value is None:
-            LOGGER.warning(
-                'Skipping malformed nfdump protocol row for %s ipv%s: %s',
-                path,
-                ip_version,
-                row,
-            )
-            return None
-        value = raw_value.strip()
-        if not value:
-            LOGGER.warning(
-                'Skipping malformed nfdump protocol row for %s ipv%s: %s',
-                path,
-                ip_version,
-                row,
-            )
-            return None
-        values.append(value)
-
-    try:
-        protocol, packets, bytes_value, flows = (int(value) for value in values)
-    except ValueError:
-        LOGGER.warning(
-            'Skipping malformed nfdump protocol row for %s ipv%s: %s',
-            path,
-            ip_version,
-            row,
-        )
-        return None
-
-    return (protocol, packets, bytes_value, flows)
-
-
-def read_address_sets_by_version(path: str) -> tuple[set[str], set[str], set[str], set[str]]:
-    """Read unique grouped source and destination address sets split by IP version."""
-    result = run_nfdump(
-        [
-            'nfdump',
-            '-r',
-            path,
-            '-q',
-            '-a',
-            '-A',
-            'srcip,dstip',
-            '-o',
-            'fmt:%sa,%da',
-        ]
-    )
-    source_ipv4 = set()
-    destination_ipv4 = set()
-    source_ipv6 = set()
-    destination_ipv6 = set()
-    for values in csv.reader(result.stdout.splitlines()):
-        if len(values) < 2:
-            continue
-        source_ip = values[0].strip()
-        destination_ip = values[1].strip()
-        source_ipv4_value = parse_ipv4_address(source_ip)
-        destination_ipv4_value = parse_ipv4_address(destination_ip)
-        if source_ipv4_value is not None and destination_ipv4_value is not None:
-            source_ipv4.add(source_ipv4_value)
-            destination_ipv4.add(destination_ipv4_value)
-            continue
-        if ':' in source_ip and ':' in destination_ip:
-            try:
-                source_ipv6.add(str(ipaddress.ip_address(source_ip)))
-                destination_ipv6.add(str(ipaddress.ip_address(destination_ip)))
-            except ValueError:
-                continue
-    return source_ipv4, destination_ipv4, source_ipv6, destination_ipv6
-
-
 def read_scoped_address_sets(
     path: str,
     source_id: str,
@@ -437,40 +308,6 @@ def parse_ipv4_address(value: str) -> int | None:
             return None
         address = (address << 8) | octet
     return address
-
-
-def looks_like_ipv4_address(value: str) -> bool:
-    """Return true for trusted nfdump IPv4 address text."""
-    return parse_ipv4_address(value) is not None
-
-
-def read_address_sets(path: str, ip_version: int) -> tuple[set[str], set[str]]:
-    """Read unique grouped source and destination address sets."""
-    result = run_nfdump(
-        [
-            'nfdump',
-            '-r',
-            path,
-            '-q',
-            '-a',
-            '-A',
-            'srcip,dstip',
-            '-o',
-            'fmt:%sa,%da',
-            *family_filter(ip_version),
-        ]
-    )
-    source = set()
-    destination = set()
-    for values in csv.reader(result.stdout.splitlines()):
-        if len(values) < 2:
-            continue
-        try:
-            source.add(str(ipaddress.ip_address(values[0].strip())))
-            destination.add(str(ipaddress.ip_address(values[1].strip())))
-        except ValueError:
-            continue
-    return source, destination
 
 
 def run_nfdump(command: list[str]) -> subprocess.CompletedProcess[str]:
