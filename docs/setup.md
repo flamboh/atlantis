@@ -5,6 +5,7 @@
 - Bun 1.2+
 - Python 3.x
 - `nfdump` available on your PATH (or via Nix — see `shell.nix`)
+- a C++17 compiler for the exact nfcapd reducer
 - SSH access to the research host if using live ONRG data
 
 ### For MAAD-Backed Address Structure Stats
@@ -13,6 +14,12 @@ Only needed if you want MAAD-backed address structure stats:
 
 - a C++ compiler for `tools/netflow-db/maad_fast.cpp`
 - or `nix-shell`, then use `scripts/build_maad_fast.sh`
+
+Build the required nfcapd reducer before processing native captures:
+
+```bash
+./scripts/build_nfdump_reducer.sh
+```
 
 ## Install
 

@@ -121,6 +121,18 @@ The canonical MAAD helper is built with:
 scripts/build_maad_fast.sh
 ```
 
+Native nfcapd ingestion requires the compiled one-pass reducer:
+
+```bash
+scripts/build_nfdump_reducer.sh
+```
+
+The reducer consumes the versioned `nfdump-csv-15-v1` field contract. This
+keeps deployment independent of nfdump's internal reader ABI and supports old
+type-2 capture blocks. Because CSV cannot expose extension presence, the native
+contract treats a min/max TTL of `0` (or blank) as missing. There is no silent
+Python fallback when the helper is unavailable; the pipeline fails closed.
+
 `nfdump` must be on `PATH` for nfcapd inputs. Use
 `scripts/run-with-nix-if-available.sh` when the local environment needs Nix
 tooling.

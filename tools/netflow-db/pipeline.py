@@ -36,6 +36,11 @@ from nfdump_stats import (
     is_nfcapd_bucket_filename,
     parse_nfcapd_bucket_start,
 )
+from nfdump_contract import (
+    NFDUMP_REDUCER_CONTRACT_VERSION,
+    NFDUMP_REDUCER_INPUT_CONTRACT,
+    NFDUMP_REDUCER_OUTPUT_CONTRACT,
+)
 from input_revision import (
     ExpectedAbsence,
     FileSnapshot,
@@ -114,8 +119,13 @@ def current_product_identity(
         },
         selection=selection.normalized_payload(),
         config={
-            'version': 1,
+            'version': 2,
             'timezone': str(PIPELINE_TIMEZONE),
+            'nfcapd_reducer': {
+                'contract_version': NFDUMP_REDUCER_CONTRACT_VERSION,
+                'input_contract': NFDUMP_REDUCER_INPUT_CONTRACT,
+                'output_contract': NFDUMP_REDUCER_OUTPUT_CONTRACT,
+            },
             'maad': {
                 'enabled': run_maad,
                 'backend': maad_backend,
