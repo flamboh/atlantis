@@ -443,10 +443,21 @@ def test_mapped_duration_seconds_are_authoritative_over_endpoints() -> None:
     duration_ms = normalized_rows.resolve_duration_ms(
         '1.234',
         'duration',
-        {'time_start': 2000, 'time_end': 1000},
+        {'time_start': 1000, 'time_end': 2000},
     )
 
     assert duration_ms == 1234
+
+
+def test_mapped_duration_does_not_override_endpoint_order_validation() -> None:
+    csv_ingest, normalized_rows = load_modules()
+
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='must not precede'):
+        normalized_rows.resolve_duration_ms(
+            '1.234',
+            'duration',
+            {'time_start': 2000, 'time_end': 1000},
+        )
 
 
 def test_derived_duration_uses_signed_64_bit_bound() -> None:

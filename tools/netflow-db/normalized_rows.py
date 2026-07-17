@@ -445,6 +445,11 @@ def resolve_duration_ms(
     timestamps: Mapping[str, int],
 ) -> int | None:
     """Resolve duration, treating a mapped seconds value as authoritative."""
+    start = timestamps.get('time_start')
+    end = timestamps.get('time_end')
+    if start is not None and end is not None and end < start:
+        raise CsvSourceConfigError('Flow time_end must not precede time_start.')
+
     if explicit_seconds is not None and str(explicit_seconds).strip() != '':
         raw_text = str(explicit_seconds).strip()
         try:
@@ -467,13 +472,9 @@ def resolve_duration_ms(
             )
         return int(integral)
 
-    start = timestamps.get('time_start')
-    end = timestamps.get('time_end')
     if start is None or end is None:
         return None
     derived = end - start
-    if derived < 0:
-        raise CsvSourceConfigError('Flow time_end must not precede time_start.')
     if derived > MAX_SQLITE_INTEGER:
         raise CsvSourceConfigError(
             f'Derived flow duration must be 0..{MAX_SQLITE_INTEGER} milliseconds.'

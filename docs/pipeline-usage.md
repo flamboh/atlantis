@@ -46,9 +46,10 @@ scripts/local/build_ugr16_netflow.sh --config scripts/local/ugr16-csv.pipeline.j
 
 The optional logical `columns.duration` mapping is measured in seconds. Decimal
 seconds are converted exactly to integer milliseconds, so values may have at
-most millisecond precision. A mapped, nonblank duration is authoritative. When
-it is absent, ingestion derives duration from mapped `time_start` and `time_end`
-timestamps when both are available.
+most millisecond precision. A mapped, nonblank duration is authoritative for
+the duration value, while mapped endpoints must still satisfy
+`time_end >= time_start`. When duration is absent, ingestion derives it from
+mapped `time_start` and `time_end` timestamps when both are available.
 
 ## Compile helpers
 
