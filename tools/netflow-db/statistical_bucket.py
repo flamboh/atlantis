@@ -48,6 +48,8 @@ class Scope:
 
 @dataclass(frozen=True, slots=True)
 class GroupedTrafficFact:
+    """Pre-aggregated traffic, including production native nfcapd input."""
+
     ip_version: int
     protocol: int
     src_tos: int

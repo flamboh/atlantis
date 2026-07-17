@@ -444,43 +444,41 @@ def resolve_duration_ms(
     column_name: str | None,
     timestamps: Mapping[str, int],
 ) -> int | None:
-    """Resolve exact duration milliseconds from seconds or endpoint timestamps."""
-    derived = None
+    """Resolve duration, treating a mapped seconds value as authoritative."""
+    if explicit_seconds is not None and str(explicit_seconds).strip() != '':
+        raw_text = str(explicit_seconds).strip()
+        try:
+            seconds = Decimal(raw_text)
+        except InvalidOperation as error:
+            raise CsvSourceConfigError(
+                f"Invalid duration value '{explicit_seconds}' for column '{column_name}'."
+            ) from error
+        milliseconds = seconds * 1000
+        integral = milliseconds.to_integral_value()
+        if (
+            not seconds.is_finite()
+            or milliseconds != integral
+            or integral < 0
+            or integral > MAX_SQLITE_INTEGER
+        ):
+            raise CsvSourceConfigError(
+                f"Duration value '{explicit_seconds}' for column '{column_name}' must be "
+                'nonnegative seconds with millisecond precision.'
+            )
+        return int(integral)
+
     start = timestamps.get('time_start')
     end = timestamps.get('time_end')
-    if start is not None and end is not None:
-        derived = end - start
-        if derived < 0:
-            raise CsvSourceConfigError('Flow time_end must not precede time_start.')
-
-    if explicit_seconds is None or str(explicit_seconds).strip() == '':
-        return derived
-    raw_text = str(explicit_seconds).strip()
-    try:
-        seconds = Decimal(raw_text)
-    except InvalidOperation as error:
+    if start is None or end is None:
+        return None
+    derived = end - start
+    if derived < 0:
+        raise CsvSourceConfigError('Flow time_end must not precede time_start.')
+    if derived > MAX_SQLITE_INTEGER:
         raise CsvSourceConfigError(
-            f"Invalid duration value '{explicit_seconds}' for column '{column_name}'."
-        ) from error
-    milliseconds = seconds * 1000
-    integral = milliseconds.to_integral_value()
-    if (
-        not seconds.is_finite()
-        or milliseconds != integral
-        or integral < 0
-        or integral > MAX_SQLITE_INTEGER
-    ):
-        raise CsvSourceConfigError(
-            f"Duration value '{explicit_seconds}' for column '{column_name}' must be "
-            'nonnegative seconds with millisecond precision.'
+            f'Derived flow duration must be 0..{MAX_SQLITE_INTEGER} milliseconds.'
         )
-    explicit = int(integral)
-    if derived is not None and explicit != derived:
-        raise CsvSourceConfigError(
-            f"Duration value '{explicit_seconds}' for column '{column_name}' does not match "
-            'time_start and time_end.'
-        )
-    return explicit
+    return derived
 
 
 def validate_ttl_order(min_ttl: int | None, max_ttl: int | None) -> None:

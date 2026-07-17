@@ -437,6 +437,38 @@ def test_optional_observation_values_distinguish_missing_from_zero(tmp_path: Pat
     assert (zero.min_ttl, zero.max_ttl) == (0, 0)
 
 
+def test_mapped_duration_seconds_are_authoritative_over_endpoints() -> None:
+    _, normalized_rows = load_modules()
+
+    duration_ms = normalized_rows.resolve_duration_ms(
+        '1.234',
+        'duration',
+        {'time_start': 2000, 'time_end': 1000},
+    )
+
+    assert duration_ms == 1234
+
+
+def test_derived_duration_uses_signed_64_bit_bound() -> None:
+    csv_ingest, normalized_rows = load_modules()
+    maximum = normalized_rows.MAX_SQLITE_INTEGER
+
+    assert (
+        normalized_rows.resolve_duration_ms(
+            None,
+            None,
+            {'time_start': 0, 'time_end': maximum},
+        )
+        == maximum
+    )
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match=f'0..{maximum}'):
+        normalized_rows.resolve_duration_ms(
+            None,
+            None,
+            {'time_start': -1, 'time_end': maximum},
+        )
+
+
 @pytest.mark.parametrize('adapter', ['mapping', 'indexed'])
 @pytest.mark.parametrize(
     ('column', 'value', 'message'),

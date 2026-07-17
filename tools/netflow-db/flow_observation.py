@@ -1,4 +1,4 @@
-"""Canonical per-flow observation passed from input adapters to statistics."""
+"""Authoritative per-flow contract for row-oriented input adapters."""
 
 from __future__ import annotations
 
@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class FlowObservation:
-    """A normalized flow with exact missing-value and millisecond semantics."""
+    """A normalized flow with exact missing-value and millisecond semantics.
+
+    Generic, indexed, and Arrow CSV adapters produce this contract before the
+    statistical bucket seam. Production native nfcapd ingestion deliberately
+    bypasses the per-flow path and contributes grouped statistical facts.
+    """
 
     ip_version: int
     src_ip: str

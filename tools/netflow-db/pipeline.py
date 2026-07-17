@@ -8,12 +8,10 @@ Processes explicit csv and nfcapd inputs into canonical netflow tables.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import logging
 import os
 import sqlite3
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -36,7 +34,6 @@ from nfdump_stats import (
     is_nfcapd_bucket_filename,
     parse_nfcapd_bucket_start,
 )
-from normalized_rows import NormalizedRow, build_nfdump_csv_command, normalize_nfdump_csv_values
 from processed_inputs import (
     InputBucketRef,
     clear_incomplete_input_scan,
@@ -77,17 +74,6 @@ MAAD_TIMEOUT_SECONDS_BY_GRANULARITY = {
     '1h': int(os.environ.get('MAAD_TIMEOUT_1H_SECONDS', '900')),
     '1d': int(os.environ.get('MAAD_TIMEOUT_1D_SECONDS', '1800')),
 }
-NFDUMP_HEADER_FIRST_VALUES = {
-    'trr',
-    'ter',
-    'tsr',
-    'ts',
-    'time_received',
-    'time received',
-    'received',
-}
-
-
 @dataclass(frozen=True)
 class SourceDefinition:
     """Logical source backed by one or more physical nfcapd member directories."""
@@ -1966,17 +1952,6 @@ def next_bucket_start(bucket_start: int, bucket_seconds: int) -> int:
     raise ValueError(f'Unsupported bucket size: {bucket_seconds}')
 
 
-def iter_input_rows(spec: dict) -> Iterable[NormalizedRow]:
-    """Yield normalized rows from one nfcapd input spec."""
-    input_kind = str(spec['input_kind'])
-    input_path = str(spec['path'])
-    if input_kind == 'nfcapd':
-        source_id = str(spec['source_id'])
-        yield from iter_nfdump_rows(input_path, source_id)
-        return
-    raise ValueError(f'Unsupported row input_kind: {input_kind}')
-
-
 def build_nfcapd_gap_payload(
     input_locator: str,
     source_id: str,
@@ -2014,36 +1989,6 @@ def build_nfcapd_gap_payload(
         else [],
         'canonical_buckets': [canonical_bucket],
     }
-
-
-def iter_nfdump_rows(path: str, source_id: str) -> Iterable[NormalizedRow]:
-    """Yield normalized rows from an nfcapd file via nfdump CSV output."""
-    for ip_version in (4, 6):
-        command = build_nfdump_csv_command(path, ip_version)
-        result = subprocess.run(command, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"nfdump failed for {path} family {ip_version}: {result.stderr.strip()}"
-            )
-        for values in csv.reader(result.stdout.splitlines()):
-            if not values:
-                continue
-            if looks_like_nfdump_header(values):
-                continue
-            yield normalize_nfdump_csv_values(values, source_id)
-
-
-def looks_like_nfdump_header(values: list[str]) -> bool:
-    """Return true when the csv row looks like a textual header."""
-    first_value = values[0].strip().lower()
-    if first_value in NFDUMP_HEADER_FIRST_VALUES:
-        return True
-    try:
-        float(first_value)
-        return False
-    except ValueError:
-        LOGGER.warning('Malformed nfdump CSV row with non-numeric timestamp: %s', values)
-        return False
 
 
 def main() -> None:
