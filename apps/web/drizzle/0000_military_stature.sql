@@ -41,6 +41,23 @@ CREATE TABLE `datasets` (
 	`sort_order` integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `port_count_stats` (
+	`source_id` text NOT NULL,
+	`granularity` text NOT NULL,
+	`bucket_start` integer NOT NULL,
+	`bucket_end` integer NOT NULL,
+	`ip_version` integer NOT NULL,
+	`src_visibility` text NOT NULL,
+	`dst_visibility` text NOT NULL,
+	`port_side` text NOT NULL,
+	`port_range` text NOT NULL,
+	`unique_port_count` integer NOT NULL,
+	`processed_at` text DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(`source_id`, `granularity`, `bucket_start`, `ip_version`, `src_visibility`, `dst_visibility`, `port_side`, `port_range`),
+	CONSTRAINT "port_count_stats_ip_version_check" CHECK("port_count_stats"."ip_version" IN (4, 6))
+);
+--> statement-breakpoint
+CREATE INDEX `idx_port_count_stats_query` ON `port_count_stats` (`granularity`,`bucket_start`,`source_id`,`ip_version`,`src_visibility`,`dst_visibility`,`port_side`,`port_range`);--> statement-breakpoint
 CREATE TABLE `processed_inputs` (
 	`input_kind` text NOT NULL,
 	`input_locator` text NOT NULL,
@@ -101,6 +118,15 @@ CREATE TABLE `traffic_stats` (
 	`bytes_udp` integer NOT NULL,
 	`bytes_icmp` integer NOT NULL,
 	`bytes_other` integer NOT NULL,
+	`duration_sum_ms` integer NOT NULL,
+	`duration_count` integer NOT NULL,
+	`average_duration_ms` real,
+	`min_ttl_sum` integer NOT NULL,
+	`min_ttl_count` integer NOT NULL,
+	`average_min_ttl` real,
+	`max_ttl_sum` integer NOT NULL,
+	`max_ttl_count` integer NOT NULL,
+	`average_max_ttl` real,
 	`processed_at` text DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY(`source_id`, `granularity`, `bucket_start`, `ip_version`, `src_visibility`, `dst_visibility`),
 	CONSTRAINT "traffic_stats_ip_version_check" CHECK("traffic_stats"."ip_version" IN (4, 6))

@@ -1,7 +1,7 @@
 {
 	"version": "6",
 	"dialect": "sqlite",
-	"id": "d3e904a8-3649-4f00-8d26-357f5fdd217a",
+	"id": "c55ac6a0-94bd-40b5-b54d-e6c40c7ddff1",
 	"prevId": "00000000-0000-0000-0000-000000000000",
 	"tables": {
 		"address_count_stats": {
@@ -300,6 +300,128 @@
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
 			"checkConstraints": {}
+		},
+		"port_count_stats": {
+			"name": "port_count_stats",
+			"columns": {
+				"source_id": {
+					"name": "source_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"granularity": {
+					"name": "granularity",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_start": {
+					"name": "bucket_start",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"bucket_end": {
+					"name": "bucket_end",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"ip_version": {
+					"name": "ip_version",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"src_visibility": {
+					"name": "src_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"dst_visibility": {
+					"name": "dst_visibility",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"port_side": {
+					"name": "port_side",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"port_range": {
+					"name": "port_range",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"unique_port_count": {
+					"name": "unique_port_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"processed_at": {
+					"name": "processed_at",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false,
+					"default": "CURRENT_TIMESTAMP"
+				}
+			},
+			"indexes": {
+				"idx_port_count_stats_query": {
+					"name": "idx_port_count_stats_query",
+					"columns": [
+						"granularity",
+						"bucket_start",
+						"source_id",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"port_side",
+						"port_range"
+					],
+					"isUnique": false
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {
+				"port_count_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_port_side_port_range_pk": {
+					"columns": [
+						"source_id",
+						"granularity",
+						"bucket_start",
+						"ip_version",
+						"src_visibility",
+						"dst_visibility",
+						"port_side",
+						"port_range"
+					],
+					"name": "port_count_stats_source_id_granularity_bucket_start_ip_version_src_visibility_dst_visibility_port_side_port_range_pk"
+				}
+			},
+			"uniqueConstraints": {},
+			"checkConstraints": {
+				"port_count_stats_ip_version_check": {
+					"name": "port_count_stats_ip_version_check",
+					"value": "\"port_count_stats\".\"ip_version\" IN (4, 6)"
+				}
+			}
 		},
 		"processed_inputs": {
 			"name": "processed_inputs",
@@ -689,6 +811,69 @@
 					"type": "integer",
 					"primaryKey": false,
 					"notNull": true,
+					"autoincrement": false
+				},
+				"duration_sum_ms": {
+					"name": "duration_sum_ms",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"duration_count": {
+					"name": "duration_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"average_duration_ms": {
+					"name": "average_duration_ms",
+					"type": "real",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"min_ttl_sum": {
+					"name": "min_ttl_sum",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"min_ttl_count": {
+					"name": "min_ttl_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"average_min_ttl": {
+					"name": "average_min_ttl",
+					"type": "real",
+					"primaryKey": false,
+					"notNull": false,
+					"autoincrement": false
+				},
+				"max_ttl_sum": {
+					"name": "max_ttl_sum",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"max_ttl_count": {
+					"name": "max_ttl_count",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"autoincrement": false
+				},
+				"average_max_ttl": {
+					"name": "average_max_ttl",
+					"type": "real",
+					"primaryKey": false,
+					"notNull": false,
 					"autoincrement": false
 				},
 				"processed_at": {

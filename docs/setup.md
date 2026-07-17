@@ -84,6 +84,11 @@ these files, rebaseline `apps/web/drizzle` when the schema changes. After a D1
 database has applied a migration, add a new migration instead of editing the
 applied file.
 
+The observation-metrics rebaseline requires a fresh D1 database. Do not apply
+it over a database created from the previous baseline: provision a separate
+database, apply the rebaselined migration, then load the matching pipeline
+product.
+
 ## Optional: Compile MAAD Helper
 
 If you need MAAD-backed address structure stats for real captures, build the

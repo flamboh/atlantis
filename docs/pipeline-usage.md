@@ -89,6 +89,12 @@ contract, but excludes paths, discovery windows, worker counts, and CSV
 mappings. A populated database without this identity is not adopted; rebuild it
 into a new database.
 
+The observation-metrics schema adds duration and TTL sufficient statistics plus
+port cardinality rows. It is a new database product, not an in-place migration:
+build it at a fresh output path. Keep each flow selection in its own database as
+well; neither a schema change nor a different prefix or visibility selection may
+reuse an existing product database.
+
 Each CSV, nfcapd file, and synthetic gap also records an exact input revision.
 The revision combines SHA-256 content identity with a canonical decoder
 fingerprint. Reusing a successfully processed locator with changed content or
