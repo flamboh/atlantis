@@ -57,6 +57,10 @@ class ProductIdentityConflict(ValueError):
     """Raised when a database is already bound to different result semantics."""
 
 
+class SourceLayoutConflict(ValueError):
+    """Raised when logical nfcapd source ownership changes within one database."""
+
+
 def init_pipeline_product_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -138,9 +142,70 @@ def bind_product_identity(
     )
 
 
+def bind_nfcapd_source_layout(
+    conn: sqlite3.Connection,
+    sources: list[tuple[str, tuple[str, ...]]],
+) -> None:
+    """Bind normalized logical source membership before any tree publication."""
+    layout = [
+        {'source_id': source_id, 'members': sorted(members)}
+        for source_id, members in sorted(sources)
+    ]
+    layout_json = canonical_json({'version': 1, 'sources': layout})
+    layout_fingerprint = fingerprint({'version': 1, 'sources': layout})
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS nfcapd_source_layout (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            layout_json TEXT NOT NULL,
+            layout_fingerprint TEXT NOT NULL,
+            bound_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    row = conn.execute(
+        'SELECT layout_json, layout_fingerprint FROM nfcapd_source_layout WHERE singleton = 1'
+    ).fetchone()
+    if row is None:
+        if _table_has_rows_where(conn, 'processed_inputs', "input_kind = 'nfcapd'"):
+            raise SourceLayoutConflict(
+                'Cannot bind nfcapd source layout after unbound nfcapd inputs were processed. '
+                'Use a new database.'
+            )
+        conn.execute(
+            """
+            INSERT INTO nfcapd_source_layout (singleton, layout_json, layout_fingerprint)
+            VALUES (1, ?, ?)
+            """,
+            (layout_json, layout_fingerprint),
+        )
+        return
+    if row[1] != layout_fingerprint:
+        raise SourceLayoutConflict(
+            'nfcapd logical source membership changed. '
+            f'stored={row[0]} requested={layout_json}. Use a new database.'
+        )
+
+
 def _table_has_rows(conn: sqlite3.Connection, table_name: str) -> bool:
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table_name,),
     ).fetchone()
     return exists is not None and conn.execute(f'SELECT 1 FROM {table_name} LIMIT 1').fetchone() is not None
+
+
+def _table_has_rows_where(
+    conn: sqlite3.Connection,
+    table_name: str,
+    predicate: str,
+) -> bool:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return (
+        exists is not None
+        and conn.execute(f'SELECT 1 FROM {table_name} WHERE {predicate} LIMIT 1').fetchone()
+        is not None
+    )

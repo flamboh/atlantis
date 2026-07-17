@@ -152,6 +152,7 @@ def test_nfcapd_processedness_compares_locator_and_revision() -> None:
     processed = importlib.reload(importlib.import_module('processed_inputs'))
     _product, revision, _stats = load_modules()
     conn = sqlite3.connect(':memory:')
+    processed.init_processed_inputs_table(conn)
     current = revision.InputRevision.create(
         input_kind='nfcapd',
         locator='/captures/nfcapd.202501010000',
@@ -238,3 +239,52 @@ def test_completed_unchanged_input_reuses_digest_but_changed_snapshot_rehashes(
     assert calls == [str(csv_path)]
     with pytest.raises(processed.InputRevisionConflict, match='content changed'):
         pipeline.csv_input_fully_processed(conn, changed['input_revision'])
+
+
+def test_nfcapd_tree_rejects_source_rename_and_reassignment_before_publication(
+    tmp_path,
+) -> None:
+    pipeline = importlib.reload(importlib.import_module('pipeline'))
+    product = importlib.reload(importlib.import_module('pipeline_product'))
+    conn = sqlite3.connect(':memory:')
+    root = tmp_path / 'captures'
+    (root / 'member-a').mkdir(parents=True)
+    (root / 'member-b').mkdir()
+
+    def run(source_id: str, member_id: str = 'member-a') -> None:
+        sources = [{'source_id': source_id, 'members': [member_id]}]
+        pipeline.process_pipeline_config(
+            conn,
+            {
+                'run_maad': False,
+                'maad_backend': 'python',
+                'datasets': [{'dataset_id': 'd1', 'sources': sources}],
+                'inputs': [
+                    {
+                        'input_kind': 'nfcapd_tree',
+                        'root_path': str(root),
+                        'sources': sources,
+                        'start_date': '2025-01-01',
+                        'end_date': '2025-01-01',
+                        'zero_fill_gaps': False,
+                    }
+                ],
+            },
+        )
+
+    run('old-name')
+    with pytest.raises(product.SourceLayoutConflict, match='membership changed'):
+        run('old-name', 'member-b')
+    with pytest.raises(product.SourceLayoutConflict, match='membership changed'):
+        run('new-name')
+
+    stored = conn.execute(
+        'SELECT layout_json FROM nfcapd_source_layout WHERE singleton = 1'
+    ).fetchone()[0]
+    assert 'old-name' in stored
+    assert 'new-name' not in stored
+    assert conn.execute(
+        'SELECT source_id, member_id FROM source_members WHERE dataset_id = ?',
+        ('d1',),
+    ).fetchall() == [('old-name', 'member-a')]
+    assert conn.execute('SELECT COUNT(*) FROM processed_inputs').fetchone() == (0,)

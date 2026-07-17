@@ -96,3 +96,12 @@ def test_stats_table_registry_drives_init_insert_and_delete() -> None:
         stats.insert_stats_payload(conn, {}, table_names=('typo_stats',))
     with pytest.raises(ValueError, match='Missing payload key'):
         stats.insert_stats_payload(conn, {})
+    with pytest.raises(ValueError, match='Unregistered stats payload'):
+        stats.insert_stats_payload(
+            conn,
+            {
+                **{adapter.payload_key: [] for adapter in stats.STATS_TABLE_ADAPTERS},
+                'port_count_rows': [],
+                'processed_buckets': [],
+            },
+        )

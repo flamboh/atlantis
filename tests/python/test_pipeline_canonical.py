@@ -928,6 +928,77 @@ def test_logical_force_replaces_changed_owner_but_rejects_unrelated_csv() -> Non
         )
 
 
+def test_gap_publication_rejects_real_file_appearing_after_discovery(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    expected_path = tmp_path / 'nfcapd.202504150000'
+    absence = pipeline.ExpectedAbsence.capture(expected_path)
+    job = {
+        'source_id': 'r1',
+        'bucket_start': 0,
+        'bucket_end': 300,
+        'member_specs': [],
+        'missing_members': ['r1'],
+        'absence_snapshots': [absence],
+    }
+    expected_path.write_bytes(b'appeared after discovery')
+
+    with pytest.raises(RuntimeError, match='appeared before gap publication'):
+        pipeline.process_nfcapd_logical_bucket_jobs(
+            conn,
+            [job],
+            maad_bin='',
+            maad_backend='python',
+            maad_workers=1,
+            max_workers=1,
+            run_maad=False,
+        )
+
+    assert conn.execute('SELECT COUNT(*) FROM processed_inputs').fetchone() == (0,)
+    assert conn.execute('SELECT COUNT(*) FROM traffic_stats').fetchone() == (0,)
+
+
+def test_gap_final_absence_check_rolls_back_replacement(tmp_path, monkeypatch) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    pipeline.init_processed_inputs_table(conn)
+    pipeline.init_stats_tables(conn)
+    old_payload = pipeline.build_nfcapd_gap_payload(
+        'gap://nfcapd/old',
+        'r1',
+        0,
+        run_maad=False,
+    )
+    pipeline.write_input_payload(conn, old_payload)
+
+    absence = pipeline.ExpectedAbsence.capture(tmp_path / 'expected')
+    replacement = pipeline.build_nfcapd_gap_payload(
+        'gap://nfcapd/new',
+        'r1',
+        0,
+        run_maad=False,
+    )
+    replacement['absence_snapshots'] = [absence]
+    calls = 0
+
+    def fail_final_check(_self):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError('appeared during publication')
+
+    monkeypatch.setattr(pipeline.ExpectedAbsence, 'verify', fail_final_check)
+    with pytest.raises(RuntimeError, match='during publication'):
+        pipeline.write_input_payload(conn, replacement, delete_existing=True)
+
+    assert conn.execute(
+        "SELECT input_locator, status FROM processed_inputs WHERE source_id = 'r1'"
+    ).fetchall() == [('gap://nfcapd/old', 'processed')]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM traffic_stats WHERE source_id = 'r1' AND granularity = '5m'"
+    ).fetchone()[0] > 0
+
+
 def test_batch_and_streaming_aggregation_render_identical_rows() -> None:
     pipeline = load_module()
     children = [

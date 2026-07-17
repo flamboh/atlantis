@@ -36,6 +36,7 @@ from nfdump_stats import (
     parse_nfcapd_bucket_start,
 )
 from input_revision import (
+    ExpectedAbsence,
     FileSnapshot,
     InputRevision,
     capture_csv_input_revision,
@@ -46,7 +47,11 @@ from input_revision import (
     revision_for_locator,
     verify_file_snapshot,
 )
-from pipeline_product import ProductIdentity, bind_product_identity
+from pipeline_product import (
+    ProductIdentity,
+    bind_nfcapd_source_layout,
+    bind_product_identity,
+)
 from processed_inputs import (
     InputBucketRef,
     InputRevisionConflict,
@@ -190,6 +195,20 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
     bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    nfcapd_layout_sources = []
+    for spec in config['inputs']:
+        if str(spec['input_kind']) != 'nfcapd_tree':
+            continue
+        root_path = Path(spec['root_path'])
+        nfcapd_layout_sources.extend(normalize_nfcapd_sources(spec, root_path))
+    if nfcapd_layout_sources:
+        source_ids = [source.source_id for source in nfcapd_layout_sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError('nfcapd_tree inputs define duplicate logical source ids')
+        bind_nfcapd_source_layout(
+            conn,
+            [(source.source_id, source.members) for source in nfcapd_layout_sources],
+        )
     init_datasets_table(conn)
     for dataset in config.get('datasets', []):
         upsert_dataset_metadata(conn, dataset)
@@ -206,6 +225,7 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
                 maad_workers=maad_workers,
                 max_workers=max_workers,
                 run_maad=run_maad,
+                bind_source_layout=False,
             )
         elif input_kind == 'csv_tree':
             process_csv_tree_spec(
@@ -241,6 +261,7 @@ def process_nfcapd_tree_spec(
     maad_workers: int,
     max_workers: int,
     run_maad: bool,
+    bind_source_layout: bool = True,
 ) -> None:
     """Process a canonical nfcapd tree one day at a time."""
     init_processed_inputs_table(conn)
@@ -248,6 +269,11 @@ def process_nfcapd_tree_spec(
     bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
     root_path = Path(spec['root_path'])
     sources = normalize_nfcapd_sources(spec, root_path)
+    if bind_source_layout:
+        bind_nfcapd_source_layout(
+            conn,
+            [(source.source_id, source.members) for source in sources],
+        )
     member_ids = sorted({member for source in sources for member in source.members})
     start_date = parse_config_date(str(spec['start_date']))
     explicit_end_date = bool(spec.get('end_date'))
@@ -296,7 +322,13 @@ def process_nfcapd_tree_spec(
         if not member_specs:
             LOGGER.info('No nfcapd files found for %s', day.strftime('%Y-%m-%d'))
             continue
-        jobs = build_nfcapd_logical_bucket_jobs(conn, sources, member_specs, force=force)
+        jobs = build_nfcapd_logical_bucket_jobs(
+            conn,
+            sources,
+            member_specs,
+            force=force,
+            root_path=root_path,
+        )
         if not jobs:
             print(f"[pipeline] Skip {day.strftime('%Y-%m-%d')}: {len(member_specs)} already processed")
             continue
@@ -554,17 +586,12 @@ def build_nfcapd_gap_spec(root: Path, source_id: str, bucket_start: int) -> dict
     """Build an internal zero-fill spec for one missing nfcapd bucket."""
     timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
     locator = f"gap://nfcapd/{source_id}/{timestamp.strftime('%Y%m%d%H%M')}"
+    expected_path = nfcapd_expected_path(root, source_id, bucket_start)
     return {
         'input_kind': 'nfcapd',
         'path': locator,
-        'expected_path': str(
-            root
-            / source_id
-            / timestamp.strftime('%Y')
-            / timestamp.strftime('%m')
-            / timestamp.strftime('%d')
-            / f"nfcapd.{timestamp.strftime('%Y%m%d%H%M')}"
-        ),
+        'expected_path': str(expected_path),
+        '_absence_snapshot': ExpectedAbsence.capture(expected_path),
         'source_id': source_id,
         'bucket_start': bucket_start,
         'gap': True,
@@ -572,8 +599,22 @@ def build_nfcapd_gap_spec(root: Path, source_id: str, bucket_start: int) -> dict
     }
 
 
+def nfcapd_expected_path(root: Path, source_id: str, bucket_start: int) -> Path:
+    """Return the canonical path expected for one native five-minute bucket."""
+    timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
+    return (
+        root
+        / source_id
+        / timestamp.strftime('%Y')
+        / timestamp.strftime('%m')
+        / timestamp.strftime('%d')
+        / f"nfcapd.{timestamp.strftime('%Y%m%d%H%M')}"
+    )
+
+
 def prepare_input_specs(conn: sqlite3.Connection, input_specs: list[dict]) -> list[dict]:
     """Load decoder configuration once and attach exact revisions."""
+    init_processed_inputs_table(conn)
     csv_configs: dict[str, CsvSourceConfig] = {}
     prepared = []
     for raw_spec in input_specs:
@@ -610,6 +651,18 @@ def prepare_input_specs(conn: sqlite3.Connection, input_specs: list[dict]) -> li
         elif input_kind == 'nfcapd':
             if spec.get('gap'):
                 spec['input_revision'] = gap_input_revision('nfcapd', locator)
+                absence = spec.get('_absence_snapshot')
+                if absence is None:
+                    expected_path = spec.get('expected_path')
+                    if expected_path is None and not locator.startswith('gap://'):
+                        expected_path = locator
+                    if expected_path is None:
+                        raise ValueError(
+                            'Synthetic nfcapd gap requires an expected_path '
+                            'to verify continued absence'
+                        )
+                    absence = ExpectedAbsence.capture(expected_path)
+                spec['_absence_snapshot'] = absence
             else:
                 snapshot = FileSnapshot.capture(locator)
                 cached_content = cached_content_fingerprint(
@@ -641,6 +694,7 @@ def build_nfcapd_logical_bucket_jobs(
     member_specs: list[dict],
     *,
     force: bool = False,
+    root_path: Path | None = None,
 ) -> list[dict]:
     """Build unprocessed logical source buckets from physical member specs."""
     specs_by_member_bucket: dict[tuple[str, int], list[dict]] = defaultdict(list)
@@ -654,10 +708,11 @@ def build_nfcapd_logical_bucket_jobs(
     needs_processing = False
     for source in sources:
         for bucket_start in source_candidate_bucket_starts(source, specs_by_member_bucket):
-            present_specs, missing_members = logical_source_member_specs(
+            present_specs, missing_members, missing_absences = logical_source_member_specs(
                 source,
                 bucket_start,
                 specs_by_member_bucket,
+                root_path=root_path,
             )
 
             revisions = (
@@ -684,6 +739,11 @@ def build_nfcapd_logical_bucket_jobs(
                     'bucket_end': bucket_start + FIVE_MINUTE_SECONDS,
                     'member_specs': present_specs,
                     'missing_members': missing_members,
+                    'absence_snapshots': [
+                        spec['_absence_snapshot']
+                        for spec in present_specs
+                        if spec.get('gap')
+                    ] + missing_absences,
                 }
             )
             if missing_members:
@@ -712,10 +772,13 @@ def logical_source_member_specs(
     source: SourceDefinition,
     bucket_start: int,
     specs_by_member_bucket: dict[tuple[str, int], list[dict]],
-) -> tuple[list[dict], list[str]]:
+    *,
+    root_path: Path | None,
+) -> tuple[list[dict], list[str], list[ExpectedAbsence]]:
     """Return present physical specs and missing members for one logical bucket."""
     present_specs = []
     missing_members = []
+    missing_absences = []
     for member_id in source.members:
         candidates = specs_by_member_bucket.get((member_id, bucket_start), [])
         usable = candidates if len(source.members) == 1 else [
@@ -727,7 +790,23 @@ def logical_source_member_specs(
             present_specs.extend(usable)
         else:
             missing_members.append(member_id)
-    return present_specs, missing_members
+            candidate_absences = [
+                spec['_absence_snapshot']
+                for spec in candidates
+                if spec.get('gap')
+            ]
+            if not candidate_absences:
+                if root_path is None:
+                    raise ValueError(
+                        'root_path is required to prove absent logical nfcapd members'
+                    )
+                candidate_absences.append(
+                    ExpectedAbsence.capture(
+                        nfcapd_expected_path(root_path, member_id, bucket_start)
+                    )
+                )
+            missing_absences.extend(candidate_absences)
+    return present_specs, missing_members, missing_absences
 
 
 def logical_nfcapd_gap_locator(source_id: str, bucket_start: int) -> str:
@@ -745,7 +824,6 @@ def nfcapd_logical_bucket_processed(
     """Return true when the logical bucket was processed from exactly these inputs."""
     if not input_revisions:
         return False
-    init_processed_inputs_table(conn)
     rows = conn.execute(
         """
         SELECT input_locator, revision_fingerprint
@@ -1273,7 +1351,7 @@ def build_logical_nfcapd_bucket_payload(
         for spec in job['member_specs']
     ]
     if not raw_buckets:
-        return build_nfcapd_gap_payload(
+        payload = build_nfcapd_gap_payload(
             logical_nfcapd_gap_locator(source_id, bucket_start),
             source_id,
             bucket_start,
@@ -1283,6 +1361,10 @@ def build_logical_nfcapd_bucket_payload(
                 logical_nfcapd_gap_locator(source_id, bucket_start),
             ),
         )
+        payload['absence_snapshots'] = job.get('absence_snapshots', [])
+        for bucket in payload['processed_buckets']:
+            bucket['_absence_snapshots'] = payload['absence_snapshots']
+        return payload
     canonical_bucket = merge_raw_buckets_for_source(
         source_id=source_id,
         bucket_start=bucket_start,
@@ -1300,9 +1382,11 @@ def build_logical_nfcapd_bucket_payload(
                 'bucket_end': bucket_end,
                 'input_revision': spec['input_revision'],
                 'file_snapshot': spec.get('_file_snapshot'),
+                '_absence_snapshots': job.get('absence_snapshots', []),
             }
             for spec in job['member_specs']
         ],
+        'absence_snapshots': job.get('absence_snapshots', []),
         'traffic_rows': rows['traffic_rows'],
         'protocol_rows': rows['protocol_rows'],
         'address_count_rows': rows['address_count_rows'],
@@ -1804,13 +1888,17 @@ def build_input_payload(
     input_revision = spec['input_revision']
     if input_kind == 'nfcapd':
         if spec.get('gap'):
-            return build_nfcapd_gap_payload(
+            payload = build_nfcapd_gap_payload(
                 input_locator=input_locator,
                 source_id=str(spec['source_id']),
                 bucket_start=int(spec['bucket_start']),
                 run_maad=run_maad,
                 input_revision=input_revision,
             )
+            payload['absence_snapshots'] = [spec['_absence_snapshot']]
+            for bucket in payload['processed_buckets']:
+                bucket['_absence_snapshots'] = payload['absence_snapshots']
+            return payload
         nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
         verify_file_snapshot(input_locator, spec['_file_snapshot'])
         nfcapd_payload['processed_bucket']['input_revision'] = input_revision
@@ -1850,17 +1938,24 @@ def write_input_payload(
         snapshot = bucket.get('file_snapshot')
         if snapshot is not None:
             verify_file_snapshot(bucket['input_locator'], snapshot)
+    for absence in payload.get('absence_snapshots', []):
+        absence.verify()
     with conn:
         if delete_existing:
             delete_5m_outputs_for_processed_buckets(conn, processed_buckets)
 
         for bucket in processed_buckets:
-            upsert_input_bucket(conn, **bucket)
+            upsert_input_bucket(
+                conn,
+                **{key: value for key, value in bucket.items() if not key.startswith('_')},
+            )
 
         insert_stats_payload(conn, payload)
 
         if mark_processed:
             mark_processed_buckets(conn, processed_buckets)
+        for absence in payload.get('absence_snapshots', []):
+            absence.verify()
 
 
 def delete_5m_outputs_for_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
@@ -1888,6 +1983,13 @@ def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start:
 
 def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
     """Mark input buckets processed after all outputs are written."""
+    absences = [
+        absence
+        for bucket in processed_buckets
+        for absence in bucket.get('_absence_snapshots', [])
+    ]
+    for absence in absences:
+        absence.verify()
     for bucket in processed_buckets:
         mark_input_bucket_status(
             conn,
@@ -1898,6 +2000,8 @@ def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dic
             status='processed',
             input_revision=bucket['input_revision'],
         )
+    for absence in absences:
+        absence.verify()
 
 
 def write_aggregate_rows(

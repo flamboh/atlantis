@@ -75,6 +75,15 @@ detects ordinary replacement and in-place modification; filesystems or
 adversarial writers capable of changing bytes while preserving every tracked
 stat field remain outside the stability guarantee.
 
+Canonical nfcapd tree runs also bind the database to their normalized logical
+source membership. Renaming a source or reassigning physical members requires a
+new database; a bounded rerun cannot safely rewrite historical buckets outside
+its window. Synthetic gaps retain the expected native path and verify that it
+is still absent immediately before and at the end of publication. A filesystem
+entry that appears after discovery aborts and rolls back that publication. A
+filesystem race after the final absence check but before SQLite commit remains
+possible and is reconciled as changed input on the next run.
+
 ## Compile helpers
 
 The canonical MAAD helper is built with:

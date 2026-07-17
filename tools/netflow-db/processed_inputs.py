@@ -140,7 +140,6 @@ def upsert_input_bucket(
     replace_revision: bool = False,
 ) -> None:
     """Insert or replace an input bucket record without committing."""
-    init_processed_inputs_table(conn)
     _validate_revision_identity(input_revision, input_kind, input_locator)
     existing = conn.execute(
         """
@@ -360,7 +359,6 @@ def cached_content_fingerprint(
     file_snapshot: FileSnapshot,
 ) -> str | None:
     """Reuse an exact digest only for a completed input with identical file identity."""
-    init_processed_inputs_table(conn)
     table_name = 'processed_input_scans' if input_kind == 'csv' else 'processed_inputs'
     row = conn.execute(
         f"""
@@ -384,7 +382,6 @@ def input_scan_fully_processed(
     input_revision: InputRevision,
 ) -> bool:
     """Return whether a successful scan and all of its bucket publications are complete."""
-    init_processed_inputs_table(conn)
     _validate_revision_identity(input_revision, input_kind, scan_locator)
     row = conn.execute(
         """

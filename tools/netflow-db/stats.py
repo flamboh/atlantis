@@ -457,9 +457,17 @@ def insert_stats_payload(
     """Insert selected registered row families, requiring complete wiring."""
     selected = None if table_names is None else set(table_names)
     registered = {adapter.table_name for adapter in STATS_TABLE_ADAPTERS}
+    registered_payloads = {adapter.payload_key for adapter in STATS_TABLE_ADAPTERS}
     unknown = set() if selected is None else selected - registered
     if unknown:
         raise ValueError(f'Unknown stats table names: {sorted(unknown)!r}')
+    unknown_row_families = {
+        key for key in payload if key.endswith('_rows') and key not in registered_payloads
+    }
+    if unknown_row_families:
+        raise ValueError(
+            f'Unregistered stats payload keys: {sorted(unknown_row_families)!r}'
+        )
     for adapter in STATS_TABLE_ADAPTERS:
         if selected is None or adapter.table_name in selected:
             if adapter.payload_key not in payload:

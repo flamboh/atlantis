@@ -47,6 +47,7 @@ def add_bucket(
     scan_locator: str = '/csv/input.csv',
     bucket_start: int = 300,
 ) -> None:
+    processed_inputs.init_processed_inputs_table(conn)
     processed_inputs.upsert_input_bucket(
         conn,
         input_kind='csv',

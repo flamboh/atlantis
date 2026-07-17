@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,25 @@ class FileSnapshot:
             mtime_ns=stat.st_mtime_ns,
             ctime_ns=stat.st_ctime_ns,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedAbsence:
+    """Path whose continued absence is required for a synthetic gap."""
+
+    path: str
+
+    @classmethod
+    def capture(cls, path: str | Path) -> ExpectedAbsence:
+        snapshot = cls(str(path))
+        snapshot.verify()
+        return snapshot
+
+    def verify(self) -> None:
+        if os.path.lexists(self.path):
+            raise InputContentChangedError(
+                f'Expected absent input appeared before gap publication: {self.path!r}'
+            )
 
 
 def capture_file_revision(path: str | Path) -> tuple[str, FileSnapshot]:
