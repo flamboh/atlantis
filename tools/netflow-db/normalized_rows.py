@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
@@ -16,34 +17,23 @@ from csv_ingest import (
     TIMESTAMP_KEYS,
     CsvSourceConfig,
     CsvSourceConfigError,
-    parse_timestamp,
+    parse_timestamp_ms,
     resolve_bucket_start,
     resolve_source_id,
 )
+from flow_observation import FlowObservation
 
 
 NFDUMP_CSV_FORMAT = 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos'
 MAX_SQLITE_INTEGER = (1 << 63) - 1
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class NormalizedRow:
     source_id: str
     bucket_start: int
     bucket_end: int
-    time_received: int | None
-    time_end: int | None
-    time_start: int | None
-    src_ip: str
-    dst_ip: str
-    ip_version: int
-    src_port: int
-    dst_port: int
-    protocol: int
-    packets: int
-    bytes: int
-    src_tos: int
-    dst_tos: int
+    observation: FlowObservation
 
 
 def build_nfdump_csv_command(file_path: str, ip_version: int) -> list[str]:
@@ -123,7 +113,7 @@ def normalize_nfdump_port(raw_value: str) -> str:
 def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> NormalizedRow:
     """Normalize a mapped CSV row into the shared row contract."""
     source_id = resolve_source_id(row, config)
-    timestamps = extract_timestamps(row, config)
+    timestamps = extract_timestamps_ms(row, config)
     bucket_start = resolve_bucket_start_from_timestamps(timestamps)
     bucket_end = bucket_start + 300
 
@@ -131,23 +121,30 @@ def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> Normal
     dst_ip = require_value(row, config.columns['dst_ip'])
     ip_version = infer_ip_version(src_ip, dst_ip)
 
+    observation = FlowObservation(
+        time_received_ms=timestamps.get('time_received'),
+        time_end_ms=timestamps.get('time_end'),
+        time_start_ms=timestamps.get('time_start'),
+        src_ip=src_ip,
+        dst_ip=dst_ip,
+        ip_version=ip_version,
+        src_port=extract_optional_bounded_int(row, config, 'src_port', maximum=65535),
+        dst_port=extract_optional_bounded_int(row, config, 'dst_port', maximum=65535),
+        protocol=extract_bounded_protocol(row, config),
+        packets=extract_nonnegative_int(row, config, 'packets'),
+        bytes_count=extract_nonnegative_int(row, config, 'bytes'),
+        src_tos=extract_byte(row, config, 'src_tos'),
+        dst_tos=extract_byte(row, config, 'dst_tos'),
+        duration_ms=extract_duration_ms(row, config, timestamps),
+        min_ttl=extract_optional_bounded_int(row, config, 'min_ttl', maximum=255),
+        max_ttl=extract_optional_bounded_int(row, config, 'max_ttl', maximum=255),
+    )
+    validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
         source_id=source_id,
         bucket_start=bucket_start,
         bucket_end=bucket_end,
-        time_received=timestamps.get('time_received'),
-        time_end=timestamps.get('time_end'),
-        time_start=timestamps.get('time_start'),
-        src_ip=src_ip,
-        dst_ip=dst_ip,
-        ip_version=ip_version,
-        src_port=extract_int(row, config, 'src_port'),
-        dst_port=extract_int(row, config, 'dst_port'),
-        protocol=extract_bounded_protocol(row, config),
-        packets=extract_nonnegative_int(row, config, 'packets'),
-        bytes=extract_nonnegative_int(row, config, 'bytes'),
-        src_tos=extract_byte(row, config, 'src_tos'),
-        dst_tos=extract_byte(row, config, 'dst_tos'),
+        observation=observation,
     )
 
 
@@ -158,7 +155,7 @@ def normalize_csv_values(
 ) -> NormalizedRow:
     """Normalize a headerless CSV row using precomputed field indexes."""
     source_id = resolve_source_id_from_values(values, config, field_indexes)
-    timestamps = extract_timestamps_from_values(values, config, field_indexes)
+    timestamps = extract_timestamps_ms_from_values(values, config, field_indexes)
     bucket_start = resolve_bucket_start_from_timestamps(timestamps)
     bucket_end = bucket_start + 300
 
@@ -166,23 +163,38 @@ def normalize_csv_values(
     dst_ip = require_value_from_values(values, field_indexes[config.columns['dst_ip']], config.columns['dst_ip'])
     ip_version = infer_ip_version(src_ip, dst_ip)
 
+    observation = FlowObservation(
+        time_received_ms=timestamps.get('time_received'),
+        time_end_ms=timestamps.get('time_end'),
+        time_start_ms=timestamps.get('time_start'),
+        src_ip=src_ip,
+        dst_ip=dst_ip,
+        ip_version=ip_version,
+        src_port=extract_optional_bounded_int_from_values(
+            values, config, field_indexes, 'src_port', maximum=65535
+        ),
+        dst_port=extract_optional_bounded_int_from_values(
+            values, config, field_indexes, 'dst_port', maximum=65535
+        ),
+        protocol=extract_bounded_protocol_from_values(values, config, field_indexes),
+        packets=extract_nonnegative_int_from_values(values, config, field_indexes, 'packets'),
+        bytes_count=extract_nonnegative_int_from_values(values, config, field_indexes, 'bytes'),
+        src_tos=extract_byte_from_values(values, config, field_indexes, 'src_tos'),
+        dst_tos=extract_byte_from_values(values, config, field_indexes, 'dst_tos'),
+        duration_ms=extract_duration_ms_from_values(values, config, field_indexes, timestamps),
+        min_ttl=extract_optional_bounded_int_from_values(
+            values, config, field_indexes, 'min_ttl', maximum=255
+        ),
+        max_ttl=extract_optional_bounded_int_from_values(
+            values, config, field_indexes, 'max_ttl', maximum=255
+        ),
+    )
+    validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
         source_id=source_id,
         bucket_start=bucket_start,
         bucket_end=bucket_end,
-        time_received=timestamps.get('time_received'),
-        time_end=timestamps.get('time_end'),
-        time_start=timestamps.get('time_start'),
-        src_ip=src_ip,
-        dst_ip=dst_ip,
-        ip_version=ip_version,
-        src_port=extract_int_from_values(values, config, field_indexes, 'src_port'),
-        dst_port=extract_int_from_values(values, config, field_indexes, 'dst_port'),
-        protocol=extract_bounded_protocol_from_values(values, config, field_indexes),
-        packets=extract_nonnegative_int_from_values(values, config, field_indexes, 'packets'),
-        bytes=extract_nonnegative_int_from_values(values, config, field_indexes, 'bytes'),
-        src_tos=extract_byte_from_values(values, config, field_indexes, 'src_tos'),
-        dst_tos=extract_byte_from_values(values, config, field_indexes, 'dst_tos'),
+        observation=observation,
     )
 
 
@@ -202,17 +214,17 @@ def resolve_source_id_from_values(
     )
 
 
-def extract_timestamps(row: Mapping[str, Any], config: CsvSourceConfig) -> dict[str, int]:
+def extract_timestamps_ms(row: Mapping[str, Any], config: CsvSourceConfig) -> dict[str, int]:
     """Extract configured timestamps once for bucket and row fields."""
     timestamps = {}
     for logical_key in TIMESTAMP_KEYS:
-        timestamp = extract_timestamp(row, config, logical_key)
+        timestamp = extract_timestamp_ms(row, config, logical_key)
         if timestamp is not None:
             timestamps[logical_key] = timestamp
     return timestamps
 
 
-def extract_timestamps_from_values(
+def extract_timestamps_ms_from_values(
     values: Sequence[str],
     config: CsvSourceConfig,
     field_indexes: Mapping[str, int],
@@ -226,7 +238,7 @@ def extract_timestamps_from_values(
         raw = values[field_indexes[column_name]]
         if raw in (None, ''):
             continue
-        timestamps[logical_key] = parse_timestamp(
+        timestamps[logical_key] = parse_timestamp_ms(
             raw,
             config.timestamp_format,
             config.timestamp_timezone,
@@ -240,7 +252,8 @@ def resolve_bucket_start_from_timestamps(timestamps: Mapping[str, int]) -> int:
     for logical_key in TIMESTAMP_KEYS:
         timestamp = timestamps.get(logical_key)
         if timestamp is not None:
-            return timestamp - (timestamp % 300)
+            timestamp_seconds = timestamp // 1000
+            return timestamp_seconds - (timestamp_seconds % 300)
     raise CsvSourceConfigError(
         'CSV row did not contain any usable timestamp value for the configured precedence.'
     )
@@ -303,7 +316,9 @@ def require_value_from_values(values: Sequence[str], index: int, column_name: st
     return value
 
 
-def extract_timestamp(row: Mapping[str, Any], config: CsvSourceConfig, logical_key: str) -> int | None:
+def extract_timestamp_ms(
+    row: Mapping[str, Any], config: CsvSourceConfig, logical_key: str
+) -> int | None:
     """Extract an optional timestamp field using the config mapping."""
     column_name = config.columns.get(logical_key)
     if column_name is None:
@@ -311,7 +326,7 @@ def extract_timestamp(row: Mapping[str, Any], config: CsvSourceConfig, logical_k
     raw = row.get(column_name)
     if raw in (None, ''):
         return None
-    return parse_timestamp(
+    return parse_timestamp_ms(
         raw,
         config.timestamp_format,
         config.timestamp_timezone,
@@ -354,6 +369,123 @@ def extract_int_from_values(
         raise CsvSourceConfigError(
             f"Invalid integer value '{raw}' for column '{column_name}'."
         ) from error
+
+
+def extract_optional_bounded_int(
+    row: Mapping[str, Any],
+    config: CsvSourceConfig,
+    logical_key: str,
+    *,
+    maximum: int,
+) -> int | None:
+    """Extract an optional bounded integer without conflating absence and zero."""
+    column_name = config.columns.get(logical_key)
+    if column_name is None:
+        return None
+    raw = row.get(column_name)
+    if raw is None or str(raw).strip() == '':
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(value, column_name, minimum=0, maximum=maximum)
+
+
+def extract_optional_bounded_int_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+    logical_key: str,
+    *,
+    maximum: int,
+) -> int | None:
+    """Extract an optional bounded integer from pre-indexed values."""
+    column_name = config.columns.get(logical_key)
+    if column_name is None:
+        return None
+    raw = values[field_indexes[column_name]].strip()
+    if raw == '':
+        return None
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(value, column_name, minimum=0, maximum=maximum)
+
+
+def extract_duration_ms(
+    row: Mapping[str, Any],
+    config: CsvSourceConfig,
+    timestamps: Mapping[str, int],
+) -> int | None:
+    column_name = config.columns.get('duration')
+    explicit = None if column_name is None else row.get(column_name)
+    return resolve_duration_ms(explicit, column_name, timestamps)
+
+
+def extract_duration_ms_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+    timestamps: Mapping[str, int],
+) -> int | None:
+    column_name = config.columns.get('duration')
+    explicit = None if column_name is None else values[field_indexes[column_name]]
+    return resolve_duration_ms(explicit, column_name, timestamps)
+
+
+def resolve_duration_ms(
+    explicit_seconds: Any,
+    column_name: str | None,
+    timestamps: Mapping[str, int],
+) -> int | None:
+    """Resolve exact duration milliseconds from seconds or endpoint timestamps."""
+    derived = None
+    start = timestamps.get('time_start')
+    end = timestamps.get('time_end')
+    if start is not None and end is not None:
+        derived = end - start
+        if derived < 0:
+            raise CsvSourceConfigError('Flow time_end must not precede time_start.')
+
+    if explicit_seconds is None or str(explicit_seconds).strip() == '':
+        return derived
+    raw_text = str(explicit_seconds).strip()
+    try:
+        seconds = Decimal(raw_text)
+    except InvalidOperation as error:
+        raise CsvSourceConfigError(
+            f"Invalid duration value '{explicit_seconds}' for column '{column_name}'."
+        ) from error
+    milliseconds = seconds * 1000
+    integral = milliseconds.to_integral_value()
+    if (
+        not seconds.is_finite()
+        or milliseconds != integral
+        or integral < 0
+        or integral > MAX_SQLITE_INTEGER
+    ):
+        raise CsvSourceConfigError(
+            f"Duration value '{explicit_seconds}' for column '{column_name}' must be "
+            'nonnegative seconds with millisecond precision.'
+        )
+    explicit = int(integral)
+    if derived is not None and explicit != derived:
+        raise CsvSourceConfigError(
+            f"Duration value '{explicit_seconds}' for column '{column_name}' does not match "
+            'time_start and time_end.'
+        )
+    return explicit
+
+
+def validate_ttl_order(min_ttl: int | None, max_ttl: int | None) -> None:
+    if min_ttl is not None and max_ttl is not None and min_ttl > max_ttl:
+        raise CsvSourceConfigError('min_ttl must be less than or equal to max_ttl.')
 
 
 def extract_protocol(row: Mapping[str, Any], config: CsvSourceConfig, logical_key: str) -> int:

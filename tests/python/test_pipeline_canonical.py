@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 
 import pytest
-from statistical_bucket import FlowFact
+from flow_observation import FlowObservation
 
 
 def load_module():
@@ -32,7 +32,7 @@ def make_raw_bucket(pipeline, source_id: str, bucket_start: int):
         )
     )
     bucket.add(
-        FlowFact(
+        FlowObservation(
             ip_version=4,
             src_ip='192.0.2.1',
             dst_ip='198.51.100.1',

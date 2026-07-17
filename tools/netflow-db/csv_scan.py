@@ -23,14 +23,12 @@ from csv_ingest import (
 )
 from csv_inputs import build_field_indexes, is_blank_row, is_tar_archive, validate_header_columns
 from normalized_rows import (
-    MAX_SQLITE_INTEGER,
     NormalizedRow,
-    infer_ip_version,
     normalize_csv_row,
     normalize_csv_values,
     resolve_source_id_from_values,
 )
-from statistical_bucket import BucketKey, CanonicalBucket, FlowFact, StatisticalBucket
+from statistical_bucket import BucketKey, CanonicalBucket, StatisticalBucket
 
 
 LOGGER = logging.getLogger(__name__)
@@ -117,17 +115,7 @@ class _ScanState:
                 dense=True,
             ),
         )
-        bucket.add(
-            FlowFact(
-                ip_version=row.ip_version,
-                src_ip=row.src_ip,
-                dst_ip=row.dst_ip,
-                protocol=row.protocol,
-                packets=row.packets,
-                bytes_count=row.bytes,
-                src_tos=row.src_tos,
-            )
-        )
+        bucket.add(row.observation)
 
     def reject(self, raw: _RawRow, error: CsvSourceConfigError) -> None:
         self.rejected_rows += 1
@@ -392,41 +380,11 @@ def _scan_csv_arrow(path: Path, config: CsvSourceConfig) -> Iterator[CsvScanEven
                 mask = pc.and_(mask, pc.and_(numeric_or_empty, in_range))
 
         filtered = batch.filter(mask)
-        filtered_timestamps = selected_timestamp.filter(mask).to_pylist()
         state.rejected_rows += batch.num_rows - filtered.num_rows
-        for row_number, (raw_values, selected_value) in enumerate(
-            zip(filtered.to_pylist(), filtered_timestamps, strict=True),
-            start=1,
-        ):
+        for row_number, raw_values in enumerate(filtered.to_pylist(), start=1):
             raw = _RawRow(raw_values, locator, row_number)
             try:
-                src_ip = raw_values[src_column]
-                dst_ip = raw_values[dst_column]
-                protocol_text = raw_values.get(protocol_column, '') if protocol_column else ''
-                protocol = config.protocol_map.get(protocol_text.upper())
-                if protocol is None:
-                    protocol = int(protocol_text) if protocol_text else 0
-                bucket_start = timestamp_buckets[selected_value]
-                state.accept(
-                    NormalizedRow(
-                        source_id=source_id,
-                        bucket_start=bucket_start,
-                        bucket_end=bucket_start + 300,
-                        time_received=None,
-                        time_end=None,
-                        time_start=None,
-                        src_ip=src_ip,
-                        dst_ip=dst_ip,
-                        ip_version=infer_ip_version(src_ip, dst_ip),
-                        src_port=0,
-                        dst_port=0,
-                        protocol=protocol,
-                        packets=_sqlite_counter(raw_values, config, 'packets'),
-                        bytes=_sqlite_counter(raw_values, config, 'bytes'),
-                        src_tos=int(raw_values.get(config.columns.get('src_tos', ''), '') or 0),
-                        dst_tos=int(raw_values.get(config.columns.get('dst_tos', ''), '') or 0),
-                    )
-                )
+                state.accept(normalize_csv_row(raw_values, config))
             except (CsvSourceConfigError, ValueError) as error:
                 if not isinstance(error, CsvSourceConfigError):
                     error = CsvSourceConfigError(str(error))
@@ -450,21 +408,6 @@ _IPV4_REGEX = (
     r'^(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
     r'(?:\.(?:[0-9]{1,2}|0[0-9]{2}|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}$'
 )
-
-
-def _sqlite_counter(
-    values: Mapping[str, str | None],
-    config: CsvSourceConfig,
-    logical_key: str,
-) -> int:
-    column = config.columns.get(logical_key)
-    raw_value = values.get(column, '') if column is not None else ''
-    value = int(raw_value or 0)
-    if value > MAX_SQLITE_INTEGER:
-        raise CsvSourceConfigError(
-            f"Integer value '{value}' for column '{column}' must be 0..{MAX_SQLITE_INTEGER}."
-        )
-    return value
 
 
 def _coverage_timestamp_row(config: CsvSourceConfig, bucket_start: int) -> dict[str, str]:

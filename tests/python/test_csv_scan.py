@@ -67,6 +67,97 @@ def test_scan_interface_normalizes_adapters_identically(tmp_path, has_header: bo
     assert events[-1].rejected_rows == 0
 
 
+def test_generic_indexed_and_arrow_adapters_emit_identical_rich_observations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    module = importlib.import_module('csv_scan')
+    fields = [
+        'tr',
+        'te',
+        'src',
+        'dst',
+        'sp',
+        'dp',
+        'proto',
+        'packets',
+        'bytes',
+        'stos',
+        'dtos',
+        'duration',
+        'min_ttl',
+        'max_ttl',
+    ]
+    columns = {
+        'time_received': 'tr',
+        'time_end': 'te',
+        'src_ip': 'src',
+        'dst_ip': 'dst',
+        'src_port': 'sp',
+        'dst_port': 'dp',
+        'protocol': 'proto',
+        'packets': 'packets',
+        'bytes': 'bytes',
+        'src_tos': 'stos',
+        'dst_tos': 'dtos',
+        'duration': 'duration',
+        'min_ttl': 'min_ttl',
+        'max_ttl': 'max_ttl',
+    }
+    values = [
+        '2016-07-27 13:43:30',
+        '2016-07-27 13:43:29',
+        '192.0.2.1',
+        '198.51.100.1',
+        '0',
+        '443',
+        'TCP',
+        '10',
+        '2048',
+        '2',
+        '3',
+        '1.234',
+        '31',
+        '64',
+    ]
+    accepted = []
+    monkeypatch.setattr(module._ScanState, 'accept', lambda _self, row: accepted.append(row))
+
+    observations = []
+    for name, has_header, delimiter in (
+        ('generic', True, ','),
+        ('indexed', False, '|'),
+        ('arrow', False, ','),
+    ):
+        mapping = write_mapping(
+            tmp_path,
+            has_header=has_header,
+            delimiter=delimiter,
+            payload_overrides={'fieldnames': fields, 'columns': columns},
+        )
+        data = delimiter.join(values) + '\n'
+        if has_header:
+            data = delimiter.join(fields) + '\n' + data
+        csv_path = tmp_path / f'{name}.csv'
+        csv_path.write_text(data, encoding='utf-8')
+        before = len(accepted)
+
+        events = scan(module, csv_path, mapping)
+
+        assert events[-1].rejected_rows == 0
+        assert len(accepted) == before + 1
+        observations.append(accepted[-1])
+
+    assert observations[0] == observations[1] == observations[2]
+    observation = observations[0].observation
+    assert observation.time_received_ms == 1469627010000
+    assert observation.time_end_ms == 1469627009000
+    assert observation.src_port == 0
+    assert observation.dst_port == 443
+    assert observation.duration_ms == 1234
+    assert (observation.min_ttl, observation.max_ttl) == (31, 64)
+
+
 def test_rejected_trailing_row_establishes_zero_coverage_and_display_end(tmp_path) -> None:
     module = importlib.import_module('csv_scan')
     mapping = write_mapping(tmp_path)

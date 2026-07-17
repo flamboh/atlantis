@@ -17,7 +17,7 @@ def test_stats_insert_round_trip() -> None:
         bucket_module.BucketKey('oh_ir1_gw', '5m', 1744733100, 1744733400)
     )
     bucket.add(
-        bucket_module.FlowFact(
+        bucket_module.FlowObservation(
             ip_version=4,
             src_ip='192.0.2.1',
             dst_ip='198.51.100.1',

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Literal
 
+from flow_observation import FlowObservation
+
 
 Granularity = Literal['5m', '30m', '1h', '1d']
 Visibility = Literal['all', 'literal', 'anonymized']
@@ -42,17 +44,6 @@ class Scope:
     def __post_init__(self) -> None:
         if self.ip_version not in (4, 6):
             raise ValueError(f'Unsupported ip_version: {self.ip_version!r}')
-
-
-@dataclass(frozen=True, slots=True)
-class FlowFact:
-    ip_version: int
-    src_ip: str
-    dst_ip: str
-    protocol: int
-    packets: int
-    bytes_count: int
-    src_tos: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +159,8 @@ class StatisticalBucket:
                     for address_side in ('source', 'destination'):
                         self._addresses[(scope, address_side)] = set()
 
-    def add(self, fact: FlowFact | GroupedTrafficFact | ScopedAddressesFact) -> None:
-        if isinstance(fact, FlowFact):
+    def add(self, fact: FlowObservation | GroupedTrafficFact | ScopedAddressesFact) -> None:
+        if isinstance(fact, FlowObservation):
             for scope in _scopes_for_tos(fact.ip_version, fact.src_tos):
                 self._add_traffic(
                     scope,
