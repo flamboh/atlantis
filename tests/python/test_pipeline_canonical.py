@@ -21,22 +21,27 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     )
 
 
-def make_raw_bucket(pipeline, source_id: str, bucket_start: int) -> dict:
-    bucket = pipeline.BucketAccumulator(
-        source_id=source_id,
-        bucket_start=bucket_start,
-        bucket_end=bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+def make_raw_bucket(pipeline, source_id: str, bucket_start: int):
+    bucket = pipeline.StatisticalBucket(
+        pipeline.BucketKey(
+            source_id,
+            '5m',
+            bucket_start,
+            bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+        )
     )
-    bucket.add_flow(
-        ip_version=4,
-        src_ip='192.0.2.1',
-        dst_ip='198.51.100.1',
-        protocol=6,
-        packets=10,
-        bytes_count=1000,
-        src_tos=0,
+    bucket.add(
+        pipeline.FlowFact(
+            ip_version=4,
+            src_ip='192.0.2.1',
+            dst_ip='198.51.100.1',
+            protocol=6,
+            packets=10,
+            bytes_count=1000,
+            src_tos=0,
+        )
     )
-    return bucket.raw_bucket_row()
+    return bucket.finish()
 
 
 def test_dataset_tree_config_uses_dataset_db_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -561,3 +566,29 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
 
     assert aggregate_flows == (6,)
     assert rewritten_5m == (0,)
+
+
+def test_batch_and_streaming_aggregation_render_identical_rows() -> None:
+    pipeline = load_module()
+    children = [
+        make_raw_bucket(pipeline, 'r1', bucket_start)
+        for bucket_start in (0, pipeline.FIVE_MINUTE_SECONDS)
+    ]
+
+    batch_rows = pipeline.build_aggregate_stats_payloads(children)
+    batch_by_key = {
+        (
+            payload['traffic_rows'][0]['granularity'],
+            payload['traffic_rows'][0]['bucket_start'],
+        ): payload
+        for payload in batch_rows
+    }
+    streaming = {}
+    for child in children:
+        pipeline.add_raw_bucket_to_streaming_aggregates(streaming, child)
+    streaming_by_key = {
+        (granularity, bucket_start): pipeline.canonical_bucket_rows(builder.finish())
+        for (_source_id, granularity, bucket_start), builder in streaming.items()
+    }
+
+    assert streaming_by_key == batch_by_key

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import datasets_metadata
 import processed_inputs
+import statistical_bucket
 import stats
 
 
@@ -76,19 +77,28 @@ def traffic_row(
     bucket_start: int,
     flows: int,
 ) -> dict:
-    row = stats.empty_traffic_stats_row(
-        source_id=source_id,
-        granularity=granularity,
-        bucket_start=bucket_start,
-        bucket_end=bucket_start + 300,
-        ip_version=4,
-        src_visibility='all',
-        dst_visibility='all',
+    bucket = statistical_bucket.CanonicalBucket(
+        key=statistical_bucket.BucketKey(
+            source_id,
+            granularity,
+            bucket_start,
+            bucket_start + 300,
+        ),
+        traffic=(
+            statistical_bucket.ScopedTraffic(
+                statistical_bucket.Scope(4, 'all', 'all'),
+                statistical_bucket.TrafficMetrics(
+                    flows=flows,
+                    packets=flows * 10,
+                    bytes=flows * 100,
+                ),
+            ),
+        ),
+        protocols=(),
+        addresses=(),
+        five_minute_starts=frozenset({bucket_start}),
     )
-    row['flows'] = flows
-    row['packets'] = flows * 10
-    row['bytes'] = flows * 100
-    return row
+    return stats.canonical_bucket_rows(bucket)['traffic_rows'][0]
 
 
 def table_sql(conn: sqlite3.Connection, name: str) -> str:
