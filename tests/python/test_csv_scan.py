@@ -45,12 +45,13 @@ def write_mapping(
     return path
 
 
-def scan(module, csv_path, mapping_path):
+def scan(module, csv_path, mapping_path, selection=None):
     config = module.load_csv_source_config(mapping_path)
     return list(
         module.scan_csv(
             {'path': str(csv_path), 'mapping_path': str(mapping_path)},
             config,
+            selection or module.FlowSelection(),
         )
     )
 
@@ -71,6 +72,36 @@ def test_scan_interface_normalizes_adapters_identically(tmp_path, has_header: bo
     traffic = next(entry for entry in ready.bucket.traffic if entry.scope.src_visibility == 'all')
     assert (traffic.metrics.flows_tcp, traffic.metrics.packets, traffic.metrics.bytes) == (1, 1, 2)
     assert events[-1].rejected_rows == 0
+
+
+def test_selection_filters_before_stats_but_preserves_dense_coverage(tmp_path) -> None:
+    module = importlib.import_module('csv_scan')
+    mapping = write_mapping(tmp_path, has_header=True)
+    csv_path = tmp_path / 'selected.csv'
+    csv_path.write_text(
+        'te,src,dst,proto,packets,bytes,stos\n'
+        '2016-07-27 13:40:00,192.0.2.1,198.51.100.1,6,1,10,1\n'
+        '2016-07-27 13:45:00,203.0.113.1,198.51.100.1,6,1,20,1\n',
+        encoding='utf-8',
+    )
+    selection = module.FlowSelection.from_payload(
+        {
+            'ip_prefix': '192.0.2.99/24',
+            'src_visibility': 'literal',
+            'dst_visibility': 'anonymized',
+        }
+    )
+
+    events = scan(module, csv_path, mapping, selection)
+
+    ready = events[:-1]
+    assert len(ready) == 2
+    assert [event.bucket.key.bucket_start for event in ready] == [1469626800, 1469627100]
+    assert [
+        next(row for row in event.bucket.traffic if row.scope.src_visibility == 'all').metrics.flows
+        for event in ready
+    ] == [1, 0]
+    assert events[-1].observed_bounds == {'r1': (1469626800, 1469627100)}
 
 
 def test_generic_indexed_and_arrow_adapters_emit_identical_rich_observations(

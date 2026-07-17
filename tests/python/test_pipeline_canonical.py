@@ -67,6 +67,42 @@ def test_dataset_tree_config_uses_dataset_db_path(monkeypatch: pytest.MonkeyPatc
     assert override['database_path'] == '/tmp/override.sqlite'
 
 
+def test_dataset_selection_requires_separate_explicit_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = load_module()
+    common = importlib.import_module('common')
+    dataset = {
+        'dataset_id': 'alpha',
+        'root_path': '/captures/alpha',
+        'db_path': '/data/custom/alpha.sqlite',
+        'sources': [{'source_id': 'r1', 'members': ['r1']}],
+    }
+    monkeypatch.setattr(common, 'get_dataset_config', lambda dataset_id: dataset)
+    selection = pipeline.FlowSelection.from_payload({'ip_prefix': '192.0.2.99/24'})
+
+    with pytest.raises(ValueError, match='explicit --database-path'):
+        pipeline.build_dataset_tree_config(
+            dataset_id='alpha',
+            start_date='2025-02-11',
+            selection=selection,
+        )
+
+    config = pipeline.build_dataset_tree_config(
+        dataset_id='alpha',
+        start_date='2025-02-11',
+        database_path='/tmp/selected.sqlite',
+        selection=selection,
+    )
+    assert config['selection'] == {
+        'version': 1,
+        'kind': 'flows',
+        'ip_prefix': '192.0.2.0/24',
+        'src_visibility': None,
+        'dst_visibility': None,
+    }
+
+
 def test_apply_cli_config_overrides_updates_loaded_config() -> None:
     pipeline = load_module()
     config = {

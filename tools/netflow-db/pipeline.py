@@ -24,6 +24,7 @@ from csv_ingest import CsvSourceConfig, load_csv_source_config
 from csv_inputs import discover_csv_specs
 from csv_scan import CsvBucketReady, CsvScanComplete, scan_csv
 from datasets_metadata import init_datasets_table, upsert_dataset_metadata
+from flow_selection import FlowSelection
 from maad import (
     MaadTimeoutError,
     MaadJsonResult,
@@ -96,8 +97,13 @@ MAAD_TIMEOUT_SECONDS_BY_GRANULARITY = {
 }
 
 
-def current_product_identity(*, run_maad: bool, maad_backend: str) -> ProductIdentity:
-    """Return result semantics for the current unfiltered pipeline product."""
+def current_product_identity(
+    *,
+    run_maad: bool,
+    maad_backend: str,
+    selection: FlowSelection = FlowSelection(),
+) -> ProductIdentity:
+    """Return result semantics for the selected pipeline product."""
     return ProductIdentity.create(
         schema={
             'version': 1,
@@ -106,7 +112,7 @@ def current_product_identity(*, run_maad: bool, maad_backend: str) -> ProductIde
                 for adapter in STATS_TABLE_ADAPTERS
             ],
         },
-        selection={'version': 1, 'kind': 'all'},
+        selection=selection.normalized_payload(),
         config={
             'version': 1,
             'timezone': str(PIPELINE_TIMEZONE),
@@ -124,11 +130,16 @@ def bind_current_product(
     *,
     run_maad: bool,
     maad_backend: str,
+    selection: FlowSelection = FlowSelection(),
 ) -> None:
     """Bind or validate database-wide result semantics."""
     bind_product_identity(
         conn,
-        current_product_identity(run_maad=run_maad, maad_backend=maad_backend),
+        current_product_identity(
+            run_maad=run_maad,
+            maad_backend=maad_backend,
+            selection=selection,
+        ),
         output_table_names=STATS_TABLE_NAMES,
     )
 
@@ -192,9 +203,15 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
     maad_workers = int(config.get('maad_workers', 1))
     max_workers = validate_max_workers(int(config.get('max_workers', DEFAULT_MAX_WORKERS)))
     run_maad = bool(config.get('run_maad', True))
+    selection = FlowSelection.from_payload(config.get('selection'))
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
-    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    bind_current_product(
+        conn,
+        run_maad=run_maad,
+        maad_backend=maad_backend,
+        selection=selection,
+    )
     nfcapd_layout_sources = []
     for spec in config['inputs']:
         if str(spec['input_kind']) != 'nfcapd_tree':
@@ -225,6 +242,7 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
                 maad_workers=maad_workers,
                 max_workers=max_workers,
                 run_maad=run_maad,
+                selection=selection,
                 bind_source_layout=False,
             )
         elif input_kind == 'csv_tree':
@@ -236,6 +254,7 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
                 maad_workers=maad_workers,
                 max_workers=max_workers,
                 run_maad=run_maad,
+                selection=selection,
             )
         else:
             explicit_inputs.append(spec)
@@ -249,6 +268,7 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
             maad_workers=maad_workers,
             max_workers=max_workers,
             run_maad=run_maad,
+            selection=selection,
         )
 
 
@@ -261,12 +281,18 @@ def process_nfcapd_tree_spec(
     maad_workers: int,
     max_workers: int,
     run_maad: bool,
+    selection: FlowSelection = FlowSelection(),
     bind_source_layout: bool = True,
 ) -> None:
     """Process a canonical nfcapd tree one day at a time."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
-    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    bind_current_product(
+        conn,
+        run_maad=run_maad,
+        maad_backend=maad_backend,
+        selection=selection,
+    )
     root_path = Path(spec['root_path'])
     sources = normalize_nfcapd_sources(spec, root_path)
     if bind_source_layout:
@@ -328,6 +354,7 @@ def process_nfcapd_tree_spec(
             member_specs,
             force=force,
             root_path=root_path,
+            selection=selection,
         )
         if not jobs:
             print(f"[pipeline] Skip {day.strftime('%Y-%m-%d')}: {len(member_specs)} already processed")
@@ -344,6 +371,7 @@ def process_nfcapd_tree_spec(
             maad_workers=maad_workers,
             max_workers=max_workers,
             run_maad=run_maad,
+            selection=selection,
         )
         print(
             f"[pipeline] Complete {day.strftime('%Y-%m-%d')}: "
@@ -413,11 +441,17 @@ def process_csv_tree_spec(
     maad_workers: int,
     max_workers: int,
     run_maad: bool,
+    selection: FlowSelection = FlowSelection(),
 ) -> None:
     """Process configured CSV files under one directory."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
-    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    bind_current_product(
+        conn,
+        run_maad=run_maad,
+        maad_backend=maad_backend,
+        selection=selection,
+    )
     csv_config = load_csv_source_config(spec['mapping_path'])
     input_specs = discover_csv_specs(
         spec['root_path'],
@@ -438,6 +472,7 @@ def process_csv_tree_spec(
         maad_workers=maad_workers,
         max_workers=max_workers,
         run_maad=run_maad,
+        selection=selection,
     )
     print(f"[pipeline] Complete {len(input_specs)} CSV inputs")
 
@@ -612,13 +647,18 @@ def nfcapd_expected_path(root: Path, source_id: str, bucket_start: int) -> Path:
     )
 
 
-def prepare_input_specs(conn: sqlite3.Connection, input_specs: list[dict]) -> list[dict]:
+def prepare_input_specs(
+    conn: sqlite3.Connection,
+    input_specs: list[dict],
+    selection: FlowSelection = FlowSelection(),
+) -> list[dict]:
     """Load decoder configuration once and attach exact revisions."""
     init_processed_inputs_table(conn)
     csv_configs: dict[str, CsvSourceConfig] = {}
     prepared = []
     for raw_spec in input_specs:
         spec = dict(raw_spec)
+        spec['_flow_selection'] = selection
         input_kind = str(spec['input_kind'])
         locator = str(spec['path'])
         if input_kind == 'csv':
@@ -695,10 +735,11 @@ def build_nfcapd_logical_bucket_jobs(
     *,
     force: bool = False,
     root_path: Path | None = None,
+    selection: FlowSelection = FlowSelection(),
 ) -> list[dict]:
     """Build unprocessed logical source buckets from physical member specs."""
     specs_by_member_bucket: dict[tuple[str, int], list[dict]] = defaultdict(list)
-    member_specs = prepare_input_specs(conn, member_specs)
+    member_specs = prepare_input_specs(conn, member_specs, selection)
     for spec in member_specs:
         member_id = str(spec['source_id'])
         bucket_start = int(spec.get('bucket_start') or parse_nfcapd_bucket_start(str(spec['path'])))
@@ -982,12 +1023,15 @@ def build_dataset_tree_config(
     start_time: str | None = None,
     end_time: str | None = None,
     force: bool = False,
+    selection: FlowSelection = FlowSelection(),
 ) -> dict:
     """Build a nfcapd_tree config from datasets.json."""
     from common import get_dataset_config, list_dataset_sources
 
     max_workers = validate_max_workers(max_workers)
     dataset = get_dataset_config(dataset_id)
+    if not selection.is_unrestricted and database_path is None:
+        raise ValueError('flow selection requires an explicit --database-path')
     db_path = Path(database_path) if database_path is not None else Path(dataset['db_path'])
     tree_input = {
         'input_kind': 'nfcapd_tree',
@@ -1010,6 +1054,7 @@ def build_dataset_tree_config(
         'database_path': str(db_path),
         'maad_bin': str(maad_bin),
         'max_workers': max_workers,
+        'selection': selection.normalized_payload(),
         'datasets': [dataset],
         'inputs': [tree_input],
     }
@@ -1024,13 +1069,19 @@ def process_input_specs(
     maad_workers: int = 1,
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_maad: bool = True,
+    selection: FlowSelection = FlowSelection(),
 ) -> None:
     """Process explicit input specs into canonical aggregate tables."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
-    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    bind_current_product(
+        conn,
+        run_maad=run_maad,
+        maad_backend=maad_backend,
+        selection=selection,
+    )
 
-    input_specs = prepare_input_specs(conn, input_specs)
+    input_specs = prepare_input_specs(conn, input_specs, selection)
     csv_specs = [spec for spec in input_specs if str(spec['input_kind']) == 'csv']
     if csv_specs:
         process_csv_input_specs_streaming(
@@ -1146,11 +1197,17 @@ def process_nfcapd_logical_bucket_jobs(
     maad_workers: int = 1,
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_maad: bool = True,
+    selection: FlowSelection = FlowSelection(),
 ) -> None:
     """Process logical nfcapd source buckets with bounded raw payload retention."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
-    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    bind_current_product(
+        conn,
+        run_maad=run_maad,
+        maad_backend=maad_backend,
+        selection=selection,
+    )
 
     jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
     processed_buckets = []
@@ -1446,7 +1503,7 @@ def process_csv_input_specs_streaming(
             started_scans.append(scan_locator)
             print(f'[pipeline] CSV start: {scan_locator}')
             bucket_count = 0
-            for event in scan_csv(spec, csv_config):
+            for event in scan_csv(spec, csv_config, spec['_flow_selection']):
                 if isinstance(event, CsvScanComplete):
                     completion_events.append(
                         (event, input_revision, spec['_file_snapshot'])
@@ -1899,7 +1956,11 @@ def build_input_payload(
             for bucket in payload['processed_buckets']:
                 bucket['_absence_snapshots'] = payload['absence_snapshots']
             return payload
-        nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
+        nfcapd_payload = build_nfcapd_bucket_payload(
+            input_locator,
+            str(spec['source_id']),
+            spec.get('_flow_selection', FlowSelection()),
+        )
         verify_file_snapshot(input_locator, spec['_file_snapshot'])
         nfcapd_payload['processed_bucket']['input_revision'] = input_revision
         nfcapd_payload['processed_bucket']['file_snapshot'] = spec['_file_snapshot']
@@ -2306,12 +2367,27 @@ def main() -> None:
     parser.add_argument('--start-time', help='Optional local half-open window start, YYYY-MM-DDTHH:MM.')
     parser.add_argument('--end-time', help='Optional local half-open window end, YYYY-MM-DDTHH:MM.')
     parser.add_argument('--database-path', help='Override SQLite output path.')
+    parser.add_argument('--ip-prefix', help='Only ingest flows with either endpoint in this CIDR.')
+    parser.add_argument(
+        '--src-visibility',
+        choices=('literal', 'anonymized'),
+        help='Only ingest flows with this source-address visibility.',
+    )
+    parser.add_argument(
+        '--dst-visibility',
+        choices=('literal', 'anonymized'),
+        help='Only ingest flows with this destination-address visibility.',
+    )
     parser.add_argument('--maad-bin', help='Path to MAAD binary.')
     parser.add_argument('--max-workers', type=int, help='Worker process count.')
     parser.add_argument('--force', action='store_true', help='Rewrite selected nfcapd buckets even when marked processed.')
     args = parser.parse_args()
 
     if args.config:
+        if args.ip_prefix or args.src_visibility or args.dst_visibility:
+            parser.error(
+                'flow selection must be defined by the top-level selection object in --config mode'
+            )
         config = load_pipeline_config(args.config)
         try:
             config = apply_cli_config_overrides(
@@ -2327,6 +2403,13 @@ def main() -> None:
         if not args.dataset or not args.start_date:
             parser.error('--config or both --dataset and --start-date is required')
         try:
+            selection = FlowSelection.from_payload(
+                {
+                    'ip_prefix': args.ip_prefix,
+                    'src_visibility': args.src_visibility,
+                    'dst_visibility': args.dst_visibility,
+                }
+            )
             config = build_dataset_tree_config(
                 dataset_id=args.dataset,
                 start_date=args.start_date,
@@ -2337,6 +2420,7 @@ def main() -> None:
                 start_time=args.start_time,
                 end_time=args.end_time,
                 force=args.force,
+                selection=selection,
             )
         except ValueError as error:
             parser.error(str(error))
