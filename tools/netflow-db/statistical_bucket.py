@@ -29,6 +29,7 @@ EXACT_VISIBILITY_PAIRS: tuple[tuple[Visibility, Visibility], ...] = (
 ZERO_FILL_VISIBILITY_PAIRS = (ALL_VISIBILITY, *EXACT_VISIBILITY_PAIRS)
 MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MEASUREMENT_SUM_NAMES = frozenset(('duration_sum_ms', 'min_ttl_sum', 'max_ttl_sum'))
+_MEASUREMENT_COUNT_NAMES = frozenset(('duration_count', 'min_ttl_count', 'max_ttl_count'))
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -162,16 +163,19 @@ class _MutableMetrics:
         ):
             if value is not None:
                 sum_name = f'{name}_sum' if name != 'duration' else 'duration_sum_ms'
-                self.values[sum_name] = _checked_measurement_sum(
+                self.values[sum_name] = _checked_measurement_value(
                     self.values[sum_name], value * observation.flow_count, sum_name
                 )
-                self.values[f'{name}_count'] += observation.flow_count
+                count_name = f'{name}_count'
+                self.values[count_name] = _checked_measurement_value(
+                    self.values[count_name], observation.flow_count, count_name
+                )
 
     def include(self, metrics: TrafficMetrics) -> None:
         for name in _METRIC_NAMES:
             value = getattr(metrics, name)
-            if name in _MEASUREMENT_SUM_NAMES:
-                self.values[name] = _checked_measurement_sum(self.values[name], value, name)
+            if name in _MEASUREMENT_SUM_NAMES or name in _MEASUREMENT_COUNT_NAMES:
+                self.values[name] = _checked_measurement_value(self.values[name], value, name)
             else:
                 self.values[name] += value
 
@@ -348,7 +352,7 @@ def _protocol_suffix(protocol: int | str) -> str:
     return 'other'
 
 
-def _checked_measurement_sum(current: int, value: int, name: str) -> int:
+def _checked_measurement_value(current: int, value: int, name: str) -> int:
     result = current + value
     if result > MAX_SQLITE_INTEGER:
         raise OverflowError(f'{name} exceeds SQLite signed 64-bit integer range')

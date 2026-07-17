@@ -177,8 +177,20 @@ bool allowsVisibility(uint64_t tos, const std::string& source, const std::string
     return true;
 }
 
-uint16_t parsePort(std::string_view value) {
-    if (value.find('.') != std::string_view::npos) return 0;
+uint16_t parsePort(std::string_view value, uint64_t protocol) {
+    const size_t decimal = value.find('.');
+    if (decimal != std::string_view::npos) {
+        if (protocol != 1 && protocol != 58) {
+            throw std::runtime_error("dotted pseudo-port is only valid for ICMP or ICMPv6");
+        }
+        if (decimal == 0 || decimal + 1 == value.size() ||
+            value.find('.', decimal + 1) != std::string_view::npos) {
+            throw std::runtime_error("invalid ICMP type/code pseudo-port");
+        }
+        parseUnsigned(value.substr(0, decimal), "ICMP type", 255);
+        parseUnsigned(value.substr(decimal + 1), "ICMP code", 255);
+        return 0;
+    }
     return static_cast<uint16_t>(parseUnsigned(value, "port", 65535));
 }
 
@@ -356,9 +368,9 @@ void reduce(const std::string& sourceVisibility, const std::string& destinationV
             const std::string destinationAddress(fields[4]);
             const int ipVersion = addressFamily(fields[3]);
             if (addressFamily(fields[4]) != ipVersion) throw std::runtime_error("mixed IP families");
-            const uint16_t sourcePort = parsePort(fields[5]);
-            const uint16_t destinationPort = parsePort(fields[6]);
             const uint64_t protocol = parseUnsigned(fields[7], "protocol", 255);
+            const uint16_t sourcePort = parsePort(fields[5], protocol);
+            const uint16_t destinationPort = parsePort(fields[6], protocol);
             const uint64_t packets = parseUnsigned(fields[8], "packets", kMaxInteger);
             const uint64_t bytes = parseUnsigned(fields[9], "bytes", kMaxInteger);
             const uint64_t sourceTos = parseUnsigned(fields[10], "src_tos", 255);

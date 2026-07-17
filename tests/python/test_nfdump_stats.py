@@ -333,6 +333,49 @@ def test_compiled_reducer_matches_python_oracle_with_visibility_selection() -> N
     )
 
 
+def test_compiled_reducer_matches_python_for_valid_icmp_pseudo_ports() -> None:
+    module = load_module()
+    stdout = native_csv(
+        '0.000,1.000,0.000,192.0.2.1,198.51.100.1,8.0,3.1,1,1,10,0,0,1,20,30',
+        '0.000,1.000,0.000,2001:db8::1,2001:db8::2,128.0,1.4,58,1,10,0,0,1,20,30',
+    )
+
+    compiled = canonical_from_compiled(module, stdout)
+    assert compiled == canonical_from_python(module, stdout)
+    assert all(
+        entry.bitmap == 1
+        for entry in compiled.ports
+        if entry.scope.src_visibility == 'all' and entry.scope.dst_visibility == 'all'
+    )
+
+
+@pytest.mark.parametrize(
+    ('protocol', 'pseudo_port'),
+    [
+        ('6', '3.1'),
+        ('1', '3.'),
+        ('58', '.1'),
+        ('1', '3.1.2'),
+        ('1', '256.1'),
+        ('1', ' 3.1'),
+        ('58', '3.1 '),
+        (' 1', '3.1'),
+    ],
+)
+def test_compiled_and_python_reject_invalid_dotted_ports(
+    protocol: str, pseudo_port: str
+) -> None:
+    module = load_module()
+    stdout = native_csv(
+        f'0.000,1.000,0.000,192.0.2.1,198.51.100.1,0,{pseudo_port},{protocol},'
+        '1,10,0,0,1,20,30'
+    )
+
+    assert compiled_result(module, stdout).returncode != 0
+    with pytest.raises(importlib.import_module('csv_ingest').CsvSourceConfigError):
+        canonical_from_python(module, stdout)
+
+
 @pytest.mark.parametrize(
     ('timestamp', 'expected'),
     [

@@ -281,3 +281,84 @@ def test_measurement_sum_overflow_rejects_before_sqlite_insert() -> None:
                 flow_count=2,
             )
         )
+
+
+@pytest.mark.parametrize(
+    ('count_name', 'measurement'),
+    [
+        ('duration_count', {'duration_ms': 0}),
+        ('min_ttl_count', {'min_ttl': 0}),
+        ('max_ttl_count', {'max_ttl': 0}),
+    ],
+)
+def test_measurement_count_accepts_int64_boundary_and_rejects_flow_count_overflow(
+    count_name: str, measurement: dict[str, int]
+) -> None:
+    module = load_module()
+    bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+
+    bucket.add(
+        module.FlowObservation(
+            4,
+            '192.0.2.1',
+            '198.51.100.1',
+            6,
+            0,
+            0,
+            0,
+            flow_count=module.MAX_SQLITE_INTEGER,
+            **measurement,
+        )
+    )
+    assert getattr(bucket.finish().traffic[0].metrics, count_name) == module.MAX_SQLITE_INTEGER
+
+    with pytest.raises(OverflowError, match=count_name):
+        bucket.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.2',
+                '198.51.100.2',
+                6,
+                0,
+                0,
+                0,
+                flow_count=1,
+                **measurement,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ('count_name', 'measurement'),
+    [
+        ('duration_count', {'duration_ms': 0}),
+        ('min_ttl_count', {'min_ttl': 0}),
+        ('max_ttl_count', {'max_ttl': 0}),
+    ],
+)
+def test_measurement_count_merge_rejects_int64_overflow(
+    count_name: str, measurement: dict[str, int]
+) -> None:
+    module = load_module()
+
+    def child(flow_count: int):
+        bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+        bucket.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.1',
+                '198.51.100.1',
+                6,
+                0,
+                0,
+                0,
+                flow_count=flow_count,
+                **measurement,
+            )
+        )
+        return bucket.finish()
+
+    aggregate = module.StatisticalBucket(module.BucketKey('r1', '30m', 0, 1800))
+    aggregate.include(child(module.MAX_SQLITE_INTEGER))
+    with pytest.raises(OverflowError, match=count_name):
+        aggregate.include(child(1))
