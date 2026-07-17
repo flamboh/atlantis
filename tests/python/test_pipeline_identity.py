@@ -84,10 +84,14 @@ def test_product_identity_rejects_populated_legacy_database() -> None:
             source_id, granularity, bucket_start, bucket_end, ip_version,
             src_visibility, dst_visibility,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
-            packets, packets_tcp, packets_udp, packets_icmp, packets_other,
-            bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other
-        ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all',
-                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                packets, packets_tcp, packets_udp, packets_icmp, packets_other,
+                bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
+                duration_sum_ms, duration_count, average_duration_ms,
+                min_ttl_sum, min_ttl_count, average_min_ttl,
+                max_ttl_sum, max_ttl_count, average_max_ttl
+            ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all',
+                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      0, 0, NULL, 0, 0, NULL, 0, 0, NULL)
         """
     )
 

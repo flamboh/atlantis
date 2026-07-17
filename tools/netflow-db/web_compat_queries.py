@@ -36,6 +36,15 @@ def assert_netflow_stats_query(
                SUM(flows) AS flows,
                SUM(packets) AS packets,
                SUM(bytes) AS bytes,
+               CASE WHEN SUM(duration_count) = 0 THEN NULL
+                    ELSE CAST(SUM(duration_sum_ms) AS REAL) / SUM(duration_count)
+               END AS averageDurationMs,
+               CASE WHEN SUM(min_ttl_count) = 0 THEN NULL
+                    ELSE CAST(SUM(min_ttl_sum) AS REAL) / SUM(min_ttl_count)
+               END AS averageMinTtl,
+               CASE WHEN SUM(max_ttl_count) = 0 THEN NULL
+                    ELSE CAST(SUM(max_ttl_sum) AS REAL) / SUM(max_ttl_count)
+               END AS averageMaxTtl,
                SUM(CASE WHEN ip_version = 4 THEN flows ELSE 0 END) AS flowsIpv4,
                SUM(CASE WHEN ip_version = 6 THEN flows ELSE 0 END) AS flowsIpv6
         FROM traffic_stats

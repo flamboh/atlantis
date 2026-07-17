@@ -189,7 +189,10 @@ def test_build_nfdump_csv_command_uses_time_received_and_family_filter() -> None
     )
 
     assert command[:4] == ['nfdump', '-r', '/captures/r1/2025/04/15/nfcapd.202504150000', '-q']
-    assert command[4:6] == ['-o', 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos']
+    assert command[4:6] == [
+        '-o',
+        'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos,%fl,%minttl,%maxttl',
+    ]
     assert command[-2:] == ['ipv6', '-6']
 
 
@@ -210,6 +213,9 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
             '2048',
             '2',
             '0',
+            '3',
+            '31',
+            '64',
         ],
         source_id='oh_ir1_gw',
     )
@@ -220,6 +226,9 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
     assert row.observation.time_end_ms == 1744733000001
     assert row.observation.time_start_ms == 1744732700500
     assert row.observation.ip_version == 4
+    assert row.observation.flow_count == 3
+    assert row.observation.duration_ms == 299501
+    assert (row.observation.min_ttl, row.observation.max_ttl) == (31, 64)
 
 
 def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
@@ -239,11 +248,15 @@ def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
             '2048',
             '2',
             '0',
+            '1',
+            '0',
+            '0',
         ],
         source_id='oh_ir1_gw',
     )
 
     assert row.observation.dst_port == 0
+    assert (row.observation.min_ttl, row.observation.max_ttl) == (None, None)
 
 
 def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:

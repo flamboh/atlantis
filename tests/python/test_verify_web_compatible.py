@@ -76,6 +76,13 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
                 address_count_row('1h', bucket_start, bucket_start + 3600, 'destination'),
             ],
         )
+        stats.insert_port_count_stats_rows(
+            conn,
+            [
+                port_count_row('5m', bucket_start, bucket_start + 300),
+                port_count_row('1h', bucket_start, bucket_start + 3600),
+            ],
+        )
         conn.commit()
 
     verifier.verify_database(
@@ -163,4 +170,19 @@ def address_count_row(
         'dst_visibility': 'all',
         'address_side': address_side,
         'unique_address_count': 1,
+    }
+
+
+def port_count_row(granularity: str, bucket_start: int, bucket_end: int) -> dict:
+    return {
+        'source_id': 'ugr16',
+        'granularity': granularity,
+        'bucket_start': bucket_start,
+        'bucket_end': bucket_end,
+        'ip_version': 4,
+        'src_visibility': 'all',
+        'dst_visibility': 'all',
+        'port_side': 'source',
+        'port_range': 'low',
+        'unique_port_count': 1,
     }

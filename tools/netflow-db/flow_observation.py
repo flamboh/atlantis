@@ -9,9 +9,8 @@ from dataclasses import dataclass
 class FlowObservation:
     """A normalized flow with exact missing-value and millisecond semantics.
 
-    Generic, indexed, and Arrow CSV adapters produce this contract before the
-    statistical bucket seam. Production native nfcapd ingestion deliberately
-    bypasses the per-flow path and contributes grouped statistical facts.
+    Generic, indexed, Arrow CSV, and native nfcapd adapters produce this
+    contract before the statistical bucket seam.
     """
 
     ip_version: int
@@ -30,3 +29,4 @@ class FlowObservation:
     duration_ms: int | None = None
     min_ttl: int | None = None
     max_ttl: int | None = None
+    flow_count: int = 1

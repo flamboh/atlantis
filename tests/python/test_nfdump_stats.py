@@ -1,209 +1,120 @@
 import importlib
+import io
 import subprocess
 
 import pytest
 
 
 def load_module():
-    nfdump_stats = importlib.import_module('nfdump_stats')
-    return importlib.reload(nfdump_stats)
+    module = importlib.import_module('nfdump_stats')
+    return importlib.reload(module)
 
 
-def test_build_nfcapd_bucket_payload_uses_grouped_nfdump_outputs(monkeypatch) -> None:
+class FakeProcess:
+    def __init__(self, stdout: str, *, returncode: int = 0, stderr=None, timeout: bool = False):
+        self.stdout = io.StringIO(stdout)
+        self.returncode = None
+        self._final_returncode = returncode
+        self._stderr = stderr
+        self._timeout = timeout
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._timeout and not self.killed:
+            raise subprocess.TimeoutExpired('nfdump', timeout)
+        self.returncode = -9 if self.killed else self._final_returncode
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def native_csv(*rows: str) -> str:
+    return (
+        'trr,ter,tsr,srcaddr,dstaddr,srcport,dstport,proto,packets,bytes,'
+        'srctos,dsttos,flows,minttl,maxttl\n'
+        + ''.join(f'{row}\n' for row in rows)
+    )
+
+
+def install_fake_popen(monkeypatch, module, stdout: str, *, returncode: int = 0, stderr=''):
+    calls = []
+    processes = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        if stderr:
+            kwargs['stderr'].write(stderr)
+            kwargs['stderr'].flush()
+        process = FakeProcess(stdout, returncode=returncode)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(module.subprocess, 'Popen', fake_popen)
+    return calls, processes
+
+
+def test_native_bucket_uses_one_all_family_streaming_observation_pass(monkeypatch) -> None:
     monkeypatch.setenv('NETFLOW_TIMEZONE', 'America/Los_Angeles')
     module = load_module()
-    statistical_bucket = importlib.import_module('statistical_bucket')
-    commands = []
-
-    def fake_run(command, capture_output, text, timeout):
-        commands.append(command)
-        assert capture_output is True
-        assert text is True
-        assert timeout == 300
-        command_text = ' '.join(command)
-        if '-A proto,srctos' in command_text and 'ipv4' in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=(
-                    'proto,srcTos,packets,bytes,flows\n'
-                    '6,2,10,1000,2\n'
-                    '17,1,5,500,1\n'
-                ),
-                stderr='',
-            )
-        if '-A proto,srctos' in command_text and 'ipv6' in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout='proto,srcTos,packets,bytes,flows\n58,0,3,300,1\n',
-                stderr='',
-            )
-        if '-A srcip,dstip,srctos' in command_text:
-            assert 'ipv4' not in command
-            assert 'ipv6' not in command
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=(
-                    'srcAddr,dstAddr,srcTos\n'
-                    '192.0.2.1,198.51.100.1,2\n'
-                    '192.0.2.2,198.51.100.2,1\n'
-                    '2001:db8::1,2001:db8::2,0\n'
-                ),
-                stderr='',
-            )
-        raise AssertionError(f'unexpected command: {command}')
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+    stdout = native_csv(
+        '1744733000.000,1744733001.500,1744733000.000,192.0.2.1,198.51.100.1,'
+        '1023,1024,6,10,1000,2,0,2,31,64',
+        '1744733000.000,1744733000.000,1744733000.000,2001:db8::1,2001:db8::2,'
+        '3.1,0,58,1,100,0,0,1,0,0',
+    )
+    calls, _processes = install_fake_popen(monkeypatch, module, stdout)
 
     payload = module.build_nfcapd_bucket_payload(
-        '/captures/oh_ir1_gw/2025/04/15/nfcapd.202504150005',
-        source_id='oh_ir1_gw',
+        '/captures/r1/nfcapd.202504150005',
+        'r1',
     )
 
-    assert payload['processed_bucket'] == {
-        'input_kind': 'nfcapd',
-        'input_locator': '/captures/oh_ir1_gw/2025/04/15/nfcapd.202504150005',
-        'source_id': 'oh_ir1_gw',
-        'bucket_start': 1744700700,
-        'bucket_end': 1744701000,
-    }
-    assert 'netflow_rows' not in payload
-    assert 'ip_row' not in payload
-    assert 'protocol_row' not in payload
-    assert payload['canonical_bucket'].key.source_id == 'oh_ir1_gw'
-    assert payload['traffic_rows'][0]['src_visibility'] == 'all'
-    assert payload['traffic_rows'][0]['dst_visibility'] == 'all'
-    address_counts = {
-        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['address_side'], row['unique_address_count'])
-        for row in payload['address_count_rows']
-    }
-    expected_address_counts = {
-        (ip_version, src_visibility, dst_visibility, address_side, 0)
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
-        for address_side in ('source', 'destination')
-    }
-    expected_address_counts -= {
-        (4, 'all', 'all', 'source', 0),
-        (4, 'all', 'all', 'destination', 0),
-        (4, 'anonymized', 'literal', 'source', 0),
-        (4, 'anonymized', 'literal', 'destination', 0),
-        (4, 'literal', 'anonymized', 'source', 0),
-        (4, 'literal', 'anonymized', 'destination', 0),
-        (6, 'all', 'all', 'source', 0),
-        (6, 'all', 'all', 'destination', 0),
-        (6, 'literal', 'literal', 'source', 0),
-        (6, 'literal', 'literal', 'destination', 0),
-    }
-    expected_address_counts |= {
-        (4, 'all', 'all', 'source', 2),
-        (4, 'all', 'all', 'destination', 2),
-        (4, 'anonymized', 'literal', 'source', 1),
-        (4, 'anonymized', 'literal', 'destination', 1),
-        (4, 'literal', 'anonymized', 'source', 1),
-        (4, 'literal', 'anonymized', 'destination', 1),
-        (6, 'all', 'all', 'source', 1),
-        (6, 'all', 'all', 'destination', 1),
-        (6, 'literal', 'literal', 'source', 1),
-        (6, 'literal', 'literal', 'destination', 1),
-    }
-    assert address_counts == expected_address_counts
-    assert len(commands) == 3
-
-
-def test_parse_nfcapd_bucket_start_uses_first_fold_for_ambiguous_fall_back(monkeypatch) -> None:
-    monkeypatch.setenv('NETFLOW_TIMEZONE', 'America/Los_Angeles')
-    module = load_module()
-
-    assert (
-        module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115')
-        == 1762071300
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[:5] == ['nfdump', '-r', '/captures/r1/nfcapd.202504150005', '-q', '-o']
+    assert 'ipv4' not in command and 'ipv6' not in command and '-6' not in command
+    assert kwargs['stdout'] is subprocess.PIPE
+    assert kwargs['stderr'] is not subprocess.PIPE
+    all_v4 = next(
+        row
+        for row in payload['traffic_rows']
+        if row['ip_version'] == 4
+        and row['src_visibility'] == 'all'
+        and row['dst_visibility'] == 'all'
     )
+    all_v6 = next(
+        row
+        for row in payload['traffic_rows']
+        if row['ip_version'] == 6
+        and row['src_visibility'] == 'all'
+        and row['dst_visibility'] == 'all'
+    )
+    assert (all_v4['flows'], all_v4['packets'], all_v4['average_duration_ms']) == (
+        2,
+        10,
+        1500,
+    )
+    assert (all_v4['average_min_ttl'], all_v4['average_max_ttl']) == (31, 64)
+    assert (all_v6['flows'], all_v6['average_duration_ms']) == (1, 0)
+    assert (all_v6['average_min_ttl'], all_v6['average_max_ttl']) == (None, None)
+    assert any(row['unique_port_count'] == 1 for row in payload['port_count_rows'])
 
 
-def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
-    module = load_module()
-
-    with pytest.raises(ValueError, match='Invalid nfcapd filename'):
-        module.parse_nfcapd_bucket_start('/captures/oh_ir1_gw/2025/11/02/nfcapd.202511020115.tmp')
-
-
-def test_read_scoped_protocol_counters_treats_no_matching_flows_as_empty(monkeypatch, caplog) -> None:
-    module = load_module()
-
-    def fake_run(command, capture_output, text, timeout):
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                'firstSeen,duration,proto,packets,bytes,bps,bpp,flows\n'
-                'No matching flows\n'
-            ),
-            stderr='',
-        )
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
-
-    rows = module.read_scoped_protocol_counters('/captures/nfcapd.202508190500', 6)
-
-    assert rows == []
-    assert 'Skipping malformed nfdump scoped protocol row' not in caplog.text
-
-
-def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> None:
-    statistical_bucket = importlib.import_module('statistical_bucket')
-    stats = importlib.import_module('stats')
-    bucket = statistical_bucket.StatisticalBucket(
-        statistical_bucket.BucketKey('r1', '5m', 1744700700, 1744701000),
-        dense=True,
-    ).finish()
-    rows = stats.canonical_bucket_rows(bucket)
-
-    assert {
-        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['flows'])
-        for row in rows['traffic_rows']
-    } == {
-        (ip_version, src_visibility, dst_visibility, 0)
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
-    }
-    assert {
-        (row['ip_version'], row['src_visibility'], row['dst_visibility'], row['protocols_list'])
-        for row in rows['protocol_rows']
-    } == {
-        (ip_version, src_visibility, dst_visibility, '')
-        for ip_version in (4, 6)
-        for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
-    }
-
-
-def test_native_selection_pushes_prefix_to_every_command_and_filters_visibility(
-    monkeypatch,
-) -> None:
+def test_native_selection_pushes_prefix_once_and_filters_visibility(monkeypatch) -> None:
     module = load_module()
     selection_module = importlib.import_module('flow_selection')
-    commands = []
-
-    def fake_run(command, capture_output, text, timeout):
-        commands.append(command)
-        command_text = ' '.join(command)
-        if '-A srcip,dstip,srctos' in command_text:
-            stdout = (
-                'srcAddr,dstAddr,srcTos\n'
-                '192.0.2.1,198.51.100.1,1\n'
-                '192.0.2.2,198.51.100.2,0\n'
-            )
-        else:
-            stdout = (
-                'proto,srcTos,packets,bytes,flows\n'
-                '6,1,10,1000,2\n'
-                '17,0,5,500,1\n'
-            )
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr='')
-
-    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+    stdout = native_csv(
+        '1744733000.000,1744733001.000,1744733000.000,192.0.2.1,198.51.100.1,'
+        '1,2,6,1,10,1,0,1,20,30',
+        '1744733000.000,1744733001.000,1744733000.000,192.0.2.2,198.51.100.2,'
+        '3,4,17,1,10,0,0,1,20,30',
+    )
+    calls, _ = install_fake_popen(monkeypatch, module, stdout)
     selection = selection_module.FlowSelection.from_payload(
         {
             'ip_prefix': '192.0.2.99/24',
@@ -213,13 +124,11 @@ def test_native_selection_pushes_prefix_to_every_command_and_filters_visibility(
     )
 
     payload = module.build_nfcapd_bucket_payload(
-        '/captures/r1/nfcapd.202504150005',
-        'r1',
-        selection,
+        '/captures/r1/nfcapd.202504150005', 'r1', selection
     )
 
-    assert len(commands) == 3
-    assert all('net 192.0.2.0/24' in ' '.join(command) for command in commands)
+    assert len(calls) == 1
+    assert calls[0][0][-1] == 'net 192.0.2.0/24'
     all_v4 = next(
         row
         for row in payload['traffic_rows']
@@ -227,15 +136,69 @@ def test_native_selection_pushes_prefix_to_every_command_and_filters_visibility(
         and row['src_visibility'] == 'all'
         and row['dst_visibility'] == 'all'
     )
-    exact_v4 = next(
-        row
-        for row in payload['traffic_rows']
-        if row['ip_version'] == 4
-        and row['src_visibility'] == 'literal'
-        and row['dst_visibility'] == 'anonymized'
+    assert all_v4['flows'] == 1
+
+
+def test_native_no_match_preserves_dense_zero_coverage(monkeypatch) -> None:
+    module = load_module()
+    calls, _ = install_fake_popen(monkeypatch, module, 'No matching flows\n')
+
+    payload = module.build_nfcapd_bucket_payload('/captures/r1/nfcapd.202504150005', 'r1')
+
+    assert len(calls) == 1
+    assert len(payload['traffic_rows']) == 10
+    assert all(row['flows'] == 0 for row in payload['traffic_rows'])
+    assert len(payload['port_count_rows']) == 40
+    assert all(row['unique_port_count'] == 0 for row in payload['port_count_rows'])
+
+
+def test_native_parser_failure_kills_process(monkeypatch) -> None:
+    module = load_module()
+    _calls, processes = install_fake_popen(monkeypatch, module, '1,2,malformed\n')
+
+    with pytest.raises(RuntimeError, match='Malformed nfdump CSV row'):
+        module.build_nfcapd_bucket_payload('/captures/r1/nfcapd.202504150005', 'r1')
+
+    assert processes[0].killed is True
+
+
+def test_native_nonzero_exit_reports_streamed_stderr(monkeypatch) -> None:
+    module = load_module()
+    install_fake_popen(monkeypatch, module, '', returncode=2, stderr='decoder failed')
+
+    with pytest.raises(RuntimeError, match='decoder failed'):
+        module.build_nfcapd_bucket_payload('/captures/r1/nfcapd.202504150005', 'r1')
+
+
+def test_native_timeout_kills_process(monkeypatch) -> None:
+    module = load_module()
+    processes = []
+
+    def fake_popen(_command, **_kwargs):
+        process = FakeProcess('', timeout=True)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(module.subprocess, 'Popen', fake_popen)
+
+    with pytest.raises(module.NfdumpTimeoutError):
+        module.build_nfcapd_bucket_payload('/captures/r1/nfcapd.202504150005', 'r1')
+
+    assert processes[0].killed is True
+
+
+def test_parse_nfcapd_bucket_start_uses_first_fold_for_ambiguous_fall_back(monkeypatch) -> None:
+    monkeypatch.setenv('NETFLOW_TIMEZONE', 'America/Los_Angeles')
+    module = load_module()
+
+    assert (
+        module.parse_nfcapd_bucket_start('/captures/r1/nfcapd.202511020115')
+        == 1762071300
     )
-    assert (all_v4['flows'], exact_v4['flows']) == (2, 2)
-    assert all(
-        row['unique_address_count'] in (0, 1)
-        for row in payload['address_count_rows']
-    )
+
+
+def test_parse_nfcapd_bucket_start_rejects_tmp_suffix() -> None:
+    module = load_module()
+
+    with pytest.raises(ValueError, match='Invalid nfcapd filename'):
+        module.parse_nfcapd_bucket_start('/captures/r1/nfcapd.202511020115.tmp')

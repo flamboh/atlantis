@@ -24,7 +24,9 @@ from csv_ingest import (
 from flow_observation import FlowObservation
 
 
-NFDUMP_CSV_FORMAT = 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos'
+NFDUMP_CSV_FORMAT = (
+    'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos,%fl,%minttl,%maxttl'
+)
 MAX_SQLITE_INTEGER = (1 << 63) - 1
 
 
@@ -50,8 +52,8 @@ def build_nfdump_csv_command(file_path: str, ip_version: int) -> list[str]:
 
 def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> NormalizedRow:
     """Normalize a fixed-order nfdump CSV row."""
-    if len(values) != 12:
-        raise CsvSourceConfigError(f'nfdump CSV row must contain 12 values, got {len(values)}.')
+    if len(values) != 15:
+        raise CsvSourceConfigError(f'nfdump CSV row must contain 15 values, got {len(values)}.')
 
     row = {
         'tr': values[0],
@@ -66,6 +68,9 @@ def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> Normal
         'byt': values[9],
         'stos': values[10],
         'dtos': values[11],
+        'fl': values[12],
+        'min_ttl': normalize_nfdump_ttl(values[13]),
+        'max_ttl': normalize_nfdump_ttl(values[14]),
     }
     config = CsvSourceConfig(
         delimiter=',',
@@ -85,6 +90,9 @@ def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> Normal
             'bytes': 'byt',
             'src_tos': 'stos',
             'dst_tos': 'dtos',
+            'flow_count': 'fl',
+            'min_ttl': 'min_ttl',
+            'max_ttl': 'max_ttl',
         },
         source_id_value=source_id,
         source_id_column=None,
@@ -108,6 +116,12 @@ def normalize_nfdump_port(raw_value: str) -> str:
     if '.' in raw_text:
         return '0'
     return raw_text
+
+
+def normalize_nfdump_ttl(raw_value: str) -> str | None:
+    """Treat native nfdump TTL zero as missing measurement."""
+    raw_text = str(raw_value).strip()
+    return None if raw_text in ('', '0') else raw_text
 
 
 def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> NormalizedRow:
@@ -138,6 +152,7 @@ def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> Normal
         duration_ms=extract_duration_ms(row, config, timestamps),
         min_ttl=extract_optional_bounded_int(row, config, 'min_ttl', maximum=255),
         max_ttl=extract_optional_bounded_int(row, config, 'max_ttl', maximum=255),
+        flow_count=extract_flow_count(row, config),
     )
     validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
@@ -188,6 +203,7 @@ def normalize_csv_values(
         max_ttl=extract_optional_bounded_int_from_values(
             values, config, field_indexes, 'max_ttl', maximum=255
         ),
+        flow_count=extract_flow_count_from_values(values, config, field_indexes),
     )
     validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
@@ -416,6 +432,46 @@ def extract_optional_bounded_int_from_values(
             f"Invalid integer value '{raw}' for column '{column_name}'."
         ) from error
     return validate_integer_range(value, column_name, minimum=0, maximum=maximum)
+
+
+def extract_flow_count(row: Mapping[str, Any], config: CsvSourceConfig) -> int:
+    column_name = config.columns.get('flow_count')
+    if column_name is None:
+        return 1
+    raw = row.get(column_name)
+    if raw is None or str(raw).strip() == '':
+        return 1
+    try:
+        value = int(str(raw).strip())
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(
+        value, column_name, minimum=1, maximum=MAX_SQLITE_INTEGER
+    )
+
+
+def extract_flow_count_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+) -> int:
+    column_name = config.columns.get('flow_count')
+    if column_name is None:
+        return 1
+    raw = values[field_indexes[column_name]].strip()
+    if raw == '':
+        return 1
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(
+        value, column_name, minimum=1, maximum=MAX_SQLITE_INTEGER
+    )
 
 
 def extract_duration_ms(

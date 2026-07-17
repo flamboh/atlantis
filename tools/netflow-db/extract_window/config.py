@@ -50,6 +50,7 @@ TABLE_CONFIG = {
     "traffic_stats": table_config(),
     "protocol_stats": table_config(),
     "address_count_stats": table_config(),
+    "port_count_stats": table_config(),
     "address_structure_stats": table_config(),
 }
 
@@ -81,6 +82,15 @@ REQUIRED_TABLE_COLUMNS = {
         "bytes_udp",
         "bytes_icmp",
         "bytes_other",
+        "duration_sum_ms",
+        "duration_count",
+        "average_duration_ms",
+        "min_ttl_sum",
+        "min_ttl_count",
+        "average_min_ttl",
+        "max_ttl_sum",
+        "max_ttl_count",
+        "average_max_ttl",
     ),
     "protocol_stats": (
         *COMMON_STATS_COLUMNS,
@@ -91,6 +101,12 @@ REQUIRED_TABLE_COLUMNS = {
         *COMMON_STATS_COLUMNS,
         "address_side",
         "unique_address_count",
+    ),
+    "port_count_stats": (
+        *COMMON_STATS_COLUMNS,
+        "port_side",
+        "port_range",
+        "unique_port_count",
     ),
     "address_structure_stats": (
         *COMMON_STATS_COLUMNS,

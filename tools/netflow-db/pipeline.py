@@ -106,7 +106,7 @@ def current_product_identity(
     """Return result semantics for the selected pipeline product."""
     return ProductIdentity.create(
         schema={
-            'version': 1,
+            'version': 2,
             'tables': [
                 {'name': adapter.table_name, 'version': adapter.schema_version}
                 for adapter in STATS_TABLE_ADAPTERS
@@ -1480,6 +1480,7 @@ def build_logical_nfcapd_bucket_payload(
         'traffic_rows': rows['traffic_rows'],
         'protocol_rows': rows['protocol_rows'],
         'address_count_rows': rows['address_count_rows'],
+        'port_count_rows': rows['port_count_rows'],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
             [canonical_bucket],
             maad_bin,
@@ -1708,6 +1709,7 @@ def publish_csv_bucket_ready(
         'traffic_rows': rows['traffic_rows'],
         'protocol_rows': rows['protocol_rows'],
         'address_count_rows': rows['address_count_rows'],
+        'port_count_rows': rows['port_count_rows'],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
             [bucket],
             maad_bin,
@@ -1912,6 +1914,11 @@ def flush_streaming_aggregate_buckets(
         for payload in stats_payloads
         for row in payload['address_count_rows']
     ]
+    port_count_rows = [
+        row
+        for payload in stats_payloads
+        for row in payload['port_count_rows']
+    ]
     address_structure_rows = (
         build_address_structure_rows_from_payloads(
             stats_payloads,
@@ -1931,6 +1938,7 @@ def flush_streaming_aggregate_buckets(
                 'traffic_rows': traffic_rows,
                 'protocol_rows': protocol_rows,
                 'address_count_rows': address_count_rows,
+                'port_count_rows': port_count_rows,
                 'address_structure_rows': address_structure_rows,
             },
         )
@@ -2003,6 +2011,7 @@ def build_input_payload(
             'traffic_rows': nfcapd_payload['traffic_rows'],
             'protocol_rows': nfcapd_payload['protocol_rows'],
             'address_count_rows': nfcapd_payload['address_count_rows'],
+            'port_count_rows': nfcapd_payload['port_count_rows'],
             'address_structure_rows': build_address_structure_rows_from_raw_buckets(
                 [canonical_bucket],
                 maad_bin,
@@ -2128,6 +2137,11 @@ def write_aggregate_rows(
         for payload in stats_payloads
         for row in payload['address_count_rows']
     ]
+    port_count_rows = [
+        row
+        for payload in stats_payloads
+        for row in payload['port_count_rows']
+    ]
     address_structure_rows = (
         build_address_structure_rows_from_payloads(
             stats_payloads,
@@ -2147,6 +2161,7 @@ def write_aggregate_rows(
                 'traffic_rows': traffic_rows,
                 'protocol_rows': protocol_rows,
                 'address_count_rows': address_count_rows,
+                'port_count_rows': port_count_rows,
                 'address_structure_rows': address_structure_rows,
             },
         )
@@ -2378,6 +2393,7 @@ def build_nfcapd_gap_payload(
         'traffic_rows': rows['traffic_rows'],
         'protocol_rows': rows['protocol_rows'],
         'address_count_rows': rows['address_count_rows'],
+        'port_count_rows': rows['port_count_rows'],
         'address_structure_rows': build_address_structure_rows_from_raw_buckets(
             [canonical_bucket],
             '',

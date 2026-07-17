@@ -63,6 +63,15 @@ REQUIRED_COLUMNS = {
         'bytes_udp',
         'bytes_icmp',
         'bytes_other',
+        'duration_sum_ms',
+        'duration_count',
+        'average_duration_ms',
+        'min_ttl_sum',
+        'min_ttl_count',
+        'average_min_ttl',
+        'max_ttl_sum',
+        'max_ttl_count',
+        'average_max_ttl',
         'processed_at',
     ],
     'protocol_stats': [
@@ -87,6 +96,19 @@ REQUIRED_COLUMNS = {
         'dst_visibility',
         'address_side',
         'unique_address_count',
+        'processed_at',
+    ],
+    'port_count_stats': [
+        'source_id',
+        'granularity',
+        'bucket_start',
+        'bucket_end',
+        'ip_version',
+        'src_visibility',
+        'dst_visibility',
+        'port_side',
+        'port_range',
+        'unique_port_count',
         'processed_at',
     ],
     'address_structure_stats': [
@@ -186,7 +208,12 @@ def verify_database(
 
         row_counts = table_row_counts(conn)
         if require_data:
-            for table_name in ('traffic_stats', 'protocol_stats', 'address_count_stats'):
+            for table_name in (
+                'traffic_stats',
+                'protocol_stats',
+                'address_count_stats',
+                'port_count_stats',
+            ):
                 if row_counts[table_name] == 0:
                     raise SystemExit(f'{table_name} has no rows.')
             rollup_count = conn.execute(
@@ -351,7 +378,22 @@ def assert_traffic_rollup_parity(conn: sqlite3.Connection) -> None:
                 SUM(ts.bytes_tcp) AS bytes_tcp,
                 SUM(ts.bytes_udp) AS bytes_udp,
                 SUM(ts.bytes_icmp) AS bytes_icmp,
-                SUM(ts.bytes_other) AS bytes_other
+                SUM(ts.bytes_other) AS bytes_other,
+                SUM(ts.duration_sum_ms) AS duration_sum_ms,
+                SUM(ts.duration_count) AS duration_count,
+                CASE WHEN SUM(ts.duration_count) = 0 THEN NULL
+                     ELSE CAST(SUM(ts.duration_sum_ms) AS REAL) / SUM(ts.duration_count)
+                END AS average_duration_ms,
+                SUM(ts.min_ttl_sum) AS min_ttl_sum,
+                SUM(ts.min_ttl_count) AS min_ttl_count,
+                CASE WHEN SUM(ts.min_ttl_count) = 0 THEN NULL
+                     ELSE CAST(SUM(ts.min_ttl_sum) AS REAL) / SUM(ts.min_ttl_count)
+                END AS average_min_ttl,
+                SUM(ts.max_ttl_sum) AS max_ttl_sum,
+                SUM(ts.max_ttl_count) AS max_ttl_count,
+                CASE WHEN SUM(ts.max_ttl_count) = 0 THEN NULL
+                     ELSE CAST(SUM(ts.max_ttl_sum) AS REAL) / SUM(ts.max_ttl_count)
+                END AS average_max_ttl
             FROM (
                 SELECT source_id, granularity, bucket_start, bucket_end
                 FROM address_count_stats
@@ -390,7 +432,16 @@ def assert_traffic_rollup_parity(conn: sqlite3.Connection) -> None:
                 bytes_tcp,
                 bytes_udp,
                 bytes_icmp,
-                bytes_other
+                bytes_other,
+                duration_sum_ms,
+                duration_count,
+                average_duration_ms,
+                min_ttl_sum,
+                min_ttl_count,
+                average_min_ttl,
+                max_ttl_sum,
+                max_ttl_count,
+                average_max_ttl
             FROM traffic_stats
             WHERE granularity IN ('30m', '1h', '1d')
         ),

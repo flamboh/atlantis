@@ -13,7 +13,7 @@ from csv_ingest import CsvSourceConfig
 
 
 CSV_DECODER_VERSION = 1
-NFCAPD_DECODER_VERSION = 1
+NFCAPD_DECODER_VERSION = 2
 GAP_DECODER_VERSION = 1
 
 
@@ -177,12 +177,23 @@ def capture_csv_input_revision(
 
 
 def nfcapd_decoder_fingerprint() -> str:
-    """Fingerprint the grouped native decoder contract."""
+    """Fingerprint the streaming per-observation native decoder contract."""
     return fingerprint(
         {
             'version': NFCAPD_DECODER_VERSION,
-            'kind': 'nfcapd-grouped',
-            'facts': ['scoped-addresses', 'protocol-src-tos-counters'],
+            'kind': 'nfcapd-streaming-observations',
+            'fields': [
+                'timestamps',
+                'addresses',
+                'ports',
+                'protocol',
+                'packets',
+                'bytes',
+                'tos',
+                'flow-count',
+                'min-ttl',
+                'max-ttl',
+            ],
         }
     )
 
