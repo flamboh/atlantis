@@ -103,6 +103,78 @@ def test_dataset_selection_requires_separate_explicit_database(
     }
 
 
+def test_logical_jobs_bind_the_selection_used_during_preparation(tmp_path) -> None:
+    pipeline = load_module()
+    pipeline_product = importlib.import_module('pipeline_product')
+    conn = sqlite3.connect(':memory:')
+    path = tmp_path / 'nfcapd.202504150000'
+    path.write_bytes(b'native-input')
+    prepared_selection = pipeline.FlowSelection.from_payload(
+        {'ip_prefix': '192.0.2.0/24'}
+    )
+    process_selection = pipeline.FlowSelection.from_payload(
+        {'ip_prefix': '198.51.100.0/24'}
+    )
+    jobs = pipeline.build_nfcapd_logical_bucket_jobs(
+        conn,
+        [pipeline.SourceDefinition('r1', ('member',))],
+        [
+            {
+                'input_kind': 'nfcapd',
+                'path': str(path),
+                'source_id': 'member',
+            }
+        ],
+        selection=prepared_selection,
+    )
+    pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(
+        conn,
+        run_maad=False,
+        maad_backend='python',
+        selection=process_selection,
+    )
+
+    with pytest.raises(pipeline_product.ProductIdentityConflict, match='selection'):
+        pipeline.process_nfcapd_logical_bucket_jobs(
+            conn,
+            jobs,
+            maad_backend='python',
+            run_maad=False,
+        )
+
+
+def test_manual_logical_jobs_require_one_consistent_selection_identity() -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    selection_a = pipeline.FlowSelection.from_payload({'ip_prefix': '192.0.2.0/24'})
+    selection_b = pipeline.FlowSelection.from_payload({'ip_prefix': '198.51.100.0/24'})
+    missing = {
+        'source_id': 'r1',
+        'bucket_start': 0,
+        'bucket_end': 300,
+        'member_specs': [],
+        'missing_members': ['r1'],
+    }
+    with pytest.raises(ValueError, match='missing a canonical FlowSelection identity'):
+        pipeline.process_nfcapd_logical_bucket_jobs(conn, [missing], run_maad=False)
+
+    inconsistent = [
+        {**missing, '_flow_selection': selection_a},
+        {**missing, '_flow_selection': selection_b, 'bucket_start': 300, 'bucket_end': 600},
+    ]
+    with pytest.raises(ValueError, match='inconsistent FlowSelection identities'):
+        pipeline.process_nfcapd_logical_bucket_jobs(conn, inconsistent, run_maad=False)
+
+    member_mismatch = {
+        **missing,
+        '_flow_selection': selection_a,
+        'member_specs': [{'_flow_selection': selection_b}],
+    }
+    with pytest.raises(ValueError, match='inconsistent FlowSelection identities'):
+        pipeline.process_nfcapd_logical_bucket_jobs(conn, [member_mismatch], run_maad=False)
+
+
 def test_apply_cli_config_overrides_updates_loaded_config() -> None:
     pipeline = load_module()
     config = {
@@ -797,6 +869,7 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
         conn,
         [
             {
+                '_flow_selection': pipeline.FlowSelection(),
                 'source_id': 'r1',
                 'bucket_start': base_bucket,
                 'bucket_end': base_bucket + pipeline.FIVE_MINUTE_SECONDS,
@@ -905,6 +978,7 @@ def test_logical_force_replaces_changed_owner_but_rejects_unrelated_csv() -> Non
         decoder_fingerprint='decoder',
     )
     job = {
+        '_flow_selection': pipeline.FlowSelection(),
         'source_id': 'r1',
         'bucket_start': 0,
         'bucket_end': 300,
@@ -970,6 +1044,7 @@ def test_gap_publication_rejects_real_file_appearing_after_discovery(tmp_path) -
     expected_path = tmp_path / 'nfcapd.202504150000'
     absence = pipeline.ExpectedAbsence.capture(expected_path)
     job = {
+        '_flow_selection': pipeline.FlowSelection(),
         'source_id': 'r1',
         'bucket_start': 0,
         'bucket_end': 300,

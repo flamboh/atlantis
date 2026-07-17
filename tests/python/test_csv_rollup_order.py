@@ -402,6 +402,7 @@ def test_exact_csv_bucket_cannot_be_overwritten_by_logical_nfcapd_gap(tmp_path) 
             conn,
             [
                 {
+                    '_flow_selection': pipeline.FlowSelection(),
                     'source_id': 'r1',
                     'bucket_start': bucket_start,
                     'bucket_end': bucket_start + 300,

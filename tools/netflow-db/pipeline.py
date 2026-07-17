@@ -371,7 +371,6 @@ def process_nfcapd_tree_spec(
             maad_workers=maad_workers,
             max_workers=max_workers,
             run_maad=run_maad,
-            selection=selection,
         )
         print(
             f"[pipeline] Complete {day.strftime('%Y-%m-%d')}: "
@@ -775,6 +774,7 @@ def build_nfcapd_logical_bucket_jobs(
                 needs_processing = True
             jobs.append(
                 {
+                    '_flow_selection': selection,
                     'source_id': source.source_id,
                     'bucket_start': bucket_start,
                     'bucket_end': bucket_start + FIVE_MINUTE_SECONDS,
@@ -1197,9 +1197,11 @@ def process_nfcapd_logical_bucket_jobs(
     maad_workers: int = 1,
     max_workers: int = DEFAULT_MAX_WORKERS,
     run_maad: bool = True,
-    selection: FlowSelection = FlowSelection(),
 ) -> None:
     """Process logical nfcapd source buckets with bounded raw payload retention."""
+    if not jobs:
+        return
+    selection = logical_jobs_flow_selection(jobs)
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
     bind_current_product(
@@ -1284,6 +1286,37 @@ def process_nfcapd_logical_bucket_jobs(
     )
     with conn:
         mark_processed_buckets(conn, processed_buckets)
+
+
+def logical_jobs_flow_selection(jobs: list[dict]) -> FlowSelection:
+    """Return the one selection identity carried by all logical jobs and members."""
+    expected: FlowSelection | None = None
+    for job_index, job in enumerate(jobs):
+        selection = job.get('_flow_selection')
+        if not isinstance(selection, FlowSelection):
+            raise ValueError(
+                f'Logical nfcapd job {job_index} is missing a canonical FlowSelection identity'
+            )
+        if expected is None:
+            expected = selection
+        elif selection != expected:
+            raise ValueError('Logical nfcapd jobs contain inconsistent FlowSelection identities')
+
+        for member_index, member_spec in enumerate(job.get('member_specs', [])):
+            member_selection = member_spec.get('_flow_selection')
+            if not isinstance(member_selection, FlowSelection):
+                raise ValueError(
+                    f'Logical nfcapd job {job_index} member {member_index} '
+                    'is missing a canonical FlowSelection identity'
+                )
+            if member_selection != selection:
+                raise ValueError(
+                    f'Logical nfcapd job {job_index} contains inconsistent '
+                    'FlowSelection identities'
+                )
+
+    assert expected is not None
+    return expected
 
 
 def iter_logical_job_windows(jobs: list[dict], bucket_window_size: int) -> Iterable[list[dict]]:
