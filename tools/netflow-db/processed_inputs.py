@@ -79,28 +79,6 @@ def upsert_input_bucket(
     )
 
 
-def get_pending_inputs(conn: sqlite3.Connection) -> list[dict]:
-    """Return bucket inputs that have not completed processing."""
-    rows = conn.execute(
-        """
-        SELECT input_kind, input_locator, source_id, bucket_start, bucket_end
-        FROM processed_inputs
-        WHERE status != 'processed'
-        ORDER BY bucket_start, source_id, input_locator
-        """
-    ).fetchall()
-    return [
-        {
-            'input_kind': row[0],
-            'input_locator': row[1],
-            'source_id': row[2],
-            'bucket_start': row[3],
-            'bucket_end': row[4],
-        }
-        for row in rows
-    ]
-
-
 def mark_input_bucket_status(
     conn: sqlite3.Connection,
     *,

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import stats_v3
+import stats
 from extract_window_helpers import (
     PORTABLE_TABLES,
     copied_rows,
@@ -393,7 +393,7 @@ def test_extract_reads_from_source_snapshot(tmp_path: Path, monkeypatch: pytest.
         if table == 'traffic_stats' and not mutated:
             mutated = True
             with module.connect_db(source_path) as writer:
-                stats_v3.insert_traffic_stats_rows(
+                stats.insert_traffic_stats_rows(
                     writer,
                     [
                         traffic_row(source_id='r1', granularity='5m', bucket_start=300, flows=999)

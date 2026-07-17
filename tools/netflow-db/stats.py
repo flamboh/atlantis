@@ -417,11 +417,6 @@ def merge_traffic_rows(rows: Iterable[dict]) -> list[dict]:
     return [merged[key] for key in sorted(merged)]
 
 
-def merge_protocol_set_entries(entries: Iterable[dict]) -> list[dict]:
-    """Union protocol sets by dimensions."""
-    return protocol_set_entries_to_rows(merge_protocol_set_entries_raw(entries))
-
-
 def merge_protocol_set_entries_raw(entries: Iterable[dict]) -> list[dict]:
     """Union protocol sets by dimensions and keep raw set entries."""
     merged = {}

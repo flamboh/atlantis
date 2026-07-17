@@ -5,7 +5,7 @@ from pathlib import Path
 
 import datasets_metadata
 import processed_inputs
-import stats_v3
+import stats
 
 
 NETFLOW_DB_TOOLS = Path(__file__).resolve().parents[2] / 'tools' / 'netflow-db'
@@ -31,7 +31,7 @@ def make_source_db(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     datasets_metadata.init_datasets_table(conn)
     processed_inputs.init_processed_inputs_table(conn)
-    stats_v3.init_stats_v3_tables(conn)
+    stats.init_stats_tables(conn)
     datasets_metadata.upsert_dataset_metadata(
         conn,
         {
@@ -55,7 +55,7 @@ def make_source_db(path: Path) -> sqlite3.Connection:
         bucket_start=200,
         bucket_end=500,
     )
-    stats_v3.insert_traffic_stats_rows(
+    stats.insert_traffic_stats_rows(
         conn,
         [
             traffic_row(source_id='r1', granularity='5m', bucket_start=100, flows=10),
@@ -76,7 +76,7 @@ def traffic_row(
     bucket_start: int,
     flows: int,
 ) -> dict:
-    row = stats_v3.empty_traffic_stats_row(
+    row = stats.empty_traffic_stats_row(
         source_id=source_id,
         granularity=granularity,
         bucket_start=bucket_start,
