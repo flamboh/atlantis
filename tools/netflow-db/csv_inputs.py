@@ -216,10 +216,14 @@ def normalize_csv_values_with_context(
         raise CsvSourceConfigError(f'{locator}:{line_number}: {error}') from error
 
 
-def discover_csv_specs(root_path: str | Path, mapping_path: str | Path) -> list[dict]:
+def discover_csv_specs(
+    root_path: str | Path,
+    mapping_path: str | Path,
+    config: CsvSourceConfig | None = None,
+) -> list[dict]:
     """Discover configured CSV inputs under a flat root directory."""
     root = Path(root_path)
-    config = load_csv_source_config(mapping_path)
+    config = load_csv_source_config(mapping_path) if config is None else config
     specs = []
     for path in sorted(root.iterdir()):
         if not path.is_file():

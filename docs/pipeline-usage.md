@@ -51,6 +51,30 @@ the duration value, while mapped endpoints must still satisfy
 `time_end >= time_start`. When duration is absent, ingestion derives it from
 mapped `time_start` and `time_end` timestamps when both are available.
 
+### Database and input identity
+
+Every pipeline database is bound on first use to independently fingerprinted
+schema, selection, and result-configuration semantics. The current selection is
+the complete input (`all`). Result configuration includes the pipeline timezone
+and the enabled MAAD backend contract, but excludes paths, discovery windows,
+worker counts, and CSV mappings. A populated database without this identity is
+not adopted; rebuild it into a new database.
+
+Each CSV, nfcapd file, and synthetic gap also records an exact input revision.
+The revision combines SHA-256 content identity with a canonical decoder
+fingerprint. Reusing a successfully processed locator with changed content or
+decoder semantics is rejected instead of silently mixing results. Forced nfcapd
+tree processing remains the explicit rewrite mechanism.
+
+Hashing is guarded by file device, inode, size, modification time, and change
+time snapshots before and after SHA-256 and again after decoding. A completed
+input with the same snapshot reuses its persisted digest, so unchanged large
+inputs are not reread on every run. A changed snapshot is hashed once and then
+conflicts with the prior revision unless the nfcapd run is forced. This policy
+detects ordinary replacement and in-place modification; filesystems or
+adversarial writers capable of changing bytes while preserving every tracked
+stat field remain outside the stability guarantee.
+
 ## Compile helpers
 
 The canonical MAAD helper is built with:

@@ -747,6 +747,7 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
         for offset in range(6)
     ]
     pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(conn, run_maad=False, maad_backend='python')
     pipeline.write_aggregate_rows(
         conn,
         raw_buckets,
@@ -803,6 +804,128 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
 
     assert aggregate_flows == (6,)
     assert rewritten_5m == (0,)
+
+
+def test_logical_force_replaces_changed_owner_but_rejects_unrelated_csv() -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    pipeline.init_processed_inputs_table(conn)
+    pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(conn, run_maad=False, maad_backend='python')
+    locator = '/captures/nfcapd.202504150000'
+    old_revision = pipeline.InputRevision.create(
+        input_kind='nfcapd',
+        locator=locator,
+        content_fingerprint='old',
+        decoder_fingerprint='decoder',
+    )
+    pipeline.upsert_input_bucket(
+        conn,
+        input_kind='nfcapd',
+        input_locator=locator,
+        source_id='r1',
+        bucket_start=0,
+        bucket_end=300,
+        input_revision=old_revision,
+    )
+    pipeline.mark_input_bucket_status(
+        conn,
+        input_kind='nfcapd',
+        input_locator=locator,
+        source_id='r1',
+        bucket_start=0,
+        status='processed',
+        input_revision=old_revision,
+    )
+    removed_locator = '/captures/nfcapd.202504150000.removed-member'
+    removed_revision = pipeline.InputRevision.create(
+        input_kind='nfcapd',
+        locator=removed_locator,
+        content_fingerprint='removed',
+        decoder_fingerprint='decoder',
+    )
+    pipeline.upsert_input_bucket(
+        conn,
+        input_kind='nfcapd',
+        input_locator=removed_locator,
+        source_id='r1',
+        bucket_start=0,
+        bucket_end=300,
+        input_revision=removed_revision,
+    )
+    pipeline.mark_input_bucket_status(
+        conn,
+        input_kind='nfcapd',
+        input_locator=removed_locator,
+        source_id='r1',
+        bucket_start=0,
+        status='processed',
+        input_revision=removed_revision,
+    )
+    new_revision = pipeline.InputRevision.create(
+        input_kind='nfcapd',
+        locator=locator,
+        content_fingerprint='new',
+        decoder_fingerprint='decoder',
+    )
+    job = {
+        'source_id': 'r1',
+        'bucket_start': 0,
+        'bucket_end': 300,
+        'member_specs': [
+            {
+                'input_kind': 'nfcapd',
+                'path': locator,
+                'source_id': 'member',
+                'input_revision': new_revision,
+            }
+        ],
+        'missing_members': [],
+    }
+    raw = make_raw_bucket(pipeline, 'member', 0)
+    pipeline.process_logical_nfcapd_job(
+        conn,
+        job,
+        {locator: raw},
+        maad_bin='',
+        maad_backend='python',
+        aggregate_buckets={},
+        processed_buckets=[],
+        current_run_keys=set(),
+        delete_existing=True,
+    )
+    assert conn.execute(
+        "SELECT input_locator, content_fingerprint FROM processed_inputs "
+        "WHERE input_kind = 'nfcapd'"
+    ).fetchall() == [(locator, 'new')]
+
+    csv_revision = pipeline.InputRevision.create(
+        input_kind='csv',
+        locator='/csv/other.csv',
+        content_fingerprint='csv',
+        decoder_fingerprint='decoder',
+    )
+    pipeline.upsert_input_bucket(
+        conn,
+        input_kind='csv',
+        input_locator=csv_revision.locator,
+        source_id='r1',
+        bucket_start=0,
+        bucket_end=300,
+        input_revision=csv_revision,
+    )
+    with pytest.raises(pipeline.AggregatePublicationConflict, match='Overlapping'):
+        pipeline.process_logical_nfcapd_job(
+            conn,
+            job,
+            {locator: raw},
+            maad_bin='',
+            maad_backend='python',
+            aggregate_buckets={},
+            processed_buckets=[],
+            current_run_keys=set(),
+            delete_existing=True,
+        )
 
 
 def test_batch_and_streaming_aggregation_render_identical_rows() -> None:

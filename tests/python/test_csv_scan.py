@@ -46,7 +46,13 @@ def write_mapping(
 
 
 def scan(module, csv_path, mapping_path):
-    return list(module.scan_csv({'path': str(csv_path), 'mapping_path': str(mapping_path)}))
+    config = module.load_csv_source_config(mapping_path)
+    return list(
+        module.scan_csv(
+            {'path': str(csv_path), 'mapping_path': str(mapping_path)},
+            config,
+        )
+    )
 
 
 @pytest.mark.parametrize('has_header', [False, True])
@@ -184,7 +190,10 @@ def test_fatal_column_shape_does_not_emit_completion(tmp_path) -> None:
     mapping = write_mapping(tmp_path)
     csv_path = tmp_path / 'flows.csv'
     csv_path.write_text('2016-07-27 13:40:00,192.0.2.1\n', encoding='utf-8')
-    events = module.scan_csv({'path': str(csv_path), 'mapping_path': str(mapping)})
+    events = module.scan_csv(
+        {'path': str(csv_path), 'mapping_path': str(mapping)},
+        module.load_csv_source_config(mapping),
+    )
 
     with pytest.raises(module.CsvSourceConfigError, match='Expected 7 columns'):
         list(events)

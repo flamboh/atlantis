@@ -410,7 +410,7 @@ def test_exact_csv_bucket_cannot_be_overwritten_by_logical_nfcapd_gap(tmp_path) 
                 }
             ],
             maad_bin='',
-            maad_backend='python',
+                maad_backend='subprocess',
             maad_workers=1,
             max_workers=1,
             run_maad=False,

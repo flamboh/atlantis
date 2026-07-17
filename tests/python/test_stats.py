@@ -1,6 +1,8 @@
 import importlib
 import sqlite3
 
+import pytest
+
 
 def load_modules():
     stats = importlib.import_module('stats')
@@ -68,3 +70,29 @@ def test_stats_insert_round_trip() -> None:
         'SELECT COUNT(*) FROM address_structure_stats WHERE structure_kind IN '
         "('structure', 'spectrum', 'dimension')"
     ).fetchone() == (3,)
+
+
+def test_stats_table_registry_drives_init_insert_and_delete() -> None:
+    stats, _maad, _bucket_module = load_modules()
+    conn = sqlite3.connect(':memory:')
+    stats.init_stats_tables(conn)
+
+    assert len(stats.STATS_TABLE_NAMES) == len(set(stats.STATS_TABLE_NAMES))
+    assert {adapter.payload_key for adapter in stats.STATS_TABLE_ADAPTERS} == {
+        'traffic_rows',
+        'protocol_rows',
+        'address_count_rows',
+        'address_structure_rows',
+    }
+    for table_name in stats.STATS_TABLE_NAMES:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone() == (1,)
+
+    stats.delete_stats_bucket_keys(conn, [('r1', '5m', 0)])
+
+    with pytest.raises(ValueError, match='Unknown stats table'):
+        stats.insert_stats_payload(conn, {}, table_names=('typo_stats',))
+    with pytest.raises(ValueError, match='Missing payload key'):
+        stats.insert_stats_payload(conn, {})

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Callable, Iterable, Mapping
 
 from maad import MaadJsonResult
 from statistical_bucket import CanonicalBucket
@@ -94,10 +95,8 @@ def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
 
 def init_stats_tables(conn: sqlite3.Connection) -> None:
     """Create all stats tables and indexes."""
-    init_traffic_stats_table(conn)
-    init_protocol_stats_table(conn)
-    init_address_count_stats_table(conn)
-    init_address_structure_stats_table(conn)
+    for adapter in STATS_TABLE_ADAPTERS:
+        adapter.initialize(conn)
 
 
 def init_traffic_stats_table(conn: sqlite3.Connection) -> None:
@@ -403,3 +402,85 @@ def insert_address_structure_stats_rows(conn: sqlite3.Connection, rows: list[dic
             for row in rows
         ],
     )
+
+
+@dataclass(frozen=True, slots=True)
+class StatsTableAdapter:
+    """One registered stats table's complete persistence lifecycle."""
+
+    table_name: str
+    payload_key: str
+    schema_version: int
+    initialize: Callable[[sqlite3.Connection], None]
+    insert: Callable[[sqlite3.Connection, list[dict]], None]
+
+
+STATS_TABLE_ADAPTERS = (
+    StatsTableAdapter(
+        'traffic_stats',
+        'traffic_rows',
+        1,
+        init_traffic_stats_table,
+        insert_traffic_stats_rows,
+    ),
+    StatsTableAdapter(
+        'protocol_stats',
+        'protocol_rows',
+        1,
+        init_protocol_stats_table,
+        insert_protocol_stats_rows,
+    ),
+    StatsTableAdapter(
+        'address_count_stats',
+        'address_count_rows',
+        1,
+        init_address_count_stats_table,
+        insert_address_count_stats_rows,
+    ),
+    StatsTableAdapter(
+        'address_structure_stats',
+        'address_structure_rows',
+        1,
+        init_address_structure_stats_table,
+        insert_address_structure_stats_rows,
+    ),
+)
+STATS_TABLE_NAMES = tuple(adapter.table_name for adapter in STATS_TABLE_ADAPTERS)
+
+
+def insert_stats_payload(
+    conn: sqlite3.Connection,
+    payload: Mapping[str, list[dict]],
+    *,
+    table_names: Iterable[str] | None = None,
+) -> None:
+    """Insert selected registered row families, requiring complete wiring."""
+    selected = None if table_names is None else set(table_names)
+    registered = {adapter.table_name for adapter in STATS_TABLE_ADAPTERS}
+    unknown = set() if selected is None else selected - registered
+    if unknown:
+        raise ValueError(f'Unknown stats table names: {sorted(unknown)!r}')
+    for adapter in STATS_TABLE_ADAPTERS:
+        if selected is None or adapter.table_name in selected:
+            if adapter.payload_key not in payload:
+                raise ValueError(
+                    f'Missing payload key {adapter.payload_key!r} '
+                    f'for stats table {adapter.table_name!r}'
+                )
+            adapter.insert(conn, payload[adapter.payload_key])
+
+
+def delete_stats_bucket_keys(
+    conn: sqlite3.Connection,
+    keys: Iterable[tuple[str, str, int]],
+) -> None:
+    """Delete source/granularity/bucket keys from every registered stats table."""
+    values = list(keys)
+    if not values:
+        return
+    for adapter in STATS_TABLE_ADAPTERS:
+        conn.executemany(
+            f'DELETE FROM {adapter.table_name} '
+            'WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
+            values,
+        )

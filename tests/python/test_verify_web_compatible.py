@@ -4,6 +4,17 @@ from pathlib import Path
 
 import pytest
 
+from input_revision import InputRevision
+
+
+def revision(input_kind: str, locator: str) -> InputRevision:
+    return InputRevision.create(
+        input_kind=input_kind,
+        locator=locator,
+        content_fingerprint='fixture',
+        decoder_fingerprint='fixture',
+    )
+
 
 def load_modules():
     verifier = importlib.import_module('verify_web_compatible')
@@ -31,6 +42,7 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
             source_id='ugr16',
             bucket_start=bucket_start,
             bucket_end=bucket_start + 300,
+            input_revision=revision('nfcapd', 'nfcapd.202504150005'),
         )
         processed_inputs.mark_input_bucket_status(
             conn,
@@ -39,6 +51,7 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
             source_id='ugr16',
             bucket_start=bucket_start,
             status='processed',
+            input_revision=revision('nfcapd', 'nfcapd.202504150005'),
         )
         stats.insert_traffic_stats_rows(
             conn,
@@ -86,6 +99,7 @@ def test_require_processed_rejects_processed_csv_buckets_without_terminal_scan()
         source_id='ugr16',
         bucket_start=1744700700,
         bucket_end=1744701000,
+        input_revision=revision('csv', '/csv/fatal.csv'),
     )
     processed_inputs.mark_input_bucket_status(
         conn,
@@ -94,6 +108,7 @@ def test_require_processed_rejects_processed_csv_buckets_without_terminal_scan()
         source_id='ugr16',
         bucket_start=1744700700,
         status='processed',
+        input_revision=revision('csv', '/csv/fatal.csv'),
     )
 
     with pytest.raises(SystemExit, match='1 incomplete CSV scan'):
