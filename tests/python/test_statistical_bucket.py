@@ -107,6 +107,41 @@ def test_include_retargets_sums_unions_and_tracks_coverage() -> None:
     assert snapshot.has_complete_five_minute_coverage is False
 
 
+def test_flow_and_grouped_adapters_produce_the_same_sparse_snapshot() -> None:
+    module = load_module()
+    key = module.BucketKey('r1', '5m', 0, 300)
+    flows = [
+        module.FlowFact(4, '192.0.2.1', '198.51.100.1', 6, 2, 20, 2),
+        module.FlowFact(4, '192.0.2.2', '198.51.100.2', 6, 3, 30, 2),
+    ]
+    per_flow = module.StatisticalBucket(key)
+    for fact in flows:
+        per_flow.add(fact)
+
+    grouped = module.StatisticalBucket(key)
+    grouped.add(module.GroupedTrafficFact(4, 6, 2, 2, 5, 50))
+    for scope in (
+        module.Scope(4, 'all', 'all'),
+        module.Scope(4, 'anonymized', 'literal'),
+    ):
+        grouped.add(
+            module.ScopedAddressesFact(
+                scope,
+                'source',
+                {'192.0.2.1', '192.0.2.2'},
+            )
+        )
+        grouped.add(
+            module.ScopedAddressesFact(
+                scope,
+                'destination',
+                {'198.51.100.1', '198.51.100.2'},
+            )
+        )
+
+    assert grouped.finish() == per_flow.finish()
+
+
 def test_dense_bucket_has_all_zero_query_scopes() -> None:
     module = load_module()
     snapshot = module.StatisticalBucket(

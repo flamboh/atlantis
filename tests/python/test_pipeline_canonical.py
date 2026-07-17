@@ -566,3 +566,29 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
 
     assert aggregate_flows == (6,)
     assert rewritten_5m == (0,)
+
+
+def test_batch_and_streaming_aggregation_render_identical_rows() -> None:
+    pipeline = load_module()
+    children = [
+        make_raw_bucket(pipeline, 'r1', bucket_start)
+        for bucket_start in (0, pipeline.FIVE_MINUTE_SECONDS)
+    ]
+
+    batch_rows = pipeline.build_aggregate_stats_payloads(children)
+    batch_by_key = {
+        (
+            payload['traffic_rows'][0]['granularity'],
+            payload['traffic_rows'][0]['bucket_start'],
+        ): payload
+        for payload in batch_rows
+    }
+    streaming = {}
+    for child in children:
+        pipeline.add_raw_bucket_to_streaming_aggregates(streaming, child)
+    streaming_by_key = {
+        (granularity, bucket_start): pipeline.canonical_bucket_rows(builder.finish())
+        for (_source_id, granularity, bucket_start), builder in streaming.items()
+    }
+
+    assert streaming_by_key == batch_by_key

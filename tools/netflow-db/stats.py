@@ -69,16 +69,20 @@ def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
             'src_visibility': entry.scope.src_visibility,
             'dst_visibility': entry.scope.dst_visibility,
             'address_side': entry.address_side,
-            'addresses': list(entry.addresses),
+            'addresses': entry.addresses,
         }
         for entry in bucket.addresses
     ]
     address_count_rows = [
         {
-            **{key: value for key, value in entry.items() if key != 'addresses'},
-            'unique_address_count': len(entry['addresses']),
+            **base,
+            'ip_version': entry.scope.ip_version,
+            'src_visibility': entry.scope.src_visibility,
+            'dst_visibility': entry.scope.dst_visibility,
+            'address_side': entry.address_side,
+            'unique_address_count': len(entry.addresses),
         }
-        for entry in address_sets
+        for entry in bucket.addresses
     ]
     return {
         'traffic_rows': traffic_rows,

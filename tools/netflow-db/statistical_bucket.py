@@ -25,7 +25,7 @@ EXACT_VISIBILITY_PAIRS: tuple[tuple[Visibility, Visibility], ...] = (
 ZERO_FILL_VISIBILITY_PAIRS = (ALL_VISIBILITY, *EXACT_VISIBILITY_PAIRS)
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True, order=True, slots=True)
 class BucketKey:
     source_id: str
     granularity: Granularity
@@ -33,7 +33,7 @@ class BucketKey:
     bucket_end: int
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True, order=True, slots=True)
 class Scope:
     ip_version: int
     src_visibility: Visibility
@@ -44,7 +44,7 @@ class Scope:
             raise ValueError(f'Unsupported ip_version: {self.ip_version!r}')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FlowFact:
     ip_version: int
     src_ip: str
@@ -55,7 +55,7 @@ class FlowFact:
     src_tos: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class GroupedTrafficFact:
     ip_version: int
     protocol: int
@@ -65,14 +65,14 @@ class GroupedTrafficFact:
     bytes_count: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScopedAddressesFact:
     scope: Scope
     address_side: AddressSide
     addresses: Iterable[str | int]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TrafficMetrics:
     flows: int = 0
     flows_tcp: int = 0
@@ -91,26 +91,26 @@ class TrafficMetrics:
     bytes_other: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScopedTraffic:
     scope: Scope
     metrics: TrafficMetrics
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScopedProtocols:
     scope: Scope
     protocols: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScopedAddresses:
     scope: Scope
     address_side: AddressSide
     addresses: tuple[str | int, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CanonicalBucket:
     key: BucketKey
     traffic: tuple[ScopedTraffic, ...]
@@ -124,7 +124,7 @@ class CanonicalBucket:
         return len(self.five_minute_starts) == expected
 
 
-@dataclass
+@dataclass(slots=True)
 class _MutableMetrics:
     values: dict[str, int] = field(default_factory=lambda: {name: 0 for name in _METRIC_NAMES})
 
@@ -170,22 +170,26 @@ class StatisticalBucket:
 
     def add(self, fact: FlowFact | GroupedTrafficFact | ScopedAddressesFact) -> None:
         if isinstance(fact, FlowFact):
-            grouped = GroupedTrafficFact(
-                ip_version=fact.ip_version,
-                protocol=fact.protocol,
-                src_tos=fact.src_tos,
-                flows=1,
-                packets=fact.packets,
-                bytes_count=fact.bytes_count,
-            )
             for scope in _scopes_for_tos(fact.ip_version, fact.src_tos):
-                self._add_grouped(scope, grouped)
-                self._addresses.setdefault((scope, 'source'), set()).add(fact.src_ip)
-                self._addresses.setdefault((scope, 'destination'), set()).add(fact.dst_ip)
+                self._add_traffic(
+                    scope,
+                    protocol=fact.protocol,
+                    flows=1,
+                    packets=fact.packets,
+                    bytes_count=fact.bytes_count,
+                )
+                self._add_address(scope, 'source', fact.src_ip)
+                self._add_address(scope, 'destination', fact.dst_ip)
             return
         if isinstance(fact, GroupedTrafficFact):
             for scope in _scopes_for_tos(fact.ip_version, fact.src_tos):
-                self._add_grouped(scope, fact)
+                self._add_traffic(
+                    scope,
+                    protocol=fact.protocol,
+                    flows=fact.flows,
+                    packets=fact.packets,
+                    bytes_count=fact.bytes_count,
+                )
             return
         if isinstance(fact, ScopedAddressesFact):
             self._addresses.setdefault((fact.scope, fact.address_side), set()).update(fact.addresses)
@@ -219,26 +223,69 @@ class StatisticalBucket:
             five_minute_starts=frozenset(self._five_minute_starts),
         )
 
-    def _add_grouped(self, scope: Scope, fact: GroupedTrafficFact) -> None:
-        self._traffic.setdefault(scope, _MutableMetrics()).add(
-            fact.protocol,
-            fact.flows,
-            fact.packets,
-            fact.bytes_count,
+    def _add_traffic(
+        self,
+        scope: Scope,
+        *,
+        protocol: int,
+        flows: int,
+        packets: int,
+        bytes_count: int,
+    ) -> None:
+        metrics = self._traffic.get(scope)
+        if metrics is None:
+            metrics = _MutableMetrics()
+            self._traffic[scope] = metrics
+        metrics.add(
+            protocol,
+            flows,
+            packets,
+            bytes_count,
         )
-        self._protocols.setdefault(scope, set()).add(str(fact.protocol))
+        protocols = self._protocols.get(scope)
+        if protocols is None:
+            protocols = set()
+            self._protocols[scope] = protocols
+        protocols.add(str(protocol))
+
+    def _add_address(
+        self,
+        scope: Scope,
+        side: AddressSide,
+        address: str | int,
+    ) -> None:
+        key = (scope, side)
+        addresses = self._addresses.get(key)
+        if addresses is None:
+            addresses = set()
+            self._addresses[key] = addresses
+        addresses.add(address)
 
 
 def visibility_pair_from_tos(src_tos: int) -> tuple[Visibility, Visibility]:
-    return (
-        'anonymized' if src_tos & 2 else 'literal',
-        'anonymized' if src_tos & 1 else 'literal',
-    )
+    return _VISIBILITY_PAIR_BY_BITS[src_tos & 3]
 
 
 def _scopes_for_tos(ip_version: int, src_tos: int) -> tuple[Scope, Scope]:
-    src_visibility, dst_visibility = visibility_pair_from_tos(src_tos)
-    return Scope(ip_version, 'all', 'all'), Scope(ip_version, src_visibility, dst_visibility)
+    if ip_version not in (4, 6):
+        raise ValueError(f'Unsupported ip_version: {ip_version!r}')
+    return _SCOPES_BY_VERSION_AND_BITS[(ip_version, src_tos & 3)]
+
+
+_VISIBILITY_PAIR_BY_BITS: tuple[tuple[Visibility, Visibility], ...] = (
+    ('literal', 'literal'),
+    ('literal', 'anonymized'),
+    ('anonymized', 'literal'),
+    ('anonymized', 'anonymized'),
+)
+_SCOPES_BY_VERSION_AND_BITS = {
+    (ip_version, bits): (
+        Scope(ip_version, 'all', 'all'),
+        Scope(ip_version, *visibility_pair),
+    )
+    for ip_version in (4, 6)
+    for bits, visibility_pair in enumerate(_VISIBILITY_PAIR_BY_BITS)
+}
 
 
 def _protocol_suffix(protocol: int | str) -> str:

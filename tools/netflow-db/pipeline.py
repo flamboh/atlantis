@@ -2105,19 +2105,21 @@ def build_bucket_payload_from_values(
     run_maad: bool,
 ) -> dict:
     """Build DB insert payloads from completed bucket accumulators."""
+    processed_buckets = [
+        {
+            'input_kind': input_kind,
+            'input_locator': input_locator,
+            'source_id': bucket.key.source_id,
+            'bucket_start': bucket.key.bucket_start,
+            'bucket_end': bucket.key.bucket_end,
+        }
+        for bucket in bucket_values
+    ]
     canonical_buckets = [bucket.finish() for bucket in bucket_values]
+    bucket_values.clear()
     rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
     return {
-        'processed_buckets': [
-            {
-                'input_kind': input_kind,
-                'input_locator': input_locator,
-                'source_id': bucket.key.source_id,
-                'bucket_start': bucket.key.bucket_start,
-                'bucket_end': bucket.key.bucket_end,
-            }
-            for bucket in bucket_values
-        ],
+        'processed_buckets': processed_buckets,
         'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
         'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
         'address_count_rows': [row for payload in rows for row in payload['address_count_rows']],
@@ -2281,8 +2283,11 @@ def build_input_payload(
 
     buckets = accumulate_input_buckets(iter_input_rows(spec))
     bucket_values = [buckets[key] for key in sorted(buckets)]
+    processed_bucket_keys = sorted(buckets)
 
     canonical_buckets = [bucket.finish() for bucket in bucket_values]
+    buckets.clear()
+    bucket_values.clear()
     rows = [canonical_bucket_rows(bucket) for bucket in canonical_buckets]
     return {
         'processed_buckets': [
@@ -2293,7 +2298,7 @@ def build_input_payload(
                 'bucket_start': bucket_start,
                 'bucket_end': bucket_end,
             }
-            for source_id, bucket_start, bucket_end in sorted(buckets)
+            for source_id, bucket_start, bucket_end in processed_bucket_keys
         ],
         'traffic_rows': [row for payload in rows for row in payload['traffic_rows']],
         'protocol_rows': [row for payload in rows for row in payload['protocol_rows']],
