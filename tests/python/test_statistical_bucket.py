@@ -8,12 +8,12 @@ def load_module():
     return importlib.reload(module)
 
 
-def test_flow_fact_expands_visibility_and_classifies_protocol() -> None:
+def test_flow_observation_expands_visibility_and_classifies_protocol() -> None:
     module = load_module()
     bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
 
     bucket.add(
-        module.FlowFact(
+        module.FlowObservation(
             ip_version=4,
             src_ip='192.0.2.1',
             dst_ip='198.51.100.1',
@@ -45,7 +45,7 @@ def test_flow_fact_expands_visibility_and_classifies_protocol() -> None:
         (34, ('anonymized', 'literal')),
     ],
 )
-def test_flow_fact_visibility_uses_only_source_tos_low_bits(
+def test_flow_observation_visibility_uses_only_source_tos_low_bits(
     src_tos: int,
     exact_visibility: tuple[str, str],
 ) -> None:
@@ -53,7 +53,7 @@ def test_flow_fact_visibility_uses_only_source_tos_low_bits(
     bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
 
     bucket.add(
-        module.FlowFact(
+        module.FlowObservation(
             ip_version=4,
             src_ip='192.0.2.1',
             dst_ip='198.51.100.1',
@@ -78,7 +78,7 @@ def test_include_retargets_sums_unions_and_tracks_coverage() -> None:
             module.BucketKey('physical', '5m', bucket_start, bucket_start + 300)
         )
         child.add(
-            module.FlowFact(
+            module.FlowObservation(
                 ip_version=4,
                 src_ip=address,
                 dst_ip='198.51.100.1',
@@ -111,8 +111,8 @@ def test_flow_and_grouped_adapters_produce_the_same_sparse_snapshot() -> None:
     module = load_module()
     key = module.BucketKey('r1', '5m', 0, 300)
     flows = [
-        module.FlowFact(4, '192.0.2.1', '198.51.100.1', 6, 2, 20, 2),
-        module.FlowFact(4, '192.0.2.2', '198.51.100.2', 6, 3, 30, 2),
+        module.FlowObservation(4, '192.0.2.1', '198.51.100.1', 6, 2, 20, 2),
+        module.FlowObservation(4, '192.0.2.2', '198.51.100.2', 6, 3, 30, 2),
     ]
     per_flow = module.StatisticalBucket(key)
     for fact in flows:
@@ -162,7 +162,7 @@ def test_invalid_ip_version_preserves_existing_error() -> None:
 
     with pytest.raises(ValueError, match='Unsupported ip_version: 5'):
         bucket.add(
-            module.FlowFact(
+            module.FlowObservation(
                 ip_version=5,
                 src_ip='192.0.2.1',
                 dst_ip='198.51.100.1',

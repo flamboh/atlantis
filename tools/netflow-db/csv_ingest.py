@@ -8,9 +8,9 @@ dimensions needed by downstream aggregators.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -326,43 +326,78 @@ def parse_timestamp(
     datetime_format: str = '%Y-%m-%d %H:%M:%S',
 ) -> int:
     """Parse the configured timestamp value into unix seconds."""
+    return parse_timestamp_ms(
+        raw_value,
+        timestamp_format,
+        timestamp_timezone,
+        datetime_format,
+    ) // 1000
+
+
+def parse_timestamp_ms(
+    raw_value: Any,
+    timestamp_format: str,
+    timestamp_timezone: str = 'UTC',
+    datetime_format: str = '%Y-%m-%d %H:%M:%S',
+) -> int:
+    """Parse the configured timestamp value into exact unix milliseconds."""
     raw_text = str(raw_value).strip()
 
     if timestamp_format == 'datetime':
-        return parse_datetime_timestamp(raw_text, timestamp_timezone, datetime_format)
-    return parse_numeric_timestamp(raw_text, timestamp_format)
+        return parse_datetime_timestamp_ms(raw_text, timestamp_timezone, datetime_format)
+    return parse_numeric_timestamp_ms(raw_text, timestamp_format)
 
 
 @lru_cache(maxsize=1_000_000)
 def parse_datetime_timestamp(raw_text: str, timestamp_timezone: str, datetime_format: str) -> int:
     """Parse and cache datetime timestamps that repeat heavily in flow rows."""
+    return parse_datetime_timestamp_ms(raw_text, timestamp_timezone, datetime_format) // 1000
+
+
+@lru_cache(maxsize=1_000_000)
+def parse_datetime_timestamp_ms(raw_text: str, timestamp_timezone: str, datetime_format: str) -> int:
+    """Parse and cache datetime timestamps as exact unix milliseconds."""
     try:
         parsed = datetime.strptime(raw_text, datetime_format)
     except ValueError as error:
         raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
-    return int(parsed.replace(tzinfo=ZoneInfo(timestamp_timezone)).timestamp())
+    if parsed.microsecond % 1000 != 0:
+        raise CsvSourceConfigError(
+            f"Timestamp value '{raw_text}' has precision finer than milliseconds."
+        )
+    localized = parsed.replace(tzinfo=ZoneInfo(timestamp_timezone))
+    delta = localized.astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)
+    return delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
 
 
 @lru_cache(maxsize=1_000_000)
 def parse_numeric_timestamp(raw_text: str, timestamp_format: str) -> int:
     """Parse and cache numeric timestamp values."""
+    return parse_numeric_timestamp_ms(raw_text, timestamp_format) // 1000
+
+
+@lru_cache(maxsize=1_000_000)
+def parse_numeric_timestamp_ms(raw_text: str, timestamp_format: str) -> int:
+    """Parse and cache numeric timestamp values as exact unix milliseconds."""
     try:
-        numeric = float(raw_text)
-    except ValueError as error:
+        numeric = Decimal(raw_text)
+    except InvalidOperation as error:
         raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
 
-    if not math.isfinite(numeric):
+    if not numeric.is_finite():
         raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.")
-    if numeric < -(1 << 63) or numeric > (1 << 63) - 1:
-        raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.")
-    try:
-        if timestamp_format == 'unix':
-            return int(numeric)
-        if timestamp_format == 'unix_ms':
-            return int(numeric) // 1000
-    except (OverflowError, ValueError) as error:
-        raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
-    raise CsvSourceConfigError(f"Unsupported timestamp_format '{timestamp_format}'.")
+    if timestamp_format == 'unix':
+        milliseconds = numeric * 1000
+    elif timestamp_format == 'unix_ms':
+        milliseconds = numeric
+    else:
+        raise CsvSourceConfigError(f"Unsupported timestamp_format '{timestamp_format}'.")
+    integral = milliseconds.to_integral_value()
+    if milliseconds != integral or integral < -(1 << 63) or integral > (1 << 63) - 1:
+        raise CsvSourceConfigError(
+            f"Invalid timestamp value '{raw_text}': expected an exact 64-bit millisecond value."
+        )
+    return int(integral)
 
 
 def floor_unix_timestamp(unix_ts: int, bucket_seconds: int) -> int:

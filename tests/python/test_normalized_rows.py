@@ -59,14 +59,14 @@ def test_normalize_csv_row_uses_time_received_and_infers_ipv4(tmp_path: Path) ->
     assert row.source_id == 'uo-feed'
     assert row.bucket_start == 1744733100
     assert row.bucket_end == 1744733400
-    assert row.ip_version == 4
-    assert row.src_port == 443
-    assert row.dst_port == 55000
-    assert row.protocol == 6
-    assert row.packets == 10
-    assert row.bytes == 2048
-    assert row.src_tos == 2
-    assert row.dst_tos == 0
+    assert row.observation.ip_version == 4
+    assert row.observation.src_port == 443
+    assert row.observation.dst_port == 55000
+    assert row.observation.protocol == 6
+    assert row.observation.packets == 10
+    assert row.observation.bytes_count == 2048
+    assert row.observation.src_tos == 2
+    assert row.observation.dst_tos == 0
 
 
 def test_normalize_csv_row_infers_ipv6_and_defaults_optional_fields(tmp_path: Path) -> None:
@@ -99,15 +99,15 @@ def test_normalize_csv_row_infers_ipv6_and_defaults_optional_fields(tmp_path: Pa
     )
 
     assert row.source_id == 'oh_ir1_gw'
-    assert row.ip_version == 6
+    assert row.observation.ip_version == 6
     assert row.bucket_start == 1744732800
-    assert row.src_port == 0
-    assert row.dst_port == 0
-    assert row.protocol == 0
-    assert row.packets == 0
-    assert row.bytes == 0
-    assert row.src_tos == 0
-    assert row.dst_tos == 0
+    assert row.observation.src_port is None
+    assert row.observation.dst_port is None
+    assert row.observation.protocol == 0
+    assert row.observation.packets == 0
+    assert row.observation.bytes_count == 0
+    assert row.observation.src_tos == 0
+    assert row.observation.dst_tos == 0
 
 
 def test_normalize_csv_row_wraps_invalid_ip_as_config_error(tmp_path: Path) -> None:
@@ -216,10 +216,10 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
 
     assert row.source_id == 'oh_ir1_gw'
     assert row.bucket_start == 1744733100
-    assert row.time_received == 1744733279
-    assert row.time_end == 1744733000
-    assert row.time_start == 1744732700
-    assert row.ip_version == 4
+    assert row.observation.time_received_ms == 1744733279999
+    assert row.observation.time_end_ms == 1744733000001
+    assert row.observation.time_start_ms == 1744732700500
+    assert row.observation.ip_version == 4
 
 
 def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
@@ -243,7 +243,7 @@ def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
         source_id='oh_ir1_gw',
     )
 
-    assert row.dst_port == 0
+    assert row.observation.dst_port == 0
 
 
 def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
@@ -287,9 +287,9 @@ def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:
     )
 
     assert row.bucket_start == 1469619600
-    assert row.protocol == 17
-    assert row.packets == 1
-    assert row.bytes == 72
+    assert row.observation.protocol == 17
+    assert row.observation.packets == 1
+    assert row.observation.bytes_count == 72
 
 
 @pytest.mark.parametrize(
@@ -386,4 +386,162 @@ def test_normalize_csv_row_strips_optional_numeric_whitespace(tmp_path: Path) ->
         config,
     )
 
-    assert (row.protocol, row.packets, row.bytes, row.src_tos) == (6, 1, 2, 3)
+    assert (
+        row.observation.protocol,
+        row.observation.packets,
+        row.observation.bytes_count,
+        row.observation.src_tos,
+    ) == (6, 1, 2, 3)
+
+
+def test_optional_observation_values_distinguish_missing_from_zero(tmp_path: Path) -> None:
+    csv_ingest, normalized_rows = load_modules()
+    config_path = tmp_path / 'mapping.json'
+    config_path.write_text(
+        """
+        {
+          "has_header": false,
+          "fieldnames": ["te", "src", "dst", "sp", "dp", "duration", "min_ttl", "max_ttl"],
+          "columns": {
+            "time_end": "te",
+            "src_ip": "src",
+            "dst_ip": "dst",
+            "src_port": "sp",
+            "dst_port": "dp",
+            "duration": "duration",
+            "min_ttl": "min_ttl",
+            "max_ttl": "max_ttl"
+          },
+          "source_id": { "value": "feed" }
+        }
+        """,
+        encoding='utf-8',
+    )
+    config = csv_ingest.load_csv_source_config(config_path)
+    indexes = {name: index for index, name in enumerate(config.fieldnames or [])}
+
+    missing = normalized_rows.normalize_csv_values(
+        ['1744733279', '192.0.2.1', '198.51.100.1', '', '', '', '', ''],
+        config,
+        indexes,
+    ).observation
+    zero = normalized_rows.normalize_csv_values(
+        ['1744733279', '192.0.2.1', '198.51.100.1', '0', '0', '0', '0', '0'],
+        config,
+        indexes,
+    ).observation
+
+    assert (missing.src_port, missing.dst_port, missing.duration_ms) == (None, None, None)
+    assert (missing.min_ttl, missing.max_ttl) == (None, None)
+    assert (zero.src_port, zero.dst_port, zero.duration_ms) == (0, 0, 0)
+    assert (zero.min_ttl, zero.max_ttl) == (0, 0)
+
+
+def test_mapped_duration_seconds_are_authoritative_over_endpoints() -> None:
+    _, normalized_rows = load_modules()
+
+    duration_ms = normalized_rows.resolve_duration_ms(
+        '1.234',
+        'duration',
+        {'time_start': 1000, 'time_end': 2000},
+    )
+
+    assert duration_ms == 1234
+
+
+def test_mapped_duration_does_not_override_endpoint_order_validation() -> None:
+    csv_ingest, normalized_rows = load_modules()
+
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match='must not precede'):
+        normalized_rows.resolve_duration_ms(
+            '1.234',
+            'duration',
+            {'time_start': 2000, 'time_end': 1000},
+        )
+
+
+def test_derived_duration_uses_signed_64_bit_bound() -> None:
+    csv_ingest, normalized_rows = load_modules()
+    maximum = normalized_rows.MAX_SQLITE_INTEGER
+
+    assert (
+        normalized_rows.resolve_duration_ms(
+            None,
+            None,
+            {'time_start': 0, 'time_end': maximum},
+        )
+        == maximum
+    )
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match=f'0..{maximum}'):
+        normalized_rows.resolve_duration_ms(
+            None,
+            None,
+            {'time_start': -1, 'time_end': maximum},
+        )
+
+
+@pytest.mark.parametrize('adapter', ['mapping', 'indexed'])
+@pytest.mark.parametrize(
+    ('column', 'value', 'message'),
+    [
+        ('sp', '65536', 'must be'),
+        ('dp', '-1', 'must be'),
+        ('duration', '-0.001', '(?i)duration'),
+        ('duration', '0.0001', 'millisecond precision'),
+        ('min_ttl', '256', 'must be'),
+        ('max_ttl', '-1', 'must be'),
+        ('min_ttl', '65', 'min_ttl'),
+    ],
+)
+def test_observation_field_validation_matches_mapping_and_indexed_adapters(
+    tmp_path: Path,
+    adapter: str,
+    column: str,
+    value: str,
+    message: str,
+) -> None:
+    csv_ingest, normalized_rows = load_modules()
+    config_path = tmp_path / 'mapping.json'
+    fields = ['te', 'src', 'dst', 'sp', 'dp', 'duration', 'min_ttl', 'max_ttl']
+    config_path.write_text(
+        """
+        {
+          "has_header": false,
+          "fieldnames": ["te", "src", "dst", "sp", "dp", "duration", "min_ttl", "max_ttl"],
+          "columns": {
+            "time_end": "te",
+            "src_ip": "src",
+            "dst_ip": "dst",
+            "src_port": "sp",
+            "dst_port": "dp",
+            "duration": "duration",
+            "min_ttl": "min_ttl",
+            "max_ttl": "max_ttl"
+          },
+          "source_id": { "value": "feed" }
+        }
+        """,
+        encoding='utf-8',
+    )
+    config = csv_ingest.load_csv_source_config(config_path)
+    row = {
+        'te': '1744733279',
+        'src': '192.0.2.1',
+        'dst': '198.51.100.1',
+        'sp': '1',
+        'dp': '2',
+        'duration': '1.234',
+        'min_ttl': '31',
+        'max_ttl': '64',
+    }
+    row[column] = value
+
+    with pytest.raises(csv_ingest.CsvSourceConfigError, match=message):
+        if adapter == 'mapping':
+            normalized_rows.normalize_csv_row(row, config)
+        else:
+            normalized_rows.normalize_csv_values(
+                [row[field] for field in fields],
+                config,
+                {field: index for index, field in enumerate(fields)},
+            )
