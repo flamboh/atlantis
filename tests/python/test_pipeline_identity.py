@@ -44,6 +44,36 @@ def test_product_identity_binds_empty_database_and_reports_component_mismatch() 
         )
 
 
+def test_pipeline_product_identity_uses_normalized_flow_selection() -> None:
+    pipeline = importlib.reload(importlib.import_module('pipeline'))
+    flow_selection = importlib.import_module('flow_selection')
+    pipeline_product = importlib.import_module('pipeline_product')
+    conn = sqlite3.connect(':memory:')
+    selected = flow_selection.FlowSelection.from_payload({'ip_prefix': '192.0.2.99/24'})
+
+    pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(
+        conn,
+        run_maad=False,
+        maad_backend='python',
+        selection=selected,
+    )
+
+    stored = conn.execute(
+        'SELECT selection_json FROM pipeline_product WHERE singleton = 1'
+    ).fetchone()[0]
+    assert '192.0.2.0/24' in stored
+    with pytest.raises(pipeline_product.ProductIdentityConflict, match='selection'):
+        pipeline.bind_current_product(
+            conn,
+            run_maad=False,
+            maad_backend='python',
+            selection=flow_selection.FlowSelection.from_payload(
+                {'ip_prefix': '198.51.100.0/24'}
+            ),
+        )
+
+
 def test_product_identity_rejects_populated_legacy_database() -> None:
     product, _revision, stats = load_modules()
     conn = sqlite3.connect(':memory:')

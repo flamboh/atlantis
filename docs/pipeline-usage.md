@@ -20,6 +20,9 @@ python tools/netflow-db/pipeline.py \
 Useful flags:
 
 - `--database-path`: override the SQLite output path
+- `--ip-prefix`: ingest flows when either endpoint belongs to the canonicalized CIDR
+- `--src-visibility` / `--dst-visibility`: independently require `literal` or
+  `anonymized` address visibility
 - `--start-time` / `--end-time`: limit a half-open local time window. These must
   align to aggregate bucket boundaries so coarse rows stay complete.
 - `--maad-bin`: path to the MAAD helper binary
@@ -42,6 +45,32 @@ Local helper:
 scripts/local/build_ugr16_netflow.sh --config scripts/local/ugr16-csv.pipeline.json
 ```
 
+### Flow selection
+
+Selection criteria are combined with AND. The IP prefix matches either the
+source or destination endpoint, while source and destination visibility are
+independent. Dataset-mode selection flags require an explicit
+`--database-path`, because a selected population is a distinct database
+product.
+
+Config-mode runs define the same semantics once at the top level:
+
+```json
+{
+  "selection": {
+    "ip_prefix": "192.0.2.0/24",
+    "src_visibility": "literal",
+    "dst_visibility": "anonymized"
+  },
+  "inputs": []
+}
+```
+
+Omit any criterion to leave it unrestricted. CSV coverage is observed before
+selection, so selected-out buckets remain dense zero buckets. Native nfcapd
+ingestion pushes the CIDR predicate into every grouped scan and applies the
+visibility predicate to grouped rows before statistics are accumulated.
+
 ### CSV duration mapping
 
 The optional logical `columns.duration` mapping is measured in seconds. Decimal
@@ -54,11 +83,11 @@ mapped `time_start` and `time_end` timestamps when both are available.
 ### Database and input identity
 
 Every pipeline database is bound on first use to independently fingerprinted
-schema, selection, and result-configuration semantics. The current selection is
-the complete input (`all`). Result configuration includes the pipeline timezone
-and the enabled MAAD backend contract, but excludes paths, discovery windows,
-worker counts, and CSV mappings. A populated database without this identity is
-not adopted; rebuild it into a new database.
+schema, normalized flow selection, and result-configuration semantics. Result
+configuration includes the pipeline timezone and the enabled MAAD backend
+contract, but excludes paths, discovery windows, worker counts, and CSV
+mappings. A populated database without this identity is not adopted; rebuild it
+into a new database.
 
 Each CSV, nfcapd file, and synthetic gap also records an exact input revision.
 The revision combines SHA-256 content identity with a canonical decoder

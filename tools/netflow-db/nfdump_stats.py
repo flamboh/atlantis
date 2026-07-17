@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from flow_selection import FlowSelection
 from statistical_bucket import (
     BucketKey,
     GroupedTrafficFact,
@@ -34,7 +35,11 @@ LOGGER = logging.getLogger(__name__)
 NFCAPD_FILENAME_RE = re.compile(r'^nfcapd\.(\d{12})$')
 
 
-def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
+def build_nfcapd_bucket_payload(
+    path: str,
+    source_id: str,
+    selection: FlowSelection = FlowSelection(),
+) -> dict:
     """Build 5m stats and raw aggregate sets for one nfcapd file."""
     bucket_start = parse_nfcapd_bucket_start(path)
     bucket_end = bucket_start + 300
@@ -42,11 +47,11 @@ def build_nfcapd_bucket_payload(path: str, source_id: str) -> dict:
         BucketKey(source_id, '5m', bucket_start, bucket_end),
         dense=True,
     )
-    for fact in read_scoped_address_facts(path):
+    for fact in read_scoped_address_facts(path, selection):
         bucket.add(fact)
     scoped_counters_by_version = {
-        4: read_scoped_protocol_counters(path, 4),
-        6: read_scoped_protocol_counters(path, 6),
+        4: read_scoped_protocol_counters(path, 4, selection),
+        6: read_scoped_protocol_counters(path, 6, selection),
     }
     for ip_version in (4, 6):
         for protocol, src_tos, packets, bytes_value, flows in scoped_counters_by_version[ip_version]:
@@ -83,7 +88,11 @@ def is_nfcapd_bucket_filename(name: str) -> bool:
     return NFCAPD_FILENAME_RE.fullmatch(name) is not None
 
 
-def read_scoped_protocol_counters(path: str, ip_version: int) -> list[tuple[int, int, int, int, int]]:
+def read_scoped_protocol_counters(
+    path: str,
+    ip_version: int,
+    selection: FlowSelection = FlowSelection(),
+) -> list[tuple[int, int, int, int, int]]:
     """Return `(protocol, src_tos, packets, bytes, flows)` scoped rows."""
     result = run_nfdump(
         [
@@ -96,7 +105,7 @@ def read_scoped_protocol_counters(path: str, ip_version: int) -> list[tuple[int,
             'proto,srctos',
             '-o',
             'csv:%pr,%stos,%pkt,%byt,%fl',
-            *family_filter(ip_version),
+            *family_filter(ip_version, selection),
             '-N',
         ]
     )
@@ -107,7 +116,7 @@ def read_scoped_protocol_counters(path: str, ip_version: int) -> list[tuple[int,
         if is_no_matching_flows_row(row):
             continue
         parsed = parse_scoped_protocol_counter_row(row, path=path, ip_version=ip_version)
-        if parsed is not None:
+        if parsed is not None and selection.allows_src_tos(parsed[1]):
             rows.append(parsed)
     return rows
 
@@ -153,7 +162,10 @@ def is_no_matching_flows_row(row: dict[str, str | None]) -> bool:
     )
 
 
-def read_scoped_address_facts(path: str) -> list[ScopedAddressesFact]:
+def read_scoped_address_facts(
+    path: str,
+    selection: FlowSelection = FlowSelection(),
+) -> list[ScopedAddressesFact]:
     """Read typed scoped address facts for one nfcapd input."""
     result = run_nfdump(
         [
@@ -166,6 +178,7 @@ def read_scoped_address_facts(path: str) -> list[ScopedAddressesFact]:
             'srcip,dstip,srctos',
             '-o',
             'csv:%sa,%da,%stos',
+            *selection_filter(selection),
         ]
     )
     sets_by_key: dict[tuple[Scope, str], set[str | int]] = {}
@@ -178,6 +191,8 @@ def read_scoped_address_facts(path: str) -> list[ScopedAddressesFact]:
         try:
             src_tos = int(src_tos_raw)
         except ValueError:
+            continue
+        if not selection.allows_src_tos(src_tos):
             continue
         source_ipv4 = parse_ipv4_address(source_ip)
         destination_ipv4 = parse_ipv4_address(destination_ip)
@@ -238,13 +253,28 @@ def run_nfdump(command: list[str]) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def family_filter(ip_version: int) -> list[str]:
+def family_filter(
+    ip_version: int,
+    selection: FlowSelection = FlowSelection(),
+) -> list[str]:
     """Return nfdump filter args for one IP family."""
     if ip_version == 4:
-        return ['ipv4']
-    if ip_version == 6:
-        return ['ipv6', '-6']
-    raise ValueError('ip_version must be 4 or 6')
+        family = 'ipv4'
+        options = []
+    elif ip_version == 6:
+        family = 'ipv6'
+        options = ['-6']
+    else:
+        raise ValueError('ip_version must be 4 or 6')
+    prefix_filter = selection.nfdump_prefix_filter()
+    expression = family if prefix_filter is None else f'{family} and {prefix_filter}'
+    return [*options, expression]
+
+
+def selection_filter(selection: FlowSelection) -> list[str]:
+    """Return a native prefix predicate when selection can be pushed down."""
+    prefix_filter = selection.nfdump_prefix_filter()
+    return [] if prefix_filter is None else [prefix_filter]
 
 
 def parse_nfcapd_bucket_start(path: str) -> int:

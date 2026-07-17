@@ -177,3 +177,65 @@ def test_empty_grouped_nfcapd_outputs_emit_zero_rows_for_all_query_scopes() -> N
         for ip_version in (4, 6)
         for src_visibility, dst_visibility in statistical_bucket.ZERO_FILL_VISIBILITY_PAIRS
     }
+
+
+def test_native_selection_pushes_prefix_to_every_command_and_filters_visibility(
+    monkeypatch,
+) -> None:
+    module = load_module()
+    selection_module = importlib.import_module('flow_selection')
+    commands = []
+
+    def fake_run(command, capture_output, text, timeout):
+        commands.append(command)
+        command_text = ' '.join(command)
+        if '-A srcip,dstip,srctos' in command_text:
+            stdout = (
+                'srcAddr,dstAddr,srcTos\n'
+                '192.0.2.1,198.51.100.1,1\n'
+                '192.0.2.2,198.51.100.2,0\n'
+            )
+        else:
+            stdout = (
+                'proto,srcTos,packets,bytes,flows\n'
+                '6,1,10,1000,2\n'
+                '17,0,5,500,1\n'
+            )
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+    selection = selection_module.FlowSelection.from_payload(
+        {
+            'ip_prefix': '192.0.2.99/24',
+            'src_visibility': 'literal',
+            'dst_visibility': 'anonymized',
+        }
+    )
+
+    payload = module.build_nfcapd_bucket_payload(
+        '/captures/r1/nfcapd.202504150005',
+        'r1',
+        selection,
+    )
+
+    assert len(commands) == 3
+    assert all('net 192.0.2.0/24' in ' '.join(command) for command in commands)
+    all_v4 = next(
+        row
+        for row in payload['traffic_rows']
+        if row['ip_version'] == 4
+        and row['src_visibility'] == 'all'
+        and row['dst_visibility'] == 'all'
+    )
+    exact_v4 = next(
+        row
+        for row in payload['traffic_rows']
+        if row['ip_version'] == 4
+        and row['src_visibility'] == 'literal'
+        and row['dst_visibility'] == 'anonymized'
+    )
+    assert (all_v4['flows'], exact_v4['flows']) == (2, 2)
+    assert all(
+        row['unique_address_count'] in (0, 1)
+        for row in payload['address_count_rows']
+    )

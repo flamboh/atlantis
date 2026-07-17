@@ -22,6 +22,7 @@ from csv_ingest import (
     resolve_source_id,
 )
 from csv_inputs import build_field_indexes, is_blank_row, is_tar_archive, validate_header_columns
+from flow_selection import FlowSelection
 from normalized_rows import (
     NormalizedRow,
     normalize_csv_row,
@@ -142,11 +143,12 @@ class _ScanState:
 def scan_csv(
     spec: Mapping[str, object],
     config: CsvSourceConfig,
+    selection: FlowSelection = FlowSelection(),
 ) -> Iterable[CsvScanEvent]:
     """Scan one CSV file/archive and emit dense canonical buckets plus terminal completion."""
     scan_locator = str(spec['path'])
     if _should_use_arrow(config):
-        yield from _scan_csv_arrow(Path(scan_locator), config)
+        yield from _scan_csv_arrow(Path(scan_locator), config, selection)
         return
     state = _ScanState(scan_locator, config)
 
@@ -169,7 +171,8 @@ def scan_csv(
         except CsvSourceConfigError as error:
             state.reject(raw, error)
         else:
-            state.accept(normalized)
+            if selection.matches(normalized.observation):
+                state.accept(normalized)
 
         if config.input_order == 'timestamp_ascending' and observed is not None:
             source_id, bucket_start = observed
@@ -268,7 +271,11 @@ def _should_use_arrow(config: CsvSourceConfig) -> bool:
     )
 
 
-def _scan_csv_arrow(path: Path, config: CsvSourceConfig) -> Iterator[CsvScanEvent]:
+def _scan_csv_arrow(
+    path: Path,
+    config: CsvSourceConfig,
+    selection: FlowSelection,
+) -> Iterator[CsvScanEvent]:
     """Vectorize validation and filtering while preserving the shared scan contract."""
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -386,7 +393,9 @@ def _scan_csv_arrow(path: Path, config: CsvSourceConfig) -> Iterator[CsvScanEven
         for row_number, raw_values in enumerate(filtered.to_pylist(), start=1):
             raw = _RawRow(raw_values, locator, row_number)
             try:
-                state.accept(normalize_csv_row(raw_values, config))
+                normalized = normalize_csv_row(raw_values, config)
+                if selection.matches(normalized.observation):
+                    state.accept(normalized)
             except (CsvSourceConfigError, ValueError) as error:
                 if not isinstance(error, CsvSourceConfigError):
                     error = CsvSourceConfigError(str(error))
