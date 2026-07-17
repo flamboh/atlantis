@@ -8,6 +8,7 @@ dimensions needed by downstream aggregators.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -350,10 +351,17 @@ def parse_numeric_timestamp(raw_text: str, timestamp_format: str) -> int:
     except ValueError as error:
         raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
 
-    if timestamp_format == 'unix':
-        return int(numeric)
-    if timestamp_format == 'unix_ms':
-        return int(numeric) // 1000
+    if not math.isfinite(numeric):
+        raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.")
+    if numeric < -(1 << 63) or numeric > (1 << 63) - 1:
+        raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.")
+    try:
+        if timestamp_format == 'unix':
+            return int(numeric)
+        if timestamp_format == 'unix_ms':
+            return int(numeric) // 1000
+    except (OverflowError, ValueError) as error:
+        raise CsvSourceConfigError(f"Invalid timestamp value '{raw_text}'.") from error
     raise CsvSourceConfigError(f"Unsupported timestamp_format '{timestamp_format}'.")
 
 

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 
 import pytest
+from statistical_bucket import FlowFact
 
 
 def load_module():
@@ -31,7 +32,7 @@ def make_raw_bucket(pipeline, source_id: str, bucket_start: int):
         )
     )
     bucket.add(
-        pipeline.FlowFact(
+        FlowFact(
             ip_version=4,
             src_ip='192.0.2.1',
             dst_ip='198.51.100.1',
@@ -259,6 +260,8 @@ def test_headerless_timestamp_ordered_csv_accumulates_src_tos_with_arrow(tmp_pat
     assert traffic_rows == [
         ('all', 'all', 2, 5, 500),
         ('anonymized', 'anonymized', 1, 3, 300),
+        ('anonymized', 'literal', 0, 0, 0),
+        ('literal', 'anonymized', 0, 0, 0),
         ('literal', 'literal', 1, 2, 200),
     ]
 
@@ -321,8 +324,67 @@ def test_headerless_timestamp_ordered_csv_without_src_tos_uses_default_visibilit
 
     assert traffic_rows == [
         ('all', 'all', 1, 3, 300),
+        ('anonymized', 'anonymized', 0, 0, 0),
+        ('anonymized', 'literal', 0, 0, 0),
+        ('literal', 'anonymized', 0, 0, 0),
         ('literal', 'literal', 1, 3, 300),
     ]
+
+
+def test_unsorted_csv_uses_deep_scan_with_default_workers_and_persists_zero_gap(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    csv_path = tmp_path / 'flows.csv'
+    mapping_path = tmp_path / 'mapping.json'
+    csv_path.write_text(
+        '2016-07-27 13:50:00,192.0.2.2,198.51.100.2,17,1,20,0\n'
+        '2016-07-27 13:40:00,192.0.2.1,198.51.100.1,6,1,10,0\n',
+        encoding='utf-8',
+    )
+    mapping_path.write_text(
+        json.dumps(
+            {
+                'has_header': False,
+                'input_order': 'unsorted',
+                'timestamp_format': 'datetime',
+                'timestamp_timezone': 'UTC',
+                'fieldnames': ['te', 'src', 'dst', 'proto', 'packets', 'bytes', 'stos'],
+                'columns': {
+                    'time_end': 'te',
+                    'src_ip': 'src',
+                    'dst_ip': 'dst',
+                    'protocol': 'proto',
+                    'packets': 'packets',
+                    'bytes': 'bytes',
+                    'src_tos': 'stos',
+                },
+                'source_id': {'value': 'r1'},
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    pipeline.process_input_specs(
+        conn,
+        [{'input_kind': 'csv', 'path': str(csv_path), 'mapping_path': str(mapping_path)}],
+        maad_bin='',
+        maad_backend='python',
+        run_maad=False,
+    )
+
+    assert conn.execute(
+        "SELECT bucket_start, flows FROM traffic_stats WHERE source_id = 'r1' "
+        "AND granularity = '5m' AND ip_version = 4 "
+        "AND src_visibility = 'all' AND dst_visibility = 'all' ORDER BY bucket_start"
+    ).fetchall() == [
+        (1469626800, 1),
+        (1469627100, 0),
+        (1469627400, 1),
+    ]
+    assert conn.execute(
+        "SELECT status, rejected_rows FROM processed_input_scans WHERE input_locator = ?",
+        (str(csv_path),),
+    ).fetchone() == ('processed', 0)
 
 
 def test_gap_input_writes_only_canonical_stats_tables() -> None:
@@ -395,6 +457,181 @@ def test_gap_input_writes_only_canonical_stats_tables() -> None:
         'SELECT input_kind, source_id, bucket_start, status FROM processed_inputs'
     ).fetchone()
     assert processed == ('nfcapd', 'oh_ir1_gw', 1744700700, 'processed')
+
+
+def test_fatal_long_csv_then_corrected_shorter_retry_removes_stale_buckets(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    mapping_path = tmp_path / 'mapping.json'
+    mapping_path.write_text(
+        json.dumps(
+            {
+                'has_header': True,
+                'timestamp_format': 'datetime',
+                'timestamp_timezone': 'UTC',
+                'columns': {
+                    'time_end': 'te',
+                    'src_ip': 'src',
+                    'dst_ip': 'dst',
+                    'protocol': 'proto',
+                    'packets': 'packets',
+                    'bytes': 'bytes',
+                    'src_tos': 'stos',
+                },
+                'source_id': {'value': 'r1'},
+                'input_order': 'timestamp_ascending',
+                'out_of_order_lag_buckets': 0,
+            }
+        ),
+        encoding='utf-8',
+    )
+    csv_path = tmp_path / 'flows.csv'
+    csv_path.write_text(
+        'te,src,dst,proto,packets,bytes,stos\n'
+        '2016-07-27 13:40:00,192.0.2.1,198.51.100.1,6,1,2,0\n'
+        '2016-07-27 14:50:00,192.0.2.2,198.51.100.2,17,1,2,0\n'
+        '2016-07-27 16:00:00,192.0.2.3,198.51.100.3,6,1,2,0\n'
+        '2016-07-27 16:05:00,too,few\n',
+        encoding='utf-8',
+    )
+    spec = {
+        'input_kind': 'csv',
+        'path': str(csv_path),
+        'mapping_path': str(mapping_path),
+    }
+
+    with pytest.raises(ValueError, match='column count'):
+        pipeline.process_input_specs(conn, [spec], run_maad=False)
+
+    assert conn.execute(
+        """
+        SELECT COUNT(*) FROM processed_inputs
+        WHERE input_kind = 'csv' AND scan_locator = ?
+        """,
+        (str(csv_path),),
+    ).fetchone() == (0,)
+    assert conn.execute('SELECT * FROM processed_input_scans').fetchall() == []
+    for table_name in (
+        'traffic_stats',
+        'protocol_stats',
+        'address_count_stats',
+        'address_structure_stats',
+    ):
+        assert conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone() == (0,)
+
+    csv_path.write_text(
+        'te,src,dst,proto,packets,bytes,stos\n'
+        '2016-07-27 13:40:00,192.0.2.1,198.51.100.1,6,1,2,0\n',
+        encoding='utf-8',
+    )
+    pipeline.process_input_specs(conn, [spec], run_maad=False)
+
+    expected_bucket = 1469626800
+    assert conn.execute(
+        """
+        SELECT bucket_start, status FROM processed_inputs
+        WHERE input_kind = 'csv' AND scan_locator = ?
+        """,
+        (str(csv_path),),
+    ).fetchall() == [(expected_bucket, 'processed')]
+    assert conn.execute(
+        """
+        SELECT DISTINCT bucket_start FROM traffic_stats
+        WHERE source_id = 'r1' AND granularity = '5m'
+        """
+    ).fetchall() == [(expected_bucket,)]
+    assert conn.execute(
+        """
+        SELECT status FROM processed_input_scans
+        WHERE input_kind = 'csv' AND input_locator = ?
+        """,
+        (str(csv_path),),
+    ).fetchone() == ('processed',)
+
+
+def test_csv_batch_failure_cleans_every_started_nonterminal_scan(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    mapping_path = tmp_path / 'mapping.json'
+    mapping_path.write_text(
+        json.dumps(
+            {
+                'has_header': True,
+                'timestamp_format': 'datetime',
+                'timestamp_timezone': 'UTC',
+                'columns': {
+                    'time_end': 'te',
+                    'src_ip': 'src',
+                    'dst_ip': 'dst',
+                    'protocol': 'proto',
+                    'packets': 'packets',
+                    'bytes': 'bytes',
+                    'src_tos': 'stos',
+                },
+                'source_id': {'value': 'r1'},
+                'input_order': 'timestamp_ascending',
+            }
+        ),
+        encoding='utf-8',
+    )
+    good_path = tmp_path / 'a-good.csv'
+    bad_path = tmp_path / 'b-bad.csv'
+    good_path.write_text(
+        'te,src,dst,proto,packets,bytes,stos\n'
+        '2016-07-27 13:40:00,192.0.2.1,198.51.100.1,6,1,2,0\n',
+        encoding='utf-8',
+    )
+    bad_path.write_text(
+        'te,src\n'
+        '2016-07-27 13:45:00,192.0.2.2\n',
+        encoding='utf-8',
+    )
+    specs = [
+        {
+            'input_kind': 'csv',
+            'path': str(good_path),
+            'mapping_path': str(mapping_path),
+        },
+        {
+            'input_kind': 'csv',
+            'path': str(bad_path),
+            'mapping_path': str(mapping_path),
+        },
+    ]
+
+    with pytest.raises(ValueError, match='missing mapped columns'):
+        pipeline.process_input_specs(conn, specs, run_maad=False)
+
+    assert conn.execute('SELECT COUNT(*) FROM processed_inputs').fetchone() == (0,)
+    assert conn.execute('SELECT COUNT(*) FROM processed_input_scans').fetchone() == (0,)
+    for table_name in (
+        'traffic_stats',
+        'protocol_stats',
+        'address_count_stats',
+        'address_structure_stats',
+    ):
+        assert conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone() == (0,)
+
+    bad_path.write_text(
+        'te,src,dst,proto,packets,bytes,stos\n'
+        '2016-07-27 13:45:00,192.0.2.2,198.51.100.2,17,3,4,0\n',
+        encoding='utf-8',
+    )
+    pipeline.process_input_specs(conn, specs, run_maad=False)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'processed'"
+    ).fetchone() == (2,)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_input_scans WHERE status = 'processed'"
+    ).fetchone() == (2,)
+    assert conn.execute(
+        """
+        SELECT DISTINCT bucket_start FROM traffic_stats
+        WHERE source_id = 'r1' AND granularity = '5m'
+        ORDER BY bucket_start
+        """
+    ).fetchall() == [(1469626800,), (1469627100,)]
 
 
 def test_tree_zero_fill_covers_explicit_multi_day_blank_interval(tmp_path) -> None:

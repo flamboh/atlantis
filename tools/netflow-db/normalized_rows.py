@@ -23,6 +23,7 @@ from csv_ingest import (
 
 
 NFDUMP_CSV_FORMAT = 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos'
+MAX_SQLITE_INTEGER = (1 << 63) - 1
 
 
 @dataclass(slots=True)
@@ -142,11 +143,11 @@ def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> Normal
         ip_version=ip_version,
         src_port=extract_int(row, config, 'src_port'),
         dst_port=extract_int(row, config, 'dst_port'),
-        protocol=extract_protocol(row, config, 'protocol'),
-        packets=extract_int(row, config, 'packets'),
-        bytes=extract_int(row, config, 'bytes'),
-        src_tos=extract_int(row, config, 'src_tos'),
-        dst_tos=extract_int(row, config, 'dst_tos'),
+        protocol=extract_bounded_protocol(row, config),
+        packets=extract_nonnegative_int(row, config, 'packets'),
+        bytes=extract_nonnegative_int(row, config, 'bytes'),
+        src_tos=extract_byte(row, config, 'src_tos'),
+        dst_tos=extract_byte(row, config, 'dst_tos'),
     )
 
 
@@ -177,11 +178,11 @@ def normalize_csv_values(
         ip_version=ip_version,
         src_port=extract_int_from_values(values, config, field_indexes, 'src_port'),
         dst_port=extract_int_from_values(values, config, field_indexes, 'dst_port'),
-        protocol=extract_protocol_from_values(values, config, field_indexes, 'protocol'),
-        packets=extract_int_from_values(values, config, field_indexes, 'packets'),
-        bytes=extract_int_from_values(values, config, field_indexes, 'bytes'),
-        src_tos=extract_int_from_values(values, config, field_indexes, 'src_tos'),
-        dst_tos=extract_int_from_values(values, config, field_indexes, 'dst_tos'),
+        protocol=extract_bounded_protocol_from_values(values, config, field_indexes),
+        packets=extract_nonnegative_int_from_values(values, config, field_indexes, 'packets'),
+        bytes=extract_nonnegative_int_from_values(values, config, field_indexes, 'bytes'),
+        src_tos=extract_byte_from_values(values, config, field_indexes, 'src_tos'),
+        dst_tos=extract_byte_from_values(values, config, field_indexes, 'dst_tos'),
     )
 
 
@@ -397,3 +398,72 @@ def extract_protocol_from_values(
         raise CsvSourceConfigError(
             f"Invalid protocol value '{raw_text}' for column '{column_name}'."
         ) from error
+
+
+def extract_bounded_protocol(row: Mapping[str, Any], config: CsvSourceConfig) -> int:
+    value = extract_protocol(row, config, 'protocol')
+    return validate_integer_range(value, config.columns.get('protocol', 'protocol'), minimum=0, maximum=255)
+
+
+def extract_bounded_protocol_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+) -> int:
+    value = extract_protocol_from_values(values, config, field_indexes, 'protocol')
+    return validate_integer_range(value, config.columns.get('protocol', 'protocol'), minimum=0, maximum=255)
+
+
+def extract_nonnegative_int(row: Mapping[str, Any], config: CsvSourceConfig, logical_key: str) -> int:
+    value = extract_int(row, config, logical_key)
+    return validate_integer_range(
+        value,
+        config.columns.get(logical_key, logical_key),
+        minimum=0,
+        maximum=MAX_SQLITE_INTEGER,
+    )
+
+
+def extract_nonnegative_int_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+    logical_key: str,
+) -> int:
+    value = extract_int_from_values(values, config, field_indexes, logical_key)
+    return validate_integer_range(
+        value,
+        config.columns.get(logical_key, logical_key),
+        minimum=0,
+        maximum=MAX_SQLITE_INTEGER,
+    )
+
+
+def extract_byte(row: Mapping[str, Any], config: CsvSourceConfig, logical_key: str) -> int:
+    value = extract_int(row, config, logical_key)
+    return validate_integer_range(value, config.columns.get(logical_key, logical_key), minimum=0, maximum=255)
+
+
+def extract_byte_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+    logical_key: str,
+) -> int:
+    value = extract_int_from_values(values, config, field_indexes, logical_key)
+    return validate_integer_range(value, config.columns.get(logical_key, logical_key), minimum=0, maximum=255)
+
+
+def validate_integer_range(
+    value: int,
+    column_name: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    if value < minimum or (maximum is not None and value > maximum):
+        expected = f'{minimum}..{maximum}' if maximum is not None else f'>= {minimum}'
+        raise CsvSourceConfigError(
+            f"Integer value '{value}' for column '{column_name}' must be {expected}."
+        )
+    return value
