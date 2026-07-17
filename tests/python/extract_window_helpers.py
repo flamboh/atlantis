@@ -7,6 +7,7 @@ import datasets_metadata
 import processed_inputs
 import statistical_bucket
 import stats
+from input_revision import InputRevision
 
 
 NETFLOW_DB_TOOLS = Path(__file__).resolve().parents[2] / 'tools' / 'netflow-db'
@@ -48,6 +49,12 @@ def make_source_db(path: Path) -> sqlite3.Connection:
             ],
         },
     )
+    input_revision = InputRevision.create(
+        input_kind='nfcapd',
+        locator='nfcapd://r1/197001010000',
+        content_fingerprint='fixture',
+        decoder_fingerprint='fixture',
+    )
     processed_inputs.upsert_input_bucket(
         conn,
         input_kind='nfcapd',
@@ -55,6 +62,7 @@ def make_source_db(path: Path) -> sqlite3.Connection:
         source_id='r1',
         bucket_start=200,
         bucket_end=500,
+        input_revision=input_revision,
     )
     stats.insert_traffic_stats_rows(
         conn,

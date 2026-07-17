@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
+from csv_ingest import CsvSourceConfig, load_csv_source_config
 from csv_inputs import discover_csv_specs
 from csv_scan import CsvBucketReady, CsvScanComplete, scan_csv
 from datasets_metadata import init_datasets_table, upsert_dataset_metadata
@@ -34,8 +35,27 @@ from nfdump_stats import (
     is_nfcapd_bucket_filename,
     parse_nfcapd_bucket_start,
 )
+from input_revision import (
+    ExpectedAbsence,
+    FileSnapshot,
+    InputRevision,
+    capture_csv_input_revision,
+    capture_nfcapd_input_revision,
+    csv_decoder_fingerprint,
+    gap_input_revision,
+    nfcapd_decoder_fingerprint,
+    revision_for_locator,
+    verify_file_snapshot,
+)
+from pipeline_product import (
+    ProductIdentity,
+    bind_nfcapd_source_layout,
+    bind_product_identity,
+)
 from processed_inputs import (
     InputBucketRef,
+    InputRevisionConflict,
+    cached_content_fingerprint,
     clear_incomplete_input_scan,
     complete_input_scan,
     init_processed_inputs_table,
@@ -50,13 +70,13 @@ from statistical_bucket import (
     ZERO_FILL_VISIBILITY_PAIRS,
 )
 from stats import (
+    STATS_TABLE_ADAPTERS,
+    STATS_TABLE_NAMES,
     build_address_structure_stats_rows,
     canonical_bucket_rows,
     init_stats_tables,
-    insert_address_count_stats_rows,
-    insert_address_structure_stats_rows,
-    insert_protocol_stats_rows,
-    insert_traffic_stats_rows,
+    delete_stats_bucket_keys,
+    insert_stats_payload,
 )
 
 
@@ -74,6 +94,45 @@ MAAD_TIMEOUT_SECONDS_BY_GRANULARITY = {
     '1h': int(os.environ.get('MAAD_TIMEOUT_1H_SECONDS', '900')),
     '1d': int(os.environ.get('MAAD_TIMEOUT_1D_SECONDS', '1800')),
 }
+
+
+def current_product_identity(*, run_maad: bool, maad_backend: str) -> ProductIdentity:
+    """Return result semantics for the current unfiltered pipeline product."""
+    return ProductIdentity.create(
+        schema={
+            'version': 1,
+            'tables': [
+                {'name': adapter.table_name, 'version': adapter.schema_version}
+                for adapter in STATS_TABLE_ADAPTERS
+            ],
+        },
+        selection={'version': 1, 'kind': 'all'},
+        config={
+            'version': 1,
+            'timezone': str(PIPELINE_TIMEZONE),
+            'maad': {
+                'enabled': run_maad,
+                'backend': maad_backend,
+                'contract_version': 1,
+            },
+        },
+    )
+
+
+def bind_current_product(
+    conn: sqlite3.Connection,
+    *,
+    run_maad: bool,
+    maad_backend: str,
+) -> None:
+    """Bind or validate database-wide result semantics."""
+    bind_product_identity(
+        conn,
+        current_product_identity(run_maad=run_maad, maad_backend=maad_backend),
+        output_table_names=STATS_TABLE_NAMES,
+    )
+
+
 @dataclass(frozen=True)
 class SourceDefinition:
     """Logical source backed by one or more physical nfcapd member directories."""
@@ -128,15 +187,31 @@ def validate_max_workers(max_workers: int) -> int:
 
 def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
     """Process a config, including canonical nfcapd tree inputs."""
-    init_datasets_table(conn)
-    for dataset in config.get('datasets', []):
-        upsert_dataset_metadata(conn, dataset)
-
     maad_bin = config.get('maad_bin', DEFAULT_MAAD_BIN)
     maad_backend = str(config.get('maad_backend', 'subprocess'))
     maad_workers = int(config.get('maad_workers', 1))
     max_workers = validate_max_workers(int(config.get('max_workers', DEFAULT_MAX_WORKERS)))
     run_maad = bool(config.get('run_maad', True))
+    init_processed_inputs_table(conn)
+    init_stats_tables(conn)
+    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    nfcapd_layout_sources = []
+    for spec in config['inputs']:
+        if str(spec['input_kind']) != 'nfcapd_tree':
+            continue
+        root_path = Path(spec['root_path'])
+        nfcapd_layout_sources.extend(normalize_nfcapd_sources(spec, root_path))
+    if nfcapd_layout_sources:
+        source_ids = [source.source_id for source in nfcapd_layout_sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError('nfcapd_tree inputs define duplicate logical source ids')
+        bind_nfcapd_source_layout(
+            conn,
+            [(source.source_id, source.members) for source in nfcapd_layout_sources],
+        )
+    init_datasets_table(conn)
+    for dataset in config.get('datasets', []):
+        upsert_dataset_metadata(conn, dataset)
     explicit_inputs = []
 
     for spec in config['inputs']:
@@ -150,6 +225,7 @@ def process_pipeline_config(conn: sqlite3.Connection, config: dict) -> None:
                 maad_workers=maad_workers,
                 max_workers=max_workers,
                 run_maad=run_maad,
+                bind_source_layout=False,
             )
         elif input_kind == 'csv_tree':
             process_csv_tree_spec(
@@ -185,10 +261,19 @@ def process_nfcapd_tree_spec(
     maad_workers: int,
     max_workers: int,
     run_maad: bool,
+    bind_source_layout: bool = True,
 ) -> None:
     """Process a canonical nfcapd tree one day at a time."""
+    init_processed_inputs_table(conn)
+    init_stats_tables(conn)
+    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
     root_path = Path(spec['root_path'])
     sources = normalize_nfcapd_sources(spec, root_path)
+    if bind_source_layout:
+        bind_nfcapd_source_layout(
+            conn,
+            [(source.source_id, source.members) for source in sources],
+        )
     member_ids = sorted({member for source in sources for member in source.members})
     start_date = parse_config_date(str(spec['start_date']))
     explicit_end_date = bool(spec.get('end_date'))
@@ -237,7 +322,13 @@ def process_nfcapd_tree_spec(
         if not member_specs:
             LOGGER.info('No nfcapd files found for %s', day.strftime('%Y-%m-%d'))
             continue
-        jobs = build_nfcapd_logical_bucket_jobs(conn, sources, member_specs, force=force)
+        jobs = build_nfcapd_logical_bucket_jobs(
+            conn,
+            sources,
+            member_specs,
+            force=force,
+            root_path=root_path,
+        )
         if not jobs:
             print(f"[pipeline] Skip {day.strftime('%Y-%m-%d')}: {len(member_specs)} already processed")
             continue
@@ -324,7 +415,17 @@ def process_csv_tree_spec(
     run_maad: bool,
 ) -> None:
     """Process configured CSV files under one directory."""
-    input_specs = discover_csv_specs(spec['root_path'], spec['mapping_path'])
+    init_processed_inputs_table(conn)
+    init_stats_tables(conn)
+    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
+    csv_config = load_csv_source_config(spec['mapping_path'])
+    input_specs = discover_csv_specs(
+        spec['root_path'],
+        spec['mapping_path'],
+        csv_config,
+    )
+    for input_spec in input_specs:
+        input_spec['_csv_config'] = csv_config
     if not input_specs:
         LOGGER.info('No CSV files found under %s', spec['root_path'])
         return
@@ -484,21 +585,107 @@ def iter_local_day_bucket_starts(day: datetime) -> Iterable[int]:
 def build_nfcapd_gap_spec(root: Path, source_id: str, bucket_start: int) -> dict:
     """Build an internal zero-fill spec for one missing nfcapd bucket."""
     timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
+    locator = f"gap://nfcapd/{source_id}/{timestamp.strftime('%Y%m%d%H%M')}"
+    expected_path = nfcapd_expected_path(root, source_id, bucket_start)
     return {
         'input_kind': 'nfcapd',
-        'path': f"gap://nfcapd/{source_id}/{timestamp.strftime('%Y%m%d%H%M')}",
-        'expected_path': str(
-            root
-            / source_id
-            / timestamp.strftime('%Y')
-            / timestamp.strftime('%m')
-            / timestamp.strftime('%d')
-            / f"nfcapd.{timestamp.strftime('%Y%m%d%H%M')}"
-        ),
+        'path': locator,
+        'expected_path': str(expected_path),
+        '_absence_snapshot': ExpectedAbsence.capture(expected_path),
         'source_id': source_id,
         'bucket_start': bucket_start,
         'gap': True,
+        'input_revision': gap_input_revision('nfcapd', locator),
     }
+
+
+def nfcapd_expected_path(root: Path, source_id: str, bucket_start: int) -> Path:
+    """Return the canonical path expected for one native five-minute bucket."""
+    timestamp = datetime.fromtimestamp(bucket_start, PIPELINE_TIMEZONE)
+    return (
+        root
+        / source_id
+        / timestamp.strftime('%Y')
+        / timestamp.strftime('%m')
+        / timestamp.strftime('%d')
+        / f"nfcapd.{timestamp.strftime('%Y%m%d%H%M')}"
+    )
+
+
+def prepare_input_specs(conn: sqlite3.Connection, input_specs: list[dict]) -> list[dict]:
+    """Load decoder configuration once and attach exact revisions."""
+    init_processed_inputs_table(conn)
+    csv_configs: dict[str, CsvSourceConfig] = {}
+    prepared = []
+    for raw_spec in input_specs:
+        spec = dict(raw_spec)
+        input_kind = str(spec['input_kind'])
+        locator = str(spec['path'])
+        if input_kind == 'csv':
+            mapping_path = str(spec['mapping_path'])
+            config = spec.get('_csv_config')
+            if config is None:
+                config = csv_configs.get(mapping_path)
+                if config is None:
+                    config = load_csv_source_config(mapping_path)
+                    csv_configs[mapping_path] = config
+            spec['_csv_config'] = config
+            snapshot = FileSnapshot.capture(locator)
+            cached_content = cached_content_fingerprint(
+                conn,
+                input_kind='csv',
+                input_locator=locator,
+                file_snapshot=snapshot,
+            )
+            if cached_content is None:
+                revision, snapshot = capture_csv_input_revision(locator, config)
+            else:
+                revision = InputRevision.create(
+                    input_kind='csv',
+                    locator=locator,
+                    content_fingerprint=cached_content,
+                    decoder_fingerprint=csv_decoder_fingerprint(config),
+                )
+            spec['input_revision'] = revision
+            spec['_file_snapshot'] = snapshot
+        elif input_kind == 'nfcapd':
+            if spec.get('gap'):
+                spec['input_revision'] = gap_input_revision('nfcapd', locator)
+                absence = spec.get('_absence_snapshot')
+                if absence is None:
+                    expected_path = spec.get('expected_path')
+                    if expected_path is None and not locator.startswith('gap://'):
+                        expected_path = locator
+                    if expected_path is None:
+                        raise ValueError(
+                            'Synthetic nfcapd gap requires an expected_path '
+                            'to verify continued absence'
+                        )
+                    absence = ExpectedAbsence.capture(expected_path)
+                spec['_absence_snapshot'] = absence
+            else:
+                snapshot = FileSnapshot.capture(locator)
+                cached_content = cached_content_fingerprint(
+                    conn,
+                    input_kind='nfcapd',
+                    input_locator=locator,
+                    file_snapshot=snapshot,
+                )
+                if cached_content is None:
+                    revision, snapshot = capture_nfcapd_input_revision(locator)
+                else:
+                    revision = InputRevision.create(
+                        input_kind='nfcapd',
+                        locator=locator,
+                        content_fingerprint=cached_content,
+                        decoder_fingerprint=nfcapd_decoder_fingerprint(),
+                    )
+                spec['input_revision'] = revision
+                spec['_file_snapshot'] = snapshot
+        else:
+            raise ValueError(f'Unsupported input_kind: {input_kind}')
+        prepared.append(spec)
+    return prepared
 
 
 def build_nfcapd_logical_bucket_jobs(
@@ -507,9 +694,11 @@ def build_nfcapd_logical_bucket_jobs(
     member_specs: list[dict],
     *,
     force: bool = False,
+    root_path: Path | None = None,
 ) -> list[dict]:
     """Build unprocessed logical source buckets from physical member specs."""
     specs_by_member_bucket: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    member_specs = prepare_input_specs(conn, member_specs)
     for spec in member_specs:
         member_id = str(spec['source_id'])
         bucket_start = int(spec.get('bucket_start') or parse_nfcapd_bucket_start(str(spec['path'])))
@@ -519,18 +708,29 @@ def build_nfcapd_logical_bucket_jobs(
     needs_processing = False
     for source in sources:
         for bucket_start in source_candidate_bucket_starts(source, specs_by_member_bucket):
-            present_specs, missing_members = logical_source_member_specs(
+            present_specs, missing_members, missing_absences = logical_source_member_specs(
                 source,
                 bucket_start,
                 specs_by_member_bucket,
+                root_path=root_path,
             )
 
-            locators = (
-                [str(spec['path']) for spec in present_specs]
+            revisions = (
+                [spec['input_revision'] for spec in present_specs]
                 if present_specs
-                else [logical_nfcapd_gap_locator(source.source_id, bucket_start)]
+                else [
+                    gap_input_revision(
+                        'nfcapd',
+                        logical_nfcapd_gap_locator(source.source_id, bucket_start),
+                    )
+                ]
             )
-            if force or not nfcapd_logical_bucket_processed(conn, source.source_id, bucket_start, locators):
+            if force or not nfcapd_logical_bucket_processed(
+                conn,
+                source.source_id,
+                bucket_start,
+                revisions,
+            ):
                 needs_processing = True
             jobs.append(
                 {
@@ -539,6 +739,11 @@ def build_nfcapd_logical_bucket_jobs(
                     'bucket_end': bucket_start + FIVE_MINUTE_SECONDS,
                     'member_specs': present_specs,
                     'missing_members': missing_members,
+                    'absence_snapshots': [
+                        spec['_absence_snapshot']
+                        for spec in present_specs
+                        if spec.get('gap')
+                    ] + missing_absences,
                 }
             )
             if missing_members:
@@ -567,10 +772,13 @@ def logical_source_member_specs(
     source: SourceDefinition,
     bucket_start: int,
     specs_by_member_bucket: dict[tuple[str, int], list[dict]],
-) -> tuple[list[dict], list[str]]:
+    *,
+    root_path: Path | None,
+) -> tuple[list[dict], list[str], list[ExpectedAbsence]]:
     """Return present physical specs and missing members for one logical bucket."""
     present_specs = []
     missing_members = []
+    missing_absences = []
     for member_id in source.members:
         candidates = specs_by_member_bucket.get((member_id, bucket_start), [])
         usable = candidates if len(source.members) == 1 else [
@@ -582,7 +790,23 @@ def logical_source_member_specs(
             present_specs.extend(usable)
         else:
             missing_members.append(member_id)
-    return present_specs, missing_members
+            candidate_absences = [
+                spec['_absence_snapshot']
+                for spec in candidates
+                if spec.get('gap')
+            ]
+            if not candidate_absences:
+                if root_path is None:
+                    raise ValueError(
+                        'root_path is required to prove absent logical nfcapd members'
+                    )
+                candidate_absences.append(
+                    ExpectedAbsence.capture(
+                        nfcapd_expected_path(root_path, member_id, bucket_start)
+                    )
+                )
+            missing_absences.extend(candidate_absences)
+    return present_specs, missing_members, missing_absences
 
 
 def logical_nfcapd_gap_locator(source_id: str, bucket_start: int) -> str:
@@ -595,15 +819,14 @@ def nfcapd_logical_bucket_processed(
     conn: sqlite3.Connection,
     source_id: str,
     bucket_start: int,
-    input_locators: list[str],
+    input_revisions: list[InputRevision],
 ) -> bool:
     """Return true when the logical bucket was processed from exactly these inputs."""
-    if not input_locators:
+    if not input_revisions:
         return False
-    init_processed_inputs_table(conn)
     rows = conn.execute(
         """
-        SELECT input_locator
+        SELECT input_locator, revision_fingerprint
         FROM processed_inputs
         WHERE input_kind = 'nfcapd'
           AND source_id = ?
@@ -612,7 +835,17 @@ def nfcapd_logical_bucket_processed(
         """,
         (source_id, bucket_start),
     ).fetchall()
-    return {row[0] for row in rows} == set(input_locators)
+    stored = {(row[0], row[1]) for row in rows}
+    requested = {
+        (revision.locator, revision.fingerprint)
+        for revision in input_revisions
+    }
+    if {item[0] for item in stored} == {item[0] for item in requested} and stored != requested:
+        raise InputRevisionConflict(
+            'nfcapd input content or decoder changed at an already processed locator; '
+            'rerun with force to rewrite it.'
+        )
+    return stored == requested
 
 
 def chunked(values: list[str], size: int) -> Iterable[list[str]]:
@@ -795,7 +1028,9 @@ def process_input_specs(
     """Process explicit input specs into canonical aggregate tables."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
+    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
 
+    input_specs = prepare_input_specs(conn, input_specs)
     csv_specs = [spec for spec in input_specs if str(spec['input_kind']) == 'csv']
     if csv_specs:
         process_csv_input_specs_streaming(
@@ -868,7 +1103,11 @@ def process_nfcapd_input_specs_streaming_aggregates(
     for payload in iter_input_payloads(tasks, max_workers):
         raw_buckets = payload.get('canonical_buckets', [])
         allowed_input_owners = {
-            (str(item['input_kind']), str(item['input_locator']))
+            (
+                str(item['input_kind']),
+                str(item['input_locator']),
+                item['input_revision'].fingerprint,
+            )
             for item in payload['processed_buckets']
         }
         for raw_bucket in raw_buckets:
@@ -911,6 +1150,7 @@ def process_nfcapd_logical_bucket_jobs(
     """Process logical nfcapd source buckets with bounded raw payload retention."""
     init_processed_inputs_table(conn)
     init_stats_tables(conn)
+    bind_current_product(conn, run_maad=run_maad, maad_backend=maad_backend)
 
     jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
     processed_buckets = []
@@ -1053,9 +1293,14 @@ def process_logical_nfcapd_job(
         conn,
         raw_bucket,
         allowed_input_owners={
-            (str(item['input_kind']), str(item['input_locator']))
+            (
+                str(item['input_kind']),
+                str(item['input_locator']),
+                item['input_revision'].fingerprint,
+            )
             for item in payload['processed_buckets']
         },
+        replaceable_input_kinds={'nfcapd'} if delete_existing else None,
     )
     reject_incomplete_persisted_aggregate(conn, raw_bucket, current_run_keys)
     write_input_payload(conn, payload, mark_processed=False, delete_existing=delete_existing)
@@ -1082,7 +1327,11 @@ def flush_5m_address_structure_raw_buckets(
         maad_workers,
     )
     with conn:
-        insert_address_structure_stats_rows(conn, address_structure_rows)
+        insert_stats_payload(
+            conn,
+            {'address_structure_rows': address_structure_rows},
+            table_names=('address_structure_stats',),
+        )
 
 
 def build_logical_nfcapd_bucket_payload(
@@ -1102,12 +1351,20 @@ def build_logical_nfcapd_bucket_payload(
         for spec in job['member_specs']
     ]
     if not raw_buckets:
-        return build_nfcapd_gap_payload(
+        payload = build_nfcapd_gap_payload(
             logical_nfcapd_gap_locator(source_id, bucket_start),
             source_id,
             bucket_start,
             run_maad=run_maad,
+            input_revision=gap_input_revision(
+                'nfcapd',
+                logical_nfcapd_gap_locator(source_id, bucket_start),
+            ),
         )
+        payload['absence_snapshots'] = job.get('absence_snapshots', [])
+        for bucket in payload['processed_buckets']:
+            bucket['_absence_snapshots'] = payload['absence_snapshots']
+        return payload
     canonical_bucket = merge_raw_buckets_for_source(
         source_id=source_id,
         bucket_start=bucket_start,
@@ -1123,9 +1380,13 @@ def build_logical_nfcapd_bucket_payload(
                 'source_id': source_id,
                 'bucket_start': bucket_start,
                 'bucket_end': bucket_end,
+                'input_revision': spec['input_revision'],
+                'file_snapshot': spec.get('_file_snapshot'),
+                '_absence_snapshots': job.get('absence_snapshots', []),
             }
             for spec in job['member_specs']
         ],
+        'absence_snapshots': job.get('absence_snapshots', []),
         'traffic_rows': rows['traffic_rows'],
         'protocol_rows': rows['protocol_rows'],
         'address_count_rows': rows['address_count_rows'],
@@ -1167,7 +1428,7 @@ def process_csv_input_specs_streaming(
     """Consume the deep CSV scan interface and publish its canonical buckets."""
     processed_buckets = []
     aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
-    completion_events: list[CsvScanComplete] = []
+    completion_events: list[tuple[CsvScanComplete, InputRevision, FileSnapshot]] = []
     published_through: dict[str, int] = {}
     current_run_keys: set[tuple[str, int]] = set()
     started_scans: list[str] = []
@@ -1176,16 +1437,20 @@ def process_csv_input_specs_streaming(
         # normalizes callers that discover the same files in a different order.
         for spec in sorted(input_specs, key=lambda item: str(item['path'])):
             scan_locator = str(spec['path'])
-            if csv_input_fully_processed(conn, scan_locator):
+            input_revision = spec['input_revision']
+            csv_config = spec['_csv_config']
+            if csv_input_fully_processed(conn, input_revision):
                 print(f'[pipeline] Skip CSV input already processed: {scan_locator}')
                 continue
             prepare_csv_scan_retry(conn, scan_locator)
             started_scans.append(scan_locator)
             print(f'[pipeline] CSV start: {scan_locator}')
             bucket_count = 0
-            for event in scan_csv(spec):
+            for event in scan_csv(spec, csv_config):
                 if isinstance(event, CsvScanComplete):
-                    completion_events.append(event)
+                    completion_events.append(
+                        (event, input_revision, spec['_file_snapshot'])
+                    )
                     continue
                 publish_csv_bucket_ready(
                     conn,
@@ -1198,8 +1463,10 @@ def process_csv_input_specs_streaming(
                     aggregate_buckets=aggregate_buckets,
                     published_through=published_through,
                     current_run_keys=current_run_keys,
+                    input_revision=input_revision,
                 )
                 bucket_count += 1
+            verify_file_snapshot(scan_locator, spec['_file_snapshot'])
             print(
                 f'[pipeline] CSV scanned: buckets={bucket_count} input={scan_locator}'
             )
@@ -1225,12 +1492,13 @@ def process_csv_input_specs_streaming(
         raise
 
 
-def csv_input_fully_processed(conn: sqlite3.Connection, input_locator: str) -> bool:
+def csv_input_fully_processed(conn: sqlite3.Connection, input_revision: InputRevision) -> bool:
     """Return true only after a successful CSV scan and all scoped publication."""
     return input_scan_fully_processed(
         conn,
         input_kind='csv',
-        scan_locator=input_locator,
+        scan_locator=input_revision.locator,
+        input_revision=input_revision,
     )
 
 
@@ -1264,22 +1532,14 @@ def prepare_csv_scan_retry(
                 for granularity, seconds in AGGREGATE_GRANULARITY_SECONDS
             }
         )
-        for table_name in (
-            'traffic_stats',
-            'protocol_stats',
-            'address_count_stats',
-            'address_structure_stats',
-        ):
-            conn.executemany(
-                f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' "
-                'AND bucket_start = ?',
-                five_minute_keys,
-            )
-            conn.executemany(
-                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? '
-                'AND bucket_start = ?',
-                aggregate_keys,
-            )
+        delete_stats_bucket_keys(
+            conn,
+            [
+                (source_id, '5m', bucket_start)
+                for source_id, bucket_start in five_minute_keys
+            ],
+        )
+        delete_stats_bucket_keys(conn, aggregate_keys)
     return stale_buckets
 
 
@@ -1295,6 +1555,7 @@ def publish_csv_bucket_ready(
     aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket],
     published_through: dict[str, int],
     current_run_keys: set[tuple[str, int]],
+    input_revision: InputRevision,
 ) -> None:
     """Publish one scanned CSV bucket while preserving scan ownership and provenance."""
     bucket = event.bucket
@@ -1309,9 +1570,16 @@ def publish_csv_bucket_ready(
     reject_overlapping_canonical_bucket(
         conn,
         bucket,
-        allowed_csv_scans={event.scan_locator},
+        allowed_csv_scans={
+            (
+                event.scan_locator,
+                input_revision.content_fingerprint,
+                input_revision.decoder_fingerprint,
+            )
+        },
     )
     reject_incomplete_persisted_aggregate(conn, bucket, current_run_keys)
+    bucket_revision = revision_for_locator(input_revision, event.input_locator)
     already_processed = conn.execute(
         """
         SELECT 1
@@ -1322,12 +1590,14 @@ def publish_csv_bucket_ready(
           AND source_id = ?
           AND bucket_start = ?
           AND status = 'processed'
+          AND revision_fingerprint = ?
         """,
         (
             event.input_locator,
             event.scan_locator,
             bucket.key.source_id,
             bucket.key.bucket_start,
+            bucket_revision.fingerprint,
         ),
     ).fetchone()
     if already_processed is not None:
@@ -1341,6 +1611,7 @@ def publish_csv_bucket_ready(
         'source_id': bucket.key.source_id,
         'bucket_start': bucket.key.bucket_start,
         'bucket_end': bucket.key.bucket_end,
+        'input_revision': bucket_revision,
     }
     payload = {
         'processed_buckets': [processed_bucket],
@@ -1422,15 +1693,20 @@ def reject_overlapping_canonical_bucket(
     conn: sqlite3.Connection,
     bucket: CanonicalBucket,
     *,
-    allowed_csv_scans: set[str] | None = None,
-    allowed_input_owners: set[tuple[str, str]] | None = None,
+    allowed_csv_scans: set[tuple[str, str, str]] | None = None,
+    allowed_input_owners: set[tuple[str, str, str]] | None = None,
+    replaceable_input_kinds: set[str] | None = None,
 ) -> None:
     """Reject a canonical 5m bucket already claimed by another logical owner."""
     allowed_csv_scans = set() if allowed_csv_scans is None else allowed_csv_scans
     allowed_input_owners = set() if allowed_input_owners is None else allowed_input_owners
+    replaceable_input_kinds = (
+        set() if replaceable_input_kinds is None else replaceable_input_kinds
+    )
     owners = conn.execute(
         """
-        SELECT input_kind, input_locator, scan_locator
+        SELECT input_kind, input_locator, scan_locator,
+               content_fingerprint, decoder_fingerprint, revision_fingerprint
         FROM processed_inputs
         WHERE source_id = ?
           AND bucket_start = ?
@@ -1440,10 +1716,14 @@ def reject_overlapping_canonical_bucket(
     ).fetchall()
     conflicting_owners = [
         (input_kind, input_locator, scan_locator)
-        for input_kind, input_locator, scan_locator in owners
+        for input_kind, input_locator, scan_locator, content, decoder, revision in owners
         if not (
-            (input_kind == 'csv' and scan_locator in allowed_csv_scans)
-            or (input_kind, input_locator) in allowed_input_owners
+            (
+                input_kind == 'csv'
+                and (scan_locator, content, decoder) in allowed_csv_scans
+            )
+            or (input_kind, input_locator, revision) in allowed_input_owners
+            or input_kind in replaceable_input_kinds
         )
     ]
     if not conflicting_owners:
@@ -1462,19 +1742,27 @@ def reject_overlapping_canonical_bucket(
 def complete_csv_scans(
     conn: sqlite3.Connection,
     processed_buckets: list[dict],
-    completion_events: list[CsvScanComplete],
+    completion_events: list[tuple[CsvScanComplete, InputRevision, FileSnapshot]],
 ) -> None:
     """Atomically mark remaining buckets and successful CSV scans complete."""
-    completions_by_locator = {event.scan_locator: event for event in completion_events}
+    completions_by_locator = {
+        event.scan_locator: (event, revision, snapshot)
+        for event, revision, snapshot in completion_events
+    }
     with conn:
         mark_processed_buckets(conn, processed_buckets)
-        for scan_locator, event in sorted(completions_by_locator.items()):
+        for scan_locator, (event, revision, snapshot) in sorted(
+            completions_by_locator.items()
+        ):
+            verify_file_snapshot(scan_locator, snapshot)
             complete_input_scan(
                 conn,
                 input_kind='csv',
                 scan_locator=scan_locator,
                 rejected_rows=event.rejected_rows,
                 skipped_bad_column_count=event.skipped_bad_column_count,
+                input_revision=revision,
+                file_snapshot=snapshot,
             )
 
 
@@ -1547,10 +1835,15 @@ def flush_streaming_aggregate_buckets(
     with conn:
         if delete_existing:
             delete_aggregate_outputs_for_streaming_buckets(conn, buckets)
-        insert_traffic_stats_rows(conn, traffic_rows)
-        insert_protocol_stats_rows(conn, protocol_rows)
-        insert_address_count_stats_rows(conn, address_count_rows)
-        insert_address_structure_stats_rows(conn, address_structure_rows)
+        insert_stats_payload(
+            conn,
+            {
+                'traffic_rows': traffic_rows,
+                'protocol_rows': protocol_rows,
+                'address_count_rows': address_count_rows,
+                'address_structure_rows': address_structure_rows,
+            },
+        )
 
 
 def delete_aggregate_outputs_for_streaming_buckets(
@@ -1559,16 +1852,10 @@ def delete_aggregate_outputs_for_streaming_buckets(
 ) -> None:
     """Delete stale aggregate rows for streaming aggregate buckets before rewrite."""
     for bucket in buckets:
-        for table_name in (
-            'traffic_stats',
-            'protocol_stats',
-            'address_count_stats',
-            'address_structure_stats',
-        ):
-            conn.execute(
-                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
-                (bucket.key.source_id, bucket.key.granularity, bucket.key.bucket_start),
-            )
+        delete_stats_bucket_keys(
+            conn,
+            [(bucket.key.source_id, bucket.key.granularity, bucket.key.bucket_start)],
+        )
 
 
 def iter_input_payloads(tasks: list[tuple[dict, str, str, int, bool]], max_workers: int) -> Iterable[dict]:
@@ -1598,15 +1885,24 @@ def build_input_payload(
     """Build all DB insert payloads for one input spec."""
     input_kind = str(spec['input_kind'])
     input_locator = str(spec['path'])
+    input_revision = spec['input_revision']
     if input_kind == 'nfcapd':
         if spec.get('gap'):
-            return build_nfcapd_gap_payload(
+            payload = build_nfcapd_gap_payload(
                 input_locator=input_locator,
                 source_id=str(spec['source_id']),
                 bucket_start=int(spec['bucket_start']),
                 run_maad=run_maad,
+                input_revision=input_revision,
             )
+            payload['absence_snapshots'] = [spec['_absence_snapshot']]
+            for bucket in payload['processed_buckets']:
+                bucket['_absence_snapshots'] = payload['absence_snapshots']
+            return payload
         nfcapd_payload = build_nfcapd_bucket_payload(input_locator, str(spec['source_id']))
+        verify_file_snapshot(input_locator, spec['_file_snapshot'])
+        nfcapd_payload['processed_bucket']['input_revision'] = input_revision
+        nfcapd_payload['processed_bucket']['file_snapshot'] = spec['_file_snapshot']
         canonical_bucket = nfcapd_payload['canonical_bucket']
         return {
             'processed_buckets': [nfcapd_payload['processed_bucket']],
@@ -1638,20 +1934,28 @@ def write_input_payload(
     processed_buckets = payload['processed_buckets']
     if not processed_buckets:
         return
+    for bucket in processed_buckets:
+        snapshot = bucket.get('file_snapshot')
+        if snapshot is not None:
+            verify_file_snapshot(bucket['input_locator'], snapshot)
+    for absence in payload.get('absence_snapshots', []):
+        absence.verify()
     with conn:
         if delete_existing:
             delete_5m_outputs_for_processed_buckets(conn, processed_buckets)
 
         for bucket in processed_buckets:
-            upsert_input_bucket(conn, **bucket)
+            upsert_input_bucket(
+                conn,
+                **{key: value for key, value in bucket.items() if not key.startswith('_')},
+            )
 
-        insert_traffic_stats_rows(conn, payload.get('traffic_rows', []))
-        insert_protocol_stats_rows(conn, payload.get('protocol_rows', []))
-        insert_address_count_stats_rows(conn, payload.get('address_count_rows', []))
-        insert_address_structure_stats_rows(conn, payload.get('address_structure_rows', []))
+        insert_stats_payload(conn, payload)
 
         if mark_processed:
             mark_processed_buckets(conn, processed_buckets)
+        for absence in payload.get('absence_snapshots', []):
+            absence.verify()
 
 
 def delete_5m_outputs_for_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
@@ -1674,20 +1978,18 @@ def delete_5m_outputs(conn: sqlite3.Connection, *, source_id: str, bucket_start:
         """,
         (source_id, bucket_start),
     )
-    for table_name in (
-        'traffic_stats',
-        'protocol_stats',
-        'address_count_stats',
-        'address_structure_stats',
-    ):
-        conn.execute(
-            f"DELETE FROM {table_name} WHERE source_id = ? AND granularity = '5m' AND bucket_start = ?",
-            (source_id, bucket_start),
-        )
+    delete_stats_bucket_keys(conn, [(source_id, '5m', bucket_start)])
 
 
 def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dict]) -> None:
     """Mark input buckets processed after all outputs are written."""
+    absences = [
+        absence
+        for bucket in processed_buckets
+        for absence in bucket.get('_absence_snapshots', [])
+    ]
+    for absence in absences:
+        absence.verify()
     for bucket in processed_buckets:
         mark_input_bucket_status(
             conn,
@@ -1696,7 +1998,10 @@ def mark_processed_buckets(conn: sqlite3.Connection, processed_buckets: list[dic
             source_id=bucket['source_id'],
             bucket_start=bucket['bucket_start'],
             status='processed',
+            input_revision=bucket['input_revision'],
         )
+    for absence in absences:
+        absence.verify()
 
 
 def write_aggregate_rows(
@@ -1742,10 +2047,15 @@ def write_aggregate_rows(
     with conn:
         if delete_existing:
             delete_aggregate_outputs_for_raw_buckets(conn, raw_buckets)
-        insert_traffic_stats_rows(conn, traffic_rows)
-        insert_protocol_stats_rows(conn, protocol_rows)
-        insert_address_count_stats_rows(conn, address_count_rows)
-        insert_address_structure_stats_rows(conn, address_structure_rows)
+        insert_stats_payload(
+            conn,
+            {
+                'traffic_rows': traffic_rows,
+                'protocol_rows': protocol_rows,
+                'address_count_rows': address_count_rows,
+                'address_structure_rows': address_structure_rows,
+            },
+        )
 
 
 def delete_aggregate_outputs_for_raw_buckets(
@@ -1765,16 +2075,7 @@ def delete_aggregate_outputs_for_raw_buckets(
             )
 
     for source_id, granularity, bucket_start in sorted(keys):
-        for table_name in (
-            'traffic_stats',
-            'protocol_stats',
-            'address_count_stats',
-            'address_structure_stats',
-        ):
-            conn.execute(
-                f'DELETE FROM {table_name} WHERE source_id = ? AND granularity = ? AND bucket_start = ?',
-                (source_id, granularity, bucket_start),
-            )
+        delete_stats_bucket_keys(conn, [(source_id, granularity, bucket_start)])
 
 
 def build_aggregate_stats_payloads(raw_buckets: list[CanonicalBucket]) -> list[dict]:
@@ -1958,9 +2259,12 @@ def build_nfcapd_gap_payload(
     bucket_start: int,
     *,
     run_maad: bool = True,
+    input_revision: InputRevision | None = None,
 ) -> dict:
     """Build zero-valued canonical rows for one bounded missing nfcapd bucket."""
     bucket_end = bucket_start + FIVE_MINUTE_SECONDS
+    if input_revision is None:
+        input_revision = gap_input_revision('nfcapd', input_locator)
     canonical_bucket = StatisticalBucket(
         BucketKey(source_id, '5m', bucket_start, bucket_end),
         dense=True,
@@ -1974,6 +2278,7 @@ def build_nfcapd_gap_payload(
                 'source_id': source_id,
                 'bucket_start': bucket_start,
                 'bucket_end': bucket_end,
+                'input_revision': input_revision,
             }
         ],
         'traffic_rows': rows['traffic_rows'],

@@ -139,10 +139,12 @@ class _ScanState:
         self.next_emit[source_id] = next_start
 
 
-def scan_csv(spec: Mapping[str, object]) -> Iterable[CsvScanEvent]:
+def scan_csv(
+    spec: Mapping[str, object],
+    config: CsvSourceConfig,
+) -> Iterable[CsvScanEvent]:
     """Scan one CSV file/archive and emit dense canonical buckets plus terminal completion."""
     scan_locator = str(spec['path'])
-    config = load_csv_source_config(str(spec['mapping_path']))
     if _should_use_arrow(config):
         yield from _scan_csv_arrow(Path(scan_locator), config)
         return
