@@ -24,7 +24,9 @@ from csv_ingest import (
 from flow_observation import FlowObservation
 
 
-NFDUMP_CSV_FORMAT = 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos'
+NFDUMP_CSV_FORMAT = (
+    'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos,%fl,%minttl,%maxttl'
+)
 MAX_SQLITE_INTEGER = (1 << 63) - 1
 
 
@@ -50,8 +52,8 @@ def build_nfdump_csv_command(file_path: str, ip_version: int) -> list[str]:
 
 def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> NormalizedRow:
     """Normalize a fixed-order nfdump CSV row."""
-    if len(values) != 12:
-        raise CsvSourceConfigError(f'nfdump CSV row must contain 12 values, got {len(values)}.')
+    if len(values) != 15:
+        raise CsvSourceConfigError(f'nfdump CSV row must contain 15 values, got {len(values)}.')
 
     row = {
         'tr': values[0],
@@ -59,13 +61,16 @@ def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> Normal
         'ts': values[2],
         'sa': values[3],
         'da': values[4],
-        'sp': normalize_nfdump_port(values[5]),
-        'dp': normalize_nfdump_port(values[6]),
+        'sp': normalize_nfdump_port(values[5], values[7]),
+        'dp': normalize_nfdump_port(values[6], values[7]),
         'pr': values[7],
         'pkt': values[8],
         'byt': values[9],
         'stos': values[10],
         'dtos': values[11],
+        'fl': values[12],
+        'min_ttl': normalize_nfdump_ttl(values[13]),
+        'max_ttl': normalize_nfdump_ttl(values[14]),
     }
     config = CsvSourceConfig(
         delimiter=',',
@@ -85,6 +90,9 @@ def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> Normal
             'bytes': 'byt',
             'src_tos': 'stos',
             'dst_tos': 'dtos',
+            'flow_count': 'fl',
+            'min_ttl': 'min_ttl',
+            'max_ttl': 'max_ttl',
         },
         source_id_value=source_id,
         source_id_column=None,
@@ -102,12 +110,35 @@ def normalize_nfdump_csv_values(values: Sequence[str], source_id: str) -> Normal
     return normalize_csv_row(row, config)
 
 
-def normalize_nfdump_port(raw_value: str) -> str:
-    """Map nfdump ICMP type/code pseudo-ports to no transport port."""
+def normalize_nfdump_port(raw_value: str, raw_protocol: str) -> str:
+    """Map valid ICMP type/code pseudo-ports to transport port zero."""
+    raw_text = str(raw_value)
+    if '.' not in raw_text:
+        return raw_text
+
+    protocol_text = str(raw_protocol)
+    if not protocol_text or any(character < '0' or character > '9' for character in protocol_text):
+        raise CsvSourceConfigError(f"Invalid nfdump protocol '{raw_protocol}'.")
+    if int(protocol_text) not in (1, 58):
+        raise CsvSourceConfigError(
+            f"Dotted nfdump pseudo-port '{raw_value}' is only valid for ICMP or ICMPv6."
+        )
+
+    components = raw_text.split('.')
+    if len(components) != 2 or any(
+        not component
+        or any(character < '0' or character > '9' for character in component)
+        or int(component) > 255
+        for component in components
+    ):
+        raise CsvSourceConfigError(f"Invalid nfdump ICMP type/code pseudo-port '{raw_value}'.")
+    return '0'
+
+
+def normalize_nfdump_ttl(raw_value: str) -> str | None:
+    """Treat native nfdump TTL zero as missing measurement."""
     raw_text = str(raw_value).strip()
-    if '.' in raw_text:
-        return '0'
-    return raw_text
+    return None if raw_text in ('', '0') else raw_text
 
 
 def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> NormalizedRow:
@@ -138,6 +169,7 @@ def normalize_csv_row(row: Mapping[str, Any], config: CsvSourceConfig) -> Normal
         duration_ms=extract_duration_ms(row, config, timestamps),
         min_ttl=extract_optional_bounded_int(row, config, 'min_ttl', maximum=255),
         max_ttl=extract_optional_bounded_int(row, config, 'max_ttl', maximum=255),
+        flow_count=extract_flow_count(row, config),
     )
     validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
@@ -188,6 +220,7 @@ def normalize_csv_values(
         max_ttl=extract_optional_bounded_int_from_values(
             values, config, field_indexes, 'max_ttl', maximum=255
         ),
+        flow_count=extract_flow_count_from_values(values, config, field_indexes),
     )
     validate_ttl_order(observation.min_ttl, observation.max_ttl)
     return NormalizedRow(
@@ -416,6 +449,46 @@ def extract_optional_bounded_int_from_values(
             f"Invalid integer value '{raw}' for column '{column_name}'."
         ) from error
     return validate_integer_range(value, column_name, minimum=0, maximum=maximum)
+
+
+def extract_flow_count(row: Mapping[str, Any], config: CsvSourceConfig) -> int:
+    column_name = config.columns.get('flow_count')
+    if column_name is None:
+        return 1
+    raw = row.get(column_name)
+    if raw is None or str(raw).strip() == '':
+        return 1
+    try:
+        value = int(str(raw).strip())
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(
+        value, column_name, minimum=1, maximum=MAX_SQLITE_INTEGER
+    )
+
+
+def extract_flow_count_from_values(
+    values: Sequence[str],
+    config: CsvSourceConfig,
+    field_indexes: Mapping[str, int],
+) -> int:
+    column_name = config.columns.get('flow_count')
+    if column_name is None:
+        return 1
+    raw = values[field_indexes[column_name]].strip()
+    if raw == '':
+        return 1
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise CsvSourceConfigError(
+            f"Invalid integer value '{raw}' for column '{column_name}'."
+        ) from error
+    return validate_integer_range(
+        value, column_name, minimum=1, maximum=MAX_SQLITE_INTEGER
+    )
 
 
 def extract_duration_ms(

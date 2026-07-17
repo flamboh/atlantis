@@ -53,6 +53,9 @@ function getMetricValue(
 function normalizeRow(row: Record<string, number | null>): NetflowStatsResult {
 	return {
 		bucketStart: row.bucketStart ?? 0,
+		averageDurationMs: row.averageDurationMs ?? null,
+		averageMinTtl: row.averageMinTtl ?? null,
+		averageMaxTtl: row.averageMaxTtl ?? null,
 		flows: getMetricValue(row, 'flows'),
 		flowsTcp: getMetricValue(row, 'flowsTcp'),
 		flowsUdp: getMetricValue(row, 'flowsUdp'),
@@ -139,6 +142,11 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		const tableName = 'traffic_stats';
 		const metricSelects = getBaseMetricSelects();
 		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
+		metricSelects.push(
+			'CASE WHEN SUM(duration_count) = 0 THEN NULL ELSE CAST(SUM(duration_sum_ms) AS REAL) / SUM(duration_count) END AS averageDurationMs',
+			'CASE WHEN SUM(min_ttl_count) = 0 THEN NULL ELSE CAST(SUM(min_ttl_sum) AS REAL) / SUM(min_ttl_count) END AS averageMinTtl',
+			'CASE WHEN SUM(max_ttl_count) = 0 THEN NULL ELSE CAST(SUM(max_ttl_sum) AS REAL) / SUM(max_ttl_count) END AS averageMaxTtl'
+		);
 
 		const query = `
 			SELECT 

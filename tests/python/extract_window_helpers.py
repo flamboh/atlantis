@@ -19,6 +19,7 @@ PORTABLE_TABLES = {
     'traffic_stats',
     'protocol_stats',
     'address_count_stats',
+    'port_count_stats',
     'address_structure_stats',
 }
 

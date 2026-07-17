@@ -1,5 +1,13 @@
 import { sql } from 'drizzle-orm';
-import { check, index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+	check,
+	index,
+	integer,
+	primaryKey,
+	real,
+	sqliteTable,
+	text
+} from 'drizzle-orm/sqlite-core';
 
 const currentTimestamp = sql`CURRENT_TIMESTAMP`;
 export const datasets = sqliteTable('datasets', {
@@ -68,7 +76,16 @@ function netflowMetricColumns() {
 		bytesTcp: integer('bytes_tcp').notNull(),
 		bytesUdp: integer('bytes_udp').notNull(),
 		bytesIcmp: integer('bytes_icmp').notNull(),
-		bytesOther: integer('bytes_other').notNull()
+		bytesOther: integer('bytes_other').notNull(),
+		durationSumMs: integer('duration_sum_ms').notNull(),
+		durationCount: integer('duration_count').notNull(),
+		averageDurationMs: real('average_duration_ms'),
+		minTtlSum: integer('min_ttl_sum').notNull(),
+		minTtlCount: integer('min_ttl_count').notNull(),
+		averageMinTtl: real('average_min_ttl'),
+		maxTtlSum: integer('max_ttl_sum').notNull(),
+		maxTtlCount: integer('max_ttl_count').notNull(),
+		averageMaxTtl: real('average_max_ttl')
 	};
 }
 
@@ -181,6 +198,48 @@ export const addressCountStats = sqliteTable(
 			table.addressSide
 		),
 		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+	]
+);
+
+export const portCountStats = sqliteTable(
+	'port_count_stats',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		portSide: text('port_side', { enum: ['source', 'destination'] }).notNull(),
+		portRange: text('port_range', { enum: ['low', 'high'] }).notNull(),
+		uniquePortCount: integer('unique_port_count').notNull(),
+		processedAt: text('processed_at').default(currentTimestamp)
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.sourceId,
+				table.granularity,
+				table.bucketStart,
+				table.ipVersion,
+				table.srcVisibility,
+				table.dstVisibility,
+				table.portSide,
+				table.portRange
+			]
+		}),
+		index('idx_port_count_stats_query').on(
+			table.granularity,
+			table.bucketStart,
+			table.sourceId,
+			table.ipVersion,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.portSide,
+			table.portRange
+		),
+		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
 

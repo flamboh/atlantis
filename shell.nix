@@ -9,6 +9,7 @@ mkShell {
     pkgs.uv
     pkgs.bun
     pkgs.nodejs
+    pkgs.nfdump
     pkgs.playwright-driver.browsers
     pkgs.stdenv.cc.cc.lib
   ];

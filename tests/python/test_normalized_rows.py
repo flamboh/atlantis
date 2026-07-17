@@ -189,7 +189,10 @@ def test_build_nfdump_csv_command_uses_time_received_and_family_filter() -> None
     )
 
     assert command[:4] == ['nfdump', '-r', '/captures/r1/2025/04/15/nfcapd.202504150000', '-q']
-    assert command[4:6] == ['-o', 'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos']
+    assert command[4:6] == [
+        '-o',
+        'csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos,%fl,%minttl,%maxttl',
+    ]
     assert command[-2:] == ['ipv6', '-6']
 
 
@@ -210,6 +213,9 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
             '2048',
             '2',
             '0',
+            '3',
+            '31',
+            '64',
         ],
         source_id='oh_ir1_gw',
     )
@@ -220,9 +226,15 @@ def test_normalize_nfdump_csv_values_maps_expected_column_order() -> None:
     assert row.observation.time_end_ms == 1744733000001
     assert row.observation.time_start_ms == 1744732700500
     assert row.observation.ip_version == 4
+    assert row.observation.flow_count == 3
+    assert row.observation.duration_ms == 299501
+    assert (row.observation.min_ttl, row.observation.max_ttl) == (31, 64)
 
 
-def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
+@pytest.mark.parametrize(('protocol', 'pseudo_port'), [('1', '3.1'), ('58', '255.0')])
+def test_normalize_nfdump_csv_values_zeroes_valid_icmp_pseudo_ports(
+    protocol: str, pseudo_port: str
+) -> None:
     _, normalized_rows = load_modules()
 
     row = normalized_rows.normalize_nfdump_csv_values(
@@ -233,17 +245,62 @@ def test_normalize_nfdump_csv_values_zeroes_decimal_pseudo_ports() -> None:
             '192.0.2.1',
             '198.51.100.9',
             '0',
-            '3.1',
-            '1',
+            pseudo_port,
+            protocol,
             '10',
             '2048',
             '2',
+            '0',
+            '1',
+            '0',
             '0',
         ],
         source_id='oh_ir1_gw',
     )
 
     assert row.observation.dst_port == 0
+    assert (row.observation.min_ttl, row.observation.max_ttl) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ('protocol', 'pseudo_port'),
+    [
+        ('6', '3.1'),
+        ('1', '3.'),
+        ('58', '.1'),
+        ('1', '256.1'),
+        ('58', '1.256'),
+        ('1', ' 3.1'),
+        ('58', '3.1 '),
+        (' 1', '3.1'),
+    ],
+)
+def test_normalize_nfdump_csv_values_rejects_invalid_dotted_ports(
+    protocol: str, pseudo_port: str
+) -> None:
+    csv_ingest, normalized_rows = load_modules()
+
+    with pytest.raises(csv_ingest.CsvSourceConfigError):
+        normalized_rows.normalize_nfdump_csv_values(
+            [
+                '1744733279.000',
+                '1744733000.000',
+                '1744732700.000',
+                '192.0.2.1',
+                '198.51.100.9',
+                '0',
+                pseudo_port,
+                protocol,
+                '10',
+                '2048',
+                '2',
+                '0',
+                '1',
+                '0',
+                '0',
+            ],
+            source_id='oh_ir1_gw',
+        )
 
 
 def test_normalize_csv_row_accepts_protocol_names(tmp_path: Path) -> None:

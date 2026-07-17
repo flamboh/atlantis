@@ -172,3 +172,193 @@ def test_invalid_ip_version_preserves_existing_error() -> None:
                 src_tos=0,
             )
         )
+
+
+def test_observation_metrics_are_weighted_with_independent_missingness() -> None:
+    module = load_module()
+    bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+    bucket.add(
+        module.FlowObservation(
+            4,
+            '192.0.2.1',
+            '198.51.100.1',
+            6,
+            1,
+            10,
+            0,
+            duration_ms=0,
+            min_ttl=None,
+            max_ttl=10,
+            flow_count=1,
+        )
+    )
+    bucket.add(
+        module.FlowObservation(
+            4,
+            '192.0.2.2',
+            '198.51.100.2',
+            6,
+            1,
+            10,
+            0,
+            duration_ms=100,
+            min_ttl=20,
+            max_ttl=None,
+            flow_count=3,
+        )
+    )
+
+    metrics = bucket.finish().traffic[0].metrics
+
+    assert metrics.flows == 4
+    assert (metrics.duration_sum_ms, metrics.duration_count) == (300, 4)
+    assert (metrics.min_ttl_sum, metrics.min_ttl_count) == (60, 3)
+    assert (metrics.max_ttl_sum, metrics.max_ttl_count) == (10, 1)
+
+
+def test_port_bitmaps_union_independently_of_order_and_keep_boundary_ports() -> None:
+    module = load_module()
+    key = module.BucketKey('r1', '5m', 0, 300)
+
+    def child(src_port: int, dst_port: int):
+        builder = module.StatisticalBucket(key)
+        builder.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.1',
+                '198.51.100.1',
+                6,
+                1,
+                1,
+                0,
+                src_port=src_port,
+                dst_port=dst_port,
+            )
+        )
+        return builder.finish()
+
+    children = [child(0, 1023), child(1023, 1024), child(1024, 65535)]
+    forward = module.StatisticalBucket(module.BucketKey('r1', '30m', 0, 1800))
+    reverse = module.StatisticalBucket(module.BucketKey('r1', '30m', 0, 1800))
+    for snapshot in children:
+        forward.include(snapshot)
+    for snapshot in reversed(children):
+        reverse.include(snapshot)
+
+    assert forward.finish() == reverse.finish()
+    all_scope_ports = {
+        entry.port_side: entry.bitmap
+        for entry in forward.finish().ports
+        if entry.scope == module.Scope(4, 'all', 'all')
+    }
+    assert {port for port in range(65536) if all_scope_ports['source'] & (1 << port)} == {
+        0,
+        1023,
+        1024,
+    }
+    assert {port for port in range(65536) if all_scope_ports['destination'] & (1 << port)} == {
+        1023,
+        1024,
+        65535,
+    }
+
+
+def test_measurement_sum_overflow_rejects_before_sqlite_insert() -> None:
+    module = load_module()
+    bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+
+    with pytest.raises(OverflowError, match='duration_sum_ms'):
+        bucket.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.1',
+                '198.51.100.1',
+                6,
+                1,
+                1,
+                0,
+                duration_ms=module.MAX_SQLITE_INTEGER,
+                flow_count=2,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ('count_name', 'measurement'),
+    [
+        ('duration_count', {'duration_ms': 0}),
+        ('min_ttl_count', {'min_ttl': 0}),
+        ('max_ttl_count', {'max_ttl': 0}),
+    ],
+)
+def test_measurement_count_accepts_int64_boundary_and_rejects_flow_count_overflow(
+    count_name: str, measurement: dict[str, int]
+) -> None:
+    module = load_module()
+    bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+
+    bucket.add(
+        module.FlowObservation(
+            4,
+            '192.0.2.1',
+            '198.51.100.1',
+            6,
+            0,
+            0,
+            0,
+            flow_count=module.MAX_SQLITE_INTEGER,
+            **measurement,
+        )
+    )
+    assert getattr(bucket.finish().traffic[0].metrics, count_name) == module.MAX_SQLITE_INTEGER
+
+    with pytest.raises(OverflowError, match=count_name):
+        bucket.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.2',
+                '198.51.100.2',
+                6,
+                0,
+                0,
+                0,
+                flow_count=1,
+                **measurement,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ('count_name', 'measurement'),
+    [
+        ('duration_count', {'duration_ms': 0}),
+        ('min_ttl_count', {'min_ttl': 0}),
+        ('max_ttl_count', {'max_ttl': 0}),
+    ],
+)
+def test_measurement_count_merge_rejects_int64_overflow(
+    count_name: str, measurement: dict[str, int]
+) -> None:
+    module = load_module()
+
+    def child(flow_count: int):
+        bucket = module.StatisticalBucket(module.BucketKey('r1', '5m', 0, 300))
+        bucket.add(
+            module.FlowObservation(
+                4,
+                '192.0.2.1',
+                '198.51.100.1',
+                6,
+                0,
+                0,
+                0,
+                flow_count=flow_count,
+                **measurement,
+            )
+        )
+        return bucket.finish()
+
+    aggregate = module.StatisticalBucket(module.BucketKey('r1', '30m', 0, 1800))
+    aggregate.include(child(module.MAX_SQLITE_INTEGER))
+    with pytest.raises(OverflowError, match=count_name):
+        aggregate.include(child(1))

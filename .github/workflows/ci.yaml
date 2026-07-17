@@ -55,6 +55,8 @@ jobs:
 
       - run: ./scripts/build_maad_fast.sh
 
+      - run: ./scripts/build_nfdump_reducer.sh
+
       - run: bun run test:db
 
       - run: python -m compileall tools/netflow-db

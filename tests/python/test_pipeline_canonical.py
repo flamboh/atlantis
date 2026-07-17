@@ -518,6 +518,7 @@ def test_gap_input_writes_only_canonical_stats_tables() -> None:
     assert table_exists(conn, 'traffic_stats')
     assert table_exists(conn, 'protocol_stats')
     assert table_exists(conn, 'address_count_stats')
+    assert table_exists(conn, 'port_count_stats')
     assert table_exists(conn, 'address_structure_stats')
     assert not table_exists(conn, 'netflow_stats_v2')
     assert not table_exists(conn, 'ip_stats_v2')
@@ -623,6 +624,7 @@ def test_fatal_long_csv_then_corrected_shorter_retry_removes_stale_buckets(tmp_p
         'traffic_stats',
         'protocol_stats',
         'address_count_stats',
+        'port_count_stats',
         'address_structure_stats',
     ):
         assert conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone() == (0,)
@@ -716,6 +718,7 @@ def test_csv_batch_failure_cleans_every_started_nonterminal_scan(tmp_path) -> No
         'traffic_stats',
         'protocol_stats',
         'address_count_stats',
+        'port_count_stats',
         'address_structure_stats',
     ):
         assert conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone() == (0,)
@@ -1134,3 +1137,95 @@ def test_batch_and_streaming_aggregation_render_identical_rows() -> None:
     }
 
     assert streaming_by_key == batch_by_key
+
+
+def test_logical_merge_preserves_weighted_observations_and_port_unions() -> None:
+    pipeline = load_module()
+
+    def raw(source_id: str, observation: FlowObservation):
+        builder = pipeline.StatisticalBucket(
+            pipeline.BucketKey(source_id, '5m', 0, 300),
+            dense=True,
+        )
+        builder.add(observation)
+        return builder.finish()
+
+    first = raw(
+        'physical-a',
+        FlowObservation(
+            4,
+            '192.0.2.1',
+            '198.51.100.1',
+            6,
+            1,
+            10,
+            0,
+            src_port=1023,
+            dst_port=0,
+            duration_ms=0,
+            min_ttl=None,
+            max_ttl=20,
+        ),
+    )
+    second = raw(
+        'physical-b',
+        FlowObservation(
+            4,
+            '192.0.2.2',
+            '198.51.100.2',
+            17,
+            1,
+            10,
+            0,
+            src_port=1024,
+            dst_port=0,
+            duration_ms=100,
+            min_ttl=30,
+            max_ttl=None,
+            flow_count=3,
+        ),
+    )
+
+    logical = pipeline.merge_raw_buckets_for_source(
+        source_id='logical',
+        bucket_start=0,
+        bucket_end=300,
+        raw_buckets=[first, second],
+    )
+    rows = pipeline.canonical_bucket_rows(logical)
+    traffic = next(
+        row
+        for row in rows['traffic_rows']
+        if row['ip_version'] == 4
+        and row['src_visibility'] == 'all'
+        and row['dst_visibility'] == 'all'
+    )
+    source_ports = {
+        row['port_range']: row['unique_port_count']
+        for row in rows['port_count_rows']
+        if row['ip_version'] == 4
+        and row['src_visibility'] == 'all'
+        and row['dst_visibility'] == 'all'
+        and row['port_side'] == 'source'
+    }
+
+    assert (traffic['flows'], traffic['average_duration_ms']) == (4, 75)
+    assert (traffic['average_min_ttl'], traffic['average_max_ttl']) == (30, 20)
+    assert source_ports == {'low': 1, 'high': 1}
+
+
+def test_nfcapd_gap_emits_null_averages_and_dense_port_rows() -> None:
+    pipeline = load_module()
+
+    payload = pipeline.build_nfcapd_gap_payload(
+        'gap://r1/0',
+        'r1',
+        0,
+        run_maad=False,
+    )
+
+    assert len(payload['port_count_rows']) == 40
+    assert all(row['unique_port_count'] == 0 for row in payload['port_count_rows'])
+    assert all(row['average_duration_ms'] is None for row in payload['traffic_rows'])
+    assert all(row['average_min_ttl'] is None for row in payload['traffic_rows'])
+    assert all(row['average_max_ttl'] is None for row in payload['traffic_rows'])

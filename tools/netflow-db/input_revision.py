@@ -10,10 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from csv_ingest import CsvSourceConfig
+from nfdump_contract import (
+    NFDUMP_REDUCER_CONTRACT_VERSION,
+    NFDUMP_REDUCER_INPUT_CONTRACT,
+    NFDUMP_REDUCER_OUTPUT_CONTRACT,
+)
 
 
 CSV_DECODER_VERSION = 1
-NFCAPD_DECODER_VERSION = 1
+NFCAPD_DECODER_VERSION = 3
 GAP_DECODER_VERSION = 1
 
 
@@ -177,12 +182,27 @@ def capture_csv_input_revision(
 
 
 def nfcapd_decoder_fingerprint() -> str:
-    """Fingerprint the grouped native decoder contract."""
+    """Fingerprint the compiled native reducer and its fixed CSV contract."""
     return fingerprint(
         {
             'version': NFCAPD_DECODER_VERSION,
-            'kind': 'nfcapd-grouped',
-            'facts': ['scoped-addresses', 'protocol-src-tos-counters'],
+            'kind': 'nfcapd-compiled-csv-reducer',
+            'reducer_contract_version': NFDUMP_REDUCER_CONTRACT_VERSION,
+            'input_contract': NFDUMP_REDUCER_INPUT_CONTRACT,
+            'output_contract': NFDUMP_REDUCER_OUTPUT_CONTRACT,
+            'ttl_missing_semantics': 'zero-or-blank',
+            'fields': [
+                'timestamps',
+                'addresses',
+                'ports',
+                'protocol',
+                'packets',
+                'bytes',
+                'tos',
+                'flow-count',
+                'min-ttl',
+                'max-ttl',
+            ],
         }
     )
 

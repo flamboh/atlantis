@@ -51,6 +51,15 @@ export const localSchemaSql = `
 		bytes_udp INTEGER NOT NULL,
 		bytes_icmp INTEGER NOT NULL,
 		bytes_other INTEGER NOT NULL,
+		duration_sum_ms INTEGER NOT NULL,
+		duration_count INTEGER NOT NULL,
+		average_duration_ms REAL,
+		min_ttl_sum INTEGER NOT NULL,
+		min_ttl_count INTEGER NOT NULL,
+		average_min_ttl REAL,
+		max_ttl_sum INTEGER NOT NULL,
+		max_ttl_count INTEGER NOT NULL,
+		average_max_ttl REAL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
 	);
@@ -102,6 +111,24 @@ export const localSchemaSql = `
 		)
 	);
 
+	CREATE TABLE IF NOT EXISTS port_count_stats (
+		source_id TEXT NOT NULL,
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL,
+		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
+		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
+		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
+		port_side TEXT NOT NULL CHECK(port_side IN ('source', 'destination')),
+		port_range TEXT NOT NULL CHECK(port_range IN ('low', 'high')),
+		unique_port_count INTEGER NOT NULL,
+		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY(
+			source_id, granularity, bucket_start, ip_version,
+			src_visibility, dst_visibility, port_side, port_range
+		)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_processed_inputs_source_bucket
 		ON processed_inputs (source_id, bucket_start);
 	CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
@@ -123,5 +150,10 @@ export const localSchemaSql = `
 		ON address_structure_stats (
 			granularity, bucket_start, source_id, ip_version,
 			src_visibility, dst_visibility, address_side, structure_kind
+		);
+	CREATE INDEX IF NOT EXISTS idx_port_count_stats_query
+		ON port_count_stats (
+			granularity, bucket_start, source_id, ip_version,
+			src_visibility, dst_visibility, port_side, port_range
 		);
 `;

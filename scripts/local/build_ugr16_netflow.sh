@@ -61,6 +61,7 @@ run_build() {
     exit 1
   fi
   ./scripts/build_maad_fast.sh
+  ./scripts/build_nfdump_reducer.sh
   exec ./scripts/run-with-nix-if-available.sh uv run python -u \
     tools/netflow-db/pipeline.py \
     --config "$CONFIG_PATH" \

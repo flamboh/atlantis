@@ -28,7 +28,19 @@ NETFLOW_METRIC_COLUMNS = (
     'bytes_udp',
     'bytes_icmp',
     'bytes_other',
+    'duration_sum_ms',
+    'duration_count',
+    'min_ttl_sum',
+    'min_ttl_count',
+    'max_ttl_sum',
+    'max_ttl_count',
 )
+AVERAGE_METRICS = (
+    ('average_duration_ms', 'duration_sum_ms', 'duration_count'),
+    ('average_min_ttl', 'min_ttl_sum', 'min_ttl_count'),
+    ('average_max_ttl', 'max_ttl_sum', 'max_ttl_count'),
+)
+LOW_PORT_MASK = (1 << 1024) - 1
 
 
 def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
@@ -48,6 +60,10 @@ def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
             **{
                 column: getattr(entry.metrics, column)
                 for column in NETFLOW_METRIC_COLUMNS
+            },
+            **{
+                average: _average(getattr(entry.metrics, total), getattr(entry.metrics, count))
+                for average, total, count in AVERAGE_METRICS
             },
         }
         for entry in bucket.traffic
@@ -85,12 +101,33 @@ def canonical_bucket_rows(bucket: CanonicalBucket) -> dict[str, list[dict]]:
         }
         for entry in bucket.addresses
     ]
+    port_count_rows = [
+        {
+            **base,
+            'ip_version': entry.scope.ip_version,
+            'src_visibility': entry.scope.src_visibility,
+            'dst_visibility': entry.scope.dst_visibility,
+            'port_side': entry.port_side,
+            'port_range': port_range,
+            'unique_port_count': bitmap.bit_count(),
+        }
+        for entry in bucket.ports
+        for port_range, bitmap in (
+            ('low', entry.bitmap & LOW_PORT_MASK),
+            ('high', entry.bitmap & ~LOW_PORT_MASK),
+        )
+    ]
     return {
         'traffic_rows': traffic_rows,
         'protocol_rows': protocol_rows,
         'address_count_rows': address_count_rows,
+        'port_count_rows': port_count_rows,
         'address_sets': address_sets,
     }
+
+
+def _average(total: int, count: int) -> float | None:
+    return None if count == 0 else total / count
 
 
 def init_stats_tables(conn: sqlite3.Connection) -> None:
@@ -125,6 +162,15 @@ def init_traffic_stats_table(conn: sqlite3.Connection) -> None:
             bytes_udp INTEGER NOT NULL,
             bytes_icmp INTEGER NOT NULL,
             bytes_other INTEGER NOT NULL,
+            duration_sum_ms INTEGER NOT NULL,
+            duration_count INTEGER NOT NULL,
+            average_duration_ms REAL,
+            min_ttl_sum INTEGER NOT NULL,
+            min_ttl_count INTEGER NOT NULL,
+            average_min_ttl REAL,
+            max_ttl_sum INTEGER NOT NULL,
+            max_ttl_count INTEGER NOT NULL,
+            average_max_ttl REAL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (
                 source_id, granularity, bucket_start, ip_version,
@@ -203,6 +249,39 @@ def init_address_count_stats_table(conn: sqlite3.Connection) -> None:
         ON address_count_stats (
             granularity, bucket_start, source_id, ip_version,
             src_visibility, dst_visibility, address_side
+        )
+        """
+    )
+
+
+def init_port_count_stats_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS port_count_stats (
+            source_id TEXT NOT NULL,
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            bucket_start INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL,
+            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
+            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
+            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            port_side TEXT NOT NULL CHECK (port_side IN ('source', 'destination')),
+            port_range TEXT NOT NULL CHECK (port_range IN ('low', 'high')),
+            unique_port_count INTEGER NOT NULL,
+            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (
+                source_id, granularity, bucket_start, ip_version,
+                src_visibility, dst_visibility, port_side, port_range
+            )
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_port_count_stats_query
+        ON port_count_stats (
+            granularity, bucket_start, source_id, ip_version,
+            src_visibility, dst_visibility, port_side, port_range
         )
         """
     )
@@ -293,8 +372,11 @@ def insert_traffic_stats_rows(conn: sqlite3.Connection, rows: list[dict]) -> Non
             src_visibility, dst_visibility,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
             packets, packets_tcp, packets_udp, packets_icmp, packets_other,
-            bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
+            duration_sum_ms, duration_count, average_duration_ms,
+            min_ttl_sum, min_ttl_count, average_min_ttl,
+            max_ttl_sum, max_ttl_count, average_max_ttl
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -320,6 +402,15 @@ def insert_traffic_stats_rows(conn: sqlite3.Connection, rows: list[dict]) -> Non
                 row['bytes_udp'],
                 row['bytes_icmp'],
                 row['bytes_other'],
+                row['duration_sum_ms'],
+                row['duration_count'],
+                row['average_duration_ms'],
+                row['min_ttl_sum'],
+                row['min_ttl_count'],
+                row['average_min_ttl'],
+                row['max_ttl_sum'],
+                row['max_ttl_count'],
+                row['average_max_ttl'],
             )
             for row in rows
         ],
@@ -376,6 +467,32 @@ def insert_address_count_stats_rows(conn: sqlite3.Connection, rows: list[dict]) 
     )
 
 
+def insert_port_count_stats_rows(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO port_count_stats (
+            source_id, granularity, bucket_start, bucket_end, ip_version,
+            src_visibility, dst_visibility, port_side, port_range, unique_port_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                row['source_id'],
+                row['granularity'],
+                row['bucket_start'],
+                row['bucket_end'],
+                row['ip_version'],
+                row['src_visibility'],
+                row['dst_visibility'],
+                row['port_side'],
+                row['port_range'],
+                row['unique_port_count'],
+            )
+            for row in rows
+        ],
+    )
+
+
 def insert_address_structure_stats_rows(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.executemany(
         """
@@ -419,7 +536,7 @@ STATS_TABLE_ADAPTERS = (
     StatsTableAdapter(
         'traffic_stats',
         'traffic_rows',
-        1,
+        2,
         init_traffic_stats_table,
         insert_traffic_stats_rows,
     ),
@@ -436,6 +553,13 @@ STATS_TABLE_ADAPTERS = (
         1,
         init_address_count_stats_table,
         insert_address_count_stats_rows,
+    ),
+    StatsTableAdapter(
+        'port_count_stats',
+        'port_count_rows',
+        1,
+        init_port_count_stats_table,
+        insert_port_count_stats_rows,
     ),
     StatsTableAdapter(
         'address_structure_stats',

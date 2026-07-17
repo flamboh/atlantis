@@ -16,6 +16,8 @@ from flow_observation import FlowObservation
 Granularity = Literal['5m', '30m', '1h', '1d']
 Visibility = Literal['all', 'literal', 'anonymized']
 AddressSide = Literal['source', 'destination']
+PortSide = Literal['source', 'destination']
+PortRange = Literal['low', 'high']
 
 ALL_VISIBILITY: tuple[Visibility, Visibility] = ('all', 'all')
 EXACT_VISIBILITY_PAIRS: tuple[tuple[Visibility, Visibility], ...] = (
@@ -25,6 +27,9 @@ EXACT_VISIBILITY_PAIRS: tuple[tuple[Visibility, Visibility], ...] = (
     ('literal', 'literal'),
 )
 ZERO_FILL_VISIBILITY_PAIRS = (ALL_VISIBILITY, *EXACT_VISIBILITY_PAIRS)
+MAX_SQLITE_INTEGER = (1 << 63) - 1
+_MEASUREMENT_SUM_NAMES = frozenset(('duration_sum_ms', 'min_ttl_sum', 'max_ttl_sum'))
+_MEASUREMENT_COUNT_NAMES = frozenset(('duration_count', 'min_ttl_count', 'max_ttl_count'))
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -48,7 +53,7 @@ class Scope:
 
 @dataclass(frozen=True, slots=True)
 class GroupedTrafficFact:
-    """Pre-aggregated traffic, including production native nfcapd input."""
+    """Pre-aggregated traffic for trusted aggregate adapters and tests."""
 
     ip_version: int
     protocol: int
@@ -82,6 +87,12 @@ class TrafficMetrics:
     bytes_udp: int = 0
     bytes_icmp: int = 0
     bytes_other: int = 0
+    duration_sum_ms: int = 0
+    duration_count: int = 0
+    min_ttl_sum: int = 0
+    min_ttl_count: int = 0
+    max_ttl_sum: int = 0
+    max_ttl_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,12 +115,20 @@ class ScopedAddresses:
 
 
 @dataclass(frozen=True, slots=True)
+class ScopedPorts:
+    scope: Scope
+    port_side: PortSide
+    bitmap: int
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalBucket:
     key: BucketKey
     traffic: tuple[ScopedTraffic, ...]
     protocols: tuple[ScopedProtocols, ...]
     addresses: tuple[ScopedAddresses, ...]
     five_minute_starts: frozenset[int]
+    ports: tuple[ScopedPorts, ...] = ()
 
     @property
     def has_complete_five_minute_coverage(self) -> bool:
@@ -130,9 +149,35 @@ class _MutableMetrics:
         self.values[f'packets_{suffix}'] += packets
         self.values[f'bytes_{suffix}'] += bytes_count
 
+    def add_observation(self, observation: FlowObservation) -> None:
+        self.add(
+            observation.protocol,
+            observation.flow_count,
+            observation.packets,
+            observation.bytes_count,
+        )
+        for name, value in (
+            ('duration', observation.duration_ms),
+            ('min_ttl', observation.min_ttl),
+            ('max_ttl', observation.max_ttl),
+        ):
+            if value is not None:
+                sum_name = f'{name}_sum' if name != 'duration' else 'duration_sum_ms'
+                self.values[sum_name] = _checked_measurement_value(
+                    self.values[sum_name], value * observation.flow_count, sum_name
+                )
+                count_name = f'{name}_count'
+                self.values[count_name] = _checked_measurement_value(
+                    self.values[count_name], observation.flow_count, count_name
+                )
+
     def include(self, metrics: TrafficMetrics) -> None:
         for name in _METRIC_NAMES:
-            self.values[name] += getattr(metrics, name)
+            value = getattr(metrics, name)
+            if name in _MEASUREMENT_SUM_NAMES or name in _MEASUREMENT_COUNT_NAMES:
+                self.values[name] = _checked_measurement_value(self.values[name], value, name)
+            else:
+                self.values[name] += value
 
     def finish(self) -> TrafficMetrics:
         return TrafficMetrics(**self.values)
@@ -149,6 +194,7 @@ class StatisticalBucket:
         self._traffic: dict[Scope, _MutableMetrics] = {}
         self._protocols: dict[Scope, set[str]] = {}
         self._addresses: dict[tuple[Scope, AddressSide], set[str | int]] = {}
+        self._ports: dict[tuple[Scope, PortSide], int] = {}
         self._five_minute_starts: set[int] = set()
         if key.granularity == '5m':
             self._five_minute_starts.add(key.bucket_start)
@@ -160,19 +206,19 @@ class StatisticalBucket:
                     self._protocols[scope] = set()
                     for address_side in ('source', 'destination'):
                         self._addresses[(scope, address_side)] = set()
+                        self._ports[(scope, address_side)] = 0
 
     def add(self, fact: FlowObservation | GroupedTrafficFact | ScopedAddressesFact) -> None:
         if isinstance(fact, FlowObservation):
             for scope in _scopes_for_tos(fact.ip_version, fact.src_tos):
                 self._add_traffic(
                     scope,
-                    protocol=fact.protocol,
-                    flows=1,
-                    packets=fact.packets,
-                    bytes_count=fact.bytes_count,
+                    observation=fact,
                 )
                 self._add_address(scope, 'source', fact.src_ip)
                 self._add_address(scope, 'destination', fact.dst_ip)
+                self._add_port(scope, 'source', fact.src_port)
+                self._add_port(scope, 'destination', fact.dst_port)
             return
         if isinstance(fact, GroupedTrafficFact):
             for scope in _scopes_for_tos(fact.ip_version, fact.src_tos):
@@ -196,6 +242,9 @@ class StatisticalBucket:
             self._protocols.setdefault(entry.scope, set()).update(entry.protocols)
         for entry in child.addresses:
             self._addresses.setdefault((entry.scope, entry.address_side), set()).update(entry.addresses)
+        for entry in child.ports:
+            key = (entry.scope, entry.port_side)
+            self._ports[key] = self._ports.get(key, 0) | entry.bitmap
         self._five_minute_starts.update(child.five_minute_starts)
 
     def finish(self) -> CanonicalBucket:
@@ -213,6 +262,10 @@ class StatisticalBucket:
                 ScopedAddresses(scope, side, tuple(sorted(addresses)))
                 for (scope, side), addresses in sorted(self._addresses.items())
             ),
+            ports=tuple(
+                ScopedPorts(scope, side, bitmap)
+                for (scope, side), bitmap in sorted(self._ports.items())
+            ),
             five_minute_starts=frozenset(self._five_minute_starts),
         )
 
@@ -220,21 +273,22 @@ class StatisticalBucket:
         self,
         scope: Scope,
         *,
-        protocol: int,
-        flows: int,
-        packets: int,
-        bytes_count: int,
+        protocol: int | None = None,
+        flows: int = 0,
+        packets: int = 0,
+        bytes_count: int = 0,
+        observation: FlowObservation | None = None,
     ) -> None:
         metrics = self._traffic.get(scope)
         if metrics is None:
             metrics = _MutableMetrics()
             self._traffic[scope] = metrics
-        metrics.add(
-            protocol,
-            flows,
-            packets,
-            bytes_count,
-        )
+        if observation is None:
+            assert protocol is not None
+            metrics.add(protocol, flows, packets, bytes_count)
+        else:
+            protocol = observation.protocol
+            metrics.add_observation(observation)
         protocols = self._protocols.get(scope)
         if protocols is None:
             protocols = set()
@@ -253,6 +307,12 @@ class StatisticalBucket:
             addresses = set()
             self._addresses[key] = addresses
         addresses.add(address)
+
+    def _add_port(self, scope: Scope, side: PortSide, port: int | None) -> None:
+        if port is None:
+            return
+        key = (scope, side)
+        self._ports[key] = self._ports.get(key, 0) | (1 << port)
 
 
 def visibility_pair_from_tos(src_tos: int) -> tuple[Visibility, Visibility]:
@@ -290,3 +350,10 @@ def _protocol_suffix(protocol: int | str) -> str:
     if protocol_value in (1, 58):
         return 'icmp'
     return 'other'
+
+
+def _checked_measurement_value(current: int, value: int, name: str) -> int:
+    result = current + value
+    if result > MAX_SQLITE_INTEGER:
+        raise OverflowError(f'{name} exceeds SQLite signed 64-bit integer range')
+    return result

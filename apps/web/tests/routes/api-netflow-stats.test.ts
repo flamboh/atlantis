@@ -28,6 +28,9 @@ describe('/api/netflow/stats GET', () => {
 		const all = vi.fn().mockResolvedValue([
 			{
 				bucketStart: 100,
+				averageDurationMs: 125.5,
+				averageMinTtl: 31,
+				averageMaxTtl: null,
 				flows: 1,
 				flowsTcp: null,
 				flowsUdp: 2,
@@ -95,6 +98,9 @@ describe('/api/netflow/stats GET', () => {
 			result: [
 				{
 					bucketStart: 100,
+					averageDurationMs: 125.5,
+					averageMinTtl: 31,
+					averageMaxTtl: null,
 					flows: 1,
 					flowsTcp: 0,
 					flowsUdp: 2,

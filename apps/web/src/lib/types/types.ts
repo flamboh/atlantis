@@ -75,6 +75,9 @@ export type NetflowMetricTotalsByIpFamily = {
 
 export interface NetflowStatsResult extends NetflowMetricTotals, NetflowMetricTotalsByIpFamily {
 	bucketStart: number;
+	averageDurationMs: number | null;
+	averageMinTtl: number | null;
+	averageMaxTtl: number | null;
 }
 
 export interface NetflowStatsResponse {

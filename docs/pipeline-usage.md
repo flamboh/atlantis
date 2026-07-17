@@ -89,6 +89,12 @@ contract, but excludes paths, discovery windows, worker counts, and CSV
 mappings. A populated database without this identity is not adopted; rebuild it
 into a new database.
 
+The observation-metrics schema adds duration and TTL sufficient statistics plus
+port cardinality rows. It is a new database product, not an in-place migration:
+build it at a fresh output path. Keep each flow selection in its own database as
+well; neither a schema change nor a different prefix or visibility selection may
+reuse an existing product database.
+
 Each CSV, nfcapd file, and synthetic gap also records an exact input revision.
 The revision combines SHA-256 content identity with a canonical decoder
 fingerprint. Reusing a successfully processed locator with changed content or
@@ -120,6 +126,18 @@ The canonical MAAD helper is built with:
 ```bash
 scripts/build_maad_fast.sh
 ```
+
+Native nfcapd ingestion requires the compiled one-pass reducer:
+
+```bash
+scripts/build_nfdump_reducer.sh
+```
+
+The reducer consumes the versioned `nfdump-csv-15-v1` field contract. This
+keeps deployment independent of nfdump's internal reader ABI and supports old
+type-2 capture blocks. Because CSV cannot expose extension presence, the native
+contract treats a min/max TTL of `0` (or blank) as missing. There is no silent
+Python fallback when the helper is unavailable; the pipeline fails closed.
 
 `nfdump` must be on `PATH` for nfcapd inputs. Use
 `scripts/run-with-nix-if-available.sh` when the local environment needs Nix
