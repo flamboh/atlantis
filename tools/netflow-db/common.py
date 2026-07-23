@@ -110,6 +110,7 @@ def load_dataset_registry() -> list[dict[str, Any]]:
                 'default_start_date': str(entry.get('default_start_date', '')).strip(),
                 'source_mode': str(entry.get('source_mode', 'subdirs')),
                 'discovery_mode': str(entry.get('discovery_mode', 'static')),
+                'sort_order': int(entry.get('sort_order') or 0),
                 'source_ids': [str(source).strip() for source in (source_ids or []) if str(source).strip()],
                 'sources': sources,
             }
