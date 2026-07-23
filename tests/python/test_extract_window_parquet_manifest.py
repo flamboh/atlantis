@@ -35,6 +35,62 @@ def test_extract_repeated_outputs_write_sqlite_and_parquet(tmp_path: Path) -> No
     assert manifest['outputs']['parquet_dir'] == str(output_dir / 'parquet')
 
 
+def test_parquet_extract_preserves_observation_sufficient_statistics_and_ports(
+    tmp_path: Path,
+) -> None:
+    pq = pytest.importorskip('pyarrow.parquet')
+    module = load_module()
+    source_path = tmp_path / 'source.sqlite'
+    make_source_db(source_path).close()
+    output_dir = tmp_path / 'out'
+
+    module.extract(
+        extract_args(module, source_path, output_dir, '--output', 'parquet')
+    )
+    traffic = pq.read_table(output_dir / 'parquet' / 'traffic_stats.parquet').to_pylist()
+    ports = pq.read_table(output_dir / 'parquet' / 'port_count_stats.parquet').to_pylist()
+    observed = next(
+        row
+        for row in traffic
+        if row['source_id'] == 'r1'
+        and row['granularity'] == '5m'
+        and row['bucket_start'] == 200
+    )
+
+    assert {
+        key: observed[key]
+        for key in (
+            'duration_sum_ms',
+            'duration_count',
+            'average_duration_ms',
+            'min_ttl_sum',
+            'min_ttl_count',
+            'average_min_ttl',
+            'max_ttl_sum',
+            'max_ttl_count',
+            'average_max_ttl',
+        )
+    } == {
+        'duration_sum_ms': 1001,
+        'duration_count': 3,
+        'average_duration_ms': 1001 / 3,
+        'min_ttl_sum': 0,
+        'min_ttl_count': 0,
+        'average_min_ttl': None,
+        'max_ttl_sum': 255,
+        'max_ttl_count': 3,
+        'average_max_ttl': 85.0,
+    }
+    assert sorted(
+        (row['port_side'], row['port_range'], row['unique_port_count']) for row in ports
+    ) == [
+        ('destination', 'high', 1),
+        ('destination', 'low', 1),
+        ('source', 'high', 1),
+        ('source', 'low', 2),
+    ]
+
+
 def test_extract_leaves_previously_enabled_outputs_when_disabled(tmp_path: Path) -> None:
     pytest.importorskip('pyarrow')
     module = load_module()
@@ -418,6 +474,8 @@ def test_manifest_contains_portable_extract_contract(tmp_path: Path) -> None:
     assert written.endswith('\n')
     assert {'dataset_id', 'generated_at', 'filters', 'window', 'outputs', 'tables'} <= set(manifest)
     assert manifest['dataset_id'] == 'uoregon'
+    assert manifest['pipeline_product']['product_fingerprint']
+    assert manifest['pipeline_product']['selection'] == {'version': 1, 'kind': 'all'}
     assert datetime.fromisoformat(manifest['generated_at'])
     assert manifest['filters'] == {'source_id': 'r1', 'granularities': ['5m']}
     assert manifest['start_input'] == '150'

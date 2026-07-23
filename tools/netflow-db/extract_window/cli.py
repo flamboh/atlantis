@@ -79,6 +79,7 @@ from .sqlite import (
     get_table_column_types,
     iter_table_batches,
     managed_output_paths,
+    read_pipeline_product,
     quote_identifier,
     sqlite_artifact_paths,
     validate_parquet_dir,
@@ -141,6 +142,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     runtime_group.add_argument("--batch-size", type=int, default=5000, help="Fetch/insert batch size.")
 
     args = parser.parse_args(argv)
+    args.output_dir_explicit = hasattr(args, "output_dir")
     args.outputs = selected_outputs(args)
     if hasattr(args, "_outputs_explicit"):
         delattr(args, "_outputs_explicit")
