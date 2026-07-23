@@ -4,6 +4,7 @@
 	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
 	import IPChart from '$lib/components/charts/IPChart.svelte';
 	import ProtocolChart from '$lib/components/charts/ProtocolChart.svelte';
+	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
 	import SpectrumStatsChart from '$lib/components/charts/SpectrumStatsChart.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
@@ -49,8 +50,14 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
-	type ChartCardId = 'dashboard' | 'ip' | 'protocol' | 'spectrum';
-	const DEFAULT_CHART_ORDER: ChartCardId[] = ['dashboard', 'ip', 'protocol', 'spectrum'];
+	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum';
+	const DEFAULT_CHART_ORDER: ChartCardId[] = [
+		'dashboard',
+		'characteristics',
+		'ip',
+		'protocol',
+		'spectrum'
+	];
 	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v3';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let draggedChartId = $state<ChartCardId | null>(null);
@@ -414,6 +421,17 @@
 						on:dateChange={handleDateChange}
 						on:groupByChange={handleGroupByChange}
 						on:dataOptionsChange={handleDataOptionsChange}
+					/>
+				{:else if chartId === 'characteristics'}
+					<FlowCharacteristicsChart
+						dataset={props.dataset}
+						{startDate}
+						{endDate}
+						groupBy={selectedGroupBy}
+						routers={selectedRouters}
+						{routersLoaded}
+						{srcVisibility}
+						{dstVisibility}
 					/>
 				{:else if chartId === 'ip'}
 					<IPChart
