@@ -120,13 +120,22 @@ export function parseFlowScopeParams(url: URL): FlowScope | RequestValidationErr
 
 export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
 	const routers = parseSourceIds(url.searchParams.get('routers'));
-	const granularity = parseIpGranularityOrDefault(url.searchParams.get('granularity'));
+	const granularityParam = url.searchParams.get('granularity');
+	const parsedGranularity = parseIpGranularity(granularityParam);
+	const granularity = parsedGranularity ?? DEFAULT_IP_GRANULARITY;
 	const start = parseTimestamp(url.searchParams.get('startDate'));
 	const end = parseTimestamp(url.searchParams.get('endDate'));
 	const flowScope = parseFlowScopeParams(url);
 
 	if (routers.length === 0) {
 		return { error: 'No routers selected', status: 400 };
+	}
+
+	if (granularityParam !== null && parsedGranularity === null) {
+		return {
+			error: `Invalid granularity. Expected one of: ${IP_GRANULARITIES.join(', ')}`,
+			status: 400
+		};
 	}
 
 	if ('error' in flowScope) {
