@@ -143,6 +143,33 @@ Python fallback when the helper is unavailable; the pipeline fails closed.
 `scripts/run-with-nix-if-available.sh` when the local environment needs Nix
 tooling.
 
+## Analysis window exports
+
+`extract_window` creates bounded SQLite and/or Parquet analysis artifacts from
+a completed pipeline database:
+
+```bash
+python tools/netflow-db/extract_window \
+  --source-db data/uoregon-0-220-v3/netflow.sqlite \
+  --output-dir data/uoregon-0-220-v3/extracts/2025-06 \
+  --start 2025-06-01 \
+  --end 2025-07-01 \
+  --output sqlite \
+  --output parquet
+```
+
+These slices preserve the portable stats tables, including port cardinalities
+and the duration/TTL sums and counts needed for weighted recomputation. Their
+manifest records the source pipeline product fingerprint and normalized flow
+selection. A selected pipeline product requires an explicit `--output-dir`, so
+two prefixes or visibility selections cannot silently publish to the same
+default path.
+
+Window exports are analysis artifacts, not deployable web databases. They do
+not include dataset metadata, processed-input provenance, coverage drilldown,
+or the source `pipeline_product` table. Use the complete pipeline database for
+the web application and operational inspection.
+
 ## Sanity check
 
 If you edited backend Python, run:
