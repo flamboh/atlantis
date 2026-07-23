@@ -9,6 +9,7 @@
 		label: string;
 		values: Array<number | null>;
 		color: string;
+		dash?: number[];
 	};
 
 	const props = $props<{
@@ -56,6 +57,7 @@
 			data: series.values,
 			borderColor: series.color,
 			backgroundColor: series.color,
+			borderDash: series.dash ?? [],
 			pointRadius: 0,
 			pointHoverRadius: 4,
 			spanGaps: true,

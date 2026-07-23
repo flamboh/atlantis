@@ -3,6 +3,7 @@
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
 	import { watch } from 'runed';
+	import { createRequestGate, getSourceLineDash } from './flow-characteristics';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 	import type {
 		FlowCharacteristicsResponse,
@@ -51,7 +52,7 @@
 	let data = $state<FlowCharacteristicsResponse | null>(null);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
-	let requestToken = 0;
+	const requestGate = createRequestGate();
 
 	const granularity: IpGranularity = $derived(
 		GROUP_BY_TO_GRANULARITY[props.groupBy as GroupByOption]
@@ -88,12 +89,13 @@
 	const portStarts = $derived(uniqueStarts(selectedPortRows));
 	const portSeries = $derived.by<MetricLineSeries[]>(() => {
 		const multipleSources = (data?.resolvedSources.length ?? 0) > 1;
-		return (data?.resolvedSources ?? []).flatMap((sourceId) =>
+		return (data?.resolvedSources ?? []).flatMap((sourceId, sourceIndex) =>
 			PORT_OPTIONS.filter(({ side, range }) => activePortSeries.has(`${side}-${range}`)).map(
 				({ side, range, label }) => ({
 					label: multipleSources ? `${sourceId} · ${label}` : label,
 					values: portValuesByStart(selectedPortRows, portStarts, sourceId, side, range),
-					color: PORT_COLORS[`${side}-${range}`]
+					color: PORT_COLORS[`${side}-${range}`],
+					dash: getSourceLineDash(sourceIndex, multipleSources)
 				})
 			)
 		);
@@ -149,6 +151,7 @@
 	}
 
 	async function loadData() {
+		const token = requestGate.begin();
 		if (!props.routersLoaded) {
 			loading = true;
 			return;
@@ -160,7 +163,6 @@
 			loading = false;
 			return;
 		}
-		const token = ++requestToken;
 		loading = true;
 		error = null;
 		const params = new URLSearchParams({
@@ -176,14 +178,14 @@
 			const response = await fetch(`/api/netflow/characteristics?${params}`);
 			if (!response.ok) throw new Error((await response.text()) || 'Request failed');
 			const next = (await response.json()) as FlowCharacteristicsResponse;
-			if (token === requestToken) data = next;
+			if (requestGate.isCurrent(token)) data = next;
 		} catch (reason) {
-			if (token === requestToken) {
+			if (requestGate.isCurrent(token)) {
 				data = null;
 				error = reason instanceof Error ? reason.message : 'Failed to load flow characteristics';
 			}
 		} finally {
-			if (token === requestToken) loading = false;
+			if (requestGate.isCurrent(token)) loading = false;
 		}
 	}
 
