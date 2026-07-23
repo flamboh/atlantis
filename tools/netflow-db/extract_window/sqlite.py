@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+from flow_selection import FlowSelection
+from pipeline_product import ProductIdentity
+from stats import STATS_TABLE_ADAPTERS
 
 from .config import (
     REQUIRED_TABLE_COLUMNS,
@@ -50,6 +55,93 @@ def validate_required_tables(conn: sqlite3.Connection, table_config: dict[str, T
         )
     if missing_columns:
         raise SystemExit(f"Missing required source column(s): {', '.join(missing_columns)}")
+
+
+def read_pipeline_product(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return a verified pipeline product contract for an analysis export."""
+    required_columns = {
+        'singleton',
+        'schema_json',
+        'schema_fingerprint',
+        'selection_json',
+        'selection_fingerprint',
+        'config_json',
+        'config_fingerprint',
+        'product_fingerprint',
+    }
+    try:
+        actual_columns = get_table_column_types(conn, 'pipeline_product')
+    except RuntimeError as error:
+        raise SystemExit('Missing required source table: pipeline_product') from error
+    missing = sorted(required_columns - set(actual_columns))
+    if missing:
+        raise SystemExit(
+            'Missing required source column(s): '
+            + ', '.join(f'pipeline_product.{column}' for column in missing)
+        )
+    rows = conn.execute(
+        """
+        SELECT singleton, schema_json, schema_fingerprint,
+               selection_json, selection_fingerprint,
+               config_json, config_fingerprint, product_fingerprint
+        FROM pipeline_product
+        """
+    ).fetchall()
+    if len(rows) != 1 or rows[0]['singleton'] != 1:
+        raise SystemExit('Source DB must contain exactly one pipeline_product singleton row.')
+    row = rows[0]
+    try:
+        schema = json.loads(row['schema_json'])
+        raw_selection = json.loads(row['selection_json'])
+        config = json.loads(row['config_json'])
+        selection = FlowSelection.from_payload(raw_selection).normalized_payload()
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise SystemExit(f'Invalid source pipeline_product contract: {error}') from error
+
+    expected_schema = {
+        'version': 2,
+        'tables': [
+            {'name': adapter.table_name, 'version': adapter.schema_version}
+            for adapter in STATS_TABLE_ADAPTERS
+        ],
+    }
+    if schema != expected_schema:
+        raise SystemExit(
+            'Source pipeline_product uses an unsupported schema; '
+            'export-window requires the current observation-metrics product schema.'
+        )
+
+    expected = ProductIdentity.create(schema=schema, selection=selection, config=config)
+    stored_values = {
+        'schema_json': row['schema_json'],
+        'schema_fingerprint': row['schema_fingerprint'],
+        'selection_json': row['selection_json'],
+        'selection_fingerprint': row['selection_fingerprint'],
+        'config_json': row['config_json'],
+        'config_fingerprint': row['config_fingerprint'],
+        'product_fingerprint': row['product_fingerprint'],
+    }
+    expected_values = {
+        'schema_json': expected.schema_json,
+        'schema_fingerprint': expected.schema_fingerprint,
+        'selection_json': expected.selection_json,
+        'selection_fingerprint': expected.selection_fingerprint,
+        'config_json': expected.config_json,
+        'config_fingerprint': expected.config_fingerprint,
+        'product_fingerprint': expected.fingerprint,
+    }
+    mismatches = [name for name, value in stored_values.items() if value != expected_values[name]]
+    if mismatches:
+        raise SystemExit(
+            'Source pipeline_product identity is internally inconsistent: '
+            + ', '.join(mismatches)
+        )
+    return {
+        'product_fingerprint': expected.fingerprint,
+        'schema_fingerprint': expected.schema_fingerprint,
+        'selection_fingerprint': expected.selection_fingerprint,
+        'selection': selection,
+    }
 
 
 def validate_parquet_dir(

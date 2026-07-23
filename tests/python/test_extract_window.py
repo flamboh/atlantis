@@ -1,8 +1,10 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+import pipeline_product
 import stats
 from extract_window_helpers import (
     PORTABLE_TABLES,
@@ -117,6 +119,152 @@ def test_default_output_dir_slug_cannot_escape_data_dir(tmp_path: Path) -> None:
     output_dir = Path(args.output_dir)
     assert '..' not in output_dir.parts
     assert output_dir.parts[:2] == ('data', 'all')
+
+
+def test_selected_product_requires_explicit_output_dir(tmp_path: Path) -> None:
+    module = load_module()
+    source_path = tmp_path / 'selected.sqlite'
+    make_source_db(
+        source_path,
+        selection={
+            'version': 1,
+            'kind': 'flows',
+            'ip_prefix': '0.220.0.0/16',
+            'src_visibility': None,
+            'dst_visibility': None,
+        },
+    ).close()
+    args = module.parse_args(
+        ['--source-db', str(source_path), '--start', '150', '--end', '500']
+    )
+
+    with pytest.raises(SystemExit, match='explicit --output-dir'):
+        module.extract(args)
+
+
+def test_selected_product_manifest_records_normalized_population(tmp_path: Path) -> None:
+    module = load_module()
+    source_path = tmp_path / 'selected.sqlite'
+    make_source_db(
+        source_path,
+        selection={
+            'ip_prefix': '0.220.99.1/16',
+            'src_visibility': 'literal',
+            'dst_visibility': None,
+        },
+    ).close()
+    output_dir = tmp_path / 'selected-export'
+
+    manifest_path = module.extract(extract_args(module, source_path, output_dir))
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+
+    assert manifest['pipeline_product']['product_fingerprint']
+    assert manifest['pipeline_product']['selection'] == {
+        'version': 1,
+        'kind': 'flows',
+        'ip_prefix': '0.220.0.0/16',
+        'src_visibility': 'literal',
+        'dst_visibility': None,
+    }
+
+
+def test_extract_rejects_source_without_pipeline_product(tmp_path: Path) -> None:
+    module = load_module()
+    source_path = tmp_path / 'legacy.sqlite'
+    conn = make_source_db(source_path)
+    conn.execute('DROP TABLE pipeline_product')
+    conn.commit()
+    conn.close()
+
+    with pytest.raises((SystemExit, RuntimeError), match='pipeline_product'):
+        module.extract(extract_args(module, source_path, tmp_path / 'out'))
+
+
+def test_extract_rejects_inconsistent_pipeline_product(tmp_path: Path) -> None:
+    module = load_module()
+    source_path = tmp_path / 'source.sqlite'
+    conn = make_source_db(source_path)
+    conn.execute(
+        "UPDATE pipeline_product SET product_fingerprint = 'not-the-product' WHERE singleton = 1"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SystemExit, match='internally inconsistent'):
+        module.extract(extract_args(module, source_path, tmp_path / 'out'))
+
+
+def test_extract_rejects_older_pipeline_product_schema(tmp_path: Path) -> None:
+    module = load_module()
+    source_path = tmp_path / 'old-product.sqlite'
+    conn = make_source_db(source_path)
+    old_identity = pipeline_product.ProductIdentity.create(
+        schema={'version': 1, 'tables': []},
+        selection={'version': 1, 'kind': 'all'},
+        config={'version': 1},
+    )
+    conn.execute(
+        """
+        UPDATE pipeline_product
+        SET schema_json = ?, schema_fingerprint = ?,
+            selection_json = ?, selection_fingerprint = ?,
+            config_json = ?, config_fingerprint = ?, product_fingerprint = ?
+        WHERE singleton = 1
+        """,
+        (
+            old_identity.schema_json,
+            old_identity.schema_fingerprint,
+            old_identity.selection_json,
+            old_identity.selection_fingerprint,
+            old_identity.config_json,
+            old_identity.config_fingerprint,
+            old_identity.fingerprint,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SystemExit, match='unsupported schema'):
+        module.extract(extract_args(module, source_path, tmp_path / 'out'))
+
+
+def test_sqlite_extract_preserves_observation_sufficient_statistics_and_ports(
+    tmp_path: Path,
+) -> None:
+    module = load_module()
+    source_path = tmp_path / 'source.sqlite'
+    make_source_db(source_path).close()
+    output_dir = tmp_path / 'out'
+
+    module.extract(extract_args(module, source_path, output_dir))
+
+    with sqlite3.connect(output_dir / module.SQLITE_FILENAME) as conn:
+        traffic = conn.execute(
+            """
+            SELECT duration_sum_ms, duration_count, average_duration_ms,
+                   min_ttl_sum, min_ttl_count, average_min_ttl,
+                   max_ttl_sum, max_ttl_count, average_max_ttl
+            FROM traffic_stats
+            WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 200
+            """
+        ).fetchone()
+        ports = conn.execute(
+            """
+            SELECT port_side, port_range, unique_port_count
+            FROM port_count_stats
+            ORDER BY port_side, port_range
+            """
+        ).fetchall()
+
+    assert traffic == (1001, 3, 1001 / 3, 0, 0, None, 255, 3, 85.0)
+    # The source bitmap includes the low-port boundaries 0 and 1023 and high-port
+    # boundary 1024; the destination bitmap includes 0 and 1024.
+    assert ports == [
+        ('destination', 'high', 1),
+        ('destination', 'low', 1),
+        ('source', 'high', 1),
+        ('source', 'low', 2),
+    ]
 
 
 def test_copy_canonical_table_preserves_schema_indexes_and_window_boundaries(

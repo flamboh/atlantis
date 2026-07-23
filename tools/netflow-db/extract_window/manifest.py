@@ -28,6 +28,7 @@ def build_manifest(
     source_id: str | None,
     granularities: Sequence[str] | None,
     tables: dict[str, Any],
+    pipeline_product: dict[str, Any],
 ) -> dict[str, Any]:
     sqlite_path = None if sqlite_output_path is None else str(sqlite_output_path)
     parquet_path = None if parquet_dir is None else str(parquet_dir)
@@ -48,6 +49,7 @@ def build_manifest(
         "source_id_filter": source_id,
         "granularity_filter": granularities_value,
         "generated_at": datetime.now(UTC).isoformat(),
+        "pipeline_product": pipeline_product,
         "filters": {
             "source_id": source_id,
             "granularities": granularities_value,

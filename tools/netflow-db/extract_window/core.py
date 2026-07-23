@@ -39,6 +39,7 @@ from .sqlite import (
     create_sqlite_table,
     copy_table_to_sqlite,
     managed_output_paths,
+    read_pipeline_product,
     validate_parquet_dir,
     validate_required_tables,
     validate_source_db_managed_files,
@@ -183,6 +184,15 @@ def extract(args: argparse.Namespace, helpers: ExtractionHelpers | None = None) 
 
     with closing(connect_db(source_db)) as source_conn:
         validate_required_tables(source_conn, TABLE_CONFIG)
+        source_product = read_pipeline_product(source_conn)
+    if (
+        source_product['selection'].get('kind') != 'all'
+        and not getattr(args, 'output_dir_explicit', True)
+    ):
+        raise SystemExit(
+            'Selected pipeline products require an explicit --output-dir to prevent '
+            'collisions with other database products.'
+        )
     print_plan(
         args=args,
         source_db=source_db,
@@ -224,6 +234,18 @@ def extract(args: argparse.Namespace, helpers: ExtractionHelpers | None = None) 
         active_helpers.create_source_snapshot(source_db, snapshot_path)
         table_manifests: dict[str, TableManifest] = {}
         with closing(connect_db(snapshot_path)) as source_conn:
+            validate_required_tables(source_conn, TABLE_CONFIG)
+            snapshot_product = read_pipeline_product(source_conn)
+            if snapshot_product['product_fingerprint'] != source_product['product_fingerprint']:
+                raise SystemExit('Source pipeline_product changed while the extraction snapshot was created.')
+            if (
+                snapshot_product['selection'].get('kind') != 'all'
+                and not getattr(args, 'output_dir_explicit', True)
+            ):
+                raise SystemExit(
+                    'Selected pipeline products require an explicit --output-dir to prevent '
+                    'collisions with other database products.'
+                )
             with optional_connection(temp_sqlite_path) as dest_conn:
                 for table, table_config_value in TABLE_CONFIG.items():
                     table_manifests[table] = extract_table(
@@ -251,6 +273,7 @@ def extract(args: argparse.Namespace, helpers: ExtractionHelpers | None = None) 
             source_id=source_id,
             granularities=granularities,
             tables=table_manifests,
+            pipeline_product=snapshot_product,
         )
         temp_manifest_path = write_manifest(work_dir, manifest)
         active_helpers.publish_outputs(
