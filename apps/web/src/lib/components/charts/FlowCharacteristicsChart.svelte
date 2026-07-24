@@ -2,6 +2,7 @@
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { watch } from 'runed';
 	import { createRequestGate, getSourceLineDash } from './flow-characteristics';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
@@ -48,7 +49,7 @@
 
 	let observationFamily = $state<NetflowIpFamily>('all');
 	let portFamily = $state<Exclude<NetflowIpFamily, 'all'>>('ipv4');
-	let activePortSeries = $state(new Set(PORT_OPTIONS.map(({ side, range }) => `${side}-${range}`)));
+	const activePortSeries = new SvelteSet(PORT_OPTIONS.map(({ side, range }) => `${side}-${range}`));
 	let data = $state<FlowCharacteristicsResponse | null>(null);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
@@ -141,13 +142,11 @@
 
 	function togglePortSeries(side: PortSide, range: PortRange) {
 		const key = `${side}-${range}`;
-		const next = new Set(activePortSeries);
-		if (next.has(key)) {
-			next.delete(key);
+		if (activePortSeries.has(key)) {
+			activePortSeries.delete(key);
 		} else {
-			next.add(key);
+			activePortSeries.add(key);
 		}
-		activePortSeries = next;
 	}
 
 	async function loadData() {
