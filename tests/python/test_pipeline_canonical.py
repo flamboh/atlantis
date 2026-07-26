@@ -1,6 +1,8 @@
 import importlib
 import json
 import sqlite3
+import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -916,6 +918,254 @@ def test_partial_logical_rewrite_does_not_replace_existing_aggregate_with_slice(
 
     assert aggregate_flows == (6,)
     assert rewritten_5m == (0,)
+
+
+def test_logical_nfcapd_retry_clears_interrupted_day(monkeypatch) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    jobs = [
+        {
+            '_flow_selection': pipeline.FlowSelection(),
+            'source_id': 'r1',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+            'member_specs': [],
+            'missing_members': ['r1'],
+        }
+        for bucket_start in (1744700400, 1744700700)
+    ]
+    original_mark_processed_buckets = pipeline.mark_processed_buckets
+    interrupted = False
+
+    def interrupt_before_completion(conn, processed_buckets):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        original_mark_processed_buckets(conn, processed_buckets)
+
+    monkeypatch.setattr(
+        pipeline,
+        'mark_processed_buckets',
+        interrupt_before_completion,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.process_nfcapd_logical_bucket_jobs(
+            conn,
+            jobs,
+            maad_bin='',
+            maad_backend='python',
+            maad_workers=1,
+            max_workers=1,
+            run_maad=False,
+        )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
+    ).fetchone() == (2,)
+
+    pipeline.process_nfcapd_logical_bucket_jobs(
+        conn,
+        jobs,
+        maad_bin='',
+        maad_backend='python',
+        maad_workers=1,
+        max_workers=1,
+        run_maad=False,
+    )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'processed'"
+    ).fetchone() == (2,)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
+    ).fetchone() == (0,)
+
+
+def test_logical_nfcapd_retry_preserves_complete_coarse_aggregate() -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    base_bucket = 1744700400
+    raw_buckets = [
+        make_raw_bucket(
+            pipeline,
+            'r1',
+            base_bucket + offset * pipeline.FIVE_MINUTE_SECONDS,
+        )
+        for offset in range(6)
+    ]
+    pipeline.init_processed_inputs_table(conn)
+    pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(conn, run_maad=False, maad_backend='python')
+    pipeline.write_aggregate_rows(
+        conn,
+        raw_buckets,
+        maad_bin='',
+        max_workers=1,
+        maad_backend='python',
+        run_maad=False,
+    )
+    interrupted_payload = pipeline.build_nfcapd_gap_payload(
+        pipeline.logical_nfcapd_gap_locator('r1', base_bucket),
+        'r1',
+        base_bucket,
+        run_maad=False,
+    )
+    pipeline.write_input_payload(conn, interrupted_payload, mark_processed=False)
+
+    pipeline.process_nfcapd_logical_bucket_jobs(
+        conn,
+        [
+            {
+                '_flow_selection': pipeline.FlowSelection(),
+                'source_id': 'r1',
+                'bucket_start': base_bucket,
+                'bucket_end': base_bucket + pipeline.FIVE_MINUTE_SECONDS,
+                'member_specs': [],
+                'missing_members': ['r1'],
+            }
+        ],
+        maad_bin='',
+        maad_backend='python',
+        maad_workers=1,
+        max_workers=1,
+        run_maad=False,
+    )
+
+    aggregate_flows = conn.execute(
+        """
+        SELECT flows
+        FROM traffic_stats
+        WHERE source_id = 'r1'
+          AND granularity = '30m'
+          AND bucket_start = ?
+          AND ip_version = 4
+          AND src_visibility = 'all'
+          AND dst_visibility = 'all'
+        """,
+        (base_bucket,),
+    ).fetchone()
+    assert aggregate_flows == (6,)
+
+
+def test_tree_retry_clears_pending_day_when_inputs_were_removed(tmp_path) -> None:
+    pipeline = load_module()
+    conn = sqlite3.connect(':memory:')
+    bucket_start = 1744700400
+    pipeline.init_processed_inputs_table(conn)
+    pipeline.init_stats_tables(conn)
+    pipeline.bind_current_product(conn, run_maad=False, maad_backend='python')
+    pipeline.bind_nfcapd_source_layout(conn, [('r1', ('member',))])
+    interrupted_payload = pipeline.build_nfcapd_gap_payload(
+        pipeline.logical_nfcapd_gap_locator('r1', bucket_start),
+        'r1',
+        bucket_start,
+        run_maad=False,
+    )
+    pipeline.write_input_payload(conn, interrupted_payload, mark_processed=False)
+    root_path = tmp_path / 'empty-captures'
+    (root_path / 'member').mkdir(parents=True)
+
+    pipeline.process_nfcapd_tree_spec(
+        conn,
+        {
+            'root_path': str(root_path),
+            'sources': [{'source_id': 'r1', 'members': ['member']}],
+            'start_date': '2025-04-15',
+            'end_date': '2025-04-15',
+            'zero_fill_gaps': False,
+        },
+        maad_bin='',
+        maad_backend='python',
+        maad_workers=1,
+        max_workers=1,
+        run_maad=False,
+    )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
+    ).fetchone() == (0,)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM traffic_stats WHERE granularity = '5m'"
+    ).fetchone() == (0,)
+
+
+def test_logical_nfcapd_attempt_serializes_source_day_across_connections(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pipeline = load_module()
+    database_path = tmp_path / 'pipeline.sqlite'
+    conn_a = sqlite3.connect(database_path, check_same_thread=False, timeout=2)
+    conn_b = sqlite3.connect(database_path, check_same_thread=False, timeout=2)
+    bucket_start = 1744700400
+    jobs = [
+        {
+            '_flow_selection': pipeline.FlowSelection(),
+            'source_id': 'r1',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+            'member_specs': [],
+            'missing_members': ['r1'],
+        }
+    ]
+    original_mark_processed_buckets = pipeline.mark_processed_buckets
+    first_attempt_pending = threading.Event()
+    release_first_attempt = threading.Event()
+    calls_lock = threading.Lock()
+    calls = 0
+    errors = []
+
+    def pause_first_completion(conn, processed_buckets):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            first_attempt_pending.set()
+            assert release_first_attempt.wait(timeout=5)
+        original_mark_processed_buckets(conn, processed_buckets)
+
+    def run_attempt(conn):
+        try:
+            pipeline.process_nfcapd_logical_bucket_jobs(
+                conn,
+                jobs,
+                maad_bin='',
+                maad_backend='python',
+                maad_workers=1,
+                max_workers=1,
+                run_maad=False,
+            )
+        except BaseException as error:
+            errors.append(error)
+
+    monkeypatch.setattr(
+        pipeline,
+        'mark_processed_buckets',
+        pause_first_completion,
+    )
+    thread_a = threading.Thread(target=run_attempt, args=(conn_a,))
+    thread_b = threading.Thread(target=run_attempt, args=(conn_b,))
+    thread_a.start()
+    assert first_attempt_pending.wait(timeout=5)
+    thread_b.start()
+    time.sleep(0.2)
+
+    assert thread_b.is_alive()
+    assert conn_a.execute(
+        "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
+    ).fetchone() == (1,)
+
+    release_first_attempt.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+    conn_a.close()
+    conn_b.close()
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
 
 
 def test_logical_force_replaces_changed_owner_but_rejects_unrelated_csv() -> None:

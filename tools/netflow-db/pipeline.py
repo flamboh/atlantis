@@ -8,6 +8,8 @@ Processes explicit csv and nfcapd inputs into canonical netflow tables.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -343,6 +345,15 @@ def process_nfcapd_tree_spec(
     force = bool(spec.get('force', False))
 
     for day in iter_days(start_date, end_date):
+        day_keys = {
+            (source.source_id, local_midnight_epoch(day))
+            for source in sources
+        }
+        locks = acquire_nfcapd_day_locks(conn, day_keys)
+        try:
+            prepare_nfcapd_day_retry(conn, day_keys)
+        finally:
+            release_nfcapd_day_locks(locks)
         member_specs = discover_nfcapd_tree_specs(
             root_path,
             member_ids,
@@ -1212,90 +1223,151 @@ def process_nfcapd_logical_bucket_jobs(
     if not jobs:
         return
     selection = logical_jobs_flow_selection(jobs)
-    init_processed_inputs_table(conn)
-    init_stats_tables(conn)
-    bind_current_product(
-        conn,
-        run_maad=run_maad,
-        maad_backend=maad_backend,
-        selection=selection,
-    )
+    day_keys = nfcapd_job_day_keys(jobs)
+    locks = acquire_nfcapd_day_locks(conn, day_keys)
 
-    jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
-    processed_buckets = []
-    aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
-    pending_structure_raw_buckets = []
-    current_run_keys: set[tuple[str, int]] = set()
-    structure_batch_size = max(1, maad_workers) * 4
-    bucket_window_size = max(1, max_workers // 2)
-
-    for window_jobs in iter_logical_job_windows(jobs, bucket_window_size):
-        member_raw_buckets = build_member_raw_buckets_for_jobs(
-            window_jobs,
-            maad_bin=maad_bin,
+    try:
+        init_processed_inputs_table(conn)
+        init_stats_tables(conn)
+        bind_current_product(
+            conn,
+            run_maad=run_maad,
             maad_backend=maad_backend,
-            maad_workers=maad_workers,
-            max_workers=max_workers,
+            selection=selection,
         )
-        for job in window_jobs:
-            raw_bucket = process_logical_nfcapd_job(
+        prepare_nfcapd_day_retry(conn, day_keys)
+        jobs = sorted(jobs, key=lambda job: (int(job['bucket_start']), str(job['source_id'])))
+        processed_buckets = []
+        aggregate_buckets: dict[tuple[str, str, int], StatisticalBucket] = {}
+        pending_structure_raw_buckets = []
+        current_run_keys: set[tuple[str, int]] = set()
+        structure_batch_size = max(1, maad_workers) * 4
+        bucket_window_size = max(1, max_workers // 2)
+
+        try:
+            for window_jobs in iter_logical_job_windows(jobs, bucket_window_size):
+                member_raw_buckets = build_member_raw_buckets_for_jobs(
+                    window_jobs,
+                    maad_bin=maad_bin,
+                    maad_backend=maad_backend,
+                    maad_workers=maad_workers,
+                    max_workers=max_workers,
+                )
+                for job in window_jobs:
+                    raw_bucket = process_logical_nfcapd_job(
+                        conn,
+                        job,
+                        member_raw_buckets,
+                        maad_bin=maad_bin,
+                        maad_backend=maad_backend,
+                        aggregate_buckets=aggregate_buckets,
+                        processed_buckets=processed_buckets,
+                        current_run_keys=current_run_keys,
+                        delete_existing=True,
+                    )
+                    if run_maad:
+                        pending_structure_raw_buckets.append(raw_bucket)
+                        if len(pending_structure_raw_buckets) >= structure_batch_size:
+                            flush_5m_address_structure_raw_buckets(
+                                conn,
+                                pending_structure_raw_buckets,
+                                maad_bin,
+                                maad_backend,
+                                maad_workers,
+                            )
+                            pending_structure_raw_buckets.clear()
+                aggregate_cutoff = max(int(job['bucket_start']) for job in window_jobs)
+                ready_aggregate_keys = [
+                    key
+                    for key, bucket in aggregate_buckets.items()
+                    if bucket.key.bucket_end <= aggregate_cutoff
+                ]
+                flush_streaming_aggregate_buckets(
+                    conn,
+                    aggregate_buckets,
+                    ready_aggregate_keys,
+                    maad_bin,
+                    maad_backend,
+                    aggregate_maad_worker_count(max(max_workers, maad_workers)),
+                    run_maad,
+                    delete_existing=True,
+                )
+
+            if pending_structure_raw_buckets:
+                flush_5m_address_structure_raw_buckets(
+                    conn,
+                    pending_structure_raw_buckets,
+                    maad_bin,
+                    maad_backend,
+                    maad_workers,
+                )
+
+            flush_streaming_aggregate_buckets(
                 conn,
-                job,
-                member_raw_buckets,
-                maad_bin=maad_bin,
-                maad_backend=maad_backend,
-                aggregate_buckets=aggregate_buckets,
-                processed_buckets=processed_buckets,
-                current_run_keys=current_run_keys,
+                aggregate_buckets,
+                list(aggregate_buckets),
+                maad_bin,
+                maad_backend,
+                aggregate_maad_worker_count(max(max_workers, maad_workers)),
+                run_maad,
                 delete_existing=True,
             )
-            if run_maad:
-                pending_structure_raw_buckets.append(raw_bucket)
-                if len(pending_structure_raw_buckets) >= structure_batch_size:
-                    flush_5m_address_structure_raw_buckets(
-                        conn,
-                        pending_structure_raw_buckets,
-                        maad_bin,
-                        maad_backend,
-                        maad_workers,
-                    )
-                    pending_structure_raw_buckets.clear()
-        aggregate_cutoff = max(int(job['bucket_start']) for job in window_jobs)
-        ready_aggregate_keys = [
-            key for key, bucket in aggregate_buckets.items() if bucket.key.bucket_end <= aggregate_cutoff
-        ]
-        flush_streaming_aggregate_buckets(
-            conn,
-            aggregate_buckets,
-            ready_aggregate_keys,
-            maad_bin,
-            maad_backend,
-            aggregate_maad_worker_count(max(max_workers, maad_workers)),
-            run_maad,
-            delete_existing=True,
-        )
+            with conn:
+                mark_processed_buckets(conn, processed_buckets)
+        except Exception as error:
+            try:
+                prepare_nfcapd_day_retry(conn, day_keys)
+            except Exception as cleanup_error:
+                error.add_note(
+                    f'Cleanup of incomplete nfcapd day also failed: {cleanup_error!r}'
+                )
+            raise
+    finally:
+        release_nfcapd_day_locks(locks)
 
-    if pending_structure_raw_buckets:
-        flush_5m_address_structure_raw_buckets(
-            conn,
-            pending_structure_raw_buckets,
-            maad_bin,
-            maad_backend,
-            maad_workers,
-        )
 
-    flush_streaming_aggregate_buckets(
-        conn,
-        aggregate_buckets,
-        list(aggregate_buckets),
-        maad_bin,
-        maad_backend,
-        aggregate_maad_worker_count(max(max_workers, maad_workers)),
-        run_maad,
-        delete_existing=True,
-    )
-    with conn:
-        mark_processed_buckets(conn, processed_buckets)
+def nfcapd_job_day_keys(jobs: list[dict]) -> set[tuple[str, int]]:
+    """Return the logical source/local-day scopes touched by jobs."""
+    return {
+        (
+            str(job['source_id']),
+            floor_bucket_start(int(job['bucket_start']), 86400),
+        )
+        for job in jobs
+    }
+
+
+def acquire_nfcapd_day_locks(
+    conn: sqlite3.Connection,
+    day_keys: set[tuple[str, int]],
+) -> list[object]:
+    """Hold process-lifetime locks so another attempt cannot clean active output."""
+    database_path = str(conn.execute('PRAGMA database_list').fetchone()[2])
+    if not database_path:
+        return []
+    resolved_path = Path(database_path).resolve()
+    lock_directory = resolved_path.parent / f'.{resolved_path.name}.nfcapd-locks'
+    lock_directory.mkdir(exist_ok=True)
+    locks = []
+    try:
+        for source_id, day_start in sorted(day_keys):
+            scope = hashlib.sha256(
+                f'{source_id}\0{day_start}'.encode()
+            ).hexdigest()
+            lock = (lock_directory / scope).open('a+')
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            locks.append(lock)
+    except BaseException:
+        release_nfcapd_day_locks(locks)
+        raise
+    return locks
+
+
+def release_nfcapd_day_locks(locks: list[object]) -> None:
+    """Release source/day attempt locks in reverse acquisition order."""
+    for lock in reversed(locks):
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
 
 
 def logical_jobs_flow_selection(jobs: list[dict]) -> FlowSelection:
@@ -1327,6 +1399,57 @@ def logical_jobs_flow_selection(jobs: list[dict]) -> FlowSelection:
 
     assert expected is not None
     return expected
+
+
+def prepare_nfcapd_day_retry(
+    conn: sqlite3.Connection,
+    day_keys: set[tuple[str, int]],
+) -> list[InputBucketRef]:
+    """Remove pending nfcapd ownership and its incomplete 5m publication."""
+    stale_buckets = []
+    with conn:
+        for source_id, day_start in sorted(day_keys):
+            day_end = next_bucket_start(day_start, 86400)
+            stale_buckets.extend(
+                InputBucketRef(str(row[0]), int(row[1]))
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT source_id, bucket_start
+                    FROM processed_inputs
+                    WHERE input_kind = 'nfcapd'
+                      AND source_id = ?
+                      AND bucket_start >= ?
+                      AND bucket_start < ?
+                      AND status = 'pending'
+                    ORDER BY bucket_start
+                    """,
+                    (source_id, day_start, day_end),
+                ).fetchall()
+            )
+            conn.execute(
+                """
+                DELETE FROM processed_inputs
+                WHERE input_kind = 'nfcapd'
+                  AND source_id = ?
+                  AND bucket_start >= ?
+                  AND bucket_start < ?
+                  AND status = 'pending'
+                """,
+                (source_id, day_start, day_end),
+            )
+
+        five_minute_keys = sorted(
+            (bucket.source_id, bucket.bucket_start)
+            for bucket in stale_buckets
+        )
+        delete_stats_bucket_keys(
+            conn,
+            [
+                (source_id, '5m', bucket_start)
+                for source_id, bucket_start in five_minute_keys
+            ],
+        )
+    return stale_buckets
 
 
 def iter_logical_job_windows(jobs: list[dict], bucket_window_size: int) -> Iterable[list[dict]]:
