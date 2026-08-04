@@ -1,6 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { env as privateEnv } from '$env/dynamic/private';
-import { localSchemaSql } from '$lib/server/db/local-schema';
 import type { DatasetSummary } from '$lib/types/types';
 
 type QueryParam = string | number | boolean | null | Uint8Array;
@@ -23,12 +22,22 @@ export type SourceDefinition = {
 };
 
 type SqliteClient = {
-	exec(sql: string): unknown;
+	close(): void;
 	prepare(sql: string): {
 		get(...params: QueryParam[]): unknown;
 		all(...params: QueryParam[]): unknown[];
-		run(...params: QueryParam[]): unknown;
 	};
+};
+
+type LocalDbIdentity = {
+	device: number;
+	inode: number;
+};
+
+type LocalDbCacheEntry = {
+	db: ReadonlyDatasetDb;
+	identity: LocalDbIdentity;
+	close(): void;
 };
 
 export type PreparedStatement = {
@@ -42,18 +51,10 @@ export interface ReadonlyDatasetDb {
 	prepare(sql: string): PreparedStatement;
 }
 
-const localDbCache = new Map<string, ReadonlyDatasetDb>();
+const localDbCache = new Map<string, LocalDbCacheEntry>();
 
 function getEnv(name: string): string | undefined {
 	return globalThis.process?.env?.[name]?.trim() || privateEnv[name]?.trim() || undefined;
-}
-
-function formatLocalDate(timestampSeconds: number): string {
-	const date = new Date(timestampSeconds * 1000);
-	const year = date.getFullYear();
-	const month = `${date.getMonth() + 1}`.padStart(2, '0');
-	const day = `${date.getDate()}`.padStart(2, '0');
-	return `${year}-${month}-${day}`;
 }
 
 function makePrepared(db: ReadonlyDatasetDb, query: string): PreparedStatement {
@@ -158,90 +159,58 @@ async function discoverLocalSqlitePaths(): Promise<string[]> {
 	return [...dbPaths].sort();
 }
 
-async function inferDatasetIdFromPath(dbPath: string): Promise<string> {
-	if (dbPath === ':memory:') {
-		return 'ugr16';
-	}
-
-	const path = await import('node:path');
-	return path.basename(path.dirname(dbPath));
-}
-
-function inferDatasetLabel(datasetId: string): string {
-	if (datasetId === 'ugr16') {
-		return 'UGR16';
-	}
-	return datasetId
-		.split(/[-_]/)
-		.filter(Boolean)
-		.map((part) => part[0]?.toUpperCase() + part.slice(1))
-		.join(' ');
-}
-
-function inferDefaultStartDate(client: SqliteClient): string {
-	const row = client
-		.prepare("SELECT MIN(bucket_start) AS minTimestamp FROM traffic_stats WHERE granularity = '5m'")
-		.get() as { minTimestamp: number | null } | undefined;
-
-	if (typeof row?.minTimestamp === 'number' && Number.isFinite(row.minTimestamp)) {
-		return formatLocalDate(row.minTimestamp);
-	}
-
-	return '2025-02-01';
-}
-
-async function seedInferredDatasetMetadata(client: SqliteClient, dbPath: string): Promise<void> {
-	const row = client.prepare('SELECT COUNT(*) AS count FROM datasets').get() as
-		| { count: number }
-		| undefined;
-	if ((row?.count ?? 0) > 0) {
-		return;
-	}
-
-	const datasetId = await inferDatasetIdFromPath(dbPath);
-	client
-		.prepare(
-			`
-				INSERT INTO datasets (
-					id,
-					label,
-					default_start_date,
-					source_mode,
-					discovery_mode,
-					sort_order
-				) VALUES (?, ?, ?, 'static', 'live', 0)
-			`
-		)
-		.run(datasetId, inferDatasetLabel(datasetId), inferDefaultStartDate(client));
-}
-
 async function openLocalClient(dbPath: string): Promise<SqliteClient> {
 	const [{ drizzle }, betterSqlite3, schema] = await Promise.all([
 		import(/* @vite-ignore */ 'drizzle-orm/better-sqlite3'),
 		import(/* @vite-ignore */ 'better-sqlite3'),
 		import('$lib/server/db/schema')
 	]);
-	const sqlite = new betterSqlite3.default(dbPath);
+	const sqlite = new betterSqlite3.default(dbPath, { readonly: true, fileMustExist: true });
+	sqlite.pragma('query_only = ON');
+	sqlite.pragma('busy_timeout = 60000');
 	const drizzleDb = drizzle(sqlite, { schema });
 	return drizzleDb.$client as SqliteClient;
 }
 
-async function createLocalDb(dbPath: string): Promise<ReadonlyDatasetDb> {
-	const client = await openLocalClient(dbPath);
-	client.exec(localSchemaSql);
-	await seedInferredDatasetMetadata(client, dbPath);
-	return createReadonlyDb(client);
+async function localDbIdentity(dbPath: string): Promise<LocalDbIdentity> {
+	const fs = await import('node:fs/promises');
+	const stat = await fs.stat(dbPath);
+	return { device: stat.dev, inode: stat.ino };
+}
+
+function sameLocalDbIdentity(left: LocalDbIdentity, right: LocalDbIdentity): boolean {
+	return left.device === right.device && left.inode === right.inode;
+}
+
+async function createLocalDb(dbPath: string): Promise<LocalDbCacheEntry> {
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const identityBeforeOpen = await localDbIdentity(dbPath);
+		const client = await openLocalClient(dbPath);
+		const identityAfterOpen = await localDbIdentity(dbPath);
+		if (sameLocalDbIdentity(identityBeforeOpen, identityAfterOpen)) {
+			return {
+				db: createReadonlyDb(client),
+				identity: identityAfterOpen,
+				close: () => client.close()
+			};
+		}
+		client.close();
+	}
+
+	throw new Error(`Local SQLite database kept changing while opening: ${dbPath}`);
 }
 
 async function getLocalDb(dbPath: string): Promise<ReadonlyDatasetDb> {
+	const identity = await localDbIdentity(dbPath);
 	const existing = localDbCache.get(dbPath);
-	if (existing) {
-		return existing;
+	if (existing && sameLocalDbIdentity(existing.identity, identity)) {
+		return existing.db;
 	}
+	existing?.close();
 
-	const db = await createLocalDb(dbPath);
-	localDbCache.set(dbPath, db);
-	return db;
+	const entry = await createLocalDb(dbPath);
+	localDbCache.set(dbPath, entry);
+	return entry.db;
 }
 
 async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]> {

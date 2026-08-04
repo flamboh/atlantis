@@ -3,6 +3,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime
 
 import pytest
@@ -980,6 +981,88 @@ def test_logical_nfcapd_retry_clears_interrupted_day(monkeypatch) -> None:
     assert conn.execute(
         "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
     ).fetchone() == (0,)
+
+
+def test_file_backed_publication_lock_failure_cleans_up_and_retries(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pipeline = load_module()
+    sqlite_runtime = importlib.import_module('sqlite_runtime')
+    database_path = tmp_path / 'pipeline.sqlite'
+    bucket_start = 1744700400
+    jobs = [
+        {
+            '_flow_selection': pipeline.FlowSelection(),
+            'source_id': 'r1',
+            'bucket_start': bucket_start,
+            'bucket_end': bucket_start + pipeline.FIVE_MINUTE_SECONDS,
+            'member_specs': [],
+            'missing_members': ['r1'],
+        }
+    ]
+    original_mark_processed_buckets = pipeline.mark_processed_buckets
+    lock_started = threading.Event()
+    release_lock = threading.Event()
+    attempted = False
+
+    def hold_competing_write_lock() -> None:
+        with closing(sqlite_runtime.connect_pipeline_writer(database_path)) as holder:
+            holder.execute('BEGIN IMMEDIATE')
+            lock_started.set()
+            assert release_lock.wait(timeout=2)
+            holder.rollback()
+
+    def fail_first_publication(conn, processed_buckets):
+        nonlocal attempted
+        if attempted:
+            return original_mark_processed_buckets(conn, processed_buckets)
+        attempted = True
+        thread = threading.Thread(target=hold_competing_write_lock)
+        thread.start()
+        assert lock_started.wait(timeout=2)
+        try:
+            original_mark_processed_buckets(conn, processed_buckets)
+        except sqlite3.OperationalError:
+            release_lock.set()
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            raise
+
+    with closing(
+        sqlite_runtime.connect_pipeline_writer(database_path, busy_timeout_ms=25)
+    ) as conn:
+        monkeypatch.setattr(pipeline, 'mark_processed_buckets', fail_first_publication)
+        with pytest.raises(sqlite3.OperationalError, match='locked'):
+            pipeline.process_nfcapd_logical_bucket_jobs(
+                conn,
+                jobs,
+                maad_bin='',
+                maad_backend='python',
+                maad_workers=1,
+                max_workers=1,
+                run_maad=False,
+            )
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM processed_inputs WHERE status = 'pending'"
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM traffic_stats WHERE granularity = '5m'"
+        ).fetchone() == (0,)
+
+        pipeline.process_nfcapd_logical_bucket_jobs(
+            conn,
+            jobs,
+            maad_bin='',
+            maad_backend='python',
+            maad_workers=1,
+            max_workers=1,
+            run_maad=False,
+        )
+        assert conn.execute(
+            "SELECT COUNT(*) FROM processed_inputs WHERE status = 'processed'"
+        ).fetchone() == (1,)
 
 
 def test_logical_nfcapd_retry_preserves_complete_coarse_aggregate() -> None:

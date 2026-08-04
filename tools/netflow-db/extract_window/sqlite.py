@@ -8,6 +8,12 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from sqlite_runtime import (
+    connect_local_writer,
+    connect_readonly,
+    database_operation_lock,
+)
+
 from .config import (
     REQUIRED_TABLE_COLUMNS,
     SQLITE_FILENAME,
@@ -18,7 +24,15 @@ from .config import (
 
 
 def connect_db(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    """Open a writable local extraction database."""
+    conn = connect_local_writer(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def connect_source_db(path: Path) -> sqlite3.Connection:
+    """Open an extraction source without allowing accidental mutation."""
+    conn = connect_readonly(path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -85,8 +99,9 @@ def validate_source_db_managed_files(source_db: Path, managed_file_paths: Sequen
 
 
 def create_source_snapshot(source_db: Path, snapshot_path: Path) -> None:
-    with closing(connect_db(source_db)) as source_conn, closing(connect_db(snapshot_path)) as snapshot_conn:
-        source_conn.backup(snapshot_conn)
+    with database_operation_lock(source_db, 'source snapshot'):
+        with closing(connect_source_db(source_db)) as source_conn, closing(connect_db(snapshot_path)) as snapshot_conn:
+            source_conn.backup(snapshot_conn)
 
 
 def get_table_column_types(conn: sqlite3.Connection, table: str) -> dict[str, str]:

@@ -19,6 +19,17 @@ from web_compat_queries import (
 )
 
 
+DATASET_REQUIRED_COLUMNS = {
+    'datasets': [
+        'id',
+        'label',
+        'default_start_date',
+        'source_mode',
+        'discovery_mode',
+        'sort_order',
+    ],
+}
+
 REQUIRED_COLUMNS = {
     'processed_inputs': [
         'input_kind',
@@ -166,6 +177,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Verify web-compatible canonical SQLite.')
     parser.add_argument('db_path', type=Path)
     parser.add_argument('--source-id', default=None)
+    parser.add_argument('--dataset-id', default=None)
     parser.add_argument('--require-data', action='store_true')
     parser.add_argument('--require-maad-data', action='store_true')
     parser.add_argument('--require-processed', action='store_true')
@@ -176,6 +188,7 @@ def main() -> None:
     verify_database(
         args.db_path,
         source_id=args.source_id,
+        dataset_id=args.dataset_id,
         require_data=args.require_data,
         require_maad_data=args.require_maad_data,
         require_processed=args.require_processed,
@@ -188,6 +201,7 @@ def verify_database(
     db_path: Path,
     *,
     source_id: str | None,
+    dataset_id: str | None = None,
     require_data: bool,
     require_maad_data: bool = False,
     require_processed: bool = False,
@@ -200,6 +214,7 @@ def verify_database(
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         assert_schema(conn)
+        assert_dataset_metadata(conn, dataset_id)
         if require_no_raw_ip:
             assert_no_raw_ip_persistence(conn)
         source = source_id or first_source_id(conn)
@@ -245,6 +260,19 @@ def verify_database(
         print(f'{table_name}={count}')
 
 
+def assert_dataset_metadata(conn: sqlite3.Connection, dataset_id: str | None) -> None:
+    """Require web discovery metadata, optionally for one expected dataset."""
+    if dataset_id is None:
+        row = conn.execute('SELECT id FROM datasets ORDER BY id LIMIT 1').fetchone()
+        if row is None:
+            raise SystemExit('datasets has no metadata rows.')
+        return
+
+    row = conn.execute('SELECT 1 FROM datasets WHERE id = ?', (dataset_id,)).fetchone()
+    if row is None:
+        raise SystemExit(f"datasets has no metadata row for '{dataset_id}'.")
+
+
 def assert_processed_inputs_complete(conn: sqlite3.Connection) -> None:
     """Reject unfinished buckets and CSV scans lacking terminal completion."""
     pending_count = conn.execute(
@@ -271,11 +299,12 @@ def assert_processed_inputs_complete(conn: sqlite3.Connection) -> None:
 
 
 def assert_schema(conn: sqlite3.Connection) -> None:
+    required_columns_by_table = DATASET_REQUIRED_COLUMNS | REQUIRED_COLUMNS
     tables = {
         row['name']
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     }
-    missing_tables = sorted(set(REQUIRED_COLUMNS) - tables)
+    missing_tables = sorted(set(required_columns_by_table) - tables)
     if missing_tables:
         raise SystemExit(f'Missing canonical tables: {", ".join(missing_tables)}')
 
@@ -283,7 +312,7 @@ def assert_schema(conn: sqlite3.Connection) -> None:
     if legacy_tables:
         raise SystemExit(f'Legacy tables still present: {", ".join(legacy_tables)}')
 
-    for table_name, required_columns in REQUIRED_COLUMNS.items():
+    for table_name, required_columns in required_columns_by_table.items():
         columns = {
             row['name']
             for row in conn.execute(f'PRAGMA table_info({quote_identifier(table_name)})').fetchall()

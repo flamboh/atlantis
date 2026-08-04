@@ -15,6 +15,7 @@ import logging
 import os
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from multiprocessing import Pool
@@ -86,6 +87,7 @@ from stats import (
     delete_stats_bucket_keys,
     insert_stats_payload,
 )
+from sqlite_runtime import connect_pipeline_writer, database_operation_lock
 
 
 DEFAULT_MAAD_BIN = Path(__file__).resolve().parent / 'maad_fast'
@@ -2610,8 +2612,9 @@ def main() -> None:
     db_path = Path(config['database_path'])
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(db_path) as conn:
-        process_pipeline_config(conn, config)
+    with database_operation_lock(db_path, 'pipeline build'):
+        with closing(connect_pipeline_writer(db_path)) as conn:
+            process_pipeline_config(conn, config)
 
 
 if __name__ == '__main__':

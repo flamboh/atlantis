@@ -29,10 +29,20 @@ def load_modules():
 
 def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> None:
     verifier, stats, processed_inputs = load_modules()
+    datasets_metadata = importlib.import_module('datasets_metadata')
     db_path = tmp_path / 'canonical.sqlite'
     bucket_start = 1744700700
 
     with sqlite3.connect(db_path) as conn:
+        datasets_metadata.init_datasets_table(conn)
+        datasets_metadata.upsert_dataset_metadata(
+            conn,
+            {
+                'dataset_id': 'ugr16',
+                'label': 'UGR16',
+                'default_start_date': '2025-02-01',
+            },
+        )
         stats.init_stats_tables(conn)
         processed_inputs.init_processed_inputs_table(conn)
         processed_inputs.upsert_input_bucket(
@@ -92,6 +102,47 @@ def test_verify_database_accepts_minimal_canonical_rollup(tmp_path: Path) -> Non
         require_processed=True,
         require_no_raw_ip=True,
     )
+
+
+def test_verify_database_requires_datasets_schema(tmp_path: Path) -> None:
+    verifier, stats, processed_inputs = load_modules()
+    db_path = tmp_path / 'canonical.sqlite'
+    with sqlite3.connect(db_path) as conn:
+        stats.init_stats_tables(conn)
+        processed_inputs.init_processed_inputs_table(conn)
+
+    with pytest.raises(SystemExit, match='Missing canonical tables: datasets'):
+        verifier.verify_database(
+            db_path,
+            source_id='ugr16',
+            require_data=False,
+        )
+
+
+def test_verify_database_requires_matching_dataset_metadata(tmp_path: Path) -> None:
+    verifier, stats, processed_inputs = load_modules()
+    datasets_metadata = importlib.import_module('datasets_metadata')
+    db_path = tmp_path / 'canonical.sqlite'
+    with sqlite3.connect(db_path) as conn:
+        datasets_metadata.init_datasets_table(conn)
+        datasets_metadata.upsert_dataset_metadata(
+            conn,
+            {
+                'dataset_id': 'other',
+                'label': 'Other',
+                'default_start_date': '2025-02-01',
+            },
+        )
+        stats.init_stats_tables(conn)
+        processed_inputs.init_processed_inputs_table(conn)
+
+    with pytest.raises(SystemExit, match="datasets has no metadata row for 'ugr16'"):
+        verifier.verify_database(
+            db_path,
+            source_id='ugr16',
+            dataset_id='ugr16',
+            require_data=False,
+        )
 
 
 def test_require_processed_rejects_processed_csv_buckets_without_terminal_scan() -> None:

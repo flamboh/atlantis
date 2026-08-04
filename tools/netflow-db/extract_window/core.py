@@ -35,6 +35,7 @@ from .publish import publish_outputs
 from .sqlite import (
     build_filters,
     connect_db,
+    connect_source_db,
     create_source_snapshot,
     create_sqlite_table,
     copy_table_to_sqlite,
@@ -181,7 +182,7 @@ def extract(args: argparse.Namespace, helpers: ExtractionHelpers | None = None) 
     if batch_size < 1:
         raise SystemExit("--batch-size must be positive.")
 
-    with closing(connect_db(source_db)) as source_conn:
+    with closing(connect_source_db(source_db)) as source_conn:
         validate_required_tables(source_conn, TABLE_CONFIG)
     print_plan(
         args=args,
@@ -223,7 +224,7 @@ def extract(args: argparse.Namespace, helpers: ExtractionHelpers | None = None) 
     try:
         active_helpers.create_source_snapshot(source_db, snapshot_path)
         table_manifests: dict[str, TableManifest] = {}
-        with closing(connect_db(snapshot_path)) as source_conn:
+        with closing(connect_source_db(snapshot_path)) as source_conn:
             with optional_connection(temp_sqlite_path) as dest_conn:
                 for table, table_config_value in TABLE_CONFIG.items():
                     table_manifests[table] = extract_table(
