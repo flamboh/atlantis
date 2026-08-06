@@ -5,8 +5,10 @@ from pathlib import Path
 
 import datasets_metadata
 import processed_inputs
+import pipeline_product
 import statistical_bucket
 import stats
+from flow_selection import FlowSelection
 from input_revision import InputRevision
 
 
@@ -29,12 +31,27 @@ def load_module():
     return importlib.reload(module)
 
 
-def make_source_db(path: Path) -> sqlite3.Connection:
+def make_source_db(path: Path, *, selection: dict | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     datasets_metadata.init_datasets_table(conn)
     processed_inputs.init_processed_inputs_table(conn)
     stats.init_stats_tables(conn)
+    pipeline_product.bind_product_identity(
+        conn,
+        pipeline_product.ProductIdentity.create(
+            schema={
+                'version': 2,
+                'tables': [
+                    {'name': adapter.table_name, 'version': adapter.schema_version}
+                    for adapter in stats.STATS_TABLE_ADAPTERS
+                ],
+            },
+            selection=FlowSelection.from_payload(selection).normalized_payload(),
+            config={'version': 2, 'fixture': True},
+        ),
+        output_table_names=stats.STATS_TABLE_NAMES,
+    )
     datasets_metadata.upsert_dataset_metadata(
         conn,
         {
@@ -69,11 +86,45 @@ def make_source_db(path: Path) -> sqlite3.Connection:
         conn,
         [
             traffic_row(source_id='r1', granularity='5m', bucket_start=100, flows=10),
-            traffic_row(source_id='r1', granularity='5m', bucket_start=200, flows=20),
+            traffic_row(
+                source_id='r1',
+                granularity='5m',
+                bucket_start=200,
+                flows=20,
+                duration_sum_ms=1001,
+                duration_count=3,
+                min_ttl_sum=0,
+                min_ttl_count=0,
+                max_ttl_sum=255,
+                max_ttl_count=3,
+            ),
             traffic_row(source_id='r2', granularity='5m', bucket_start=200, flows=30),
             traffic_row(source_id='r1', granularity='1h', bucket_start=200, flows=40),
             traffic_row(source_id='r1', granularity='5m', bucket_start=500, flows=50),
         ],
+    )
+    port_bucket = statistical_bucket.CanonicalBucket(
+        key=statistical_bucket.BucketKey('r1', '5m', 200, 500),
+        traffic=(),
+        protocols=(),
+        addresses=(),
+        ports=(
+            statistical_bucket.ScopedPorts(
+                statistical_bucket.Scope(4, 'all', 'all'),
+                'source',
+                (1 << 0) | (1 << 1023) | (1 << 1024),
+            ),
+            statistical_bucket.ScopedPorts(
+                statistical_bucket.Scope(4, 'all', 'all'),
+                'destination',
+                (1 << 0) | (1 << 1024),
+            ),
+        ),
+        five_minute_starts=frozenset({200}),
+    )
+    stats.insert_port_count_stats_rows(
+        conn,
+        stats.canonical_bucket_rows(port_bucket)['port_count_rows'],
     )
     conn.commit()
     return conn
@@ -85,6 +136,12 @@ def traffic_row(
     granularity: str,
     bucket_start: int,
     flows: int,
+    duration_sum_ms: int = 0,
+    duration_count: int = 0,
+    min_ttl_sum: int = 0,
+    min_ttl_count: int = 0,
+    max_ttl_sum: int = 0,
+    max_ttl_count: int = 0,
 ) -> dict:
     bucket = statistical_bucket.CanonicalBucket(
         key=statistical_bucket.BucketKey(
@@ -100,6 +157,12 @@ def traffic_row(
                     flows=flows,
                     packets=flows * 10,
                     bytes=flows * 100,
+                    duration_sum_ms=duration_sum_ms,
+                    duration_count=duration_count,
+                    min_ttl_sum=min_ttl_sum,
+                    min_ttl_count=min_ttl_count,
+                    max_ttl_sum=max_ttl_sum,
+                    max_ttl_count=max_ttl_count,
                 ),
             ),
         ),
