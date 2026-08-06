@@ -74,6 +74,14 @@ describe('netflow v3 helpers', () => {
 		).toEqual({ error: 'Start time must be before end time', status: 400 });
 		expect(
 			parseAggregateStatsParams(
+				new URL('http://localhost/api/test?routers=r1&granularity=weekly&startDate=100&endDate=200')
+			)
+		).toEqual({
+			error: 'Invalid granularity. Expected one of: 5m, 30m, 1h, 1d',
+			status: 400
+		});
+		expect(
+			parseAggregateStatsParams(
 				new URL('http://localhost/api/test?routers=r1&startDate=100&endDate=200&srcVisibility=bad')
 			)
 		).toEqual({

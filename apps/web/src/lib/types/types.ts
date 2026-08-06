@@ -85,6 +85,34 @@ export interface NetflowStatsResponse {
 	availableIpFamilies: NetflowIpFamily[];
 }
 
+export type PortSide = 'source' | 'destination';
+export type PortRange = 'low' | 'high';
+
+export interface ObservationStatsBucket {
+	bucketStart: number;
+	bucketEnd: number;
+	ipFamily: NetflowIpFamily;
+	averageDurationMs: number | null;
+	averageMinTtl: number | null;
+	averageMaxTtl: number | null;
+}
+
+export interface PortCardinalityBucket {
+	sourceId: string;
+	bucketStart: number;
+	bucketEnd: number;
+	ipFamily: Exclude<NetflowIpFamily, 'all'>;
+	portSide: PortSide;
+	portRange: PortRange;
+	uniquePortCount: number;
+}
+
+export interface FlowCharacteristicsResponse {
+	observationBuckets: ObservationStatsBucket[];
+	portBuckets: PortCardinalityBucket[];
+	resolvedSources: string[];
+}
+
 export interface NetflowFileSummaryRecord {
 	router: string;
 	file_path: string | null;
