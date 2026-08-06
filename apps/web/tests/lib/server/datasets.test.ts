@@ -66,6 +66,7 @@ describe('dataset server helpers', () => {
 	afterEach(() => {
 		process.chdir(originalCwd);
 		vi.unstubAllEnvs();
+		vi.doUnmock('node:fs/promises');
 	});
 
 	it('lists dataset summaries from local sqlite metadata', async () => {
@@ -88,6 +89,37 @@ describe('dataset server helpers', () => {
 		await expect(
 			datasets.getRequestedDataset(new URL('http://localhost/api?dataset=alpha'))
 		).resolves.toBe('alpha');
+	});
+
+	it('opens local dataset databases as strictly readonly', async () => {
+		const dbPath = createSqliteFixture();
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+		const db = await datasets.getDatasetDb('alpha');
+
+		await expect(db.get('DELETE FROM datasets RETURNING id')).rejects.toThrow(/readonly/i);
+		await expect(datasets.getDatasetConfig('alpha')).resolves.toMatchObject({ id: 'alpha' });
+	});
+
+	it('does not initialize schema or inferred metadata while opening a request database', async () => {
+		const dbPath = path.join(os.tmpdir(), `datasets-empty-${crypto.randomUUID()}.sqlite`);
+		const seedResult = spawnSync('sqlite3', [dbPath, 'CREATE TABLE placeholder (id INTEGER);'], {
+			encoding: 'utf-8'
+		});
+		expect(seedResult.status, seedResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).rejects.toThrow(/no such table: datasets/i);
+		const schemaResult = spawnSync(
+			'sqlite3',
+			[dbPath, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'datasets';"],
+			{ encoding: 'utf-8' }
+		);
+		expect(schemaResult.status, schemaResult.stderr).toBe(0);
+		expect(schemaResult.stdout.trim()).toBe('0');
 	});
 
 	it('lists source member definitions from metadata', async () => {
@@ -227,6 +259,57 @@ describe('dataset server helpers', () => {
 
 		await expect(datasets.listDatasets()).resolves.toMatchObject([{ id: 'beta' }]);
 		await expect(datasets.getDatasetConfig('alpha')).rejects.toThrow(/Unknown dataset 'alpha'/);
+	});
+
+	it('reopens a cached readonly database after atomic file replacement', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-replace-'));
+		const dbPath = path.join(workspace, 'netflow.sqlite');
+		const replacementPath = path.join(workspace, 'replacement.sqlite');
+		seedDatasetDb(dbPath, 'alpha', 'Before replacement', 'router-a');
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Before replacement');
+
+		seedDatasetDb(replacementPath, 'alpha', 'After replacement', 'router-a');
+		fs.renameSync(replacementPath, dbPath);
+
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('After replacement');
+	});
+
+	it('retries when the database is atomically replaced while opening it', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-open-race-'));
+		const dbPath = path.join(workspace, 'netflow.sqlite');
+		const intermediatePath = path.join(workspace, 'intermediate.sqlite');
+		const finalPath = path.join(workspace, 'final.sqlite');
+		seedDatasetDb(dbPath, 'alpha', 'Initially cached', 'router-a');
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		const fsPromises = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+		let raceEnabled = false;
+		let statCalls = 0;
+		vi.doMock('node:fs/promises', () => ({
+			...fsPromises,
+			stat: async (...args: Parameters<typeof fsPromises.stat>) => {
+				if (raceEnabled) {
+					statCalls += 1;
+					if (statCalls === 3) {
+						fs.renameSync(finalPath, dbPath);
+					}
+				}
+				return fsPromises.stat(...args);
+			}
+		}));
+
+		const datasets = await loadDatasetsModule();
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Initially cached');
+
+		seedDatasetDb(intermediatePath, 'alpha', 'Intermediate replacement', 'router-a');
+		seedDatasetDb(finalPath, 'alpha', 'Final replacement', 'router-a');
+		fs.renameSync(intermediatePath, dbPath);
+		raceEnabled = true;
+
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Final replacement');
+		expect(statCalls).toBeGreaterThanOrEqual(5);
 	});
 });
 

@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from input_revision import InputRevision, revision_for_locator
+from input_revision import FileSnapshot, InputRevision, revision_for_locator
 
 
 def load_module():
@@ -359,3 +359,50 @@ def test_terminal_scan_revision_conflict_names_changed_component() -> None:
             scan_locator='/csv/input.csv',
             input_revision=changed_decoder,
         )
+
+
+def test_nfcapd_snapshot_supports_unsigned_64_bit_inode() -> None:
+    processed_inputs = load_module()
+    conn = sqlite3.connect(':memory:')
+    locator = '/nfs/nfcapd.202506010000'
+    revision = InputRevision.create(
+        input_kind='nfcapd',
+        locator=locator,
+        content_fingerprint='content',
+        decoder_fingerprint='decoder',
+    )
+    snapshot = FileSnapshot(
+        device=59,
+        inode=12_920_913_336_376_042_522,
+        size=75_142_409,
+        mtime_ns=1_749_185_788_758_725_896,
+        ctime_ns=1_749_185_803_169_058_597,
+    )
+
+    processed_inputs.init_processed_inputs_table(conn)
+    processed_inputs.upsert_input_bucket(
+        conn,
+        input_kind='nfcapd',
+        input_locator=locator,
+        source_id='cc_ir1_gw',
+        bucket_start=1_748_736_000,
+        bucket_end=1_748_736_300,
+        input_revision=revision,
+        file_snapshot=snapshot,
+    )
+    processed_inputs.mark_input_bucket_status(
+        conn,
+        input_kind='nfcapd',
+        input_locator=locator,
+        source_id='cc_ir1_gw',
+        bucket_start=1_748_736_000,
+        status='processed',
+        input_revision=revision,
+    )
+
+    assert processed_inputs.cached_content_fingerprint(
+        conn,
+        input_kind='nfcapd',
+        input_locator=locator,
+        file_snapshot=snapshot,
+    ) == 'content'

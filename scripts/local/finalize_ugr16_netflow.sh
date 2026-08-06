@@ -58,6 +58,7 @@ verify_db() {
   ./scripts/run-with-nix-if-available.sh uv run python \
     tools/netflow-db/verify_web_compatible.py \
     "$db_path" \
+    --dataset-id ugr16 \
     --source-id ugr16 \
     --require-data \
     --require-maad-data \
@@ -74,13 +75,16 @@ if [[ "$PROMOTE" -ne 1 ]]; then
 fi
 
 mkdir -p "$(dirname "$TARGET_PATH")"
+maintenance_args=("$CANDIDATE_PATH" "$TARGET_PATH")
 if [[ -e "$TARGET_PATH" ]]; then
   backup_path="$TARGET_PATH.backup.$(date -u +%Y%m%dT%H%M%SZ)"
-  mv "$TARGET_PATH" "$backup_path"
+  maintenance_args+=(--backup-existing "$backup_path")
+fi
+./scripts/run-with-nix-if-available.sh uv run python \
+  tools/netflow-db/sqlite_maintenance.py "${maintenance_args[@]}"
+if [[ -n "${backup_path:-}" ]]; then
   echo "backed up existing target: $backup_path"
 fi
-
-mv "$CANDIDATE_PATH" "$TARGET_PATH"
 verify_db "$TARGET_PATH"
 if [[ "$SKIP_WEB" -ne 1 ]]; then
   web_args=(--db-path "$TARGET_PATH")

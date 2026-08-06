@@ -338,13 +338,20 @@ def complete_input_scan(
     )
 
 
+def sqlite_uint64(value: int) -> int:
+    """Map an unsigned 64-bit stat identifier losslessly into SQLite INTEGER."""
+    if not 0 <= value < 1 << 64:
+        raise ValueError(f'File stat identifier is outside uint64: {value}')
+    return value if value < 1 << 63 else value - (1 << 64)
+
+
 def snapshot_values(snapshot: FileSnapshot | None) -> tuple[int | None, ...]:
     """Return SQLite column values for an optional file snapshot."""
     if snapshot is None:
         return (None, None, None, None, None)
     return (
-        snapshot.device,
-        snapshot.inode,
+        sqlite_uint64(snapshot.device),
+        sqlite_uint64(snapshot.inode),
         snapshot.size,
         snapshot.mtime_ns,
         snapshot.ctime_ns,

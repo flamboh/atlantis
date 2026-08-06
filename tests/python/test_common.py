@@ -36,6 +36,7 @@ def write_registry(path: Path) -> None:
                         'root_path': 'data/root',
                         'db_path': 'data/db.sqlite',
                         'default_start_date': '2025-03-01',
+                        'sort_order': 7,
                         'source_ids': ['r2', 'r1'],
                     }
                 ]
@@ -59,6 +60,7 @@ def test_initialize_runtime_loads_dataset_config(tmp_path: Path, monkeypatch: py
 
     assert common.DEFAULT_DATASET == 'alpha'
     assert common.ACTIVE_DATASET['dataset_id'] == 'alpha'
+    assert common.ACTIVE_DATASET['sort_order'] == 7
     assert common.NETFLOW_DATA_PATH.endswith('data/root')
     assert common.DATABASE_PATH.endswith('data/db.sqlite')
     assert common.AVAILABLE_ROUTERS == ['r2', 'r1']
