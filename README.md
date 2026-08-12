@@ -2,7 +2,9 @@
 
 Network telemetry visualization platform for analyzing large-scale NetFlow data. SvelteKit frontend, SQLite backend, Rust ingestion pipeline.
 
-## Quick Start
+ATLANTIS requires NetFlow data. The pipeline converts this data into the database that the dashboard reads.
+
+## Quick start
 
 ```bash
 bun install
@@ -14,13 +16,16 @@ bun run dev                              # start the web app
 
 ## Documentation
 
-- [Setup](docs/setup.md) — prerequisites, configuration, running the app
-- [Querying](docs/querying.md) — direct database access and example queries
-- [Project Structure](docs/structure.md) — packages, stack, and dev commands
-- [Pipeline Usage](docs/pipeline-usage.md) — ingestion pipeline flags and scheduling
-- [datasets.json](docs/datasets-json.md) — dataset configuration reference
+- [Install and use ATLANTIS](docs/user/README.md)
+- [Develop ATLANTIS](docs/code/README.md)
 
-# Acknowledgement
+For a new setup, use these procedures:
+
+- [Set up the web applications](docs/user/setup-web.md)
+- [Configure the datasets](docs/user/datasets.md)
+- [Set up the data pipeline](docs/user/setup-pipeline.md)
+
+## Acknowledgment
 
 Developed by Oliver Boorstein under support by NSF Research Experiences for Undergraduates with the Oregon Networking Research Group.
 

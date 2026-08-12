@@ -1,4 +1,4 @@
-# Dashboard Data Loading + Chart Refactor
+# Dashboard data loading and chart refactor
 
 ## Goal
 
