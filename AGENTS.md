@@ -1,53 +1,44 @@
 # AGENTS.md
 
-Generally speaking, you should browse the codebase to figure out what is going on.
+ATLANTIS turns NetFlow captures and CSV imports into queryable aggregate databases, then visualizes them in a web dashboard.
 
-## Task Completion Requirements
+## Repository Map
 
-- All of `bun format`, `bun lint`, and `bun typecheck` must pass before considering tasks completed. Testing can be narrowed where appropriate based on the diff.
-- Never run `bun test`, use `bun run test` for all testing (runs Vitest).
+- `tools/netflow-db`: Python 3.13 ingestion, aggregation, verification, and analysis-window exports. Native `nfcapd` ingestion uses `nfdump` plus the compiled reducer.
+- `apps/web`: Svelte 5/SvelteKit 2 dashboard and API routes. It reads local SQLite during development and Cloudflare D1 in deployment.
+- `apps/landing`: Astro marketing and SEO site.
+- `vendor/*`: Third-party analysis submodules. Treat these as read-only; build repo-local binaries through the scripts in `scripts/`.
+- `data/`, `.env`, and `datasets.json`: Machine-local inputs and generated databases. Keep paths and dataset contents out of commits.
 
-## Project Snapshot
+## Engineering Contracts
 
-ATLANTIS is a large-scale network telemetry visualization platform.
-
-This repository is WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
-
-## Core Priorities
-
-1. Performance first.
-2. Reliability first.
-3. Simple code first.
-
-If a trade-off is required, choose correctness and robustness over short-term convenience.
-
-Avoide complex type assertions, needless casts, and extreme robustness. No "legacy fallbacks" or excessive try catch blocks.
-
-## Maintainability
-
-Long-term maintainability is a core priority. If you add new functionality, first check if there are shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
-
-## Package Roles
-
-- `tools/netflow-db`: Manages NetFlow database
-- `apps/web`: Data visualization dashboard frontend
-- `apps/landing`: App landing page for SEO, discoverability, and marketing
-- `vendor/*`: Git submodules containing compiled binaries for network analysis
-- `scripts`: One-off scripts or migrations
-- `plans`: Generated plans
-- `docs`: Maintainer/Admin facing documentation
+- Treat ingestion, storage, API queries, and charts as one data contract. When a stored field or dimension changes, account for every Python writer and verifier, the local SQLite schema, the Drizzle schema and migrations, TypeScript query code, and focused tests.
+- A pipeline database is a product bound to its schema, flow selection, result configuration, and logical source membership. Semantic changes produce a fresh product database; never silently mix incompatible results in an existing one.
+- Assume captures and databases are large. Preserve streaming, batching, bounded concurrency, and bounded-memory processing instead of materializing an entire dataset for convenience.
+- Preserve half-open time-window and additive-rollup semantics across ingestion and queries. Missing `nfcapd` buckets are explicit zero-filled observations within proven source bounds, not absent data to ignore.
+- Keep the system greenfield: replace obsolete paths cleanly. Add compatibility code only when a deployed database or external contract in scope requires it.
 
 ## Svelte
 
-### $effect
+Keep derived state derived. Put interaction-driven updates in event handlers or function bindings, use `{@attach}` for DOM or external-library lifecycle, and use `createSubscriber` for external sources. Reserve `$effect` for genuine external side effects, and never mutate Svelte state from an effect.
 
-Never update state inside of an effect, effects are an escape hatch and should NEVER be used.
+Reuse the existing chart registries, chart utilities, and shared filter components when extending dashboard behavior. Keep metric and filter semantics out of presentation-only components.
 
-- If you need to sync state to an external library, it is often neater to use {@attach ...}
-- If you need to run some code in response to user interaction, put the code directly in an event handler or use a function binding as appropriate
-- If you need to log values for debugging purposes, use $inspect
-- If you need to observe something external to Svelte, use createSubscriber
+## Verification
 
-## References
+- Before completion, run `bun run format`, `bun run lint`, and `bun run typecheck` successfully.
+- Run focused tests for the changed surface: `bun run test:web` for dashboard/API behavior, `bun run test:db` for pipeline behavior, and `bun run test:e2e` for user flows that need browser coverage.
+- Use `bun run test`, not `bun test`; the latter invokes Bun's test runner instead of the repository's Vitest orchestration.
+- When editing the landing site, also run `bun run --cwd apps/landing lint` and `bun run build:landing`; the root lint script only covers `apps/web`.
 
-- Skills: use ~/.agents/skills/find-skills to locate relevant skills wherever possible
+## Pull Requests
+
+Use the Conventional Commit style for PR titles.
+
+Every PR description must give a reviewer a fast path to approval:
+
+- Name the flows to exercise, required setup or test data, and expected results.
+- Call out important edge cases, failure states, and business-logic decisions.
+- List automated verification and any remaining manual verification.
+
+Keep this focused on observable behavior and decisions rather than an exhaustive implementation summary.
