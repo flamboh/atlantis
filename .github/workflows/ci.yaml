@@ -13,8 +13,8 @@ concurrency:
 
 jobs:
   unit-and-build:
-    name: Web + Python Checks
-    runs-on: ubuntu-latest
+    name: Web + Pipeline Checks
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
 
@@ -24,24 +24,20 @@ jobs:
         with:
           bun-version-file: package.json
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+      - run: rustup show
 
       - uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          path: |
+            ~/.bun/install/cache
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-toolchains-${{ hashFiles('bun.lock', 'Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-toolchains-
 
       - run: bun install --frozen-lockfile
-
-      - run: uv sync --all-extras
 
       - run: bun run format:check
 
@@ -53,13 +49,7 @@ jobs:
 
       - run: bun run test:web
 
-      - run: ./scripts/build_maad_fast.sh
-
-      - run: ./scripts/build_nfdump_reducer.sh
-
       - run: bun run test:db
-
-      - run: python -m compileall tools/netflow-db
 
       - run: bun run build:web
 

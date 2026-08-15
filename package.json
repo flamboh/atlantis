@@ -16,17 +16,18 @@
     "build:web": "bun run --cwd apps/web build",
     "build:landing": "bun run --cwd apps/landing build",
     "check:web": "bun run --cwd apps/web check",
-    "lint": "bun run --cwd apps/web lint",
-    "typecheck": "bun run --cwd apps/web typecheck",
-    "format": "bunx prettier --write .",
-    "format:check": "bunx prettier --check .",
+    "lint": "bun run --cwd apps/web lint && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "typecheck": "bun run --cwd apps/web typecheck && cargo check --workspace --all-targets --locked",
+    "format": "bunx prettier --write . && cargo fmt --all",
+    "format:check": "bunx prettier --check . && cargo fmt --all --check",
     "test": "bun run test:web && bun run test:db",
     "test:all": "bun run test:web && bun run test:db && bun run test:e2e",
     "test:web": "bun run --cwd apps/web test",
-    "test:db": "./scripts/run-with-nix-if-available.sh uv run --extra test pytest tests/python",
+    "test:db": "bun run test:db:rust",
+    "test:db:rust": "cargo test --workspace --all-features --locked",
     "test:e2e": "./scripts/run-with-nix-if-available.sh env PLAYWRIGHT_WEB_SERVER=1 bun run --cwd apps/web test:e2e",
     "test:e2e:headed": "./scripts/run-with-nix-if-available.sh env PLAYWRIGHT_WEB_SERVER=1 bun run --cwd apps/web test:e2e:headed",
-    "check:db": "sh -c 'if command -v python >/dev/null 2>&1; then exec python -m compileall tools/netflow-db; else exec python3 -m compileall tools/netflow-db; fi'"
+    "check:db": "cargo check --workspace --all-targets --locked"
   },
   "workspaces": [
     "apps/*"

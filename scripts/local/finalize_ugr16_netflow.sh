@@ -55,8 +55,7 @@ cd "$ROOT_DIR"
 
 verify_db() {
   local db_path="$1"
-  ./scripts/run-with-nix-if-available.sh uv run python \
-    tools/netflow-db/verify_web_compatible.py \
+  ./scripts/netflow-db.sh verify \
     "$db_path" \
     --dataset-id ugr16 \
     --source-id ugr16 \
@@ -80,8 +79,7 @@ if [[ -e "$TARGET_PATH" ]]; then
   backup_path="$TARGET_PATH.backup.$(date -u +%Y%m%dT%H%M%SZ)"
   maintenance_args+=(--backup-existing "$backup_path")
 fi
-./scripts/run-with-nix-if-available.sh uv run python \
-  tools/netflow-db/sqlite_maintenance.py "${maintenance_args[@]}"
+./scripts/netflow-db.sh sqlite-maintenance "${maintenance_args[@]}"
 if [[ -n "${backup_path:-}" ]]; then
   echo "backed up existing target: $backup_path"
 fi
@@ -91,6 +89,6 @@ if [[ "$SKIP_WEB" -ne 1 ]]; then
   if [[ -n "$WEB_BASE_URL" ]]; then
     web_args+=(--base-url "$WEB_BASE_URL")
   fi
-  python scripts/local/verify_ugr16_web_routes.py "${web_args[@]}"
+  ./scripts/netflow-db.sh verify-web-routes "${web_args[@]}"
 fi
 echo "promoted UGR16 database: $TARGET_PATH"

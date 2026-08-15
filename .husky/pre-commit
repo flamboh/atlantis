@@ -7,6 +7,10 @@ STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 
 printf '%s\n' "$STAGED" | tr '\n' '\0' | xargs -0 bunx prettier --write --ignore-unknown
 
+if printf '%s\n' "$STAGED" | grep -Eq '(^|/)(Cargo\.toml|rust-toolchain\.toml)$|\.rs$'; then
+	cargo fmt --all
+fi
+
 WEB_LINT_TARGETS=$(
 	printf '%s\n' "$STAGED" | grep -E '^apps/web/.*\.(cjs|cts|js|jsx|mjs|mts|svelte|ts|tsx)$' | sed 's|^apps/web/||' || true
 )

@@ -54,17 +54,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required to scrape the dataset pages." >&2
-  exit 1
-fi
-
 mkdir -p "$DEST_DIR"
 URL_LIST_PATH="$DEST_DIR/$URL_LIST_NAME"
 TMP_URL_LIST="$(mktemp)"
 trap 'rm -f "$TMP_URL_LIST"' EXIT
 
-python3 "$SCRIPT_DIR/scrape_ugr16_download_urls.py" \
+"$SCRIPT_DIR/../netflow-db.sh" scrape-ugr16 \
   --base-url "$BASE_URL" \
   --kind nfcapd \
   > "$TMP_URL_LIST"

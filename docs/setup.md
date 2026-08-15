@@ -3,23 +3,13 @@
 ## Prerequisites
 
 - Bun 1.2+
-- Python 3.x
-- `nfdump` available on your PATH (or via Nix — see `shell.nix`)
-- a C++17 compiler for the exact nfcapd reducer
-- SSH access to the research host if using live ONRG data
+- Rust 1.97.1 through `rustup` (the repository pins the toolchain)
+- `nfdump` on `PATH` for native capture ingestion
+- SSH access to the research host when using live ONRG data
 
-### For MAAD-Backed Address Structure Stats
-
-Only needed if you want MAAD-backed address structure stats:
-
-- a C++ compiler for `tools/netflow-db/maad_fast.cpp`
-- or `nix-shell`, then use `scripts/build_maad_fast.sh`
-
-Build the required nfcapd reducer before processing native captures:
-
-```bash
-./scripts/build_nfdump_reducer.sh
-```
+`nix-shell` supplies Bun, rustup, nfdump, and Playwright's browser dependencies.
+The reducer and MAAD implementation are part of the Rust crate; no C++ compiler
+or separately built helper is required.
 
 ## Install
 
@@ -27,81 +17,38 @@ Build the required nfcapd reducer before processing native captures:
 git clone https://github.com/flamboh/atlantis.git
 cd atlantis
 bun install
+cargo build --locked --release --package atlantis-netflow-db
 ```
 
-## Configure Datasets
+The build uses [rust-toolchain.toml](../rust-toolchain.toml), so `rustup`
+installs the exact toolchain automatically. `scripts/netflow-db.sh` uses the
+release binary when present and otherwise builds it through Cargo.
 
-Copy the example config and edit paths for your machine:
+## Configure datasets
 
 ```bash
 cp datasets.json.example datasets.json
-```
-
-`root_path` should point at the directory containing router/source subdirectories.
-
-See [datasets-json.md](datasets-json.md) for more.
-
-## Environment
-
-Start from the template:
-
-```bash
 cp .env.example .env
 ```
 
-At minimum, make sure `DEFAULT_DATASET` matches one of the dataset ids in
-`datasets.json`.
+Set each dataset's `root_path` and `db_path`; see
+[datasets-json.md](datasets-json.md). `DATASETS_CONFIG_PATH` can point the CLI
+and web application at another registry.
 
-Optional overrides: `DATASETS_CONFIG_PATH`, `MAX_WORKERS`, `AGGREGATE_MAAD_MAX_WORKERS`.
-
-## Populate the Database
-
-```bash
-python tools/netflow-db/pipeline.py --dataset uoregon --start-date 2025-02-11
-```
-
-This discovers and processes NetFlow files into SQLite.
-See [pipeline-usage.md](pipeline-usage.md) for flags and scheduling patterns.
-
-## D1 Migrations
-
-The web app's D1 schema is tracked in `apps/web/drizzle`. Generate migrations
-from the Drizzle schema:
+## Populate the database
 
 ```bash
-bun run --cwd apps/web db:generate
+./scripts/netflow-db.sh pipeline \
+  --dataset uoregon \
+  --start-date 2025-02-11
 ```
 
-Wrangler is configured to read the same directory:
+This discovers native captures, streams `nfdump`'s fixed CSV contract, computes
+MAAD in process, and publishes canonical SQLite rows. See
+[pipeline-usage.md](pipeline-usage.md) for bounded runs, CSV mapping, exports,
+and verification.
 
-```bash
-bun run --cwd apps/web d1:migrations:list
-bun run --cwd apps/web d1:migrations:apply:local
-```
-
-Current stack policy is greenfield: before a shared D1 database has applied
-these files, rebaseline `apps/web/drizzle` when the schema changes. After a D1
-database has applied a migration, add a new migration instead of editing the
-applied file.
-
-The observation-metrics rebaseline requires a fresh D1 database. Do not apply
-it over a database created from the previous baseline: provision a separate
-database, apply the rebaselined migration, then load the matching pipeline
-product.
-
-## Optional: Compile MAAD Helper
-
-If you need MAAD-backed address structure stats for real captures, build the
-fast MAAD helper:
-
-```bash
-git submodule update --init --recursive
-./scripts/build_maad_fast.sh
-```
-
-This helper is not required for the no-data setup verification flow above.
-
-## Run the App
+## Run the app
 
 ```bash
 bun run dev
@@ -109,10 +56,24 @@ bun run dev
 
 The web app starts at http://localhost:5173.
 
-### SSH Tunnel (remote host)
+## Checks
 
 ```bash
-ssh -L 5173:localhost:5173 user@pinot
+bun format
+bun lint
+bun typecheck
+bun run test
 ```
 
-Then open http://localhost:5173 locally.
+## D1 migrations
+
+The web app's D1 schema is tracked in `apps/web/drizzle`:
+
+```bash
+bun run --cwd apps/web db:generate
+bun run --cwd apps/web d1:migrations:list
+bun run --cwd apps/web d1:migrations:apply:local
+```
+
+The observation-metrics schema requires a fresh database product rather than an
+in-place migration from an older pipeline schema.
