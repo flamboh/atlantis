@@ -1,10 +1,18 @@
 //! Streaming reduction of nfdump's fixed 15-column CSV contract.
 
+use fixedbitset::FixedBitSet;
+use ipnet::IpNet;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{BufRead, Write};
 use std::net::IpAddr;
+
+use crate::domain::{
+    AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection, Granularity,
+    IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols, ScopedTraffic, TrafficMetrics,
+    Visibility as DomainVisibility,
+};
 
 pub const CONTRACT_VERSION: u32 = 1;
 pub const INPUT_CONTRACT: &str = "nfdump-csv-15-v1";
@@ -92,22 +100,22 @@ impl std::error::Error for ReducerError {}
 
 #[derive(Clone)]
 struct ScopeAccumulator {
-    ip_version: u8,
-    source_visibility: &'static str,
-    destination_visibility: &'static str,
+    ip_version: IpVersion,
+    source_visibility: DomainVisibility,
+    destination_visibility: DomainVisibility,
     metrics: [u64; METRIC_COUNT],
     protocols: [u64; 4],
-    source_addresses: BTreeSet<String>,
-    destination_addresses: BTreeSet<String>,
+    source_addresses: BTreeSet<IpAddr>,
+    destination_addresses: BTreeSet<IpAddr>,
     source_ports: PortBitmap,
     destination_ports: PortBitmap,
 }
 
 impl ScopeAccumulator {
     fn new(
-        ip_version: u8,
-        source_visibility: &'static str,
-        destination_visibility: &'static str,
+        ip_version: IpVersion,
+        source_visibility: DomainVisibility,
+        destination_visibility: DomainVisibility,
     ) -> Self {
         Self {
             ip_version,
@@ -173,9 +181,8 @@ impl ScopeAccumulator {
         }
         self.protocols[usize::from(flow.protocol) / 64] |=
             1_u64 << (usize::from(flow.protocol) % 64);
-        self.source_addresses.insert(flow.source_address.clone());
-        self.destination_addresses
-            .insert(flow.destination_address.clone());
+        self.source_addresses.insert(flow.source_address);
+        self.destination_addresses.insert(flow.destination_address);
         self.source_ports.insert(flow.source_port);
         self.destination_ports.insert(flow.destination_port);
         Ok(())
@@ -190,49 +197,116 @@ impl ScopeAccumulator {
             .map(|protocol| protocol.to_string())
             .collect();
         ReducedScope {
-            ip_version: self.ip_version,
-            src_visibility: self.source_visibility,
-            dst_visibility: self.destination_visibility,
+            ip_version: self.ip_version.number(),
+            src_visibility: self.source_visibility.as_str(),
+            dst_visibility: self.destination_visibility.as_str(),
             metrics: self.metrics,
             protocols,
-            source_addresses: self.source_addresses,
-            destination_addresses: self.destination_addresses,
+            source_addresses: self
+                .source_addresses
+                .into_iter()
+                .map(|address| address.to_string())
+                .collect(),
+            destination_addresses: self
+                .destination_addresses
+                .into_iter()
+                .map(|address| address.to_string())
+                .collect(),
             source_ports_hex: self.source_ports.to_hex(),
             destination_ports_hex: self.destination_ports.to_hex(),
         }
     }
-}
 
-#[derive(Clone)]
-struct PortBitmap(Box<[u64; 1024]>);
-
-impl Default for PortBitmap {
-    fn default() -> Self {
-        Self(Box::new([0; 1024]))
+    fn finish_bucket(
+        self,
+    ) -> (
+        ScopedTraffic,
+        ScopedProtocols,
+        [ScopedAddresses; 2],
+        [ScopedPorts; 2],
+    ) {
+        let scope = Scope::new(
+            self.ip_version,
+            self.source_visibility,
+            self.destination_visibility,
+        );
+        let mut protocols = (0_u16..=255)
+            .filter(|protocol| {
+                let protocol = usize::from(*protocol);
+                self.protocols[protocol / 64] & (1_u64 << (protocol % 64)) != 0
+            })
+            .map(|protocol| protocol.to_string())
+            .collect::<Vec<_>>();
+        // Canonical protocol lists are ordered as strings (for example,
+        // "17" precedes "6"), matching StatisticalBucket's BTreeSet.
+        protocols.sort_unstable();
+        (
+            ScopedTraffic {
+                scope,
+                metrics: traffic_metrics(self.metrics),
+            },
+            ScopedProtocols { scope, protocols },
+            [
+                ScopedAddresses {
+                    scope,
+                    address_side: AddressSide::Destination,
+                    addresses: self.destination_addresses.into_iter().collect(),
+                },
+                ScopedAddresses {
+                    scope,
+                    address_side: AddressSide::Source,
+                    addresses: self.source_addresses.into_iter().collect(),
+                },
+            ],
+            [
+                ScopedPorts {
+                    scope,
+                    port_side: AddressSide::Destination,
+                    ports: self.destination_ports.into_inner(),
+                },
+                ScopedPorts {
+                    scope,
+                    port_side: AddressSide::Source,
+                    ports: self.source_ports.into_inner(),
+                },
+            ],
+        )
     }
 }
+
+#[derive(Clone, Default)]
+struct PortBitmap(FixedBitSet);
 
 impl PortBitmap {
     fn insert(&mut self, port: u16) {
         let port = usize::from(port);
-        self.0[port / 64] |= 1_u64 << (port % 64);
+        if self.0.len() < 65_536 {
+            self.0.grow(65_536);
+        }
+        self.0.insert(port);
     }
 
     fn to_hex(&self) -> String {
-        let Some(last_word) = self.0.iter().rposition(|word| *word != 0) else {
+        let words = self.0.as_slice();
+        let Some(last_word) = words.iter().rposition(|word| *word != 0) else {
             return "0".to_owned();
         };
-        let mut result = format!("{:x}", self.0[last_word]);
-        for word in self.0[..last_word].iter().rev() {
+        let mut result = format!("{:x}", words[last_word]);
+        let width = usize::BITS as usize / 4;
+        for word in words[..last_word].iter().rev() {
             use fmt::Write as _;
-            write!(result, "{word:016x}").expect("writing to a String cannot fail");
+            write!(result, "{word:0width$x}").expect("writing to a String cannot fail");
         }
         result
+    }
+
+    fn into_inner(self) -> FixedBitSet {
+        self.0
     }
 }
 
 struct Flow {
-    ip_version: u8,
+    ip_version: IpVersion,
     protocol: u8,
     packets: u64,
     bytes: u64,
@@ -241,17 +315,68 @@ struct Flow {
     min_ttl: Option<u8>,
     max_ttl: Option<u8>,
     source_tos: u8,
-    source_address: String,
-    destination_address: String,
+    source_address: IpAddr,
+    destination_address: IpAddr,
     source_port: u16,
     destination_port: u16,
 }
 
 /// Reduce nfdump stdout without materializing its rows.
 pub fn reduce<R: BufRead>(
-    mut input: R,
+    input: R,
     selection: VisibilitySelection,
 ) -> Result<ReducerResult, ReducerError> {
+    let scopes = reduce_scopes(input, selection, None)?;
+    Ok(ReducerResult {
+        version: CONTRACT_VERSION,
+        input_contract: INPUT_CONTRACT,
+        output_contract: OUTPUT_CONTRACT,
+        scopes: scopes.into_iter().map(ScopeAccumulator::finish).collect(),
+    })
+}
+
+/// Reduce nfdump stdout directly into the canonical five-minute bucket used by the pipeline.
+pub fn reduce_to_bucket<R: BufRead>(
+    input: R,
+    key: BucketKey,
+    selection: &FlowSelection,
+) -> Result<CanonicalBucket, ReducerError> {
+    let visibility = VisibilitySelection {
+        source: selection.src_visibility().map(Visibility::from),
+        destination: selection.dst_visibility().map(Visibility::from),
+    };
+    let scopes = reduce_scopes(input, visibility, selection.ip_prefix())?;
+    let mut traffic = Vec::with_capacity(scopes.len());
+    let mut protocols = Vec::with_capacity(scopes.len());
+    let mut addresses = Vec::with_capacity(scopes.len() * 2);
+    let mut ports = Vec::with_capacity(scopes.len() * 2);
+    for accumulator in scopes {
+        let (scope_traffic, scope_protocols, scope_addresses, scope_ports) =
+            accumulator.finish_bucket();
+        traffic.push(scope_traffic);
+        protocols.push(scope_protocols);
+        addresses.extend(scope_addresses);
+        ports.extend(scope_ports);
+    }
+    let mut five_minute_starts = BTreeSet::new();
+    if key.granularity == Granularity::FiveMinutes {
+        five_minute_starts.insert(key.bucket_start);
+    }
+    Ok(CanonicalBucket {
+        key,
+        traffic,
+        protocols,
+        addresses,
+        ports,
+        five_minute_starts,
+    })
+}
+
+fn reduce_scopes<R: BufRead>(
+    mut input: R,
+    selection: VisibilitySelection,
+    ip_prefix: Option<&IpNet>,
+) -> Result<Vec<ScopeAccumulator>, ReducerError> {
     let mut scopes = make_scopes();
     let mut line = String::new();
     let mut line_number = 0_u64;
@@ -300,10 +425,19 @@ pub fn reduce<R: BufRead>(
         }
 
         let flow = parse_flow(&line).map_err(|error| ReducerError::at_line(line_number, error))?;
-        if !allows_visibility(flow.source_tos, selection) {
+        if !allows_visibility(flow.source_tos, selection)
+            || ip_prefix.is_some_and(|prefix| {
+                !prefix.contains(&flow.source_address)
+                    && !prefix.contains(&flow.destination_address)
+            })
+        {
             continue;
         }
-        let family_base = if flow.ip_version == 4 { 0 } else { 5 };
+        let family_base = if flow.ip_version == IpVersion::V4 {
+            0
+        } else {
+            5
+        };
         for index in [
             family_base,
             family_base + exact_scope_index(flow.source_tos),
@@ -317,12 +451,7 @@ pub fn reduce<R: BufRead>(
     if !saw_header {
         return Err(ReducerError::new("missing CSV header"));
     }
-    Ok(ReducerResult {
-        version: CONTRACT_VERSION,
-        input_contract: INPUT_CONTRACT,
-        output_contract: OUTPUT_CONTRACT,
-        scopes: scopes.into_iter().map(ScopeAccumulator::finish).collect(),
-    })
+    Ok(scopes)
 }
 
 /// Reduce nfdump stdout and write the canonical JSON contract directly.
@@ -340,14 +469,14 @@ pub fn reduce_to_json<R: BufRead, W: Write>(
 }
 
 fn make_scopes() -> Vec<ScopeAccumulator> {
-    const VISIBILITIES: [(&str, &str); 5] = [
-        ("all", "all"),
-        ("anonymized", "anonymized"),
-        ("anonymized", "literal"),
-        ("literal", "anonymized"),
-        ("literal", "literal"),
+    const VISIBILITIES: [(DomainVisibility, DomainVisibility); 5] = [
+        (DomainVisibility::All, DomainVisibility::All),
+        (DomainVisibility::Anonymized, DomainVisibility::Anonymized),
+        (DomainVisibility::Anonymized, DomainVisibility::Literal),
+        (DomainVisibility::Literal, DomainVisibility::Anonymized),
+        (DomainVisibility::Literal, DomainVisibility::Literal),
     ];
-    [4, 6]
+    [IpVersion::V4, IpVersion::V6]
         .into_iter()
         .flat_map(|family| {
             VISIBILITIES
@@ -368,7 +497,7 @@ fn parse_flow(line: &str) -> Result<Flow, ReducerError> {
     let destination_ip: IpAddr = fields[4]
         .parse()
         .map_err(|_| ReducerError::new("invalid IP address"))?;
-    let ip_version = if source_ip.is_ipv4() { 4 } else { 6 };
+    let ip_version = IpVersion::of(source_ip);
     if source_ip.is_ipv4() != destination_ip.is_ipv4() {
         return Err(ReducerError::new("mixed IP families"));
     }
@@ -398,21 +527,84 @@ fn parse_flow(line: &str) -> Result<Flow, ReducerError> {
         min_ttl,
         max_ttl,
         source_tos,
-        source_address: fields[3].to_owned(),
-        destination_address: fields[4].to_owned(),
+        source_address: source_ip,
+        destination_address: destination_ip,
         source_port,
         destination_port,
     })
 }
 
 fn split_csv_line(line: &str) -> Result<[&str; FIELD_COUNT], ReducerError> {
-    let fields: Vec<_> = line.split(',').collect();
-    match fields.len() {
-        0..FIELD_COUNT => Err(ReducerError::new("CSV row has too few fields")),
-        FIELD_COUNT => Ok(fields
-            .try_into()
-            .expect("a vector checked to contain exactly 15 fields converts to an array")),
-        _ => Err(ReducerError::new("CSV row has too many fields")),
+    let mut fields = [""; FIELD_COUNT];
+    let mut values = line.split(',');
+    for field in &mut fields {
+        let Some(value) = values.next() else {
+            return Err(ReducerError::new("CSV row has too few fields"));
+        };
+        *field = value;
+    }
+    if values.next().is_some() {
+        Err(ReducerError::new("CSV row has too many fields"))
+    } else {
+        Ok(fields)
+    }
+}
+
+impl From<ExactVisibility> for Visibility {
+    fn from(value: ExactVisibility) -> Self {
+        match value {
+            ExactVisibility::Literal => Self::Literal,
+            ExactVisibility::Anonymized => Self::Anonymized,
+        }
+    }
+}
+
+fn traffic_metrics(metrics: [u64; METRIC_COUNT]) -> TrafficMetrics {
+    let [
+        flows,
+        flows_tcp,
+        flows_udp,
+        flows_icmp,
+        flows_other,
+        packets,
+        packets_tcp,
+        packets_udp,
+        packets_icmp,
+        packets_other,
+        bytes,
+        bytes_tcp,
+        bytes_udp,
+        bytes_icmp,
+        bytes_other,
+        duration_sum_ms,
+        duration_count,
+        min_ttl_sum,
+        min_ttl_count,
+        max_ttl_sum,
+        max_ttl_count,
+    ] = metrics;
+    TrafficMetrics {
+        flows: flows as i64,
+        flows_tcp: flows_tcp as i64,
+        flows_udp: flows_udp as i64,
+        flows_icmp: flows_icmp as i64,
+        flows_other: flows_other as i64,
+        packets: packets as i64,
+        packets_tcp: packets_tcp as i64,
+        packets_udp: packets_udp as i64,
+        packets_icmp: packets_icmp as i64,
+        packets_other: packets_other as i64,
+        bytes: bytes as i64,
+        bytes_tcp: bytes_tcp as i64,
+        bytes_udp: bytes_udp as i64,
+        bytes_icmp: bytes_icmp as i64,
+        bytes_other: bytes_other as i64,
+        duration_sum_ms: duration_sum_ms as i64,
+        duration_count: duration_count as i64,
+        min_ttl_sum: min_ttl_sum as i64,
+        min_ttl_count: min_ttl_count as i64,
+        max_ttl_sum: max_ttl_sum as i64,
+        max_ttl_count: max_ttl_count as i64,
     }
 }
 
@@ -641,6 +833,105 @@ mod tests {
         assert_eq!(result.scopes[0].metrics[0], 1);
         assert_eq!(result.scopes[3].metrics[0], 1);
         assert_eq!(result.scopes[4].metrics[0], 0);
+    }
+
+    #[test]
+    fn reduces_directly_to_a_selected_canonical_bucket() {
+        let input = csv(&[
+            "0.000,1.000,0.000,192.0.2.1,198.51.100.1,443,55000,6,10,1000,1,0,2,31,64",
+            "0.000,1.000,0.000,203.0.113.1,198.51.100.2,53,55001,17,20,2000,1,0,3,32,63",
+            "0.000,1.000,0.000,192.0.2.2,198.51.100.3,80,55002,6,30,3000,0,0,4,33,62",
+        ]);
+        let selection = FlowSelection::from_payload(Some(&serde_json::json!({
+            "version": 1,
+            "kind": "flows",
+            "ip_prefix": "192.0.2.0/24",
+            "src_visibility": "literal",
+            "dst_visibility": "anonymized",
+        })))
+        .unwrap();
+        let key = BucketKey::new(
+            "edge-a",
+            Granularity::FiveMinutes,
+            1_700_000_000,
+            1_700_000_300,
+        );
+
+        let bucket = reduce_to_bucket(Cursor::new(input), key.clone(), &selection).unwrap();
+
+        assert_eq!(bucket.key, key);
+        assert_eq!(bucket.five_minute_starts, BTreeSet::from([1_700_000_000]));
+        assert_eq!(bucket.traffic.len(), 10);
+        assert_eq!(bucket.protocols.len(), 10);
+        assert_eq!(bucket.addresses.len(), 20);
+        assert_eq!(bucket.ports.len(), 20);
+        let all_scope = Scope::new(IpVersion::V4, DomainVisibility::All, DomainVisibility::All);
+        let exact_scope = Scope::new(
+            IpVersion::V4,
+            DomainVisibility::Literal,
+            DomainVisibility::Anonymized,
+        );
+        for scope in [all_scope, exact_scope] {
+            let metrics = &bucket
+                .traffic
+                .iter()
+                .find(|entry| entry.scope == scope)
+                .unwrap()
+                .metrics;
+            assert_eq!(metrics.flows, 2);
+            assert_eq!(metrics.flows_tcp, 2);
+            assert_eq!(metrics.packets, 10);
+            assert_eq!(metrics.bytes, 1000);
+            assert_eq!(metrics.duration_sum_ms, 2000);
+            assert_eq!(metrics.duration_count, 2);
+            assert_eq!(metrics.min_ttl_sum, 62);
+            assert_eq!(metrics.max_ttl_sum, 128);
+        }
+        assert_eq!(
+            bucket
+                .addresses
+                .iter()
+                .find(|entry| {
+                    entry.scope == all_scope && entry.address_side == AddressSide::Source
+                })
+                .unwrap()
+                .addresses,
+            ["192.0.2.1".parse::<IpAddr>().unwrap()]
+        );
+        assert!(
+            bucket
+                .ports
+                .iter()
+                .find(|entry| entry.scope == all_scope && entry.port_side == AddressSide::Source)
+                .unwrap()
+                .ports
+                .contains(443)
+        );
+    }
+
+    #[test]
+    fn canonical_bucket_protocols_keep_textual_order() {
+        let input = csv(&[
+            "0.000,1.000,0.000,192.0.2.1,198.51.100.1,1,2,6,1,10,0,0,1,20,30",
+            "0.000,1.000,0.000,192.0.2.2,198.51.100.2,1,2,17,1,10,0,0,1,20,30",
+        ]);
+        let bucket = reduce_to_bucket(
+            Cursor::new(input),
+            BucketKey::new("edge-a", Granularity::FiveMinutes, 0, 300),
+            &FlowSelection::default(),
+        )
+        .unwrap();
+        let all_v4 = Scope::new(IpVersion::V4, DomainVisibility::All, DomainVisibility::All);
+
+        assert_eq!(
+            bucket
+                .protocols
+                .iter()
+                .find(|entry| entry.scope == all_v4)
+                .unwrap()
+                .protocols,
+            vec!["17".to_owned(), "6".to_owned()]
+        );
     }
 
     #[test]

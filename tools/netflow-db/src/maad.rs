@@ -1,7 +1,6 @@
 //! In-process MAAD-compatible multifractal analysis for IPv4 address sets.
 
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::net::Ipv4Addr;
 
@@ -52,13 +51,15 @@ pub struct DimensionRow {
 
 #[derive(Clone, Debug)]
 struct PreparedMoment {
-    parent_counts: Vec<f64>,
-    child_counts: Vec<Vec<f64>>,
+    parent_counts: Vec<usize>,
+    child_counts: Vec<Vec<usize>>,
 }
 
 /// Compute MAAD-compatible output from an IPv4 address set.
 pub fn compute(addresses: impl IntoIterator<Item = Ipv4Addr>) -> MaadResult {
-    let addresses: BTreeSet<u32> = addresses.into_iter().map(u32::from).collect();
+    let mut addresses: Vec<_> = addresses.into_iter().map(u32::from).collect();
+    addresses.sort_unstable();
+    addresses.dedup();
     if addresses.len() < MIN_MAAD_ADDRESSES {
         return empty_result(addresses.len());
     }
@@ -108,15 +109,21 @@ fn empty_result(total_addrs: usize) -> MaadResult {
     }
 }
 
-fn build_prefix_counts(addresses: &BTreeSet<u32>) -> Vec<BTreeMap<u32, usize>> {
-    let mut counts = vec![BTreeMap::new(); 33];
-    for &address in addresses {
-        for prefix_length in 0..=32_u8 {
+fn build_prefix_counts(addresses: &[u32]) -> Vec<Vec<(u32, usize)>> {
+    let mut counts = Vec::with_capacity(33);
+    for prefix_length in 0..=32_u8 {
+        let mut prefixes = Vec::new();
+        for &address in addresses {
             let prefix = prefix_of(address, prefix_length);
-            *counts[usize::from(prefix_length)]
-                .entry(prefix)
-                .or_default() += 1;
+            if let Some((last_prefix, count)) = prefixes.last_mut()
+                && *last_prefix == prefix
+            {
+                *count += 1;
+            } else {
+                prefixes.push((prefix, 1));
+            }
         }
+        counts.push(prefixes);
     }
     counts
 }
@@ -129,24 +136,24 @@ const fn prefix_of(address: u32, prefix_length: u8) -> u32 {
     }
 }
 
-fn first_atomic_length(counts: &[BTreeMap<u32, usize>]) -> u8 {
+fn first_atomic_length(counts: &[Vec<(u32, usize)>]) -> u8 {
     (1..=32)
-        .find(|&length| counts[length].values().any(|&count| count == 1))
+        .find(|&length| counts[length].iter().any(|&(_, count)| count == 1))
         .map_or(33, |length| length as u8)
 }
 
-fn first_spillover_length(counts: &[BTreeMap<u32, usize>]) -> u8 {
+fn first_spillover_length(counts: &[Vec<(u32, usize)>]) -> u8 {
     (1..=32)
         .find(|&length| {
             let capacity = 2_f64.powi(32 - length as i32);
             counts[length]
-                .values()
-                .any(|&count| count as f64 / capacity >= 1.0 - SPILLOVER_THRESHOLD)
+                .iter()
+                .any(|&(_, count)| count as f64 / capacity >= 1.0 - SPILLOVER_THRESHOLD)
         })
         .map_or(33, |length| length as u8)
 }
 
-fn prepare_moments(counts: &[BTreeMap<u32, usize>], prefix_lengths: &[u8]) -> Vec<PreparedMoment> {
+fn prepare_moments(counts: &[Vec<(u32, usize)>], prefix_lengths: &[u8]) -> Vec<PreparedMoment> {
     prefix_lengths
         .iter()
         .map(|&prefix_length| {
@@ -160,17 +167,22 @@ fn prepare_moments(counts: &[BTreeMap<u32, usize>], prefix_lengths: &[u8]) -> Ve
             };
             let mut parent_counts = Vec::new();
             let mut child_counts = Vec::new();
-            for (&prefix, &count) in &counts[usize::from(prefix_length)] {
+            let mut next_child = 0;
+            for &(prefix, count) in &counts[usize::from(prefix_length)] {
                 if count <= 1 {
                     continue;
                 }
-                let child_counts_for_parent: Vec<_> = [prefix << 1, (prefix << 1) | 1]
-                    .into_iter()
-                    .filter_map(|child| children.get(&child).copied())
-                    .map(|child_count| child_count as f64)
-                    .collect();
+                let first_child = prefix << 1;
+                while next_child < children.len() && children[next_child].0 < first_child {
+                    next_child += 1;
+                }
+                let mut child_counts_for_parent = Vec::with_capacity(2);
+                while next_child < children.len() && children[next_child].0 <= first_child | 1 {
+                    child_counts_for_parent.push(children[next_child].1);
+                    next_child += 1;
+                }
                 if !child_counts_for_parent.is_empty() {
-                    parent_counts.push(count as f64);
+                    parent_counts.push(count);
                     child_counts.push(child_counts_for_parent);
                 }
             }
@@ -182,19 +194,19 @@ fn prepare_moments(counts: &[BTreeMap<u32, usize>], prefix_lengths: &[u8]) -> Ve
         .collect()
 }
 
-fn one_moment(prepared: &PreparedMoment, q: f64) -> (f64, f64) {
+fn one_moment(prepared: &PreparedMoment, powers: &[f64]) -> (f64, f64) {
     if prepared.parent_counts.is_empty() {
         return (0.0, 0.0);
     }
     let parent_powers: Vec<_> = prepared
         .parent_counts
         .iter()
-        .map(|count| count.powf(q))
+        .map(|&count| powers[count])
         .collect();
     let child_power_sums: Vec<_> = prepared
         .child_counts
         .iter()
-        .map(|children| children.iter().map(|count| count.powf(q)).sum::<f64>())
+        .map(|children| children.iter().map(|&count| powers[count]).sum::<f64>())
         .collect();
     let this_z: f64 = parent_powers.iter().sum();
     let next_z: f64 = child_power_sums.iter().sum();
@@ -210,12 +222,26 @@ fn one_moment(prepared: &PreparedMoment, q: f64) -> (f64, f64) {
 }
 
 fn compute_structure(prepared: &[PreparedMoment]) -> Vec<StructureRow> {
+    let max_count = prepared
+        .iter()
+        .flat_map(|moment| {
+            moment
+                .parent_counts
+                .iter()
+                .chain(moment.child_counts.iter().flatten())
+        })
+        .copied()
+        .max()
+        .unwrap_or_default();
     (0..=((MAX_Q - MIN_Q) / DELTA_Q) as usize)
         .map(|index| {
             let q = MIN_Q + index as f64 * DELTA_Q;
+            let powers: Vec<_> = (0..=max_count)
+                .map(|count| (count as f64).powf(q))
+                .collect();
             let (tau_sum, d2_sum) = prepared
                 .iter()
-                .map(|moment| one_moment(moment, q))
+                .map(|moment| one_moment(moment, &powers))
                 .fold((0.0, 0.0), |(tau_sum, d2_sum), (tau, d2)| {
                     (tau_sum + tau, d2_sum + d2)
                 });
@@ -258,7 +284,7 @@ fn compute_spectrum(structure: &[StructureRow]) -> Vec<SpectrumRow> {
 }
 
 fn compute_dimensions(
-    counts: &[BTreeMap<u32, usize>],
+    counts: &[Vec<(u32, usize)>],
     prefix_lengths: &[u8],
     structure: &[StructureRow],
     total_addresses: usize,
@@ -280,7 +306,7 @@ fn compute_dimensions(
 }
 
 fn info_dimension(
-    counts: &[BTreeMap<u32, usize>],
+    counts: &[Vec<(u32, usize)>],
     prefix_lengths: &[u8],
     total_addresses: usize,
 ) -> f64 {
@@ -289,8 +315,8 @@ fn info_dimension(
         .iter()
         .map(|&prefix_length| {
             let entropy = counts[usize::from(prefix_length)]
-                .values()
-                .map(|&count| {
+                .iter()
+                .map(|&(_, count)| {
                     let probability = count as f64 / total;
                     probability * probability.log2()
                 })
@@ -318,9 +344,245 @@ fn info_dimension(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn close(left: f64, right: f64) {
         assert!((left - right).abs() <= 1e-12, "{left} != {right}");
+    }
+
+    fn reference_compute(addresses: impl IntoIterator<Item = Ipv4Addr>) -> MaadResult {
+        let addresses: BTreeSet<_> = addresses.into_iter().map(u32::from).collect();
+        if addresses.len() < MIN_MAAD_ADDRESSES {
+            return empty_result(addresses.len());
+        }
+        let counts = reference_prefix_counts(&addresses);
+        let min_prefix_length = (1..=32)
+            .find(|&length| counts[length].values().any(|&count| count == 1))
+            .map_or(33, |length| length as u8);
+        let max_prefix_length = (1..=32)
+            .find(|&length| {
+                let capacity = 2_f64.powi(32 - length as i32);
+                counts[length]
+                    .values()
+                    .any(|&count| count as f64 / capacity >= 1.0 - SPILLOVER_THRESHOLD)
+            })
+            .map_or(33, |length| length as u8);
+        if min_prefix_length > max_prefix_length {
+            return empty_result(addresses.len());
+        }
+        let prefix_lengths: Vec<_> = (min_prefix_length..=max_prefix_length).collect();
+        let prepared = reference_prepare_moments(&counts, &prefix_lengths);
+        let structure = reference_structure(&prepared);
+        let spectrum = compute_spectrum(&structure);
+        let dimensions =
+            reference_dimensions(&counts, &prefix_lengths, &structure, addresses.len());
+        MaadResult {
+            schema_version: 1,
+            metadata: MaadMetadata {
+                input: "-",
+                min_prefix_length: Some(min_prefix_length),
+                max_prefix_length: Some(max_prefix_length),
+                total_addrs: addresses.len(),
+            },
+            structure,
+            spectrum,
+            dimensions,
+        }
+    }
+
+    fn reference_prefix_counts(addresses: &BTreeSet<u32>) -> Vec<BTreeMap<u32, usize>> {
+        let mut counts = vec![BTreeMap::new(); 33];
+        for &address in addresses {
+            for prefix_length in 0..=32_u8 {
+                *counts[usize::from(prefix_length)]
+                    .entry(prefix_of(address, prefix_length))
+                    .or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    fn reference_prepare_moments(
+        counts: &[BTreeMap<u32, usize>],
+        prefix_lengths: &[u8],
+    ) -> Vec<PreparedMoment> {
+        prefix_lengths
+            .iter()
+            .map(|&prefix_length| {
+                let Some(children) = counts.get(usize::from(prefix_length) + 1) else {
+                    return PreparedMoment {
+                        parent_counts: Vec::new(),
+                        child_counts: Vec::new(),
+                    };
+                };
+                let mut parent_counts = Vec::new();
+                let mut child_counts = Vec::new();
+                for (&prefix, &count) in &counts[usize::from(prefix_length)] {
+                    if count <= 1 {
+                        continue;
+                    }
+                    let children: Vec<_> = [prefix << 1, (prefix << 1) | 1]
+                        .into_iter()
+                        .filter_map(|child| children.get(&child).copied())
+                        .collect();
+                    if !children.is_empty() {
+                        parent_counts.push(count);
+                        child_counts.push(children);
+                    }
+                }
+                PreparedMoment {
+                    parent_counts,
+                    child_counts,
+                }
+            })
+            .collect()
+    }
+
+    fn reference_structure(prepared: &[PreparedMoment]) -> Vec<StructureRow> {
+        (0..=((MAX_Q - MIN_Q) / DELTA_Q) as usize)
+            .map(|index| {
+                let q = MIN_Q + index as f64 * DELTA_Q;
+                let (tau_sum, d2_sum) = prepared
+                    .iter()
+                    .map(|moment| {
+                        let parent_powers: Vec<_> = moment
+                            .parent_counts
+                            .iter()
+                            .map(|&count| (count as f64).powf(q))
+                            .collect();
+                        let child_power_sums: Vec<_> = moment
+                            .child_counts
+                            .iter()
+                            .map(|children| {
+                                children
+                                    .iter()
+                                    .map(|&count| (count as f64).powf(q))
+                                    .sum::<f64>()
+                            })
+                            .collect();
+                        let this_z: f64 = parent_powers.iter().sum();
+                        let next_z: f64 = child_power_sums.iter().sum();
+                        if this_z <= 0.0 || next_z <= 0.0 {
+                            return (0.0, 0.0);
+                        }
+                        let d2 = parent_powers
+                            .iter()
+                            .zip(child_power_sums)
+                            .map(|(parent, children)| (parent / this_z - children / next_z).powi(2))
+                            .sum();
+                        (this_z.log2() - next_z.log2(), d2)
+                    })
+                    .fold((0.0, 0.0), |(tau_sum, d2_sum), (tau, d2)| {
+                        (tau_sum + tau, d2_sum + d2)
+                    });
+                let count = prepared.len() as f64;
+                StructureRow {
+                    q,
+                    tau_tilde: tau_sum / count,
+                    sd: (d2_sum / count).sqrt(),
+                }
+            })
+            .collect()
+    }
+
+    fn reference_dimensions(
+        counts: &[BTreeMap<u32, usize>],
+        prefix_lengths: &[u8],
+        structure: &[StructureRow],
+        total_addresses: usize,
+    ) -> Vec<DimensionRow> {
+        let total = total_addresses as f64;
+        let points: Vec<_> = prefix_lengths
+            .iter()
+            .map(|&prefix_length| {
+                let entropy = counts[usize::from(prefix_length)]
+                    .values()
+                    .map(|&count| {
+                        let probability = count as f64 / total;
+                        probability * probability.log2()
+                    })
+                    .sum::<f64>();
+                (-(f64::from(prefix_length)), entropy)
+            })
+            .collect();
+        let point_count = points.len() as f64;
+        let mean_x = points.iter().map(|point| point.0).sum::<f64>() / point_count;
+        let mean_y = points.iter().map(|point| point.1).sum::<f64>() / point_count;
+        let denominator = points
+            .iter()
+            .map(|point| (point.0 - mean_x).powi(2))
+            .sum::<f64>();
+        let info = if denominator == 0.0 {
+            0.0
+        } else {
+            points
+                .iter()
+                .map(|point| (point.0 - mean_x) * (point.1 - mean_y))
+                .sum::<f64>()
+                / denominator
+        };
+        let mut rows = vec![DimensionRow { q: 1.0, dim: info }];
+        rows.extend(
+            structure
+                .iter()
+                .filter(|row| row.q.abs() < 1e-12 || (row.q - 2.0).abs() < 1e-12)
+                .map(|row| DimensionRow {
+                    q: row.q,
+                    dim: row.tau_tilde / (row.q - 1.0),
+                }),
+        );
+        rows
+    }
+
+    fn assert_matches_reference(addresses: Vec<Ipv4Addr>) {
+        let result = compute(addresses.clone());
+        let reference = reference_compute(addresses);
+        assert_eq!(result.metadata, reference.metadata);
+        assert_eq!(result.structure.len(), reference.structure.len());
+        assert_eq!(result.spectrum.len(), reference.spectrum.len());
+        assert_eq!(result.dimensions.len(), reference.dimensions.len());
+        for (actual, expected) in result.structure.iter().zip(reference.structure) {
+            close(actual.q, expected.q);
+            close(actual.tau_tilde, expected.tau_tilde);
+            close(actual.sd, expected.sd);
+        }
+        for (actual, expected) in result.spectrum.iter().zip(reference.spectrum) {
+            close(actual.alpha, expected.alpha);
+            close(actual.f, expected.f);
+        }
+        for (actual, expected) in result.dimensions.iter().zip(reference.dimensions) {
+            close(actual.q, expected.q);
+            close(actual.dim, expected.dim);
+        }
+    }
+
+    #[test]
+    fn optimized_path_matches_the_ordered_map_reference() {
+        let dense: Vec<_> = (0..=255)
+            .map(|last| Ipv4Addr::new(10, 0, 0, last))
+            .collect();
+        let mut random = Vec::new();
+        let mut state = 0x9e37_79b9_u32;
+        for _ in 0..256 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            random.push(Ipv4Addr::from(state));
+        }
+        let duplicate_and_boundaries = vec![
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(192, 0, 2, 2),
+        ];
+        for addresses in [
+            Vec::new(),
+            vec![Ipv4Addr::LOCALHOST],
+            dense,
+            random,
+            duplicate_and_boundaries,
+        ] {
+            assert_matches_reference(addresses);
+        }
     }
 
     #[test]

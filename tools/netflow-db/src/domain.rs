@@ -748,7 +748,7 @@ impl CanonicalBucket {
     }
 
     #[must_use]
-    pub fn rows(&self) -> CanonicalRows {
+    pub fn rows(&self) -> CanonicalRows<'_> {
         CanonicalRows {
             traffic_rows: self
                 .traffic
@@ -811,7 +811,7 @@ impl CanonicalBucket {
                     key: self.key.clone(),
                     scope: entry.scope,
                     address_side: entry.address_side,
-                    addresses: entry.addresses.clone(),
+                    addresses: &entry.addresses,
                 })
                 .collect(),
         }
@@ -854,20 +854,20 @@ pub struct PortCountRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddressSetRow {
+pub struct AddressSetRow<'a> {
     pub key: BucketKey,
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: Vec<IpAddr>,
+    pub addresses: &'a [IpAddr],
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalRows {
+pub struct CanonicalRows<'a> {
     pub traffic_rows: Vec<TrafficRow>,
     pub protocol_rows: Vec<ProtocolRow>,
     pub address_count_rows: Vec<AddressCountRow>,
     pub port_count_rows: Vec<PortCountRow>,
-    pub address_sets: Vec<AddressSetRow>,
+    pub address_sets: Vec<AddressSetRow<'a>>,
 }
 
 fn average(total: i64, count: i64) -> Option<f64> {
@@ -1409,7 +1409,8 @@ mod tests {
                 [address([198, 51, 100, 3]), address([198, 51, 100, 2])],
             ))
             .unwrap();
-        let rows = bucket.finish().rows();
+        let bucket = bucket.finish();
+        let rows = bucket.rows();
         let traffic = rows
             .traffic_rows
             .iter()

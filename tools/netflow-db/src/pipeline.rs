@@ -1,6 +1,7 @@
 //! End-to-end pipeline orchestration.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
@@ -39,7 +40,8 @@ use crate::{
 };
 
 const FIVE_MINUTES: i64 = 300;
-const NFCAPD_DECODE_BATCH_SIZE: usize = 4;
+const NFCAPD_DECODE_BATCH_SIZE: usize = 12;
+const NFCAPD_REVISION_HASH_MAX_WORKERS: usize = NFCAPD_DECODE_BATCH_SIZE * 2;
 const DEFAULT_TIMEZONE: &str = "America/Los_Angeles";
 
 #[derive(Clone, Debug)]
@@ -835,11 +837,36 @@ fn process_nfcapd_tree_day(
     let mut prepare_elapsed = Duration::ZERO;
     let mut decode_elapsed = Duration::ZERO;
     let mut publish_elapsed = Duration::ZERO;
+    let revision_hash_workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(NFCAPD_REVISION_HASH_MAX_WORKERS);
+    let revision_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(revision_hash_workers)
+        .thread_name(|index| format!("nfcapd-revision-{index}"))
+        .build()
+        .map_err(|error| {
+            PipelineError::InvalidConfig(format!("failed to build revision hash pool: {error}"))
+        })?;
+    let revision_context = NfcapdRevisionContext {
+        connection,
+        sources,
+        by_member_and_start,
+        member_bounds,
+        zero_fill_gaps,
+        extend_gaps_to_window,
+        revision_pool: &revision_pool,
+    };
     let mut bucket_start = start;
     while bucket_start < end {
         let prepare_started = Instant::now();
-        let mut batch = Vec::with_capacity(NFCAPD_DECODE_BATCH_SIZE);
-        while bucket_start < end && batch.len() < NFCAPD_DECODE_BATCH_SIZE {
+        let mut batch_starts = Vec::with_capacity(NFCAPD_DECODE_BATCH_SIZE);
+        while bucket_start < end && batch_starts.len() < NFCAPD_DECODE_BATCH_SIZE {
+            batch_starts.push(bucket_start);
+            bucket_start = next_local_five_minute_start(bucket_start, &pipeline.timezone)?;
+        }
+        let revisions = resolve_nfcapd_batch_revisions(&revision_context, &batch_starts)?;
+        let mut batch = Vec::with_capacity(batch_starts.len());
+        for bucket_start in batch_starts {
             batch.push(prepare_nfcapd_tree_timestamp(
                 connection,
                 root,
@@ -852,8 +879,8 @@ fn process_nfcapd_tree_day(
                 force,
                 pipeline,
                 report,
+                &revisions,
             )?);
-            bucket_start = next_local_five_minute_start(bucket_start, &pipeline.timezone)?;
         }
         prepare_elapsed += prepare_started.elapsed();
 
@@ -902,11 +929,10 @@ fn process_nfcapd_tree_day(
                         decoded_cache
                             .get(&(member.clone(), timestamp.bucket_start))
                             .expect("requested physical member was decoded")
-                            .clone()
                     })
                     .collect::<Vec<_>>();
                 let logical =
-                    merge_source_bucket(&job.source_id, timestamp.bucket_start, &member_buckets)?;
+                    logical_source_bucket(&job.source_id, timestamp.bucket_start, &member_buckets)?;
                 aggregates.reject_persisted_siblings(connection, &logical, &pipeline.timezone)?;
                 publish_nfcapd_bucket(
                     connection,
@@ -938,6 +964,105 @@ fn process_nfcapd_tree_day(
     Ok(())
 }
 
+struct NfcapdRevisionProbe {
+    path: PathBuf,
+    observed: FileSnapshot,
+    cached_content_fingerprint: Option<String>,
+}
+
+struct NfcapdRevisionContext<'a> {
+    connection: &'a Connection,
+    sources: &'a [DatasetSource],
+    by_member_and_start: &'a BTreeMap<(String, i64), PathBuf>,
+    member_bounds: &'a BTreeMap<String, (i64, i64)>,
+    zero_fill_gaps: bool,
+    extend_gaps_to_window: bool,
+    revision_pool: &'a rayon::ThreadPool,
+}
+
+/// Resolve the physical files needed by a decode batch before making any job decisions.
+/// SQLite access stays on the pipeline thread; only exact hashes run in parallel.
+fn resolve_nfcapd_batch_revisions(
+    context: &NfcapdRevisionContext<'_>,
+    batch_starts: &[i64],
+) -> Result<BTreeMap<PathBuf, PreparedRevision>, PipelineError> {
+    let mut paths = BTreeSet::new();
+    for &bucket_start in batch_starts {
+        for source in context.sources {
+            if !source_has_candidate(
+                source,
+                bucket_start,
+                context.by_member_and_start,
+                context.member_bounds,
+                context.zero_fill_gaps,
+                context.extend_gaps_to_window,
+            ) {
+                continue;
+            }
+            paths.extend(source.members.iter().filter_map(|member| {
+                context
+                    .by_member_and_start
+                    .get(&(member.clone(), bucket_start))
+                    .cloned()
+            }));
+        }
+    }
+
+    let decoder_fingerprint = nfcapd_decoder_fingerprint()?;
+    let probes = paths
+        .into_iter()
+        .map(|path| {
+            let locator = path.to_string_lossy().into_owned();
+            let observed = FileSnapshot::capture(&path)?;
+            let cached_fingerprint = cached_content_fingerprint(
+                context.connection,
+                InputKind::Nfcapd,
+                &locator,
+                &observed,
+            )?;
+            Ok::<_, PipelineError>(NfcapdRevisionProbe {
+                path,
+                observed,
+                cached_content_fingerprint: cached_fingerprint,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let resolved = context.revision_pool.install(|| {
+        probes
+            .par_iter()
+            .map(|probe| {
+                let captured = match &probe.cached_content_fingerprint {
+                    Some(content_fingerprint) => {
+                        Ok((content_fingerprint.clone(), probe.observed.clone()))
+                    }
+                    None => capture_file_revision(&probe.path),
+                };
+                captured
+                    .map_err(PipelineError::from)
+                    .and_then(|(content_fingerprint, snapshot)| {
+                        let revision = InputRevision::create(
+                            "nfcapd",
+                            probe.path.to_string_lossy().into_owned(),
+                            content_fingerprint,
+                            &decoder_fingerprint,
+                        )?;
+                        Ok(PreparedRevision {
+                            revision,
+                            snapshot: Some(snapshot),
+                        })
+                    })
+            })
+            .collect::<Vec<_>>()
+    });
+
+    probes
+        .into_iter()
+        .zip(resolved)
+        .map(|(probe, result)| result.map(|revision| (probe.path, revision)))
+        .collect::<Result<BTreeMap<_, _>, _>>()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_nfcapd_tree_timestamp(
     connection: &Connection,
@@ -951,6 +1076,7 @@ fn prepare_nfcapd_tree_timestamp(
     force: bool,
     pipeline: &ResolvedPipeline,
     report: &mut PipelineReport,
+    revisions: &BTreeMap<PathBuf, PreparedRevision>,
 ) -> Result<PreparedTreeTimestamp, PipelineError> {
     let mut revision_cache: BTreeMap<String, PreparedRevision> = BTreeMap::new();
     let mut jobs = Vec::new();
@@ -979,16 +1105,10 @@ fn prepare_nfcapd_tree_timestamp(
             let owner = match revision_cache.get(member) {
                 Some(owner) => owner.clone(),
                 None => {
-                    let (revision, snapshot) = prepare_file_revision(
-                        connection,
-                        path,
-                        InputKind::Nfcapd,
-                        nfcapd_decoder_fingerprint()?,
-                    )?;
-                    let owner = PreparedRevision {
-                        revision,
-                        snapshot: Some(snapshot),
-                    };
+                    let owner = revisions
+                        .get(path)
+                        .cloned()
+                        .expect("present member has a resolved revision");
                     revision_cache.insert(member.clone(), owner.clone());
                     owner
                 }
@@ -1310,7 +1430,7 @@ fn normalize_sources(
 fn merge_source_bucket(
     source_id: &str,
     bucket_start: i64,
-    members: &[CanonicalBucket],
+    members: &[&CanonicalBucket],
 ) -> Result<CanonicalBucket, PipelineError> {
     let mut builder = StatisticalBucket::dense(BucketKey::new(
         source_id,
@@ -1322,6 +1442,29 @@ fn merge_source_bucket(
         builder.include(member)?;
     }
     Ok(builder.finish())
+}
+
+fn logical_source_bucket<'a>(
+    source_id: &str,
+    bucket_start: i64,
+    members: &[&'a CanonicalBucket],
+) -> Result<Cow<'a, CanonicalBucket>, PipelineError> {
+    let expected_key = BucketKey::new(
+        source_id,
+        Granularity::FiveMinutes,
+        bucket_start,
+        bucket_start + FIVE_MINUTES,
+    );
+    if let [member] = members
+        && member.key == expected_key
+    {
+        return Ok(Cow::Borrowed(member));
+    }
+    Ok(Cow::Owned(merge_source_bucket(
+        source_id,
+        bucket_start,
+        members,
+    )?))
 }
 
 #[derive(Clone, Debug)]
@@ -1765,13 +1908,86 @@ fn expected_nfcapd_path(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs,
+        net::{IpAddr, Ipv4Addr},
+    };
 
     use rusqlite::Connection;
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::domain::{AddressSide, FlowObservation, IpVersion, Scope, Visibility};
+
+    #[test]
+    fn logical_sources_borrow_singletons_and_merge_overlapping_members() {
+        let build = |source_id: &str, destination: [u8; 4]| {
+            let mut bucket = StatisticalBucket::dense(BucketKey::new(
+                source_id,
+                Granularity::FiveMinutes,
+                0,
+                FIVE_MINUTES,
+            ));
+            bucket
+                .add(
+                    FlowObservation::new(
+                        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                        IpAddr::V4(Ipv4Addr::from(destination)),
+                        6,
+                        2,
+                        128,
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            bucket.finish()
+        };
+        let cc = build("cc_ir1_gw", [198, 51, 100, 1]);
+        let oh = build("oh_ir1_gw", [198, 51, 100, 2]);
+
+        let singleton = logical_source_bucket("cc_ir1_gw", 0, &[&cc]).unwrap();
+        assert!(matches!(singleton, Cow::Borrowed(_)));
+
+        let combined = logical_source_bucket("uoregon_all", 0, &[&cc, &oh]).unwrap();
+        assert!(matches!(combined, Cow::Owned(_)));
+        let all_v4 = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+        assert_eq!(
+            combined
+                .traffic
+                .iter()
+                .find(|entry| entry.scope == all_v4)
+                .unwrap()
+                .metrics
+                .flows,
+            2
+        );
+        assert_eq!(
+            combined
+                .addresses
+                .iter()
+                .find(|entry| {
+                    entry.scope == all_v4 && entry.address_side == AddressSide::Source
+                })
+                .unwrap()
+                .addresses
+                .len(),
+            1
+        );
+        assert_eq!(
+            combined
+                .addresses
+                .iter()
+                .find(|entry| {
+                    entry.scope == all_v4 && entry.address_side == AddressSide::Destination
+                })
+                .unwrap()
+                .addresses
+                .len(),
+            2
+        );
+    }
 
     #[test]
     fn config_run_publishes_dense_five_minute_buckets_and_only_complete_rollups() {
@@ -2250,6 +2466,7 @@ mod tests {
         let mut script = fs::File::create(&decoder).unwrap();
         writeln!(script, "#!/bin/sh").unwrap();
         writeln!(script, "case \"$*\" in *20250102*) exit 9;; esac").unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' '1735689600.000,1735689600.000,1735689600.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64'").unwrap();
         drop(script);
         fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2306,6 +2523,7 @@ mod tests {
             "case \"$*\" in *0005*) ts=1735689900;; *) ts=1735689600;; esac"
         )
         .unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' \"$ts.000,$ts.000,$ts.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64\"").unwrap();
         drop(script);
         fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2355,6 +2573,7 @@ mod tests {
         let decoder = temporary.path().join("fake-nfdump");
         let mut script = fs::File::create(&decoder).unwrap();
         writeln!(script, "#!/bin/sh").unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' '1762070400.000,1762070400.000,1762070400.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64'").unwrap();
         drop(script);
         fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2429,6 +2648,7 @@ mod tests {
             "case \"$*\" in *20250102*) ts=1735776000;; *) ts=1735689600;; esac"
         )
         .unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' \"$ts.000,$ts.000,$ts.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64\"").unwrap();
         drop(script);
         fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2483,6 +2703,7 @@ mod tests {
         let mut script = fs::File::create(&decoder).unwrap();
         writeln!(script, "#!/bin/sh").unwrap();
         writeln!(script, "echo called >> '{}'", calls.display()).unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' '1744733279.999,1744733279.999,1744733279.000,192.0.2.1,198.51.100.1,443,55000,6,2,128,0,0,3,32,64'").unwrap();
         drop(script);
         fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();

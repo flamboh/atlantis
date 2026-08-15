@@ -13,7 +13,7 @@ use std::{
 };
 
 use command_group::CommandGroup;
-use csv::{ReaderBuilder, StringRecord};
+use csv::ReaderBuilder;
 use flate2::read::MultiGzDecoder;
 use jiff::civil::DateTime;
 use thiserror::Error;
@@ -21,13 +21,10 @@ use thiserror::Error;
 use crate::{
     config::{CsvSourceConfig, InputOrder},
     domain::{
-        BucketKey, CanonicalBucket, DomainError, FlowObservation, FlowSelection, Granularity,
-        StatisticalBucket,
+        BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
     },
-    normalize::{
-        NFDUMP_CSV_FORMAT, NormalizeError, field_indexes, normalize_csv_values,
-        normalize_nfdump_values,
-    },
+    normalize::{NFDUMP_CSV_FORMAT, NormalizeError, field_indexes, normalize_csv_values},
+    reducer,
 };
 
 const BUCKET_SECONDS: i64 = 300;
@@ -724,15 +721,40 @@ pub fn build_nfdump_command(
     command
 }
 
-/// Run external `nfdump` and stream selected fixed-15-field observations to a sink.
-pub fn stream_nfdump_observations<E>(
+/// Decode one canonical nfcapd file into its dense five-minute bucket.
+pub fn read_nfcapd_bucket(
     path: impl AsRef<Path>,
     source_id: &str,
     selection: &FlowSelection,
     executable: impl AsRef<std::ffi::OsStr>,
-    mut emit: impl FnMut(FlowObservation) -> Result<(), E>,
-) -> Result<(), ProducerError<E>> {
+    timezone: &str,
+) -> Result<CanonicalBucket, IngestError> {
+    read_nfcapd_bucket_with_timeout(
+        path,
+        source_id,
+        selection,
+        executable,
+        timezone,
+        NFDUMP_TIMEOUT,
+    )
+}
+
+fn read_nfcapd_bucket_with_timeout(
+    path: impl AsRef<Path>,
+    source_id: &str,
+    selection: &FlowSelection,
+    executable: impl AsRef<std::ffi::OsStr>,
+    timezone: &str,
+    timeout: Duration,
+) -> Result<CanonicalBucket, IngestError> {
     let path = path.as_ref();
+    let bucket_start = parse_nfcapd_bucket_start(path, timezone)?;
+    let key = BucketKey::new(
+        source_id,
+        Granularity::FiveMinutes,
+        bucket_start,
+        bucket_start + BUCKET_SECONDS,
+    );
     let command = build_nfdump_command(path, selection, executable.as_ref());
     let executable_name = command[0].clone();
     let stderr_file = tempfile::tempfile().map_err(|source| IngestError::Io {
@@ -757,81 +779,71 @@ pub fn stream_nfdump_observations<E>(
         .stdout
         .take()
         .ok_or_else(|| IngestError::InvalidInput("nfdump stdout was not captured".into()))?;
-    let (sender, receiver) = mpsc::sync_channel::<Result<StringRecord, String>>(1024);
+    let selection = selection.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || {
-        let mut csv = ReaderBuilder::new()
-            .has_headers(false)
-            .from_reader(BufReader::new(stdout));
-        for row in csv.records() {
-            if sender.send(row.map_err(|error| error.to_string())).is_err() {
-                return;
-            }
-        }
+        let result = reducer::reduce_to_bucket(BufReader::new(stdout), key, &selection);
+        let _ = sender.send(result);
     });
-    let deadline = Instant::now() + NFDUMP_TIMEOUT;
-    let mut sink_error = None;
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+    let deadline = Instant::now() + timeout;
+    let reduced = match receiver.recv_timeout(timeout) {
+        Ok(result) => {
+            reader.join().map_err(|_| {
+                IngestError::InvalidInput(format!(
+                    "nfdump reducer thread panicked for {}",
+                    path.display()
+                ))
+            })?;
+            result
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
             drop(receiver);
             let _ = reader.join();
             return Err(IngestError::NfdumpTimeout {
-                seconds: NFDUMP_TIMEOUT.as_secs(),
-            }
-            .into());
-        };
-        match receiver.recv_timeout(remaining) {
-            Ok(Ok(values)) if values.is_empty() || is_nfdump_header_or_no_match(&values) => {}
-            Ok(Ok(values)) => {
-                let values = values.iter().map(str::to_owned).collect::<Vec<_>>();
-                let row = match normalize_nfdump_values(&values, source_id) {
-                    Ok(row) => row,
-                    Err(error) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        drop(receiver);
-                        let _ = reader.join();
-                        return Err(IngestError::InvalidInput(format!(
-                            "malformed nfdump CSV row for {}: {error}",
-                            path.display()
-                        ))
-                        .into());
-                    }
-                };
-                if selection.matches(&row.observation)
-                    && let Err(error) = emit(row.observation)
-                {
-                    sink_error = Some(error);
-                    break;
-                }
-            }
-            Ok(Err(error)) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(receiver);
-                let _ = reader.join();
-                return Err(IngestError::InvalidInput(format!(
-                    "malformed nfdump CSV stream for {}: {error}",
-                    path.display()
-                ))
-                .into());
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(receiver);
-                let _ = reader.join();
-                return Err(IngestError::NfdumpTimeout {
-                    seconds: NFDUMP_TIMEOUT.as_secs(),
-                }
-                .into());
-            }
+                seconds: timeout.as_secs(),
+            });
         }
-    }
-    if sink_error.is_some() {
-        let _ = child.kill();
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return Err(IngestError::InvalidInput(format!(
+                "nfdump reducer thread stopped unexpectedly for {}",
+                path.display()
+            )));
+        }
+    };
+    if let Err(error) = reduced {
+        // EOF can reach the reader just before the kernel reports the child as exited.
+        // Give it a short grace period so a decoder failure wins over a secondary parse error.
+        let grace_deadline = Instant::now() + Duration::from_millis(50);
+        let status = loop {
+            let status = child.try_wait().map_err(|source| IngestError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            if status.is_some() || Instant::now() >= grace_deadline {
+                break status;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        if status.as_ref().is_some_and(|status| !status.success()) {
+            return Err(IngestError::NfdumpFailed {
+                exit_code: status.and_then(|status| status.code()),
+                stderr: read_tail(stderr_file, MAX_DIAGNOSTIC_BYTES)
+                    .unwrap_or_else(|tail_error| format!("unable to read stderr: {tail_error}")),
+            });
+        }
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        return Err(IngestError::InvalidInput(format!(
+            "malformed nfdump CSV stream for {}: {error}",
+            path.display()
+        )));
     }
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|source| IngestError::Io {
@@ -844,68 +856,20 @@ pub fn stream_nfdump_observations<E>(
             let _ = child.kill();
             let _ = child.wait();
             drop(receiver);
-            let _ = reader.join();
             return Err(IngestError::NfdumpTimeout {
-                seconds: NFDUMP_TIMEOUT.as_secs(),
-            }
-            .into());
+                seconds: timeout.as_secs(),
+            });
         }
         thread::sleep(Duration::from_millis(10));
     };
-    drop(receiver);
-    let _ = reader.join();
-    if let Some(error) = sink_error {
-        return Err(ProducerError::Sink(error));
-    }
     if !status.success() {
         return Err(IngestError::NfdumpFailed {
             exit_code: status.code(),
             stderr: read_tail(stderr_file, MAX_DIAGNOSTIC_BYTES)
                 .unwrap_or_else(|error| format!("unable to read stderr: {error}")),
-        }
-        .into());
+        });
     }
-    Ok(())
-}
-
-/// Decode one canonical nfcapd file into its dense five-minute bucket.
-pub fn read_nfcapd_bucket(
-    path: impl AsRef<Path>,
-    source_id: &str,
-    selection: &FlowSelection,
-    executable: impl AsRef<std::ffi::OsStr>,
-    timezone: &str,
-) -> Result<CanonicalBucket, IngestError> {
-    let path = path.as_ref();
-    let bucket_start = parse_nfcapd_bucket_start(path, timezone)?;
-    let mut bucket = StatisticalBucket::dense(BucketKey::new(
-        source_id,
-        Granularity::FiveMinutes,
-        bucket_start,
-        bucket_start + BUCKET_SECONDS,
-    ));
-    stream_nfdump_observations(path, source_id, selection, executable, |observation| {
-        bucket.add(observation)
-    })
-    .map_err(|error| match error {
-        ProducerError::Input(error) => error,
-        ProducerError::Sink(error) => IngestError::Domain(error),
-    })?;
-    Ok(bucket.finish())
-}
-
-fn is_nfdump_header_or_no_match(values: &StringRecord) -> bool {
-    values.get(0).is_some_and(|first| {
-        matches!(
-            first.trim().to_ascii_lowercase().as_str(),
-            "trr"
-                | "firstseen"
-                | "received"
-                | "time received"
-                | "time_received"
-                | "no matching flows"
-        )
-    })
+    Ok(reduced.expect("reducer success checked above"))
 }
 
 fn read_tail(mut file: fs::File, limit: usize) -> std::io::Result<String> {
@@ -1194,39 +1158,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nfdump_stream_skips_headers_and_emits_normalized_selected_observations() {
+    fn nfdump_reducer_builds_the_canonical_bucket() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
         let executable = directory.path().join("fake-nfdump");
         let mut script = fs::File::create(&executable).unwrap();
         writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(
-            script,
-            "printf '%s\\n' 'trr,ter,tsr,sa,da,sp,dp,pr,pkt,byt,stos,dtos,fl,minttl,maxttl'"
-        )
-        .unwrap();
+        writeln!(script, "printf '%s\\n' '{}'", reducer::CSV_HEADER).unwrap();
         writeln!(script, "printf '%s\\n' '1744733279.999,1744733279.999,1744733279.000,192.0.2.1,198.51.100.1,443,55000,6,2,128,0,0,3,32,64'").unwrap();
         drop(script);
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut observations = Vec::new();
-
-        stream_nfdump_observations(
-            "capture",
-            "edge-a",
-            &FlowSelection::default(),
-            &executable,
-            |observation| {
-                observations.push(observation);
-                Ok::<_, ()>(())
-            },
-        )
-        .unwrap();
-
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].flow_count, 3);
-        assert_eq!(observations[0].duration_ms, Some(999));
-        assert_eq!(observations[0].src_port, Some(443));
 
         let capture = directory.path().join("nfcapd.202504151200");
         fs::write(&capture, "fixture").unwrap();
@@ -1250,5 +1192,81 @@ mod tests {
                 .flows,
             3
         );
+        let metrics = &bucket
+            .traffic
+            .iter()
+            .find(|entry| entry.scope == scope)
+            .unwrap()
+            .metrics;
+        assert_eq!(metrics.duration_sum_ms, 2_997);
+        assert_eq!(metrics.duration_count, 3);
+        assert_eq!(metrics.min_ttl_sum, 96);
+        assert_eq!(metrics.max_ttl_sum, 192);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nfdump_reducer_preserves_decoder_failure_diagnostics() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'decoder exploded' >&2\nexit 9\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = read_nfcapd_bucket(
+            &capture,
+            "edge-a",
+            &FlowSelection::default(),
+            &executable,
+            "America/Los_Angeles",
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            IngestError::NfdumpFailed {
+                exit_code: Some(9),
+                stderr,
+            } if stderr == "decoder exploded"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nfdump_reducer_timeout_kills_a_blocked_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' '{}'\nsleep 5\n",
+                reducer::CSV_HEADER
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = read_nfcapd_bucket_with_timeout(
+            &capture,
+            "edge-a",
+            &FlowSelection::default(),
+            &executable,
+            "America/Los_Angeles",
+            Duration::from_millis(50),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, IngestError::NfdumpTimeout { .. }));
     }
 }

@@ -97,7 +97,7 @@ pub fn write_buckets(
     Ok(())
 }
 
-fn insert_rows(connection: &Connection, rows: &CanonicalRows) -> Result<(), PublishError> {
+fn insert_rows(connection: &Connection, rows: &CanonicalRows<'_>) -> Result<(), PublishError> {
     let traffic = rows
         .traffic_rows
         .iter()
@@ -168,7 +168,7 @@ fn insert_rows(connection: &Connection, rows: &CanonicalRows) -> Result<(), Publ
 }
 
 fn maad_rows(
-    address_sets: &[AddressSetRow],
+    address_sets: &[AddressSetRow<'_>],
 ) -> Result<Vec<AddressStructureStatsRow>, PublishError> {
     Ok(address_sets
         .par_iter()
