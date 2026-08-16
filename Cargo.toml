@@ -13,3 +13,13 @@ unsafe_code = "forbid"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# Keep production binaries optimized across crate boundaries. The profiling
+# profile preserves line information without changing release optimization.
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
