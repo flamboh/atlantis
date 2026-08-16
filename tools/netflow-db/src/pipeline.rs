@@ -19,6 +19,7 @@ use crate::{
     config::{ConfigError, CsvSourceConfig},
     domain::{
         BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
+        StatisticalBucketIncludeProfile,
     },
     ingest::{self, IngestError, ProducerError},
     nfdump,
@@ -27,7 +28,7 @@ use crate::{
         csv_decoder_fingerprint, gap_input_revision, nfcapd_decoder_fingerprint,
         revision_for_locator, verify_file_snapshot,
     },
-    publish::{PublishError, write_buckets},
+    publish::{PublishError, WriteBucketsProfile, write_buckets, write_buckets_profiled},
     registry::{Dataset, DatasetRegistry, DatasetSource, RegistryError, is_safe_path_component},
     storage::{
         DatabaseOperationLock, DatasetMetadata, InputBucket, InputKind, InputStatus,
@@ -768,10 +769,11 @@ fn process_nfcapd_tree(
             }
             bucket_start = next_local_five_minute_start(bucket_start, &pipeline.timezone)?;
         }
-        let day_report = with_transaction(connection, || {
+        let transaction_started = Instant::now();
+        let (day_report, day_profile) = with_transaction(connection, || {
             let mut aggregates = AggregateBuckets::with_owned_keys(owned_keys);
             let mut day_report = PipelineReport::default();
-            process_nfcapd_tree_day(
+            let mut day_profile = process_nfcapd_tree_day(
                 connection,
                 root,
                 &sources,
@@ -786,9 +788,11 @@ fn process_nfcapd_tree(
                 &mut aggregates,
                 &mut day_report,
             )?;
-            publish_rollups(connection, aggregates, pipeline, &mut day_report)?;
-            Ok(day_report)
+            day_profile.final_rollups =
+                publish_rollups_profiled(connection, aggregates, pipeline, &mut day_report)?;
+            Ok((day_report, day_profile))
         })?;
+        day_profile.log(day_start, day_end, transaction_started.elapsed());
         merge_report(report, day_report);
         day_start = day_end;
     }
@@ -832,11 +836,12 @@ fn process_nfcapd_tree_day(
     pipeline: &ResolvedPipeline,
     aggregates: &mut AggregateBuckets,
     report: &mut PipelineReport,
-) -> Result<(), PipelineError> {
+) -> Result<NfcapdDayPublishProfile, PipelineError> {
     let day_started = Instant::now();
     let mut prepare_elapsed = Duration::ZERO;
     let mut decode_elapsed = Duration::ZERO;
     let mut publish_elapsed = Duration::ZERO;
+    let mut publish_profile = NfcapdDayPublishProfile::default();
     let revision_hash_workers = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(NFCAPD_REVISION_HASH_MAX_WORKERS);
@@ -931,10 +936,14 @@ fn process_nfcapd_tree_day(
                             .expect("requested physical member was decoded")
                     })
                     .collect::<Vec<_>>();
+                let logical_started = Instant::now();
                 let logical =
                     logical_source_bucket(&job.source_id, timestamp.bucket_start, &member_buckets)?;
+                publish_profile.logical_source_elapsed += logical_started.elapsed();
+                let sibling_started = Instant::now();
                 aggregates.reject_persisted_siblings(connection, &logical, &pipeline.timezone)?;
-                publish_nfcapd_bucket(
+                publish_profile.persisted_sibling_elapsed += sibling_started.elapsed();
+                let bucket_profile = publish_nfcapd_bucket_profiled(
                     connection,
                     &logical,
                     &job.owners,
@@ -942,26 +951,42 @@ fn process_nfcapd_tree_day(
                     force,
                     pipeline.run_maad,
                 )?;
-                aggregates.include(&logical, &pipeline.timezone)?;
-                report.rollup_buckets +=
-                    aggregates.flush_complete(connection, pipeline.run_maad)?;
+                publish_profile.bucket_publish.include(bucket_profile);
+                let aggregate_profile =
+                    aggregates.include_profiled(&logical, &pipeline.timezone)?;
+                publish_profile.aggregate_include.include(aggregate_profile);
+                let flush_started = Instant::now();
+                let (flushed, rollup_write) =
+                    aggregates.flush_complete_profiled(connection, pipeline.run_maad)?;
+                publish_profile.completed_rollup_flush_elapsed += flush_started.elapsed();
+                publish_profile.completed_rollup_write.include(rollup_write);
+                publish_profile.completed_rollup_flushes += 1;
+                if flushed > 0 {
+                    publish_profile.nonempty_rollup_flushes += 1;
+                }
+                publish_profile.logical_buckets += 1;
+                report.rollup_buckets += flushed;
                 report.five_minute_buckets += 1;
             }
             decoded_cache.retain(|(_, start), _| *start != timestamp.bucket_start);
         }
         publish_elapsed += publish_started.elapsed();
     }
+    publish_profile.day_elapsed = day_started.elapsed();
+    publish_profile.prepare_elapsed = prepare_elapsed;
+    publish_profile.decode_elapsed = decode_elapsed;
+    publish_profile.batch_publish_elapsed = publish_elapsed;
     tracing::info!(
         target: "netflow_db::profile",
         phase = "nfcapd_tree_day",
         day_start = start,
         day_end = end,
-        elapsed_seconds = day_started.elapsed().as_secs_f64(),
+        elapsed_seconds = publish_profile.day_elapsed.as_secs_f64(),
         prepare_seconds = prepare_elapsed.as_secs_f64(),
         decode_seconds = decode_elapsed.as_secs_f64(),
         publish_seconds = publish_elapsed.as_secs_f64(),
     );
-    Ok(())
+    Ok(publish_profile)
 }
 
 struct NfcapdRevisionProbe {
@@ -1467,6 +1492,285 @@ fn logical_source_bucket<'a>(
     )?))
 }
 
+#[derive(Debug, Default)]
+struct NfcapdBucketPublishProfile {
+    total_elapsed: Duration,
+    preflight_elapsed: Duration,
+    overlap_elapsed: Duration,
+    force_delete_elapsed: Duration,
+    owner_upsert_elapsed: Duration,
+    write: WriteBucketsProfile,
+    owner_status_elapsed: Duration,
+    postflight_elapsed: Duration,
+    owners: u64,
+    absences: u64,
+}
+
+impl NfcapdBucketPublishProfile {
+    fn include(&mut self, profile: Self) {
+        self.total_elapsed += profile.total_elapsed;
+        self.preflight_elapsed += profile.preflight_elapsed;
+        self.overlap_elapsed += profile.overlap_elapsed;
+        self.force_delete_elapsed += profile.force_delete_elapsed;
+        self.owner_upsert_elapsed += profile.owner_upsert_elapsed;
+        self.write.include(profile.write);
+        self.owner_status_elapsed += profile.owner_status_elapsed;
+        self.postflight_elapsed += profile.postflight_elapsed;
+        self.owners += profile.owners;
+        self.absences += profile.absences;
+    }
+
+    fn other_elapsed(&self) -> Duration {
+        self.total_elapsed.saturating_sub(
+            self.preflight_elapsed
+                + self.overlap_elapsed
+                + self.force_delete_elapsed
+                + self.owner_upsert_elapsed
+                + self.write.total_elapsed
+                + self.owner_status_elapsed
+                + self.postflight_elapsed,
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct FinalRollupProfile {
+    total_elapsed: Duration,
+    finish_elapsed: Duration,
+    delete_elapsed: Duration,
+    write: WriteBucketsProfile,
+    incomplete_keys: u64,
+    rollup_buckets: u64,
+}
+
+impl FinalRollupProfile {
+    fn other_elapsed(&self) -> Duration {
+        self.total_elapsed
+            .saturating_sub(self.finish_elapsed + self.delete_elapsed + self.write.total_elapsed)
+    }
+}
+
+#[derive(Debug, Default)]
+struct AggregateGranularityProfile {
+    total_elapsed: Duration,
+    bounds_elapsed: Duration,
+    builder_elapsed: Duration,
+    bucket: StatisticalBucketIncludeProfile,
+}
+
+impl AggregateGranularityProfile {
+    fn include(
+        &mut self,
+        total_elapsed: Duration,
+        bounds_elapsed: Duration,
+        builder_elapsed: Duration,
+        bucket: StatisticalBucketIncludeProfile,
+    ) {
+        self.total_elapsed += total_elapsed;
+        self.bounds_elapsed += bounds_elapsed;
+        self.builder_elapsed += builder_elapsed;
+        self.bucket.include(bucket);
+    }
+
+    fn other_elapsed(&self) -> Duration {
+        self.total_elapsed
+            .saturating_sub(self.bounds_elapsed + self.builder_elapsed + self.bucket.total_elapsed)
+    }
+}
+
+#[derive(Debug, Default)]
+struct AggregateIncludeProfile {
+    total_elapsed: Duration,
+    thirty_minutes: AggregateGranularityProfile,
+    one_hour: AggregateGranularityProfile,
+    one_day: AggregateGranularityProfile,
+}
+
+impl AggregateIncludeProfile {
+    fn include(&mut self, profile: Self) {
+        self.total_elapsed += profile.total_elapsed;
+        self.thirty_minutes.include(
+            profile.thirty_minutes.total_elapsed,
+            profile.thirty_minutes.bounds_elapsed,
+            profile.thirty_minutes.builder_elapsed,
+            profile.thirty_minutes.bucket,
+        );
+        self.one_hour.include(
+            profile.one_hour.total_elapsed,
+            profile.one_hour.bounds_elapsed,
+            profile.one_hour.builder_elapsed,
+            profile.one_hour.bucket,
+        );
+        self.one_day.include(
+            profile.one_day.total_elapsed,
+            profile.one_day.bounds_elapsed,
+            profile.one_day.builder_elapsed,
+            profile.one_day.bucket,
+        );
+    }
+
+    fn granularity_mut(&mut self, granularity: Granularity) -> &mut AggregateGranularityProfile {
+        match granularity {
+            Granularity::ThirtyMinutes => &mut self.thirty_minutes,
+            Granularity::OneHour => &mut self.one_hour,
+            Granularity::OneDay => &mut self.one_day,
+            Granularity::FiveMinutes => unreachable!("five-minute buckets are not rollups"),
+        }
+    }
+
+    fn other_elapsed(&self) -> Duration {
+        self.total_elapsed.saturating_sub(
+            self.thirty_minutes.total_elapsed
+                + self.one_hour.total_elapsed
+                + self.one_day.total_elapsed,
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct NfcapdDayPublishProfile {
+    day_elapsed: Duration,
+    prepare_elapsed: Duration,
+    decode_elapsed: Duration,
+    batch_publish_elapsed: Duration,
+    logical_source_elapsed: Duration,
+    persisted_sibling_elapsed: Duration,
+    bucket_publish: NfcapdBucketPublishProfile,
+    aggregate_include: AggregateIncludeProfile,
+    completed_rollup_flush_elapsed: Duration,
+    completed_rollup_write: WriteBucketsProfile,
+    final_rollups: FinalRollupProfile,
+    logical_buckets: u64,
+    completed_rollup_flushes: u64,
+    nonempty_rollup_flushes: u64,
+}
+
+impl NfcapdDayPublishProfile {
+    fn log(&self, day_start: i64, day_end: i64, transaction_elapsed: Duration) {
+        let mut rollup_write = self.completed_rollup_write.clone();
+        rollup_write.include(self.final_rollups.write.clone());
+        let publish_other = self.batch_publish_elapsed.saturating_sub(
+            self.logical_source_elapsed
+                + self.persisted_sibling_elapsed
+                + self.bucket_publish.total_elapsed
+                + self.aggregate_include.total_elapsed
+                + self.completed_rollup_flush_elapsed,
+        );
+        let transaction_other =
+            transaction_elapsed.saturating_sub(self.day_elapsed + self.final_rollups.total_elapsed);
+        let completed_rollup_housekeeping = self
+            .completed_rollup_flush_elapsed
+            .saturating_sub(self.completed_rollup_write.total_elapsed);
+        tracing::info!(
+            target: "netflow_db::profile",
+            phase = "nfcapd_tree_day_publish_detail",
+            day_start,
+            day_end,
+            transaction_seconds = transaction_elapsed.as_secs_f64(),
+            transaction_other_seconds = transaction_other.as_secs_f64(),
+            day_seconds = self.day_elapsed.as_secs_f64(),
+            prepare_seconds = self.prepare_elapsed.as_secs_f64(),
+            decode_seconds = self.decode_elapsed.as_secs_f64(),
+            batch_publish_seconds = self.batch_publish_elapsed.as_secs_f64(),
+            publish_other_seconds = publish_other.as_secs_f64(),
+            logical_source_seconds = self.logical_source_elapsed.as_secs_f64(),
+            persisted_sibling_seconds = self.persisted_sibling_elapsed.as_secs_f64(),
+            bucket_publish_seconds = self.bucket_publish.total_elapsed.as_secs_f64(),
+            bucket_preflight_seconds = self.bucket_publish.preflight_elapsed.as_secs_f64(),
+            bucket_overlap_seconds = self.bucket_publish.overlap_elapsed.as_secs_f64(),
+            bucket_force_delete_seconds = self.bucket_publish.force_delete_elapsed.as_secs_f64(),
+            owner_upsert_seconds = self.bucket_publish.owner_upsert_elapsed.as_secs_f64(),
+            owner_status_seconds = self.bucket_publish.owner_status_elapsed.as_secs_f64(),
+            bucket_postflight_seconds = self.bucket_publish.postflight_elapsed.as_secs_f64(),
+            bucket_other_seconds = self.bucket_publish.other_elapsed().as_secs_f64(),
+            aggregate_include_seconds = self.aggregate_include.total_elapsed.as_secs_f64(),
+            aggregate_include_other_seconds = self.aggregate_include.other_elapsed().as_secs_f64(),
+            aggregate_30m_seconds = self.aggregate_include.thirty_minutes.total_elapsed.as_secs_f64(),
+            aggregate_30m_bounds_seconds = self.aggregate_include.thirty_minutes.bounds_elapsed.as_secs_f64(),
+            aggregate_30m_builder_seconds = self.aggregate_include.thirty_minutes.builder_elapsed.as_secs_f64(),
+            aggregate_30m_traffic_seconds = self.aggregate_include.thirty_minutes.bucket.traffic_elapsed.as_secs_f64(),
+            aggregate_30m_protocols_seconds = self.aggregate_include.thirty_minutes.bucket.protocols_elapsed.as_secs_f64(),
+            aggregate_30m_addresses_seconds = self.aggregate_include.thirty_minutes.bucket.addresses_elapsed.as_secs_f64(),
+            aggregate_30m_ports_seconds = self.aggregate_include.thirty_minutes.bucket.ports_elapsed.as_secs_f64(),
+            aggregate_30m_coverage_seconds = self.aggregate_include.thirty_minutes.bucket.coverage_elapsed.as_secs_f64(),
+            aggregate_30m_bucket_other_seconds = self.aggregate_include.thirty_minutes.bucket.other_elapsed().as_secs_f64(),
+            aggregate_30m_other_seconds = self.aggregate_include.thirty_minutes.other_elapsed().as_secs_f64(),
+            aggregate_1h_seconds = self.aggregate_include.one_hour.total_elapsed.as_secs_f64(),
+            aggregate_1h_bounds_seconds = self.aggregate_include.one_hour.bounds_elapsed.as_secs_f64(),
+            aggregate_1h_builder_seconds = self.aggregate_include.one_hour.builder_elapsed.as_secs_f64(),
+            aggregate_1h_traffic_seconds = self.aggregate_include.one_hour.bucket.traffic_elapsed.as_secs_f64(),
+            aggregate_1h_protocols_seconds = self.aggregate_include.one_hour.bucket.protocols_elapsed.as_secs_f64(),
+            aggregate_1h_addresses_seconds = self.aggregate_include.one_hour.bucket.addresses_elapsed.as_secs_f64(),
+            aggregate_1h_ports_seconds = self.aggregate_include.one_hour.bucket.ports_elapsed.as_secs_f64(),
+            aggregate_1h_coverage_seconds = self.aggregate_include.one_hour.bucket.coverage_elapsed.as_secs_f64(),
+            aggregate_1h_bucket_other_seconds = self.aggregate_include.one_hour.bucket.other_elapsed().as_secs_f64(),
+            aggregate_1h_other_seconds = self.aggregate_include.one_hour.other_elapsed().as_secs_f64(),
+            aggregate_1d_seconds = self.aggregate_include.one_day.total_elapsed.as_secs_f64(),
+            aggregate_1d_bounds_seconds = self.aggregate_include.one_day.bounds_elapsed.as_secs_f64(),
+            aggregate_1d_builder_seconds = self.aggregate_include.one_day.builder_elapsed.as_secs_f64(),
+            aggregate_1d_traffic_seconds = self.aggregate_include.one_day.bucket.traffic_elapsed.as_secs_f64(),
+            aggregate_1d_protocols_seconds = self.aggregate_include.one_day.bucket.protocols_elapsed.as_secs_f64(),
+            aggregate_1d_addresses_seconds = self.aggregate_include.one_day.bucket.addresses_elapsed.as_secs_f64(),
+            aggregate_1d_ports_seconds = self.aggregate_include.one_day.bucket.ports_elapsed.as_secs_f64(),
+            aggregate_1d_coverage_seconds = self.aggregate_include.one_day.bucket.coverage_elapsed.as_secs_f64(),
+            aggregate_1d_bucket_other_seconds = self.aggregate_include.one_day.bucket.other_elapsed().as_secs_f64(),
+            aggregate_1d_other_seconds = self.aggregate_include.one_day.other_elapsed().as_secs_f64(),
+            completed_rollup_flush_seconds = self.completed_rollup_flush_elapsed.as_secs_f64(),
+            completed_rollup_housekeeping_seconds = completed_rollup_housekeeping.as_secs_f64(),
+            final_rollup_seconds = self.final_rollups.total_elapsed.as_secs_f64(),
+            final_rollup_finish_seconds = self.final_rollups.finish_elapsed.as_secs_f64(),
+            final_rollup_delete_seconds = self.final_rollups.delete_elapsed.as_secs_f64(),
+            final_rollup_other_seconds = self.final_rollups.other_elapsed().as_secs_f64(),
+            five_minute_write_seconds = self.bucket_publish.write.total_elapsed.as_secs_f64(),
+            five_minute_delete_seconds = self.bucket_publish.write.delete_elapsed.as_secs_f64(),
+            five_minute_canonical_rows_seconds = self.bucket_publish.write.canonical_rows_elapsed.as_secs_f64(),
+            five_minute_scalar_rows_seconds = self.bucket_publish.write.scalar_rows_elapsed.as_secs_f64(),
+            five_minute_scalar_insert_seconds = scalar_insert_elapsed(&self.bucket_publish.write).as_secs_f64(),
+            five_minute_maad_seconds = self.bucket_publish.write.maad_elapsed.as_secs_f64(),
+            five_minute_address_structure_insert_seconds = self.bucket_publish.write.address_structure_insert_elapsed.as_secs_f64(),
+            five_minute_write_other_seconds = self.bucket_publish.write.other_elapsed().as_secs_f64(),
+            rollup_write_seconds = rollup_write.total_elapsed.as_secs_f64(),
+            rollup_delete_seconds = rollup_write.delete_elapsed.as_secs_f64(),
+            rollup_canonical_rows_seconds = rollup_write.canonical_rows_elapsed.as_secs_f64(),
+            rollup_scalar_rows_seconds = rollup_write.scalar_rows_elapsed.as_secs_f64(),
+            rollup_scalar_insert_seconds = scalar_insert_elapsed(&rollup_write).as_secs_f64(),
+            rollup_maad_seconds = rollup_write.maad_elapsed.as_secs_f64(),
+            rollup_address_structure_insert_seconds = rollup_write.address_structure_insert_elapsed.as_secs_f64(),
+            rollup_write_other_seconds = rollup_write.other_elapsed().as_secs_f64(),
+            logical_buckets = self.logical_buckets,
+            owners = self.bucket_publish.owners,
+            absences = self.bucket_publish.absences,
+            completed_rollup_flushes = self.completed_rollup_flushes,
+            nonempty_rollup_flushes = self.nonempty_rollup_flushes,
+            final_incomplete_keys = self.final_rollups.incomplete_keys,
+            final_rollup_buckets = self.final_rollups.rollup_buckets,
+            five_minute_write_calls = self.bucket_publish.write.write_calls,
+            rollup_write_calls = rollup_write.write_calls,
+            five_minute_bucket_keys = self.bucket_publish.write.bucket_keys,
+            rollup_bucket_keys = rollup_write.bucket_keys,
+            traffic_rows = self.bucket_publish.write.traffic_rows + rollup_write.traffic_rows,
+            protocol_rows = self.bucket_publish.write.protocol_rows + rollup_write.protocol_rows,
+            address_count_rows = self.bucket_publish.write.address_count_rows + rollup_write.address_count_rows,
+            port_count_rows = self.bucket_publish.write.port_count_rows + rollup_write.port_count_rows,
+            address_structure_rows = self.bucket_publish.write.address_structure_rows + rollup_write.address_structure_rows,
+            maad_address_sets = self.bucket_publish.write.maad_address_sets + rollup_write.maad_address_sets,
+            maad_addresses = self.bucket_publish.write.maad_addresses + rollup_write.maad_addresses,
+            address_structure_json_bytes = self.bucket_publish.write.address_structure_json_bytes + rollup_write.address_structure_json_bytes,
+        );
+    }
+}
+
+fn scalar_insert_elapsed(profile: &WriteBucketsProfile) -> Duration {
+    profile.traffic_insert_elapsed
+        + profile.protocol_insert_elapsed
+        + profile.address_count_insert_elapsed
+        + profile.port_count_insert_elapsed
+}
+
+fn profile_count(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Debug)]
 struct PreparedRevision {
     revision: InputRevision,
@@ -1494,6 +1798,25 @@ fn publish_nfcapd_bucket(
     force: bool,
     run_maad: bool,
 ) -> Result<(), PipelineError> {
+    publish_nfcapd_bucket_profiled(connection, bucket, owners, absences, force, run_maad)
+        .map(|_| ())
+}
+
+fn publish_nfcapd_bucket_profiled(
+    connection: &Connection,
+    bucket: &CanonicalBucket,
+    owners: &[PreparedRevision],
+    absences: &[ExpectedAbsence],
+    force: bool,
+    run_maad: bool,
+) -> Result<NfcapdBucketPublishProfile, PipelineError> {
+    let total_started = Instant::now();
+    let mut profile = NfcapdBucketPublishProfile {
+        owners: profile_count(owners.len()),
+        absences: profile_count(absences.len()),
+        ..NfcapdBucketPublishProfile::default()
+    };
+    let preflight_started = Instant::now();
     for absence in absences {
         absence.verify()?;
     }
@@ -1502,14 +1825,20 @@ fn publish_nfcapd_bucket(
             verify_file_snapshot(&owner.revision.locator, snapshot)?;
         }
     }
+    profile.preflight_elapsed += preflight_started.elapsed();
+    let overlap_started = Instant::now();
     reject_overlapping_bucket(connection, bucket, InputKind::Nfcapd, "", force)?;
+    profile.overlap_elapsed += overlap_started.elapsed();
     if force {
+        let force_delete_started = Instant::now();
         connection.execute(
             "DELETE FROM processed_inputs WHERE input_kind = 'nfcapd' AND source_id = ?1 AND bucket_start = ?2",
             params![bucket.key.source_id, bucket.key.bucket_start],
         ).map_err(StorageError::from)?;
+        profile.force_delete_elapsed += force_delete_started.elapsed();
     }
     let publication = (|| -> Result<(), PipelineError> {
+        let owner_upsert_started = Instant::now();
         for prepared in owners {
             let revision = &prepared.revision;
             let owner = InputBucket {
@@ -1524,7 +1853,9 @@ fn publish_nfcapd_bucket(
             };
             upsert_input_bucket(connection, &owner, force)?;
         }
-        write_buckets(connection, std::slice::from_ref(bucket), run_maad)?;
+        profile.owner_upsert_elapsed += owner_upsert_started.elapsed();
+        profile.write = write_buckets_profiled(connection, std::slice::from_ref(bucket), run_maad)?;
+        let owner_status_started = Instant::now();
         for prepared in owners {
             let revision = &prepared.revision;
             mark_input_bucket_status(
@@ -1538,13 +1869,17 @@ fn publish_nfcapd_bucket(
                 None,
             )?;
         }
+        profile.owner_status_elapsed += owner_status_started.elapsed();
+        let postflight_started = Instant::now();
         for absence in absences {
             absence.verify()?;
         }
+        profile.postflight_elapsed += postflight_started.elapsed();
         Ok(())
     })();
     publication?;
-    Ok(())
+    profile.total_elapsed = total_started.elapsed();
+    Ok(profile)
 }
 
 fn reject_overlapping_bucket(
@@ -1644,6 +1979,16 @@ impl AggregateBuckets {
     }
 
     fn include(&mut self, child: &CanonicalBucket, timezone: &str) -> Result<(), PipelineError> {
+        self.include_profiled(child, timezone).map(|_| ())
+    }
+
+    fn include_profiled(
+        &mut self,
+        child: &CanonicalBucket,
+        timezone: &str,
+    ) -> Result<AggregateIncludeProfile, PipelineError> {
+        let total_started = Instant::now();
+        let mut profile = AggregateIncludeProfile::default();
         if self
             .published_through
             .get(&child.key.source_id)
@@ -1661,20 +2006,30 @@ impl AggregateBuckets {
             Granularity::OneHour,
             Granularity::OneDay,
         ] {
+            let granularity_started = Instant::now();
+            let bounds_started = Instant::now();
             let (start, end) = aggregate_bounds(child.key.bucket_start, granularity, timezone)?;
+            let bounds_elapsed = bounds_started.elapsed();
             let key = (child.key.source_id.clone(), granularity, start, end);
-            self.builders
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    StatisticalBucket::dense(BucketKey::new(&key.0, key.1, key.2, key.3))
-                })
-                .include(child)?;
+            let builder_started = Instant::now();
+            let builder = self.builders.entry(key.clone()).or_insert_with(|| {
+                StatisticalBucket::dense(BucketKey::new(&key.0, key.1, key.2, key.3))
+            });
+            let builder_elapsed = builder_started.elapsed();
+            let bucket = builder.include_profiled(child)?;
+            profile.granularity_mut(granularity).include(
+                granularity_started.elapsed(),
+                bounds_elapsed,
+                builder_elapsed,
+                bucket,
+            );
         }
         self.published_through
             .insert(child.key.source_id.clone(), child.key.bucket_start);
         self.current_run_keys
             .insert((child.key.source_id.clone(), child.key.bucket_start));
-        Ok(())
+        profile.total_elapsed = total_started.elapsed();
+        Ok(profile)
     }
 
     fn flush_complete(
@@ -1682,6 +2037,15 @@ impl AggregateBuckets {
         connection: &Connection,
         run_maad: bool,
     ) -> Result<usize, PipelineError> {
+        self.flush_complete_profiled(connection, run_maad)
+            .map(|(count, _)| count)
+    }
+
+    fn flush_complete_profiled(
+        &mut self,
+        connection: &Connection,
+        run_maad: bool,
+    ) -> Result<(usize, WriteBucketsProfile), PipelineError> {
         let complete_keys = self
             .builders
             .iter()
@@ -1693,8 +2057,9 @@ impl AggregateBuckets {
             .filter_map(|key| self.builders.remove(&key))
             .map(|builder| builder.finish())
             .collect::<Vec<_>>();
-        write_buckets(connection, &buckets, run_maad)?;
-        Ok(buckets.len())
+        let count = buckets.len();
+        let profile = write_buckets_profiled(connection, &buckets, run_maad)?;
+        Ok((count, profile))
     }
 
     fn finish(self) -> (Vec<CanonicalBucket>, Vec<StatsBucketKey>) {
@@ -1721,11 +2086,32 @@ fn publish_rollups(
     pipeline: &ResolvedPipeline,
     report: &mut PipelineReport,
 ) -> Result<(), PipelineError> {
+    publish_rollups_profiled(connection, aggregates, pipeline, report).map(|_| ())
+}
+
+fn publish_rollups_profiled(
+    connection: &Connection,
+    aggregates: AggregateBuckets,
+    pipeline: &ResolvedPipeline,
+    report: &mut PipelineReport,
+) -> Result<FinalRollupProfile, PipelineError> {
+    let total_started = Instant::now();
+    let finish_started = Instant::now();
     let (rollups, incomplete) = aggregates.finish();
+    let finish_elapsed = finish_started.elapsed();
+    let delete_started = Instant::now();
     delete_stats_bucket_keys(connection, &incomplete)?;
-    write_buckets(connection, &rollups, pipeline.run_maad)?;
+    let delete_elapsed = delete_started.elapsed();
+    let write = write_buckets_profiled(connection, &rollups, pipeline.run_maad)?;
     report.rollup_buckets += rollups.len();
-    Ok(())
+    Ok(FinalRollupProfile {
+        total_elapsed: total_started.elapsed(),
+        finish_elapsed,
+        delete_elapsed,
+        write,
+        incomplete_keys: profile_count(incomplete.len()),
+        rollup_buckets: profile_count(rollups.len()),
+    })
 }
 
 fn aggregate_bounds(

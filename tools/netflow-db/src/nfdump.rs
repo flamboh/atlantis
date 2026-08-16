@@ -8,9 +8,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use fixedbitset::FixedBitSet;
 
 use crate::domain::{
-    AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection, Granularity,
-    IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols, ScopedTraffic, TrafficMetrics,
-    Visibility,
+    AddressSet, AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection,
+    Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols, ScopedTraffic,
+    TrafficMetrics, Visibility,
 };
 
 pub(crate) const OUTPUT_MODE: &str = "atlantis";
@@ -236,8 +236,8 @@ impl std::error::Error for NfdumpError {
 struct ScopeAccumulator {
     metrics: [i64; METRIC_COUNT],
     protocols: [u64; 4],
-    source_addresses: BTreeSet<IpAddr>,
-    destination_addresses: BTreeSet<IpAddr>,
+    source_addresses: AddressSet,
+    destination_addresses: AddressSet,
     source_ports: FixedBitSet,
     destination_ports: FixedBitSet,
 }
@@ -324,12 +324,12 @@ impl ScopeAccumulator {
                 ScopedAddresses {
                     scope,
                     address_side: AddressSide::Destination,
-                    addresses: self.destination_addresses.into_iter().collect(),
+                    addresses: self.destination_addresses,
                 },
                 ScopedAddresses {
                     scope,
                     address_side: AddressSide::Source,
-                    addresses: self.source_addresses.into_iter().collect(),
+                    addresses: self.source_addresses,
                 },
             ],
             [
@@ -992,10 +992,14 @@ mod tests {
         assert_eq!(
             bucket.addresses[0].addresses,
             [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))]
+                .into_iter()
+                .collect::<AddressSet>()
         );
         assert_eq!(
             bucket.addresses[1].addresses,
             [IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
+                .into_iter()
+                .collect::<AddressSet>()
         );
         assert!(bucket.ports[0].ports.contains(55_000));
         assert!(bucket.ports[1].ports.contains(443));
@@ -1059,6 +1063,8 @@ mod tests {
         assert_eq!(
             bucket.addresses[10].addresses,
             [IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2))]
+                .into_iter()
+                .collect::<AddressSet>()
         );
         assert!(bucket.ports[10].ports.contains(0));
     }
@@ -1350,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_output_order_is_scope_then_textual_protocol_and_sorted_address() {
+    fn canonical_output_orders_scopes_and_textual_protocols() {
         let mut udp = base_record();
         udp[0..4].copy_from_slice(&[192, 0, 2, 2]);
         udp[16..20].copy_from_slice(&[198, 51, 100, 1]);
@@ -1379,6 +1385,8 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
             ]
+            .into_iter()
+            .collect::<AddressSet>()
         );
     }
 }

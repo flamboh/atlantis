@@ -1,7 +1,10 @@
 //! Canonical, adapter-independent NetFlow observations and statistical buckets.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    net::IpAddr,
+    time::{Duration, Instant},
+};
 
 use fixedbitset::FixedBitSet;
 use ipnet::IpNet;
@@ -492,11 +495,45 @@ pub struct GroupedTrafficFact {
     pub bytes: i64,
 }
 
+/// Unique IP addresses with no iteration-order contract.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddressSet(HashSet<IpAddr>);
+
+impl AddressSet {
+    pub fn insert(&mut self, address: IpAddr) {
+        self.0.insert(address);
+    }
+
+    pub fn extend(&mut self, addresses: impl IntoIterator<Item = IpAddr>) {
+        self.0.extend(addresses);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &IpAddr> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<IpAddr> for AddressSet {
+    fn from_iter<T: IntoIterator<Item = IpAddr>>(addresses: T) -> Self {
+        Self(addresses.into_iter().collect())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedAddressesFact {
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: BTreeSet<IpAddr>,
+    pub addresses: AddressSet,
 }
 
 impl ScopedAddressesFact {
@@ -720,7 +757,7 @@ pub struct ScopedProtocols {
 pub struct ScopedAddresses {
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: Vec<IpAddr>,
+    pub addresses: AddressSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -858,7 +895,7 @@ pub struct AddressSetRow<'a> {
     pub key: BucketKey,
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: &'a [IpAddr],
+    pub addresses: &'a AddressSet,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -884,15 +921,47 @@ fn count_ports(ports: &FixedBitSet, range: PortRange) -> usize {
         .count()
 }
 
-/// Mutable builder for an immutable, deterministically ordered bucket.
+/// Mutable builder with deterministic scope and side topology.
 #[derive(Debug, Clone)]
 pub struct StatisticalBucket {
     key: BucketKey,
     traffic: BTreeMap<Scope, TrafficMetrics>,
     protocols: BTreeMap<Scope, BTreeSet<String>>,
-    addresses: BTreeMap<(Scope, AddressSide), BTreeSet<IpAddr>>,
+    addresses: BTreeMap<(Scope, AddressSide), AddressSet>,
     ports: BTreeMap<(Scope, PortSide), FixedBitSet>,
     five_minute_starts: BTreeSet<i64>,
+}
+
+/// Aggregate timings for merging canonical children into one rollup builder.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct StatisticalBucketIncludeProfile {
+    pub(crate) total_elapsed: Duration,
+    pub(crate) traffic_elapsed: Duration,
+    pub(crate) protocols_elapsed: Duration,
+    pub(crate) addresses_elapsed: Duration,
+    pub(crate) ports_elapsed: Duration,
+    pub(crate) coverage_elapsed: Duration,
+}
+
+impl StatisticalBucketIncludeProfile {
+    pub(crate) fn include(&mut self, profile: Self) {
+        self.total_elapsed += profile.total_elapsed;
+        self.traffic_elapsed += profile.traffic_elapsed;
+        self.protocols_elapsed += profile.protocols_elapsed;
+        self.addresses_elapsed += profile.addresses_elapsed;
+        self.ports_elapsed += profile.ports_elapsed;
+        self.coverage_elapsed += profile.coverage_elapsed;
+    }
+
+    pub(crate) fn other_elapsed(&self) -> Duration {
+        self.total_elapsed.saturating_sub(
+            self.traffic_elapsed
+                + self.protocols_elapsed
+                + self.addresses_elapsed
+                + self.ports_elapsed
+                + self.coverage_elapsed,
+        )
+    }
 }
 
 impl StatisticalBucket {
@@ -921,7 +990,9 @@ impl StatisticalBucket {
                 bucket.traffic.insert(scope, TrafficMetrics::default());
                 bucket.protocols.insert(scope, BTreeSet::new());
                 for side in [AddressSide::Destination, AddressSide::Source] {
-                    bucket.addresses.insert((scope, side), BTreeSet::new());
+                    bucket
+                        .addresses
+                        .insert((scope, side), AddressSet::default());
                     bucket.ports.insert((scope, side), empty_ports());
                 }
             }
@@ -941,6 +1012,15 @@ impl StatisticalBucket {
     }
 
     pub fn include(&mut self, child: &CanonicalBucket) -> Result<(), DomainError> {
+        self.include_profiled(child).map(|_| ())
+    }
+
+    pub(crate) fn include_profiled(
+        &mut self,
+        child: &CanonicalBucket,
+    ) -> Result<StatisticalBucketIncludeProfile, DomainError> {
+        let total_started = Instant::now();
+        let traffic_started = Instant::now();
         let mut updates = Vec::with_capacity(child.traffic.len());
         for entry in &child.traffic {
             let mut metrics = self.traffic.get(&entry.scope).cloned().unwrap_or_default();
@@ -950,27 +1030,43 @@ impl StatisticalBucket {
         for (scope, metrics) in updates {
             self.traffic.insert(scope, metrics);
         }
+        let traffic_elapsed = traffic_started.elapsed();
+        let protocols_started = Instant::now();
         for entry in &child.protocols {
             self.protocols
                 .entry(entry.scope)
                 .or_default()
                 .extend(entry.protocols.iter().cloned());
         }
+        let protocols_elapsed = protocols_started.elapsed();
+        let addresses_started = Instant::now();
         for entry in &child.addresses {
             self.addresses
                 .entry((entry.scope, entry.address_side))
                 .or_default()
                 .extend(entry.addresses.iter().copied());
         }
+        let addresses_elapsed = addresses_started.elapsed();
+        let ports_started = Instant::now();
         for entry in &child.ports {
             self.ports
                 .entry((entry.scope, entry.port_side))
                 .or_insert_with(empty_ports)
                 .union_with(&entry.ports);
         }
+        let ports_elapsed = ports_started.elapsed();
+        let coverage_started = Instant::now();
         self.five_minute_starts
             .extend(child.five_minute_starts.iter().copied());
-        Ok(())
+        let coverage_elapsed = coverage_started.elapsed();
+        Ok(StatisticalBucketIncludeProfile {
+            total_elapsed: total_started.elapsed(),
+            traffic_elapsed,
+            protocols_elapsed,
+            addresses_elapsed,
+            ports_elapsed,
+            coverage_elapsed,
+        })
     }
 
     /// Whether every five-minute child in this bucket's interval was included.
@@ -1006,7 +1102,7 @@ impl StatisticalBucket {
                 .map(|((scope, address_side), addresses)| ScopedAddresses {
                     scope: *scope,
                     address_side: *address_side,
-                    addresses: addresses.iter().copied().collect(),
+                    addresses: addresses.clone(),
                 })
                 .collect(),
             ports: self
@@ -1095,7 +1191,7 @@ impl StatisticalBucket {
         self.addresses
             .entry((fact.scope, fact.address_side))
             .or_default()
-            .extend(fact.addresses);
+            .extend(fact.addresses.iter().copied());
     }
 }
 
@@ -1148,9 +1244,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AddressSide, BucketKey, DomainError, ExactVisibility, FlowObservation, FlowSelection,
-        Granularity, GroupedTrafficFact, IpVersion, PortRange, Scope, ScopedAddressesFact,
-        StatisticalBucket, Visibility,
+        AddressSet, AddressSide, BucketKey, DomainError, ExactVisibility, FlowObservation,
+        FlowSelection, Granularity, GroupedTrafficFact, IpVersion, PortRange, Scope,
+        ScopedAddressesFact, StatisticalBucket, Visibility,
     };
 
     fn address(value: [u8; 4]) -> IpAddr {
@@ -1163,6 +1259,18 @@ mod tests {
 
     fn key(granularity: Granularity, start: i64, end: i64) -> BucketKey {
         BucketKey::new("router", granularity, start, end)
+    }
+
+    #[test]
+    fn address_set_deduplicates_without_order_semantics() {
+        let first = "192.0.2.1".parse().unwrap();
+        let second = "2001:db8::1".parse().unwrap();
+
+        let forward: AddressSet = [first, second, first].into_iter().collect();
+        let reverse: AddressSet = [second, first].into_iter().collect();
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.len(), 2);
     }
 
     #[test]
@@ -1362,7 +1470,9 @@ mod tests {
                 })
                 .unwrap()
                 .addresses,
-            vec![address([192, 0, 2, 1]), address([192, 0, 2, 2])]
+            [address([192, 0, 2, 1]), address([192, 0, 2, 2])]
+                .into_iter()
+                .collect::<AddressSet>()
         );
         let rows = rolled_up.rows();
         let counts = rows
@@ -1429,11 +1539,13 @@ mod tests {
                 .find(|row| { row.scope == scope && row.address_side == AddressSide::Destination })
                 .unwrap()
                 .addresses,
-            vec![
+            &[
                 address([198, 51, 100, 1]),
                 address([198, 51, 100, 2]),
                 address([198, 51, 100, 3]),
             ]
+            .into_iter()
+            .collect::<AddressSet>()
         );
     }
 }
