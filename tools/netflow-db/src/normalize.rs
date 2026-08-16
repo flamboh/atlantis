@@ -1,4 +1,4 @@
-//! Input normalization shared by CSV files and `nfdump` subprocesses.
+//! Input normalization for configured CSV sources.
 
 use std::{collections::BTreeMap, net::IpAddr, str::FromStr};
 
@@ -10,8 +10,6 @@ use crate::{
     domain::{DomainError, FlowObservation},
 };
 
-pub const NFDUMP_CSV_FORMAT: &str =
-    "csv:%trr,%ter,%tsr,%sa,%da,%sp,%dp,%pr,%pkt,%byt,%stos,%dtos,%fl,%minttl,%maxttl";
 const MAX_SQLITE_INTEGER: i64 = i64::MAX;
 const TIMESTAMP_KEYS: [&str; 3] = ["time_received", "time_end", "time_start"];
 
@@ -31,82 +29,6 @@ pub struct NormalizedRow {
     pub bucket_start: i64,
     pub bucket_end: i64,
     pub observation: FlowObservation,
-}
-
-#[must_use]
-pub fn build_nfdump_csv_command(
-    executable: &str,
-    file_path: &str,
-    ip_version: u8,
-) -> Option<Vec<String>> {
-    let family = match ip_version {
-        4 => vec!["ipv4"],
-        6 => vec!["ipv6", "-6"],
-        _ => return None,
-    };
-    Some(
-        [executable, "-r", file_path, "-q", "-o", NFDUMP_CSV_FORMAT]
-            .into_iter()
-            .chain(family)
-            .map(str::to_owned)
-            .collect(),
-    )
-}
-
-pub fn normalize_nfdump_values(
-    values: &[String],
-    source_id: &str,
-) -> Result<NormalizedRow, NormalizeError> {
-    if values.len() != 15 {
-        return Err(NormalizeError::InvalidRow(format!(
-            "nfdump CSV row must contain 15 values, got {}",
-            values.len()
-        )));
-    }
-    let timestamps = [
-        parse_unix_ms(&values[0])?,
-        parse_unix_ms(&values[1])?,
-        parse_unix_ms(&values[2])?,
-    ];
-    let bucket_start = timestamps[0].div_euclid(300_000) * 300;
-    let src_ip = parse_ip(&values[3])?;
-    let dst_ip = parse_ip(&values[4])?;
-    let protocol = bounded_u8(parse_integer(&values[7], "protocol")?, "protocol")?;
-    let src_port = normalize_nfdump_port(&values[5], protocol)?;
-    let dst_port = normalize_nfdump_port(&values[6], protocol)?;
-    let packets = nonnegative_integer(&values[8], "packets")?;
-    let bytes = nonnegative_integer(&values[9], "bytes")?;
-    let src_tos = bounded_u8(parse_integer(&values[10], "src_tos")?, "src_tos")?;
-    let dst_tos = bounded_u8(parse_integer(&values[11], "dst_tos")?, "dst_tos")?;
-    let flow_count = positive_integer(&values[12], "flow_count")?;
-    let min_ttl = normalize_nfdump_ttl(&values[13])?;
-    let max_ttl = normalize_nfdump_ttl(&values[14])?;
-    validate_ttl_order(min_ttl, max_ttl)?;
-
-    let duration_ms = timestamps[1].checked_sub(timestamps[2]).ok_or_else(|| {
-        NormalizeError::InvalidRow("flow duration exceeds signed 64-bit range".into())
-    })?;
-    if duration_ms < 0 {
-        return Err(NormalizeError::InvalidRow(
-            "flow time_end must not precede time_start".into(),
-        ));
-    }
-
-    let mut observation = FlowObservation::new(src_ip, dst_ip, protocol, packets, bytes, src_tos)?
-        .with_ports(src_port, dst_port)
-        .with_measurements(Some(duration_ms), min_ttl, max_ttl)?
-        .with_flow_count(flow_count)?;
-    observation.time_received_ms = Some(timestamps[0]);
-    observation.time_end_ms = Some(timestamps[1]);
-    observation.time_start_ms = Some(timestamps[2]);
-    observation.dst_tos = dst_tos;
-
-    Ok(NormalizedRow {
-        source_id: source_id.to_owned(),
-        bucket_start,
-        bucket_end: bucket_start + 300,
-        observation,
-    })
 }
 
 pub fn field_indexes(
@@ -214,60 +136,10 @@ pub fn normalize_csv_values(
     })
 }
 
-fn parse_unix_ms(raw: &str) -> Result<i64, NormalizeError> {
-    let value = Decimal::from_str(raw.trim())
-        .map_err(|_| NormalizeError::InvalidRow(format!("invalid Unix timestamp {raw:?}")))?;
-    let milliseconds = value
-        .checked_mul(Decimal::from(1_000))
-        .filter(|value| value.fract().is_zero())
-        .ok_or_else(|| {
-            NormalizeError::InvalidRow(format!(
-                "Unix timestamp {raw:?} must have millisecond precision"
-            ))
-        })?;
-    milliseconds
-        .trunc()
-        .to_string()
-        .parse()
-        .map_err(|_| NormalizeError::InvalidRow(format!("invalid Unix timestamp {raw:?}")))
-}
-
 fn parse_ip(raw: &str) -> Result<IpAddr, NormalizeError> {
     raw.trim()
         .parse()
         .map_err(|_| NormalizeError::InvalidRow(format!("invalid IP address value {raw:?}")))
-}
-
-fn normalize_nfdump_port(raw: &str, protocol: u8) -> Result<Option<u16>, NormalizeError> {
-    let raw = raw.trim();
-    if !raw.contains('.') {
-        return raw
-            .parse()
-            .map(Some)
-            .map_err(|_| NormalizeError::InvalidRow(format!("invalid nfdump port {raw:?}")));
-    }
-    if !matches!(protocol, 1 | 58) {
-        return Err(NormalizeError::InvalidRow(format!(
-            "dotted nfdump pseudo-port {raw:?} is only valid for ICMP"
-        )));
-    }
-    let components = raw.split('.').collect::<Vec<_>>();
-    if components.len() != 2 || components.iter().any(|value| value.parse::<u8>().is_err()) {
-        return Err(NormalizeError::InvalidRow(format!(
-            "invalid nfdump ICMP type/code pseudo-port {raw:?}"
-        )));
-    }
-    Ok(Some(0))
-}
-
-fn normalize_nfdump_ttl(raw: &str) -> Result<Option<u8>, NormalizeError> {
-    match raw.trim() {
-        "" | "0" => Ok(None),
-        value => value
-            .parse()
-            .map(Some)
-            .map_err(|_| NormalizeError::InvalidRow(format!("invalid nfdump TTL {raw:?}"))),
-    }
 }
 
 fn required<'a>(raw: &'a str, column: &str) -> Result<&'a str, NormalizeError> {
@@ -292,16 +164,6 @@ fn nonnegative_integer(raw: &str, name: &str) -> Result<i64, NormalizeError> {
     if !(0..=MAX_SQLITE_INTEGER).contains(&value) {
         return Err(NormalizeError::InvalidRow(format!(
             "{name} must be a nonnegative signed 64-bit integer"
-        )));
-    }
-    Ok(value)
-}
-
-fn positive_integer(raw: &str, name: &str) -> Result<i64, NormalizeError> {
-    let value = nonnegative_integer(raw, name)?;
-    if value == 0 {
-        return Err(NormalizeError::InvalidRow(format!(
-            "{name} must be at least 1"
         )));
     }
     Ok(value)
@@ -391,58 +253,5 @@ fn validate_ttl_order(minimum: Option<u8>, maximum: Option<u8>) -> Result<(), No
         ))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nfdump_adapter_preserves_missing_ttl_and_icmp_pseudo_ports() {
-        let values = [
-            "1744733279.999",
-            "1744733279.999",
-            "1744733279.000",
-            "192.0.2.1",
-            "198.51.100.1",
-            "8.0",
-            "0.0",
-            "1",
-            "2",
-            "128",
-            "0",
-            "0",
-            "3",
-            "0",
-            "64",
-        ]
-        .map(str::to_owned);
-
-        let row = normalize_nfdump_values(&values, "router-a").unwrap();
-
-        assert_eq!(row.bucket_start, 1_744_733_100);
-        assert_eq!(row.observation.src_port, Some(0));
-        assert_eq!(row.observation.min_ttl, None);
-        assert_eq!(row.observation.max_ttl, Some(64));
-        assert_eq!(row.observation.duration_ms, Some(999));
-        assert_eq!(row.observation.flow_count, 3);
-    }
-
-    #[test]
-    fn nfdump_command_uses_fixed_contract() {
-        assert_eq!(
-            build_nfdump_csv_command("nfdump", "/capture", 6).unwrap(),
-            vec![
-                "nfdump",
-                "-r",
-                "/capture",
-                "-q",
-                "-o",
-                NFDUMP_CSV_FORMAT,
-                "ipv6",
-                "-6",
-            ]
-        );
     }
 }

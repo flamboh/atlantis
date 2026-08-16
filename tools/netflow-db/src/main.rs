@@ -16,7 +16,6 @@ use netflow_db::{
         UgrAssetKind, scrape_ugr16_urls, select_web_verification_window, verify_web_routes,
     },
     prepare::{PrepareOptions, prepare_archive},
-    reducer::{self, VisibilitySelection},
     registry::DatasetRegistry,
     storage::{backup_database, promote_database},
     verify::{VerifyOptions, verify_database},
@@ -47,8 +46,6 @@ enum Command {
     ScrapeUgr16(ScrapeArgs),
     /// Verify a running web application against a built database.
     VerifyWebRoutes(WebVerifyArgs),
-    /// Reduce fixed-contract nfdump CSV from stdin to canonical JSON.
-    Reduce(ReduceArgs),
     /// Compute MAAD JSON from IPv4 addresses, one per line.
     Maad(MaadArgs),
     /// Print the persisted pipeline contract version.
@@ -98,13 +95,6 @@ impl VisibilityArg {
         match self {
             Self::Literal => "literal",
             Self::Anonymized => "anonymized",
-        }
-    }
-
-    const fn reducer(self) -> reducer::Visibility {
-        match self {
-            Self::Literal => reducer::Visibility::Literal,
-            Self::Anonymized => reducer::Visibility::Anonymized,
         }
     }
 }
@@ -237,22 +227,6 @@ struct WebVerifyArgs {
 }
 
 #[derive(Debug, Args)]
-struct ReduceArgs {
-    #[arg(long)]
-    version: bool,
-    #[arg(long, default_value_t = reducer::CONTRACT_VERSION)]
-    contract_version: u32,
-    #[arg(long, default_value = reducer::INPUT_CONTRACT)]
-    input_contract: String,
-    #[arg(long, default_value = reducer::OUTPUT_CONTRACT)]
-    output_contract: String,
-    #[arg(long, value_enum)]
-    src_visibility: Option<VisibilityArg>,
-    #[arg(long, value_enum)]
-    dst_visibility: Option<VisibilityArg>,
-}
-
-#[derive(Debug, Args)]
 struct MaadArgs {
     /// Read addresses from this file instead of standard input.
     input: Option<PathBuf>,
@@ -284,7 +258,6 @@ fn main() -> Result<()> {
         Command::PrepareNfcapd(args) => run_prepare(args)?,
         Command::ScrapeUgr16(args) => run_scrape(args)?,
         Command::VerifyWebRoutes(args) => run_web_verify(args)?,
-        Command::Reduce(args) => run_reduce(args)?,
         Command::Maad(args) => run_maad(args)?,
         Command::ContractVersion => println!("{}", netflow_db::PIPELINE_CONTRACT_VERSION),
     }
@@ -525,32 +498,6 @@ fn run_web_verify(args: WebVerifyArgs) -> Result<()> {
         }
     }
     bail!("web route verification failed: {}", failures.join("; "))
-}
-
-fn run_reduce(args: ReduceArgs) -> Result<()> {
-    if args.version {
-        println!("{}", reducer::VERSION_LINE);
-        return Ok(());
-    }
-    if args.contract_version != reducer::CONTRACT_VERSION
-        || args.input_contract != reducer::INPUT_CONTRACT
-        || args.output_contract != reducer::OUTPUT_CONTRACT
-    {
-        bail!(
-            "unsupported reducer contract: version={} input={} output={}",
-            args.contract_version,
-            args.input_contract,
-            args.output_contract
-        );
-    }
-    let selection = VisibilitySelection {
-        source: args.src_visibility.map(VisibilityArg::reducer),
-        destination: args.dst_visibility.map(VisibilityArg::reducer),
-    };
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    reducer::reduce_to_json(stdin.lock(), selection, stdout.lock())?;
-    Ok(())
 }
 
 fn run_maad(args: MaadArgs) -> Result<()> {

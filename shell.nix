@@ -6,9 +6,17 @@ with (import (builtins.fetchTarball {
 }) {});
 mkShell {
   buildInputs = [
+    pkgs.autoconf
+    pkgs.automake
+    pkgs.bison
     pkgs.bun
+    pkgs.flex
+    pkgs.gnumake
+    pkgs.gnutar
+    pkgs.libtool
     pkgs.nodejs
-    pkgs.nfdump
+    pkgs.pkg-config
+    pkgs.python3
     pkgs.rustup
     pkgs.playwright-driver.browsers
   ];

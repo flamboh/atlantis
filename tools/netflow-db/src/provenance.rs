@@ -11,14 +11,11 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::config::CsvSourceConfig;
+use crate::{config::CsvSourceConfig, nfdump};
 
 pub const CSV_DECODER_VERSION: u32 = 1;
-pub const NFCAPD_DECODER_VERSION: u32 = 3;
+pub const NFCAPD_DECODER_VERSION: u32 = 4;
 pub const GAP_DECODER_VERSION: u32 = 1;
-pub const NFDUMP_REDUCER_CONTRACT_VERSION: u32 = 1;
-pub const NFDUMP_REDUCER_INPUT_CONTRACT: &str = "nfdump-csv-15-v1";
-pub const NFDUMP_REDUCER_OUTPUT_CONTRACT: &str = "canonical-scopes-v1";
 
 #[derive(Debug, Error)]
 pub enum ProvenanceError {
@@ -340,18 +337,20 @@ pub fn csv_decoder_fingerprint(config: &CsvSourceConfig) -> Result<String, Prove
     }))
 }
 
-/// Fingerprint the fixed nfdump CSV reducer contract.
+/// Fingerprint the pinned nfdump binary stream decoder contract.
 pub fn nfcapd_decoder_fingerprint() -> Result<String, ProvenanceError> {
     fingerprint(&json!({
         "version": NFCAPD_DECODER_VERSION,
-        "kind": "nfcapd-compiled-csv-reducer",
-        "reducer_contract_version": NFDUMP_REDUCER_CONTRACT_VERSION,
-        "input_contract": NFDUMP_REDUCER_INPUT_CONTRACT,
-        "output_contract": NFDUMP_REDUCER_OUTPUT_CONTRACT,
-        "ttl_missing_semantics": "zero-or-blank",
+        "kind": "nfcapd-atlantis-binary",
+        "protocol_version": nfdump::CONTRACT_VERSION,
+        "input_contract": nfdump::INPUT_CONTRACT,
+        "output_contract": nfdump::OUTPUT_CONTRACT,
+        "ttl_missing_semantics": "zero-per-field",
+        "tunnel_expansion": "synthetic-before-outer",
+        "icmp_destination_port": "zero",
         "fields": [
-            "timestamps", "addresses", "ports", "protocol", "packets", "bytes", "tos",
-            "flow-count", "min-ttl", "max-ttl"
+            "addresses", "ports", "protocol", "packets", "bytes", "visibility",
+            "flow-count", "duration-ms", "min-ttl", "max-ttl"
         ],
     }))
 }
@@ -504,7 +503,7 @@ mod tests {
         assert_ne!(first.decoder_fingerprint, csv.decoder_fingerprint);
         assert_eq!(
             nfcapd_decoder_fingerprint().unwrap(),
-            "495da8d9c808642b6c82b9b74dfc53746e7d368865db7d0035704933e90cac17"
+            "9449009ebd7893d33301ebe87d1a6865847044da15c67ee09849835ff5df4e69"
         );
         assert_eq!(
             first.fingerprint,

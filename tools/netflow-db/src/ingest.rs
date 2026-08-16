@@ -23,8 +23,8 @@ use crate::{
     domain::{
         BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
     },
-    normalize::{NFDUMP_CSV_FORMAT, NormalizeError, field_indexes, normalize_csv_values},
-    reducer,
+    nfdump,
+    normalize::{NormalizeError, field_indexes, normalize_csv_values},
 };
 
 const BUCKET_SECONDS: i64 = 300;
@@ -699,7 +699,7 @@ pub fn parse_nfcapd_bucket_start(
         })
 }
 
-/// Build the all-family fixed-15-field `nfdump` command with safe prefix pushdown.
+/// Build the Atlantis binary `nfdump` command with safe prefix pushdown.
 #[must_use]
 pub fn build_nfdump_command(
     path: impl AsRef<Path>,
@@ -712,8 +712,7 @@ pub fn build_nfdump_command(
         path.as_ref().as_os_str().to_owned(),
         "-q".into(),
         "-o".into(),
-        NFDUMP_CSV_FORMAT.into(),
-        "-N".into(),
+        nfdump::OUTPUT_MODE.into(),
     ];
     if let Some(filter) = selection.nfdump_prefix_filter() {
         command.push(filter.into());
@@ -782,7 +781,7 @@ fn read_nfcapd_bucket_with_timeout(
     let selection = selection.clone();
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || {
-        let result = reducer::reduce_to_bucket(BufReader::new(stdout), key, &selection);
+        let result = nfdump::reduce_to_bucket(BufReader::new(stdout), key, &selection);
         let _ = sender.send(result);
     });
     let deadline = Instant::now() + timeout;
@@ -790,7 +789,7 @@ fn read_nfcapd_bucket_with_timeout(
         Ok(result) => {
             reader.join().map_err(|_| {
                 IngestError::InvalidInput(format!(
-                    "nfdump reducer thread panicked for {}",
+                    "nfdump decoder thread panicked for {}",
                     path.display()
                 ))
             })?;
@@ -810,41 +809,11 @@ fn read_nfcapd_bucket_with_timeout(
             let _ = child.wait();
             let _ = reader.join();
             return Err(IngestError::InvalidInput(format!(
-                "nfdump reducer thread stopped unexpectedly for {}",
+                "nfdump decoder thread stopped unexpectedly for {}",
                 path.display()
             )));
         }
     };
-    if let Err(error) = reduced {
-        // EOF can reach the reader just before the kernel reports the child as exited.
-        // Give it a short grace period so a decoder failure wins over a secondary parse error.
-        let grace_deadline = Instant::now() + Duration::from_millis(50);
-        let status = loop {
-            let status = child.try_wait().map_err(|source| IngestError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-            if status.is_some() || Instant::now() >= grace_deadline {
-                break status;
-            }
-            thread::sleep(Duration::from_millis(1));
-        };
-        if status.as_ref().is_some_and(|status| !status.success()) {
-            return Err(IngestError::NfdumpFailed {
-                exit_code: status.and_then(|status| status.code()),
-                stderr: read_tail(stderr_file, MAX_DIAGNOSTIC_BYTES)
-                    .unwrap_or_else(|tail_error| format!("unable to read stderr: {tail_error}")),
-            });
-        }
-        if status.is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        return Err(IngestError::InvalidInput(format!(
-            "malformed nfdump CSV stream for {}: {error}",
-            path.display()
-        )));
-    }
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|source| IngestError::Io {
             path: path.to_owned(),
@@ -869,7 +838,12 @@ fn read_nfcapd_bucket_with_timeout(
                 .unwrap_or_else(|error| format!("unable to read stderr: {error}")),
         });
     }
-    Ok(reduced.expect("reducer success checked above"))
+    reduced.map_err(|error| {
+        IngestError::InvalidInput(format!(
+            "malformed nfdump binary stream for {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn read_tail(mut file: fs::File, limit: usize) -> std::io::Result<String> {
@@ -901,6 +875,18 @@ mod tests {
     use super::*;
     use crate::config::{CsvSourceConfig, InputOrder};
     use crate::domain::{IpVersion, Scope, Visibility};
+
+    const ONE_V4_BINARY_STREAM: [u8; 92] = [
+        // Stream header and one-record block count.
+        b'A', b'T', b'L', b'N', b'F', b'L', b'O', b'W', 1, 0, 72, 0, 1, 0, 0, 0,
+        // Source 192.0.2.1 and destination 198.51.100.1.
+        192, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 198, 51, 100, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, // packets=2, bytes=128, flows=3, duration=999ms.
+        2, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 231, 3, 0, 0, 0,
+        0, 0, 0, // src port=443, dst port=55000, TCP, IPv4 literal/literal, TTL 32..64.
+        187, 1, 216, 214, 6, 0, 32, 64, // Successful end marker.
+        0, 0, 0, 0,
+    ];
 
     fn config() -> CsvSourceConfig {
         CsvSourceConfig {
@@ -1131,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn nfdump_command_uses_fixed_contract_and_safe_prefix_pushdown() {
+    fn nfdump_command_uses_binary_contract_and_safe_prefix_pushdown() {
         let selection = FlowSelection::from_payload(Some(&json!({
             "version": 1,
             "kind": "flows",
@@ -1148,8 +1134,7 @@ mod tests {
                 "capture",
                 "-q",
                 "-o",
-                NFDUMP_CSV_FORMAT,
-                "-N",
+                "atlantis",
                 "net 192.0.2.0/24",
             ]
             .map(OsString::from)
@@ -1158,15 +1143,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nfdump_reducer_builds_the_canonical_bucket() {
+    fn nfdump_decoder_builds_the_canonical_bucket() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
         let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        fs::write(&stream, ONE_V4_BINARY_STREAM).unwrap();
         let mut script = fs::File::create(&executable).unwrap();
         writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' '1744733279.999,1744733279.999,1744733279.000,192.0.2.1,198.51.100.1,443,55000,6,2,128,0,0,3,32,64'").unwrap();
+        writeln!(script, "cat '{}'", stream.display()).unwrap();
         drop(script);
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -1206,7 +1192,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nfdump_reducer_preserves_decoder_failure_diagnostics() {
+    fn nfdump_decoder_preserves_process_failure_diagnostics() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
@@ -1240,7 +1226,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nfdump_reducer_timeout_kills_a_blocked_process_group() {
+    fn nfdump_failure_wins_after_stdout_closes_before_child_exit() {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().unwrap();
@@ -1249,10 +1235,43 @@ mod tests {
         fs::write(&capture, "fixture").unwrap();
         fs::write(
             &executable,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' '{}'\nsleep 5\n",
-                reducer::CSV_HEADER
-            ),
+            "#!/bin/sh\nprintf bad\nexec 1>&-\nsleep 0.1\nprintf '%s\\n' 'decoder exploded later' >&2\nexit 9\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = read_nfcapd_bucket(
+            &capture,
+            "edge-a",
+            &FlowSelection::default(),
+            &executable,
+            "America/Los_Angeles",
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            IngestError::NfdumpFailed {
+                exit_code: Some(9),
+                stderr,
+            } if stderr == "decoder exploded later"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nfdump_decoder_timeout_kills_a_blocked_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let header = directory.path().join("header.bin");
+        fs::write(&header, &ONE_V4_BINARY_STREAM[..12]).unwrap();
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\ncat '{}'\nsleep 5\n", header.display()),
         )
         .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();

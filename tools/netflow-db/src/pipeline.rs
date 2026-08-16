@@ -21,13 +21,13 @@ use crate::{
         BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
     },
     ingest::{self, IngestError, ProducerError},
+    nfdump,
     provenance::{
         ExpectedAbsence, FileSnapshot, InputRevision, ProvenanceError, capture_file_revision,
         csv_decoder_fingerprint, gap_input_revision, nfcapd_decoder_fingerprint,
         revision_for_locator, verify_file_snapshot,
     },
     publish::{PublishError, write_buckets},
-    reducer::{CONTRACT_VERSION, INPUT_CONTRACT, OUTPUT_CONTRACT},
     registry::{Dataset, DatasetRegistry, DatasetSource, RegistryError, is_safe_path_component},
     storage::{
         DatabaseOperationLock, DatasetMetadata, InputBucket, InputKind, InputStatus,
@@ -478,10 +478,10 @@ fn bind_identity(
     let result_config = json!({
         "version": 2,
         "timezone": pipeline.timezone,
-        "nfcapd_reducer": {
-            "contract_version": CONTRACT_VERSION,
-            "input_contract": INPUT_CONTRACT,
-            "output_contract": OUTPUT_CONTRACT
+        "nfcapd_decoder": {
+            "protocol_version": nfdump::CONTRACT_VERSION,
+            "input_contract": nfdump::INPUT_CONTRACT,
+            "output_contract": nfdump::OUTPUT_CONTRACT
         },
         // This is a result-contract identifier retained for existing databases;
         // the in-process Rust implementation is byte-compatible with that backend.
@@ -1920,6 +1920,20 @@ mod tests {
     use super::*;
     use crate::domain::{AddressSide, FlowObservation, IpVersion, Scope, Visibility};
 
+    #[cfg(unix)]
+    fn write_fake_nfdump(executable: &Path, setup: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stream = executable.with_extension("stream");
+        fs::write(&stream, crate::nfdump::ONE_V4_TEST_STREAM).unwrap();
+        fs::write(
+            executable,
+            format!("#!/bin/sh\n{setup}\ncat '{}'\n", stream.display()),
+        )
+        .unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[test]
     fn logical_sources_borrow_singletons_and_merge_overlapping_members() {
         let build = |source_id: &str, destination: [u8; 4]| {
@@ -2451,9 +2465,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn nfcapd_tree_commits_completed_days_before_a_later_day_fails() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("captures");
         let first = root.join("r1/2025/01/01/nfcapd.202501010000");
@@ -2463,13 +2474,7 @@ mod tests {
         fs::write(&first, "first").unwrap();
         fs::write(&second, "second").unwrap();
         let decoder = temporary.path().join("fake-nfdump");
-        let mut script = fs::File::create(&decoder).unwrap();
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(script, "case \"$*\" in *20250102*) exit 9;; esac").unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' '1735689600.000,1735689600.000,1735689600.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64'").unwrap();
-        drop(script);
-        fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_nfdump(&decoder, "case \"$*\" in *20250102*) exit 9;; esac");
         let database = temporary.path().join("netflow.sqlite");
         let config = temporary.path().join("pipeline.json");
         fs::write(
@@ -2507,26 +2512,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn explicit_nfcapd_files_share_one_transaction() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         let first = temporary.path().join("nfcapd.202501010000");
         let second = temporary.path().join("nfcapd.202501010005");
         fs::write(&first, "first").unwrap();
         fs::write(&second, "second").unwrap();
         let decoder = temporary.path().join("fake-nfdump");
-        let mut script = fs::File::create(&decoder).unwrap();
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(
-            script,
-            "case \"$*\" in *0005*) ts=1735689900;; *) ts=1735689600;; esac"
-        )
-        .unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' \"$ts.000,$ts.000,$ts.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64\"").unwrap();
-        drop(script);
-        fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_nfdump(&decoder, "");
         let database = temporary.path().join("netflow.sqlite");
         let config = temporary.path().join("pipeline.json");
         fs::write(
@@ -2562,21 +2554,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn fall_back_tree_uses_wall_clock_filenames_without_repeating_one_am() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("captures");
         let capture = root.join("r1/2025/11/02/nfcapd.202511020100");
         fs::create_dir_all(capture.parent().unwrap()).unwrap();
         fs::write(&capture, "capture").unwrap();
         let decoder = temporary.path().join("fake-nfdump");
-        let mut script = fs::File::create(&decoder).unwrap();
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' '1762070400.000,1762070400.000,1762070400.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64'").unwrap();
-        drop(script);
-        fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_nfdump(&decoder, "");
         let database = temporary.path().join("netflow.sqlite");
         let config = temporary.path().join("pipeline.json");
         fs::write(
@@ -2629,9 +2613,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn implicit_tree_end_zero_fills_only_within_each_members_observed_bounds() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("captures");
         let first = root.join("r1/2025/01/01/nfcapd.202501010000");
@@ -2641,17 +2622,7 @@ mod tests {
         fs::write(&first, "first").unwrap();
         fs::write(&second, "second").unwrap();
         let decoder = temporary.path().join("fake-nfdump");
-        let mut script = fs::File::create(&decoder).unwrap();
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(
-            script,
-            "case \"$*\" in *20250102*) ts=1735776000;; *) ts=1735689600;; esac"
-        )
-        .unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' \"$ts.000,$ts.000,$ts.000,192.0.2.1,198.51.100.1,1,2,6,1,1,0,0,1,32,64\"").unwrap();
-        drop(script);
-        fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_nfdump(&decoder, "");
         let database = temporary.path().join("netflow.sqlite");
         let config = temporary.path().join("pipeline.json");
         fs::write(
@@ -2690,9 +2661,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn completed_nfcapd_input_is_skipped_before_running_decoder_again() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
         let temporary = tempdir().unwrap();
         let capture = temporary.path().join("nfcapd.202504151200");
         let decoder = temporary.path().join("fake-nfdump");
@@ -2700,13 +2668,7 @@ mod tests {
         let database = temporary.path().join("netflow.sqlite");
         let config = temporary.path().join("pipeline.json");
         fs::write(&capture, "fixture").unwrap();
-        let mut script = fs::File::create(&decoder).unwrap();
-        writeln!(script, "#!/bin/sh").unwrap();
-        writeln!(script, "echo called >> '{}'", calls.display()).unwrap();
-        writeln!(script, "printf '%s\\n' '{}'", crate::reducer::CSV_HEADER).unwrap();
-        writeln!(script, "printf '%s\\n' '1744733279.999,1744733279.999,1744733279.000,192.0.2.1,198.51.100.1,443,55000,6,2,128,0,0,3,32,64'").unwrap();
-        drop(script);
-        fs::set_permissions(&decoder, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_nfdump(&decoder, &format!("echo called >> '{}'", calls.display()));
         fs::write(
             &config,
             serde_json::to_vec(&json!({
