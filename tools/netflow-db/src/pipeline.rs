@@ -466,6 +466,7 @@ fn bind_identity(
     connection: &Connection,
     pipeline: &ResolvedPipeline,
 ) -> Result<(), PipelineError> {
+    let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
     let schema = json!({
         "version": 2,
         "tables": [
@@ -484,9 +485,12 @@ fn bind_identity(
             "input_contract": nfdump::INPUT_CONTRACT,
             "output_contract": nfdump::OUTPUT_CONTRACT
         },
-        // This is a result-contract identifier retained for existing databases;
-        // the in-process Rust implementation is byte-compatible with that backend.
-        "maad": {"enabled": pipeline.run_maad, "backend": "subprocess", "contract_version": 1}
+        "maad": {
+            "enabled": pipeline.run_maad,
+            "backend": "in-process",
+            "contract_version": 2,
+            "config": maad_config
+        }
     });
     let identity = ProductIdentity::create(
         &schema,
@@ -2386,6 +2390,53 @@ mod tests {
                 .addresses
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn pipeline_persists_in_process_maad_identity() {
+        let temporary = tempdir().unwrap();
+        let database = temporary.path().join("pipeline.sqlite");
+        let config = temporary.path().join("pipeline.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "database_path": database,
+                "timezone": "UTC",
+                "run_maad": true,
+                "inputs": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(PipelineRequest::config(&config)).unwrap();
+
+        let connection = Connection::open(database).unwrap();
+        let config_json: Value = connection
+            .query_row(
+                "SELECT config_json FROM pipeline_product WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            config_json["maad"],
+            json!({
+                "enabled": true,
+                "backend": "in-process",
+                "contract_version": 2,
+                "config": {
+                    "q_min": -0.5,
+                    "q_max": 3.5,
+                    "q_step": 0.125,
+                    "min_prefix_length": 8,
+                    "max_prefix_length": 24,
+                    "full_threshold": 0.05
+                }
+            })
         );
     }
 
