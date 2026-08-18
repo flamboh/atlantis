@@ -473,7 +473,7 @@ fn compute_spectrum(structure: &[StructureRow], q_step: f64) -> Vec<SpectrumRow>
     let mut rows = Vec::new();
     let mut started = false;
     for pair in alphas.windows(2) {
-        let decreasing = pair[0].alpha > pair[1].alpha;
+        let decreasing = pair[0].alpha - pair[1].alpha > GRID_EPSILON;
         if !started && !decreasing {
             continue;
         }
@@ -877,6 +877,15 @@ mod tests {
         close(result.dimensions[1].dim, 0.0);
         close(result.dimensions[2].q, 2.0);
         close(result.dimensions[2].dim, 0.0);
+    }
+
+    #[test]
+    fn linear_structure_curve_has_no_spectrum_rows() {
+        let addresses = (0..1024).map(|index| Ipv4Addr::from(index << 22));
+
+        let result = compute(addresses);
+
+        assert!(result.spectrum.is_empty());
     }
 
     #[test]
