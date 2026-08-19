@@ -82,6 +82,9 @@ struct PipelineArgs {
     force: bool,
     #[arg(long)]
     no_maad: bool,
+    /// Leave partial results in place but fail if requested five-minute coverage is incomplete.
+    #[arg(long)]
+    require_complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -270,7 +273,7 @@ fn run_pipeline(args: PipelineArgs) -> Result<()> {
         "src_visibility": args.src_visibility.map(VisibilityArg::as_str),
         "dst_visibility": args.dst_visibility.map(VisibilityArg::as_str),
     });
-    netflow_db::pipeline::run(netflow_db::pipeline::PipelineRequest {
+    let report = netflow_db::pipeline::run(netflow_db::pipeline::PipelineRequest {
         config_path: args.config,
         dataset_id: args.dataset,
         datasets_path: args.datasets,
@@ -283,7 +286,14 @@ fn run_pipeline(args: PipelineArgs) -> Result<()> {
         nfdump: args.nfdump,
         force: args.force,
         run_maad: !args.no_maad,
+        require_complete: args.require_complete,
     })?;
+    println!(
+        "Five-minute coverage: {} complete, {} partial, {} unknown",
+        report.complete_five_minute_buckets,
+        report.partial_five_minute_buckets,
+        report.unknown_five_minute_buckets
+    );
     Ok(())
 }
 

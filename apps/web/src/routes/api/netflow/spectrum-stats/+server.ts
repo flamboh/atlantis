@@ -1,8 +1,52 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { SpectrumPoint, SpectrumStatsBucket, SpectrumStatsResponse } from '$lib/types/types';
+import type { SpectrumPoint } from '$lib/types/types';
+import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
+import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
 import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
+
+type SpectrumStatsRow = SpectrumStatsPayload & {
+	router: string;
+	bucketStart: number;
+	bucketEnd: number;
+};
+
+type RawSpectrumStatsRow = {
+	router: string;
+	bucketStart: number;
+	bucketEnd: number;
+	spectrumSaJson: string | null;
+	spectrumDaJson: string | null;
+};
+
+function isSpectrumPoint(value: unknown): value is SpectrumPoint {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		'alpha' in value &&
+		'f' in value &&
+		typeof value.alpha === 'number' &&
+		typeof value.f === 'number'
+	);
+}
+
+function parseSpectrumPoints(
+	valuesJson: string | null,
+	router: string,
+	bucketStart: number
+): SpectrumPoint[] | null {
+	if (valuesJson === null) return null;
+
+	try {
+		const values: unknown = JSON.parse(valuesJson);
+		if (!Array.isArray(values)) return null;
+		return values.filter(isSpectrumPoint);
+	} catch (error) {
+		console.error('Failed to parse spectrum values_json:', { router, bucketStart, error });
+		return null;
+	}
+}
 
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
@@ -22,8 +66,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			SELECT
 				${sourceColumn} AS router,
 				bucket_start AS bucketStart,
-				address_side AS addressSide,
-				values_json AS valuesJson
+				bucket_end AS bucketEnd,
+				MAX(CASE WHEN address_side = 'source' THEN values_json END) AS spectrumSaJson,
+				MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS spectrumDaJson
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
@@ -33,49 +78,44 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND bucket_start < ?
 				AND ip_version = 4
 				AND structure_kind = 'spectrum'
+			GROUP BY ${sourceColumn}, bucket_start, bucket_end
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
-		const rows = await db.all<{
-			router: string;
-			bucketStart: number;
-			addressSide: 'source' | 'destination';
-			valuesJson: string;
-		}>(query, queryParams);
-		const bucketsByKey = new Map<string, SpectrumStatsBucket>();
-
-		for (const row of rows) {
-			const key = `${row.router}:${row.bucketStart}`;
-			const bucket =
-				bucketsByKey.get(key) ??
-				({
-					bucketStart: row.bucketStart,
-					router: row.router,
-					spectrumSa: [],
-					spectrumDa: []
-				} satisfies SpectrumStatsBucket);
-			let points: SpectrumPoint[] = [];
-			try {
-				points = JSON.parse(row.valuesJson) as SpectrumPoint[];
-			} catch (e) {
-				console.error('Failed to parse spectrum values_json:', e);
-			}
-
-			if (row.addressSide === 'source') {
-				bucket.spectrumSa = points;
-			} else {
-				bucket.spectrumDa = points;
-			}
-			bucketsByKey.set(key, bucket);
-		}
-
-		const buckets = [...bucketsByKey.values()].sort(
-			(left, right) =>
-				left.router.localeCompare(right.router) || left.bucketStart - right.bucketStart
-		);
+		const rawRows = await db.all<RawSpectrumStatsRow>(query, queryParams);
+		const rows: SpectrumStatsRow[] = rawRows.flatMap((row) => {
+			const spectrumSa = parseSpectrumPoints(row.spectrumSaJson, row.router, row.bucketStart);
+			const spectrumDa = parseSpectrumPoints(row.spectrumDaJson, row.router, row.bucketStart);
+			return spectrumSa === null && spectrumDa === null
+				? []
+				: [
+						{
+							router: row.router,
+							bucketStart: row.bucketStart,
+							bucketEnd: row.bucketEnd,
+							spectrumSa: spectrumSa ?? [],
+							spectrumDa: spectrumDa ?? []
+						}
+					];
+		});
+		const timelines = await buildCoverageTimelines({
+			db,
+			granularity,
+			start,
+			end,
+			partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
+			rows,
+			getPartitionKey: (row) => row.router,
+			toData: ({ router: _router, bucketStart: _bucketStart, bucketEnd: _bucketEnd, ...data }) =>
+				data,
+			emptyData: () => null
+		});
 
 		const response: SpectrumStatsResponse = {
-			buckets,
+			timelines: routers.map((router) => ({
+				router,
+				buckets: timelines.get(router) ?? []
+			})),
 			requestedRouters: routers
 		};
 

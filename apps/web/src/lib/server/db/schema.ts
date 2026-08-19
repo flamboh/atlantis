@@ -60,6 +60,40 @@ export const processedInputs = sqliteTable(
 	]
 );
 
+export const bucketCoverage = sqliteTable(
+	'bucket_coverage',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		coverageState: text('coverage_state', {
+			enum: ['complete', 'partial', 'unknown']
+		}).notNull(),
+		observedUnits: integer('observed_units').notNull(),
+		expectedUnits: integer('expected_units').notNull(),
+		rejectedUnits: integer('rejected_units').notNull()
+	},
+	(table) => [
+		primaryKey({ columns: [table.sourceId, table.granularity, table.bucketStart] }),
+		index('idx_bucket_coverage_query').on(table.granularity, table.bucketStart, table.sourceId),
+		check('bucket_coverage_interval_check', sql`${table.bucketEnd} > ${table.bucketStart}`),
+		check('bucket_coverage_expected_check', sql`${table.expectedUnits} > 0`),
+		check(
+			'bucket_coverage_observed_check',
+			sql`${table.observedUnits} >= 0 AND ${table.observedUnits} <= ${table.expectedUnits}`
+		),
+		check(
+			'bucket_coverage_rejected_check',
+			sql`${table.rejectedUnits} >= 0 AND ${table.rejectedUnits} <= ${table.expectedUnits}`
+		),
+		check(
+			'bucket_coverage_state_check',
+			sql`(${table.coverageState} = 'complete' AND ${table.observedUnits} = ${table.expectedUnits} AND ${table.rejectedUnits} = 0) OR (${table.coverageState} = 'unknown' AND ${table.observedUnits} = 0 AND ${table.rejectedUnits} = 0) OR (${table.coverageState} = 'partial' AND NOT (${table.observedUnits} = ${table.expectedUnits} AND ${table.rejectedUnits} = 0) AND NOT (${table.observedUnits} = 0 AND ${table.rejectedUnits} = 0))`
+		)
+	]
+);
+
 function netflowMetricColumns() {
 	return {
 		flows: integer('flows').notNull(),

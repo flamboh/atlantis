@@ -8,9 +8,11 @@ use std::{
 
 use fixedbitset::FixedBitSet;
 use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Deserializer, ser::Serializer};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
+
+use crate::coverage::{BucketCoverage, CoverageError};
 
 const PORT_COUNT: usize = 65_536;
 
@@ -20,6 +22,8 @@ pub const MAX_SQLITE_INTEGER: i64 = i64::MAX;
 /// Failures rejected at the canonical domain boundary.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DomainError {
+    #[error(transparent)]
+    Coverage(#[from] CoverageError),
     #[error("source and destination addresses must use the same IP version")]
     MixedIpVersions,
     #[error("{0} must be a non-negative signed 64-bit integer")]
@@ -438,7 +442,7 @@ pub fn visibility_pair_from_tos(src_tos: u8) -> (Visibility, Visibility) {
     (source.into(), destination.into())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BucketKey {
     pub source_id: String,
     pub granularity: Granularity,
@@ -463,7 +467,7 @@ impl BucketKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Scope {
     pub ip_version: IpVersion,
     pub src_visibility: Visibility,
@@ -496,7 +500,7 @@ pub struct GroupedTrafficFact {
 }
 
 /// Unique IP addresses with no iteration-order contract.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddressSet(HashSet<IpAddr>);
 
 impl AddressSet {
@@ -576,7 +580,7 @@ impl From<ScopedAddressesFact> for StatisticalFact {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrafficMetrics {
     pub flows: i64,
     pub flows_tcp: i64,
@@ -741,40 +745,69 @@ fn multiply_metric(left: i64, right: i64, name: &'static str) -> Result<i64, Dom
         .ok_or(DomainError::MetricOverflow(name))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedTraffic {
     pub scope: Scope,
     pub metrics: TrafficMetrics,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedProtocols {
     pub scope: Scope,
     pub protocols: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedAddresses {
     pub scope: Scope,
     pub address_side: AddressSide,
     pub addresses: AddressSet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedPorts {
     pub scope: Scope,
     pub port_side: PortSide,
+    #[serde(
+        serialize_with = "serialize_fixed_bitset",
+        deserialize_with = "deserialize_fixed_bitset"
+    )]
     pub ports: FixedBitSet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalBucket {
     pub key: BucketKey,
+    pub coverage: BucketCoverage,
     pub traffic: Vec<ScopedTraffic>,
     pub protocols: Vec<ScopedProtocols>,
     pub addresses: Vec<ScopedAddresses>,
     pub ports: Vec<ScopedPorts>,
     pub five_minute_starts: BTreeSet<i64>,
+}
+
+fn serialize_fixed_bitset<S>(ports: &FixedBitSet, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    (ports.len(), ports.ones().collect::<Vec<_>>()).serialize(serializer)
+}
+
+fn deserialize_fixed_bitset<'de, D>(deserializer: D) -> Result<FixedBitSet, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let (length, ones) = <(usize, Vec<usize>)>::deserialize(deserializer)?;
+    let mut ports = FixedBitSet::with_capacity(length);
+    for index in ones {
+        if index >= length {
+            return Err(serde::de::Error::custom(
+                "fixed bitset item exceeds serialized length",
+            ));
+        }
+        ports.insert(index);
+    }
+    Ok(ports)
 }
 
 impl CanonicalBucket {
@@ -925,6 +958,7 @@ fn count_ports(ports: &FixedBitSet, range: PortRange) -> usize {
 #[derive(Debug, Clone)]
 pub struct StatisticalBucket {
     key: BucketKey,
+    coverage: BucketCoverage,
     traffic: BTreeMap<Scope, TrafficMetrics>,
     protocols: BTreeMap<Scope, BTreeSet<String>>,
     addresses: BTreeMap<(Scope, AddressSide), AddressSet>,
@@ -968,11 +1002,15 @@ impl StatisticalBucket {
     #[must_use]
     pub fn new(key: BucketKey) -> Self {
         let mut five_minute_starts = BTreeSet::new();
-        if key.granularity == Granularity::FiveMinutes {
+        let coverage = if key.granularity == Granularity::FiveMinutes {
             five_minute_starts.insert(key.bucket_start);
-        }
+            BucketCoverage::complete_unit()
+        } else {
+            BucketCoverage::empty()
+        };
         Self {
             key,
+            coverage,
             traffic: BTreeMap::new(),
             protocols: BTreeMap::new(),
             addresses: BTreeMap::new(),
@@ -998,6 +1036,13 @@ impl StatisticalBucket {
             }
         }
         bucket
+    }
+
+    /// Replace the default coverage attached to this bucket builder.
+    #[must_use]
+    pub fn with_coverage(mut self, coverage: BucketCoverage) -> Self {
+        self.coverage = coverage;
+        self
     }
 
     pub fn add(&mut self, fact: impl Into<StatisticalFact>) -> Result<(), DomainError> {
@@ -1058,6 +1103,7 @@ impl StatisticalBucket {
         let coverage_started = Instant::now();
         self.five_minute_starts
             .extend(child.five_minute_starts.iter().copied());
+        self.coverage.include(child.coverage)?;
         let coverage_elapsed = coverage_started.elapsed();
         Ok(StatisticalBucketIncludeProfile {
             total_elapsed: total_started.elapsed(),
@@ -1080,6 +1126,7 @@ impl StatisticalBucket {
     pub fn finish(&self) -> CanonicalBucket {
         CanonicalBucket {
             key: self.key.clone(),
+            coverage: self.coverage,
             traffic: self
                 .traffic
                 .iter()
@@ -1248,6 +1295,7 @@ mod tests {
         FlowSelection, Granularity, GroupedTrafficFact, IpVersion, PortRange, Scope,
         ScopedAddressesFact, StatisticalBucket, Visibility,
     };
+    use crate::coverage::{BucketCoverage, CoverageState};
 
     fn address(value: [u8; 4]) -> IpAddr {
         IpAddr::V4(Ipv4Addr::from(value))
@@ -1372,6 +1420,25 @@ mod tests {
                 (6, "literal", "literal"),
             ]
         );
+    }
+
+    #[test]
+    fn bucket_coverage_is_explicit_and_additive_across_rollups() {
+        let partial = StatisticalBucket::new(key(Granularity::FiveMinutes, 0, 300))
+            .with_coverage(BucketCoverage::new(2, 1, 0).unwrap())
+            .finish();
+        let unknown = StatisticalBucket::new(key(Granularity::FiveMinutes, 300, 600))
+            .with_coverage(BucketCoverage::new(2, 0, 0).unwrap())
+            .finish();
+        let mut rollup = StatisticalBucket::new(key(Granularity::ThirtyMinutes, 0, 1800));
+
+        rollup.include(&partial).unwrap();
+        rollup.include(&unknown).unwrap();
+        let rollup = rollup.finish();
+
+        assert_eq!(partial.coverage.state(), CoverageState::Partial);
+        assert_eq!(unknown.coverage.state(), CoverageState::Unknown);
+        assert_eq!(rollup.coverage, BucketCoverage::new(4, 1, 0).unwrap());
     }
 
     #[test]

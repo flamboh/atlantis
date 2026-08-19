@@ -24,7 +24,8 @@
 		NetflowIpFamily,
 		NetflowMetricTotals,
 		NetflowStatsResponse,
-		NetflowStatsResult
+		NetflowStatsResult,
+		TimeBucket
 	} from '$lib/types/types';
 
 	const props = $props<{
@@ -53,7 +54,7 @@
 	let chartType = $state<ChartTypeOption>('stacked');
 	let selectedIpFamily = $state<NetflowIpFamily>('all');
 	let availableIpFamilies = $state<NetflowIpFamily[]>(['all']);
-	let rawResults = $state.raw<NetflowStatsResult[]>([]);
+	let rawResults = $state.raw<TimeBucket<NetflowStatsResult>[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
@@ -83,9 +84,9 @@
 	let results = $derived.by<NetflowDataPoint[]>(() => {
 		const suffix =
 			selectedIpFamily === 'all' ? null : selectedIpFamily === 'ipv4' ? 'Ipv4' : 'Ipv6';
-		return rawResults.map((row) => ({
-			bucketStart: row.bucketStart,
-			...getMetricsForFamily(row, suffix)
+		return rawResults.map((bucket) => ({
+			...bucket,
+			data: bucket.data === null ? null : getMetricsForFamily(bucket.data, suffix)
 		}));
 	});
 
@@ -144,10 +145,15 @@
 		};
 	}
 
-	function readCachedResults(cacheKey: string, requestedRange: TimeRange): NetflowStatsResult[] {
-		return readCachedWindow<NetflowStatsResult>(cacheKey, requestedRange, (record, range) => {
-			return record.bucketStart >= range.start && record.bucketStart < range.end;
-		});
+	function readCachedResults(
+		cacheKey: string,
+		requestedRange: TimeRange
+	): TimeBucket<NetflowStatsResult>[] {
+		return readCachedWindow<TimeBucket<NetflowStatsResult>>(
+			cacheKey,
+			requestedRange,
+			(record, range) => record.bucketStart >= range.start && record.bucketStart < range.end
+		);
 	}
 
 	function handleIpFamilyChange(ipFamily: NetflowIpFamily) {
@@ -174,7 +180,7 @@
 		});
 
 		try {
-			await ensureCachedWindow<NetflowStatsResult>({
+			await ensureCachedWindow<TimeBucket<NetflowStatsResult>>({
 				key: cacheKey,
 				requestedRange,
 				fetchRange: async (range) => {

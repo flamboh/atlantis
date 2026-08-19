@@ -11,9 +11,10 @@
 		FlowVisibility,
 		IpGranularity,
 		SpectrumPoint,
-		SpectrumStatsBucket,
-		SpectrumStatsResponse
+		TimeBucket,
+		BucketCoverage
 	} from '$lib/types/types';
+	import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
 	import {
 		generateSlugFromLabel,
 		parseClickedLabel,
@@ -26,7 +27,9 @@
 		beginRangeDrag,
 		updateRangeDrag,
 		endRangeDrag,
-		buildMirroredSelectionStyle
+		buildMirroredSelectionStyle,
+		getCoveragePointStyle,
+		getCoverageTooltipLines
 	} from './chart-utils';
 	import {
 		formatIpGranularityTick,
@@ -85,11 +88,20 @@
 	const getInitialRouter = () => (props.router ?? '').trim();
 	const getInitialGranularity = () => props.granularity ?? '1h';
 
-	let buckets = $state<SpectrumStatsBucket[]>([]);
+	type SpectrumChartBucket = TimeBucket<SpectrumStatsPayload>;
+	type CachedSpectrumBucket = {
+		router: string;
+		bucket: SpectrumChartBucket;
+	};
+
+	let currentRouter = $state(getInitialRouter());
+	let cachedBuckets = $state<CachedSpectrumBucket[]>([]);
+	let buckets = $derived(
+		cachedBuckets.filter((record) => record.router === currentRouter).map((record) => record.bucket)
+	);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
-	let currentRouter = $state(getInitialRouter());
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
@@ -105,12 +117,29 @@
 	let activeCrosshairX = $derived(localHoverX ?? externalHoverX);
 	let showLocalTooltip = $state(false);
 	let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	function pointsForBucket(bucket: SpectrumChartBucket): SpectrumPoint[] {
+		if (!bucket.data) return [];
+		return addressType === 'sa' ? bucket.data.spectrumSa : bucket.data.spectrumDa;
+	}
+
+	function nearestBucketIndex(value: number): number | null {
+		if (!Number.isFinite(value) || bucketStarts.length === 0) return null;
+		let closestIndex = 0;
+		let closestDistance = Math.abs(bucketStarts[0] - value);
+		for (let index = 1; index < bucketStarts.length; index += 1) {
+			const distance = Math.abs((bucketStarts[index] ?? 0) - value);
+			if (distance < closestDistance) {
+				closestIndex = index;
+				closestDistance = distance;
+			}
+		}
+		return closestIndex;
+	}
+
 	const hasSelectedSpectrumData = $derived(
 		buckets.some((bucket) => {
-			if (bucket.router !== currentRouter) {
-				return false;
-			}
-			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
+			const points = pointsForBucket(bucket);
 			return points.length > 0;
 		})
 	);
@@ -143,14 +172,8 @@
 		if (typeof value !== 'number' || !Number.isFinite(value)) {
 			return null;
 		}
-		const roundedIndex = Math.round(value);
-		if (Math.abs(value - roundedIndex) > 1e-6) {
-			return null;
-		}
-		if (roundedIndex < 0 || roundedIndex >= bucketStarts.length) {
-			return null;
-		}
-		return bucketStarts[roundedIndex] ?? null;
+		const index = nearestBucketIndex(value);
+		return index === null ? null : (bucketStarts[index] ?? null);
 	}
 
 	function getChartColors() {
@@ -197,7 +220,8 @@
 		if (index === -1) {
 			return null;
 		}
-		return chart.scales.x.getPixelForValue(index);
+		const bucketStart = bucketStarts[index];
+		return bucketStart === undefined ? null : chart.scales.x.getPixelForValue(bucketStart);
 	}
 
 	function syncCrosshairPositions() {
@@ -261,14 +285,19 @@
 			return;
 		}
 
-		const nextIndex = Math.max(0, Math.min(bucketStarts.length - 1, Math.round(rawIndex)));
+		const nearestIndex = nearestBucketIndex(rawIndex);
+		if (nearestIndex === null) {
+			clearLocalHover();
+			return;
+		}
+		const nextIndex = nearestIndex;
 		const nextLabel = getLabelFromIndex(nextIndex);
 		if (!nextLabel) {
 			clearLocalHover();
 			return;
 		}
 
-		const nextX = chart.scales.x.getPixelForValue(nextIndex);
+		const nextX = chart.scales.x.getPixelForValue(bucketStarts[nextIndex] ?? 0);
 		const labelChanged = nextLabel !== localHoverLabel;
 		localHoverLabel = nextLabel;
 		localHoverX = nextX;
@@ -294,13 +323,23 @@
 
 		const area = chart.chartArea;
 		const snappedX = Math.round(x) + 0.5;
-		const tooltipWidth = 120;
+		const tooltipWidth = 190;
 		const left = Math.min(
 			Math.max(snappedX - tooltipWidth / 2, area.left + 5),
 			area.right - tooltipWidth - 5
 		);
 		const top = Math.max(6, area.top - 34);
 		return `left:${left}px; top:${top}px; width:${tooltipWidth}px;`;
+	}
+
+	function getCoverageLinesForLabel(label: string): string[] {
+		const index = (chart?.data.labels as string[] | undefined)?.indexOf(label) ?? -1;
+		const bucketStart = bucketStarts[index];
+		const bucket =
+			bucketStart === undefined
+				? undefined
+				: buckets.find((item) => item.bucketStart === bucketStart);
+		return bucket ? getCoverageTooltipLines(bucket.coverage) : [];
 	}
 
 	// Color gradient function based on f value
@@ -438,19 +477,14 @@
 		const canvasPosition = getRelativePosition(event, chart);
 		const dataX = chart.scales.x.getValueForPixel(canvasPosition.x);
 
-		let labelIndex: number | null = null;
-		if (typeof dataX === 'number' && Number.isFinite(dataX)) {
-			const roundedIndex = Math.round(dataX);
-			if (roundedIndex >= 0 && roundedIndex < labels.length) {
-				labelIndex = roundedIndex;
-			} else if (roundedIndex < 0) {
-				labelIndex = 0;
-			} else {
-				labelIndex = labels.length - 1;
-			}
-		}
-
-		const fallbackIndex = activeElements.length > 0 ? activeElements[0].index : null;
+		const labelIndex =
+			typeof dataX === 'number' && Number.isFinite(dataX) ? nearestBucketIndex(dataX) : null;
+		const fallbackIndex =
+			activeElements.length > 0
+				? nearestBucketIndex(
+						bucketStarts[Math.min(activeElements[0]?.index ?? 0, bucketStarts.length - 1)] ?? 0
+					)
+				: null;
 		const targetIndex = labelIndex ?? fallbackIndex;
 		const label = targetIndex !== null ? getLabelFromIndex(targetIndex) : labels[0];
 
@@ -501,10 +535,11 @@
 		y: number;
 		f: number;
 		timeLabel: string;
+		coverage: BucketCoverage;
 	}
 
 	function buildDatasets(
-		selectedBuckets: SpectrumStatsBucket[],
+		selectedBuckets: SpectrumChartBucket[],
 		bucketStarts: number[]
 	): {
 		data: DataPoint[];
@@ -515,7 +550,7 @@
 	} {
 		const pointsByBucketStart: Record<number, SpectrumPoint[]> = {};
 		selectedBuckets.forEach((bucket) => {
-			const points = addressType === 'sa' ? bucket.spectrumSa : bucket.spectrumDa;
+			const points = pointsForBucket(bucket);
 			if (points.length > 0) {
 				pointsByBucketStart[bucket.bucketStart] = points;
 			}
@@ -543,7 +578,11 @@
 		// Build data points: each (time, alpha) has an f value for coloring
 		const data: DataPoint[] = [];
 
-		bucketStarts.forEach((bucketStart, timeIndex) => {
+		const coverageByBucketStart = new Map(
+			selectedBuckets.map((bucket) => [bucket.bucketStart, bucket.coverage])
+		);
+
+		bucketStarts.forEach((bucketStart) => {
 			const points = pointsByBucketStart[bucketStart];
 			if (!points || points.length === 0) return;
 
@@ -551,10 +590,15 @@
 
 			points.forEach((point) => {
 				data.push({
-					x: timeIndex,
+					x: bucketStart,
 					y: point.alpha,
 					f: point.f,
-					timeLabel
+					timeLabel,
+					coverage: coverageByBucketStart.get(bucketStart) ?? {
+						state: 'unknown',
+						observedUnits: 0,
+						expectedUnits: 0
+					}
 				});
 			});
 		});
@@ -569,9 +613,7 @@
 			return;
 		}
 
-		const selectedBuckets = currentRouter
-			? buckets.filter((bucket) => bucket.router === currentRouter)
-			: [];
+		const selectedBuckets = currentRouter ? buckets : [];
 
 		// Get unique time buckets, sorted
 		bucketStarts = Array.from(new Set(selectedBuckets.map((b) => b.bucketStart))).sort(
@@ -604,6 +646,14 @@
 
 		// Create scatter dataset with individual point colors based on f
 		const pointColors = data.map((d) => getColorForF(d.f, minF, maxF));
+		const pointStyles = data.map((d, index) =>
+			getCoveragePointStyle(d.coverage, pointColors[index] ?? pointColors[0] ?? 'transparent')
+		);
+		const chartPoints = data.map((d) => ({
+			x: d.x,
+			y: d.y,
+			coverage: d.coverage
+		}));
 
 		const granularity = currentGranularity;
 		const alphaPadding = (maxAlpha - minAlpha) * 0.05;
@@ -615,10 +665,13 @@
 					labels,
 					datasets: [
 						{
-							data: data.map((d) => ({ x: d.x, y: d.y })),
+							data: chartPoints,
 							backgroundColor: pointColors,
 							borderColor: pointColors,
-							pointRadius: 1,
+							pointRadius: data.map((d) => (d.coverage.state === 'partial' ? 4 : 1)),
+							pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
+							pointBorderColor: pointStyles.map((style) => style.borderColor),
+							pointBorderWidth: pointStyles.map((style) => style.borderWidth),
 							pointHoverRadius: 2
 						}
 					]
@@ -644,8 +697,8 @@
 					scales: {
 						x: {
 							type: 'linear',
-							min: 0,
-							max: bucketStarts.length - 1,
+							min: bucketStarts[0],
+							max: bucketStarts[bucketStarts.length - 1],
 							title: {
 								display: true,
 								text: `Time (${granularity})`,
@@ -653,7 +706,6 @@
 							},
 							ticks: {
 								color: textColor,
-								stepSize: 1,
 								autoSkip: false,
 								maxRotation: 45,
 								minRotation: 45,
@@ -661,7 +713,7 @@
 								callback: (value: unknown) => {
 									const bucketStart = getBucketStartForTickValue(value);
 									if (bucketStart === null) return '';
-									const index = Math.round(value as number);
+									const index = typeof value === 'number' ? (nearestBucketIndex(value) ?? 0) : 0;
 									return formatIpGranularityTick(bucketStart, granularity, index);
 								}
 							},
@@ -672,7 +724,7 @@
 									if (bucketStart === null || typeof tickValue !== 'number') {
 										return gridHighlightColor;
 									}
-									const index = Math.round(tickValue);
+									const index = nearestBucketIndex(tickValue) ?? 0;
 									return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
 										? gridColor
 										: gridHighlightColor;
@@ -701,21 +753,24 @@
 			chart.data.labels = labels;
 			chart.data.datasets = [
 				{
-					data: data.map((d) => ({ x: d.x, y: d.y })),
+					data: chartPoints,
 					backgroundColor: pointColors,
 					borderColor: pointColors,
-					pointRadius: 1,
+					pointRadius: data.map((d) => (d.coverage.state === 'partial' ? 4 : 1)),
+					pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
+					pointBorderColor: pointStyles.map((style) => style.borderColor),
+					pointBorderWidth: pointStyles.map((style) => style.borderWidth),
 					pointHoverRadius: 2
 				}
 			];
 			chart.options.scales = {
 				x: {
-					min: 0,
-					max: bucketStarts.length - 1,
+					type: 'linear',
+					min: bucketStarts[0],
+					max: bucketStarts[bucketStarts.length - 1],
 					title: { display: true, text: `Time (${granularity})`, color: textColor },
 					ticks: {
 						color: textColor,
-						stepSize: 1,
 						autoSkip: false,
 						maxRotation: 45,
 						minRotation: 45,
@@ -723,7 +778,7 @@
 						callback: (value: unknown) => {
 							const bucketStart = getBucketStartForTickValue(value);
 							if (bucketStart === null) return '';
-							const index = Math.round(value as number);
+							const index = typeof value === 'number' ? (nearestBucketIndex(value) ?? 0) : 0;
 							return formatIpGranularityTick(bucketStart, granularity, index);
 						}
 					},
@@ -734,13 +789,13 @@
 							if (bucketStart === null || typeof tickValue !== 'number') {
 								return gridHighlightColor;
 							}
-							const index = Math.round(tickValue);
+							const index = nearestBucketIndex(tickValue) ?? 0;
 							return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
 								? gridColor
 								: gridHighlightColor;
 						}
 					}
-				} as never,
+				},
 				y: {
 					min: minAlpha - alphaPadding,
 					max: maxAlpha + alphaPadding,
@@ -750,7 +805,7 @@
 					title: { display: true, text: 'alpha', color: textColor },
 					ticks: { color: textColor },
 					grid: { color: gridColor }
-				} as never
+				}
 			};
 			chart.options.onClick = handleChartClick;
 			chart.update('none');
@@ -806,7 +861,7 @@
 		});
 
 		try {
-			await ensureCachedWindow<SpectrumStatsBucket>({
+			await ensureCachedWindow<CachedSpectrumBucket>({
 				key: cacheKey,
 				requestedRange,
 				fetchRange: async (range) => {
@@ -821,19 +876,29 @@
 						const message = await response.text();
 						throw new Error(message || 'Failed to load spectrum statistics');
 					}
-					const data = (await response.json()) as SpectrumStatsResponse;
-					return data.buckets;
+					const data: SpectrumStatsResponse = await response.json();
+					return data.timelines.flatMap((timeline) =>
+						timeline.buckets.map((bucket) => ({
+							router: timeline.router,
+							bucket
+						}))
+					);
 				},
-				getRecordKey: (record) => `${record.router}-${record.bucketStart}`,
+				getRecordKey: (record) => `${record.router}-${record.bucket.bucketStart}`,
 				compareRecords: (left, right) =>
-					left.bucketStart - right.bucketStart || left.router.localeCompare(right.router)
+					left.bucket.bucketStart - right.bucket.bucketStart ||
+					left.router.localeCompare(right.router)
 			});
 			if (token !== requestToken) {
 				return;
 			}
-			buckets = readCachedWindow<SpectrumStatsBucket>(cacheKey, requestedRange, (record, range) => {
-				return record.bucketStart >= range.start && record.bucketStart < range.end;
-			});
+			cachedBuckets = readCachedWindow<CachedSpectrumBucket>(
+				cacheKey,
+				requestedRange,
+				(record, range) => {
+					return record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end;
+				}
+			);
 			loading = false;
 			await tick();
 			renderChart();
@@ -842,7 +907,7 @@
 				return;
 			}
 			error = err instanceof Error ? err.message : 'Unexpected error loading spectrum statistics';
-			buckets = [];
+			cachedBuckets = [];
 			loading = false;
 			destroyChart();
 		}
@@ -905,7 +970,7 @@
 
 		if (filters.routers.length === 0) {
 			error = 'Select at least one source to view spectrum statistics';
-			buckets = [];
+			cachedBuckets = [];
 			destroyChart();
 			lastFiltersKey = JSON.stringify(filters);
 			loading = false;
@@ -1023,7 +1088,10 @@
 							class="pointer-events-none absolute z-20 rounded border px-2 py-1 text-xs whitespace-nowrap shadow-sm"
 							style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
 						>
-							{localHoverLabel}
+							<div>{localHoverLabel}</div>
+							{#each getCoverageLinesForLabel(localHoverLabel) as line (line)}
+								<div>{line}</div>
+							{/each}
 						</div>
 					{/if}
 					{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}

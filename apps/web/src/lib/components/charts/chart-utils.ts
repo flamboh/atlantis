@@ -50,6 +50,26 @@ export function indexFromPixelX(chart: Chart | null, pixelX: number): number | n
 	if (!labels || labels.length === 0) return null;
 	const value = chart.scales.x.getValueForPixel(pixelX);
 	if (typeof value !== 'number' || Number.isNaN(value)) return null;
+	if ((chart.scales.x.options as { type?: string }).type === 'linear') {
+		const points = chart.data.datasets[0]?.data ?? [];
+		let closestIndex: number | null = null;
+		let closestDistance = Infinity;
+		const seenX = new Set<number>();
+		points.forEach((point, index) => {
+			if (typeof point !== 'object' || point === null || Array.isArray(point) || !('x' in point))
+				return;
+			const x = point.x;
+			if (typeof x !== 'number' || !Number.isFinite(x)) return;
+			if (seenX.has(x)) return;
+			seenX.add(x);
+			const distance = Math.abs(x - value);
+			if (distance < closestDistance) {
+				closestDistance = distance;
+				closestIndex = index;
+			}
+		});
+		return closestIndex;
+	}
 	const rounded = Math.round(value);
 	return Math.max(0, Math.min(labels.length - 1, rounded));
 }
@@ -144,8 +164,43 @@ export function buildMirroredSelectionStyle(
 	if (startIndex === -1 || endIndex === -1) return null;
 	const area = getChartArea(chart);
 	if (!area) return null;
-	const rawLeft = chart.scales.x.getPixelForValue(Math.min(startIndex, endIndex));
-	const rawRight = chart.scales.x.getPixelForValue(Math.max(startIndex, endIndex));
+	const from = Math.min(startIndex, endIndex);
+	const to = Math.max(startIndex, endIndex);
+	const firstDataset = chart.data.datasets[0]?.data ?? [];
+	const xValues = firstDataset.reduce<number[]>((values, point) => {
+		if (
+			typeof point === 'object' &&
+			point !== null &&
+			!Array.isArray(point) &&
+			'x' in point &&
+			typeof point.x === 'number' &&
+			Number.isFinite(point.x) &&
+			!values.includes(point.x)
+		) {
+			values.push(point.x);
+		}
+		return values;
+	}, []);
+	const xValueAt = (index: number): number => {
+		if ((chart.scales.x.options as { type?: string }).type === 'linear') {
+			const uniqueX = xValues[index];
+			if (uniqueX !== undefined) return uniqueX;
+		}
+		const point = firstDataset[index];
+		if (
+			(chart.scales.x.options as { type?: string }).type === 'linear' &&
+			typeof point === 'object' &&
+			point !== null &&
+			!Array.isArray(point) &&
+			'x' in point
+		) {
+			const x = point.x;
+			if (typeof x === 'number' && Number.isFinite(x)) return x;
+		}
+		return index;
+	};
+	const rawLeft = chart.scales.x.getPixelForValue(xValueAt(from));
+	const rawRight = chart.scales.x.getPixelForValue(xValueAt(to));
 	const left = Math.max(area.left, Math.min(rawLeft, rawRight));
 	const right = Math.min(area.right, Math.max(rawLeft, rawRight));
 	const width = right - left;
@@ -423,4 +478,114 @@ export function shouldHighlightNetflowGrid(
 		return minutes === 0;
 	}
 	return index === 0;
+}
+
+/**
+ * Coverage metadata attached to a time bucket. Keep this structural so chart
+ * presentation code can consume API buckets without coupling to a database
+ * response type.
+ */
+export type ChartCoverage = {
+	state: 'complete' | 'partial' | 'unknown';
+	observedUnits: number;
+	expectedUnits: number;
+};
+
+export type ChartTimeBucket<T> = {
+	bucketStart: number;
+	bucketEnd: number;
+	coverage: ChartCoverage;
+	data: T | null;
+};
+
+export type TemporalChartPoint<T = number> = {
+	x: number;
+	y: T | null;
+	bucketStart: number;
+	bucketEnd: number;
+	coverage: ChartCoverage;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
+}
+
+/** Read coverage metadata from an untyped Chart.js point. */
+export function getChartBucketCoverage(bucket: unknown): ChartCoverage | null {
+	if (!isRecord(bucket) || !isRecord(bucket.coverage)) {
+		return null;
+	}
+
+	const { state, observedUnits, expectedUnits } = bucket.coverage;
+	if (
+		(state === 'complete' || state === 'partial' || state === 'unknown') &&
+		typeof observedUnits === 'number' &&
+		Number.isFinite(observedUnits) &&
+		typeof expectedUnits === 'number' &&
+		Number.isFinite(expectedUnits)
+	) {
+		return { state, observedUnits, expectedUnits };
+	}
+
+	return null;
+}
+
+/** Build Chart.js points without compressing gaps into adjacent indexes. */
+export function buildTemporalChartPoints<T>(
+	buckets: readonly ChartTimeBucket<T>[],
+	getValue: (data: T) => number | null
+): TemporalChartPoint[] {
+	return buckets.map((bucket) => ({
+		x: bucket.bucketStart,
+		y: bucket.data === null ? null : getValue(bucket.data),
+		bucketStart: bucket.bucketStart,
+		bucketEnd: bucket.bucketEnd,
+		coverage: bucket.coverage
+	}));
+}
+
+/** Return the visual treatment used for a complete or partial data point. */
+export function getCoveragePointStyle(
+	coverage: ChartCoverage,
+	color: string
+): {
+	backgroundColor: string;
+	borderColor: string;
+	borderWidth: number;
+	radius: number;
+} {
+	if (coverage.state !== 'partial') {
+		return {
+			backgroundColor: color,
+			borderColor: color,
+			borderWidth: 1,
+			radius: 0
+		};
+	}
+
+	return {
+		backgroundColor: 'transparent',
+		borderColor: color,
+		borderWidth: 2,
+		radius: 4
+	};
+}
+
+/** Partial buckets make both adjoining line segments visibly uncertain. */
+export function isCoverageSegmentDashed(
+	left: { coverage?: ChartCoverage } | null | undefined,
+	right: { coverage?: ChartCoverage } | null | undefined
+): boolean {
+	return left?.coverage?.state === 'partial' || right?.coverage?.state === 'partial';
+}
+
+export function getCoverageTooltipLines(coverage: ChartCoverage | null | undefined): string[] {
+	if (!coverage || coverage.state === 'complete') {
+		return [];
+	}
+
+	return [
+		`Coverage: ${coverage.state}`,
+		`Observed units: ${coverage.observedUnits.toLocaleString()} / ${coverage.expectedUnits.toLocaleString()}`
+	];
 }

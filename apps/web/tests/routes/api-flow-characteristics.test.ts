@@ -50,6 +50,28 @@ describe('/api/netflow/characteristics GET', () => {
 					portRange: 'low',
 					uniquePortCount: 7
 				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'uoregon_all',
+					bucketStart: 100,
+					bucketEnd: 200,
+					coverageState: 'partial',
+					observedUnits: 1,
+					expectedUnits: 2,
+					rejectedUnits: 0
+				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'uoregon_all',
+					bucketStart: 100,
+					bucketEnd: 200,
+					coverageState: 'partial',
+					observedUnits: 1,
+					expectedUnits: 2,
+					rejectedUnits: 0
+				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('uoregon');
 		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
@@ -71,37 +93,47 @@ describe('/api/netflow/characteristics GET', () => {
 				{
 					bucketStart: 100,
 					bucketEnd: 200,
-					ipFamily: 'ipv4',
-					averageDurationMs: 150,
-					averageMinTtl: 30,
-					averageMaxTtl: 64
-				},
-				{
-					bucketStart: 100,
-					bucketEnd: 200,
-					ipFamily: 'ipv6',
-					averageDurationMs: 50,
-					averageMinTtl: null,
-					averageMaxTtl: 64
-				},
-				{
-					bucketStart: 100,
-					bucketEnd: 200,
-					ipFamily: 'all',
-					averageDurationMs: 100,
-					averageMinTtl: 30,
-					averageMaxTtl: 64
+					coverage: { state: 'partial', observedUnits: 1, expectedUnits: 2 },
+					data: [
+						{
+							ipFamily: 'ipv4',
+							averageDurationMs: 150,
+							averageMinTtl: 30,
+							averageMaxTtl: 64
+						},
+						{
+							ipFamily: 'ipv6',
+							averageDurationMs: 50,
+							averageMinTtl: null,
+							averageMaxTtl: 64
+						},
+						{
+							ipFamily: 'all',
+							averageDurationMs: 100,
+							averageMinTtl: 30,
+							averageMaxTtl: 64
+						}
+					]
 				}
 			],
-			portBuckets: [
+			portTimelines: [
 				{
 					sourceId: 'uoregon_all',
-					bucketStart: 100,
-					bucketEnd: 200,
-					ipFamily: 'ipv4',
-					portSide: 'source',
-					portRange: 'low',
-					uniquePortCount: 7
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'partial', observedUnits: 1, expectedUnits: 2 },
+							data: [
+								{
+									ipFamily: 'ipv4',
+									portSide: 'source',
+									portRange: 'low',
+									uniquePortCount: 7
+								}
+							]
+						}
+					]
 				}
 			],
 			resolvedSources: ['uoregon_all']
@@ -125,7 +157,7 @@ describe('/api/netflow/characteristics GET', () => {
 	});
 
 	it('keeps disjoint fallback sources separate instead of summing cardinalities', async () => {
-		const all = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+		const all = vi.fn().mockResolvedValue([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
 			{ sourceId: 'r1', members: ['r1'] },
@@ -140,7 +172,41 @@ describe('/api/netflow/characteristics GET', () => {
 		} as never);
 
 		expect(response.status).toBe(200);
-		await expect(response.json()).resolves.toMatchObject({ resolvedSources: ['r1', 'r2'] });
+		await expect(response.json()).resolves.toMatchObject({
+			resolvedSources: ['r1', 'r2'],
+			observationBuckets: [
+				{
+					bucketStart: 1,
+					bucketEnd: 2,
+					coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+					data: null
+				}
+			],
+			portTimelines: [
+				{
+					sourceId: 'r1',
+					buckets: [
+						{
+							bucketStart: 1,
+							bucketEnd: 2,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					sourceId: 'r2',
+					buckets: [
+						{
+							bucketStart: 1,
+							bucketEnd: 2,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				}
+			]
+		});
 		expect(all).toHaveBeenNthCalledWith(2, expect.any(String), [
 			'r1',
 			'r2',

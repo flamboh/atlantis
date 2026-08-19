@@ -14,7 +14,8 @@
 		type IpMetricKey,
 		type IpMetricOption,
 		type IpStatsBucket,
-		type IpStatsResponse
+		type IpStatsResponse,
+		type TimeBucket
 	} from '$lib/types/types';
 	import {
 		generateSlugFromLabel,
@@ -26,10 +27,16 @@
 		chooseAdaptiveGranularity,
 		createRangeDragState,
 		getSelectionLabels,
+		indexFromPixelX,
 		beginRangeDrag,
 		updateRangeDrag,
 		endRangeDrag,
-		buildMirroredSelectionStyle
+		buildMirroredSelectionStyle,
+		getChartBucketCoverage,
+		getCoveragePointStyle,
+		getCoverageTooltipLines,
+		isCoverageSegmentDashed,
+		type ChartCoverage
 	} from './chart-utils';
 	import {
 		formatIpGranularityTick,
@@ -101,7 +108,11 @@
 	let activeMetrics = $state<IpMetricKey[]>(getInitialMetrics());
 	let currentGranularity = $state<IpGranularity>(getGranularity());
 
-	let buckets = $state<IpStatsBucket[]>([]);
+	type IpChartRecord = {
+		router: string;
+		bucket: TimeBucket<IpStatsBucket>;
+	};
+	let buckets = $state<IpChartRecord[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
@@ -321,19 +332,7 @@
 		}
 
 		const canvasPosition = getRelativePosition(event, chart);
-		const dataX = chart.scales.x.getValueForPixel(canvasPosition.x);
-
-		let labelIndex: number | null = null;
-		if (typeof dataX === 'number' && Number.isFinite(dataX)) {
-			const roundedIndex = Math.round(dataX);
-			if (roundedIndex >= 0 && roundedIndex < labels.length) {
-				labelIndex = roundedIndex;
-			} else if (roundedIndex < 0) {
-				labelIndex = 0;
-			} else {
-				labelIndex = labels.length - 1;
-			}
-		}
+		const labelIndex = indexFromPixelX(chart, canvasPosition.x);
 
 		const fallbackIndex = activeElements.length > 0 ? activeElements[0].index : null;
 		const targetIndex = labelIndex ?? fallbackIndex;
@@ -391,7 +390,7 @@
 			tooltipBorderColor
 		} = getChartColors();
 		const selectedRouters = new Set(deriveSelectedRouters(props.routers));
-		const selectedBuckets = buckets.filter((bucket) => selectedRouters.has(bucket.router));
+		const selectedBuckets = buckets.filter((record) => selectedRouters.has(record.router));
 
 		if (activeMetrics.length === 0 || selectedBuckets.length === 0) {
 			destroyChart();
@@ -404,26 +403,39 @@
 		}
 
 		const bucketStarts = Array.from(
-			new Set(selectedBuckets.map((bucket) => bucket.bucketStart))
+			new Set(selectedBuckets.map((record) => record.bucket.bucketStart))
 		).sort((a, b) => a - b);
-		const routers = Array.from(new Set(selectedBuckets.map((bucket) => bucket.router))).sort();
+		const routers = Array.from(new Set(selectedBuckets.map((record) => record.router))).sort();
 
 		const labels = bucketStarts.map((bucketStart) =>
 			formatTemporalBucketLabel(bucketStart, currentGranularity)
 		);
 
-		const bucketByRouterAndStart: Record<string, IpStatsBucket> = {};
-		selectedBuckets.forEach((bucket) => {
-			bucketByRouterAndStart[`${bucket.router}-${bucket.bucketStart}`] = bucket;
+		const bucketByRouterAndStart: Record<string, IpChartRecord> = {};
+		selectedBuckets.forEach((record) => {
+			bucketByRouterAndStart[`${record.router}-${record.bucket.bucketStart}`] = record;
 		});
 
 		const datasets = routers.flatMap((router, routerIndex) =>
 			IP_METRIC_OPTIONS.filter((option) => activeMetrics.includes(option.key)).map((option) => {
 				const { stroke, fill } = buildColors(option, routerIndex);
 				const data = bucketStarts.map((bucketStart) => {
-					const bucket = bucketByRouterAndStart[`${router}-${bucketStart}`];
-					return bucket ? bucket[option.key] : null;
+					const record = bucketByRouterAndStart[`${router}-${bucketStart}`];
+					const bucket = record?.bucket;
+					const coverage = getChartBucketCoverage(bucket) ?? {
+						state: 'unknown',
+						observedUnits: 0,
+						expectedUnits: 0
+					};
+					return {
+						x: bucketStart,
+						y: bucket?.data?.[option.key] ?? null,
+						bucketStart,
+						bucketEnd: bucket?.bucketEnd ?? bucketStart,
+						coverage
+					};
 				});
+				const pointStyles = data.map((point) => getCoveragePointStyle(point.coverage, stroke));
 
 				return {
 					label: `${router} · ${METRIC_SHORT_LABELS[option.key]}`,
@@ -432,9 +444,24 @@
 					backgroundColor: fill,
 					tension: 0.3,
 					fill: false,
-					pointRadius: 0,
+					pointRadius: data.map((point, index) =>
+						point.y === null ? 0 : (pointStyles[index]?.radius ?? 0)
+					),
+					pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
+					pointBorderColor: pointStyles.map((style) => style.borderColor),
+					pointBorderWidth: pointStyles.map((style) => style.borderWidth),
 					pointHoverRadius: 4,
-					spanGaps: true
+					spanGaps: false,
+					segment: {
+						borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
+							isCoverageSegmentDashed(
+								context.p0.raw as { coverage?: ChartCoverage },
+								context.p1.raw as { coverage?: ChartCoverage }
+							)
+								? [6, 4]
+								: []
+					},
+					parsing: false
 				};
 			})
 		);
@@ -460,6 +487,12 @@
 					interaction: { mode: 'index', intersect: false },
 					plugins: {
 						legend: { position: 'top', labels: { color: textColor } },
+						tooltip: {
+							callbacks: {
+								afterLabel: (context: { raw: unknown }) =>
+									getCoverageTooltipLines(getChartBucketCoverage(context.raw))
+							}
+						},
 						verticalCrosshair: {
 							enabled: true,
 							line: {
@@ -487,6 +520,9 @@
 					} as Record<string, unknown>,
 					scales: {
 						x: {
+							type: 'linear',
+							min: bucketStarts[0],
+							max: bucketStarts[bucketStarts.length - 1],
 							title: {
 								display: true,
 								text: `Time (${currentGranularity})`,
@@ -498,19 +534,15 @@
 								maxRotation: 45,
 								minRotation: 45,
 								sampleSize: 12,
-								callback: (_value, idx) =>
-									formatIpGranularityTick(
-										bucketStarts[idx as number] ?? 0,
-										currentGranularity,
-										idx as number
-									)
+								callback: (value: string | number) =>
+									formatIpGranularityTick(Number(value), currentGranularity, 0)
 							},
 							grid: {
-								color: (ctx) =>
+								color: (ctx: { tick?: { value?: number } }) =>
 									shouldHighlightIpGranularityGrid(
-										bucketStarts[ctx.index] ?? 0,
+										Number(ctx.tick?.value ?? 0),
 										currentGranularity,
-										ctx.index
+										0
 									)
 										? gridColor
 										: gridHighlightColor
@@ -536,15 +568,18 @@
 						}
 					}
 				}
-			});
+			} as never);
 			// Register chart with crosshair store for synchronized crosshairs
-			crosshairStore.register(CHART_ID, chart);
+			crosshairStore.register(CHART_ID, chart as Chart);
 		} else {
 			chart.data.labels = labels;
 			chart.data.datasets = datasets as never[];
 			chart.options.scales = {
 				x: {
 					...chart.options.scales?.x,
+					type: 'linear',
+					min: bucketStarts[0],
+					max: bucketStarts[bucketStarts.length - 1],
 					title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
 					ticks: {
 						color: textColor,
@@ -552,20 +587,12 @@
 						maxRotation: 45,
 						minRotation: 45,
 						sampleSize: 12,
-						callback: (_value, idx) =>
-							formatIpGranularityTick(
-								bucketStarts[idx as number] ?? 0,
-								currentGranularity,
-								idx as number
-							)
+						callback: (value: string | number) =>
+							formatIpGranularityTick(Number(value), currentGranularity, 0)
 					},
 					grid: {
-						color: (ctx) =>
-							shouldHighlightIpGranularityGrid(
-								bucketStarts[ctx.index] ?? 0,
-								currentGranularity,
-								ctx.index
-							)
+						color: (ctx: { tick?: { value?: number } }) =>
+							shouldHighlightIpGranularityGrid(Number(ctx.tick?.value ?? 0), currentGranularity, 0)
 								? gridColor
 								: gridHighlightColor
 					}
@@ -584,11 +611,17 @@
 						color: gridColor
 					}
 				}
-			};
+			} as never;
 			chart.options.onClick = handleChartClick;
 			chart.options.plugins = {
 				...chart.options.plugins,
 				legend: { position: 'top', labels: { color: textColor } },
+				tooltip: {
+					callbacks: {
+						afterLabel: (context: { raw: unknown }) =>
+							getCoverageTooltipLines(getChartBucketCoverage(context.raw))
+					}
+				},
 				verticalCrosshair: {
 					enabled: true,
 					line: {
@@ -667,7 +700,7 @@
 		});
 
 		try {
-			await ensureCachedWindow<IpStatsBucket>({
+			await ensureCachedWindow<IpChartRecord>({
 				key: cacheKey,
 				requestedRange,
 				fetchRange: async (range) => {
@@ -683,17 +716,20 @@
 						throw new Error(message || 'Failed to load IP statistics');
 					}
 					const data = (await response.json()) as IpStatsResponse;
-					return data.buckets;
+					return data.timelines.flatMap((timeline) =>
+						timeline.buckets.map((bucket) => ({ router: timeline.router, bucket }))
+					);
 				},
-				getRecordKey: (record) => `${record.router}-${record.bucketStart}`,
+				getRecordKey: (record) => `${record.router}-${record.bucket.bucketStart}`,
 				compareRecords: (left, right) =>
-					left.bucketStart - right.bucketStart || left.router.localeCompare(right.router)
+					left.bucket.bucketStart - right.bucket.bucketStart ||
+					left.router.localeCompare(right.router)
 			});
 			if (token !== requestToken) {
 				return;
 			}
-			buckets = readCachedWindow<IpStatsBucket>(cacheKey, requestedRange, (record, range) => {
-				return record.bucketStart >= range.start && record.bucketStart < range.end;
+			buckets = readCachedWindow<IpChartRecord>(cacheKey, requestedRange, (record, range) => {
+				return record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end;
 			});
 			loading = false;
 			await tick();

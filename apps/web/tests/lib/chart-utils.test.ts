@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	clampGroupByToDateRange,
+	buildTemporalChartPoints,
+	getCoveragePointStyle,
+	getCoverageTooltipLines,
+	isCoverageSegmentDashed,
 	getMaxAllowedGranularityForDateRange,
 	isGranularityAllowedForDateRange
 } from '../../src/lib/components/charts/chart-utils';
@@ -45,5 +49,51 @@ describe('shared IP granularity chart labels', () => {
 		expect(formatIpGranularityTick(tuesdayStart, '1d', 1)).toBe('');
 		expect(shouldHighlightIpGranularityGrid(mondayStart, '1d', 0)).toBe(true);
 		expect(shouldHighlightIpGranularityGrid(tuesdayStart, '1d', 1)).toBe(false);
+	});
+});
+
+describe('coverage-aware chart data', () => {
+	const completeCoverage = { state: 'complete' as const, observedUnits: 12, expectedUnits: 12 };
+	const partialCoverage = { state: 'partial' as const, observedUnits: 8, expectedUnits: 12 };
+	const unknownCoverage = { state: 'unknown' as const, observedUnits: 0, expectedUnits: 12 };
+
+	it('keeps bucket timestamps and preserves zero, partial, and unknown values', () => {
+		const points = buildTemporalChartPoints(
+			[
+				{ bucketStart: 100, bucketEnd: 160, coverage: completeCoverage, data: { value: 0 } },
+				{ bucketStart: 160, bucketEnd: 220, coverage: partialCoverage, data: { value: 4 } },
+				{ bucketStart: 520, bucketEnd: 580, coverage: unknownCoverage, data: null }
+			],
+			(data) => data.value
+		);
+
+		expect(points.map(({ x, y }) => ({ x, y }))).toEqual([
+			{ x: 100, y: 0 },
+			{ x: 160, y: 4 },
+			{ x: 520, y: null }
+		]);
+		expect(points[1]?.coverage).toEqual(partialCoverage);
+	});
+
+	it('styles partial points as hollow and dashes adjoining segments', () => {
+		const partialPoint = { coverage: partialCoverage };
+		const completePoint = { coverage: completeCoverage };
+
+		expect(getCoveragePointStyle(partialCoverage, '#2563eb')).toEqual({
+			backgroundColor: 'transparent',
+			borderColor: '#2563eb',
+			borderWidth: 2,
+			radius: 4
+		});
+		expect(isCoverageSegmentDashed(partialPoint, completePoint)).toBe(true);
+		expect(isCoverageSegmentDashed(completePoint, completePoint)).toBe(false);
+	});
+
+	it('exposes observed and expected units for partial coverage tooltips', () => {
+		expect(getCoverageTooltipLines(partialCoverage)).toEqual([
+			'Coverage: partial',
+			'Observed units: 8 / 12'
+		]);
+		expect(getCoverageTooltipLines(completeCoverage)).toEqual([]);
 	});
 });

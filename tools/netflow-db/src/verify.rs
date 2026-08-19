@@ -60,19 +60,20 @@ pub fn verify_database(
         Some(source_id) => source_id.clone(),
         None => connection
             .query_row(
-                "SELECT source_id FROM traffic_stats WHERE granularity = '5m' \
+                "SELECT source_id FROM bucket_coverage WHERE granularity = '5m' \
                  ORDER BY source_id LIMIT 1",
                 [],
                 |row| row.get(0),
             )
             .optional()?
             .ok_or_else(|| {
-                VerifyError::Incompatible("no source_id found in traffic_stats".into())
+                VerifyError::Incompatible("no source_id found in bucket_coverage".into())
             })?,
     };
     let row_counts = table_row_counts(&connection)?;
     if options.require_data {
         for table in [
+            "bucket_coverage",
             "traffic_stats",
             "protocol_stats",
             "address_count_stats",
@@ -107,46 +108,76 @@ pub fn verify_database(
     let (bucket_start, bucket_end) = select_query_window(&connection, &source_id)?;
     assert_query_returns_row(
         &connection,
-        NETFLOW_QUERY,
+        COVERAGE_QUERY,
         params![source_id, bucket_start, bucket_end],
-        "web netflow stats query returned no rows",
+        "web coverage query returned no rows",
     )?;
-    assert_query_returns_row(
-        &connection,
-        ADDRESS_QUERY,
+    let has_metric_data = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM traffic_stats
+            WHERE source_id = ?1 AND granularity = '1h'
+              AND bucket_start >= ?2 AND bucket_start < ?3
+        )",
         params![source_id, bucket_start, bucket_end],
-        "web IP stats query returned no rows",
+        |row| row.get::<_, bool>(0),
     )?;
-    assert_query_returns_row(
-        &connection,
-        PROTOCOL_QUERY,
-        params![source_id, bucket_start, bucket_end],
-        "web protocol stats query returned no rows",
-    )?;
-    assert_optional_maad_query(
-        &connection,
-        STRUCTURE_QUERY,
-        &source_id,
-        bucket_start,
-        bucket_end,
-        options.require_maad_data,
-        "web structure stats query returned no rows",
-    )?;
-    assert_optional_maad_query(
-        &connection,
-        SPECTRUM_QUERY,
-        &source_id,
-        bucket_start,
-        bucket_end,
-        options.require_maad_data,
-        "web spectrum stats query returned no rows",
-    )?;
-    assert_query_returns_row(
-        &connection,
-        FILE_DETAILS_QUERY,
-        params![bucket_start, bucket_start, bucket_start],
-        "web file details query returned no rows",
-    )?;
+    if has_metric_data {
+        assert_query_returns_row(
+            &connection,
+            NETFLOW_QUERY,
+            params![source_id, bucket_start, bucket_end],
+            "web netflow stats query returned no rows",
+        )?;
+        assert_query_returns_row(
+            &connection,
+            ADDRESS_QUERY,
+            params![source_id, bucket_start, bucket_end],
+            "web IP stats query returned no rows",
+        )?;
+        assert_query_returns_row(
+            &connection,
+            PROTOCOL_QUERY,
+            params![source_id, bucket_start, bucket_end],
+            "web protocol stats query returned no rows",
+        )?;
+        assert_optional_maad_query(
+            &connection,
+            STRUCTURE_QUERY,
+            &source_id,
+            bucket_start,
+            bucket_end,
+            options.require_maad_data,
+            "web structure stats query returned no rows",
+        )?;
+        assert_optional_maad_query(
+            &connection,
+            SPECTRUM_QUERY,
+            &source_id,
+            bucket_start,
+            bucket_end,
+            options.require_maad_data,
+            "web spectrum stats query returned no rows",
+        )?;
+        let file_bucket_start = connection.query_row(
+            "SELECT MIN(bucket_start) FROM traffic_stats
+             WHERE source_id = ?1 AND granularity = '5m'
+               AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, bucket_start, bucket_end],
+            |row| row.get::<_, Option<i64>>(0),
+        )?;
+        if let Some(file_bucket_start) = file_bucket_start {
+            assert_query_returns_row(
+                &connection,
+                FILE_DETAILS_QUERY,
+                params![file_bucket_start, file_bucket_start, file_bucket_start],
+                "web file details query returned no rows",
+            )?;
+        }
+    } else if options.require_maad_data {
+        return Err(VerifyError::Incompatible(
+            "capture coverage exists but no metric data is available".into(),
+        ));
+    }
     Ok(VerificationReport {
         database: database.to_owned(),
         source_id,
@@ -193,6 +224,19 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "rejected_rows",
             "skipped_bad_column_count",
             "processed_at",
+        ],
+    ),
+    (
+        "bucket_coverage",
+        &[
+            "source_id",
+            "granularity",
+            "bucket_start",
+            "bucket_end",
+            "coverage_state",
+            "observed_units",
+            "expected_units",
+            "rejected_units",
         ],
     ),
     (
@@ -498,14 +542,14 @@ fn select_query_window(
     source_id: &str,
 ) -> Result<(i64, i64), VerifyError> {
     let window = connection.query_row(
-        "SELECT MIN(bucket_start), MAX(bucket_end) FROM traffic_stats
+        "SELECT MIN(bucket_start), MAX(bucket_end) FROM bucket_coverage
          WHERE source_id = ? AND granularity = '5m'
-           AND src_visibility = 'all' AND dst_visibility = 'all'",
+        ",
         [source_id],
         |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
     )?;
     window.0.zip(window.1).ok_or_else(|| {
-        VerifyError::Incompatible(format!("no traffic rows found for source_id={source_id}"))
+        VerifyError::Incompatible(format!("no coverage rows found for source_id={source_id}"))
     })
 }
 
@@ -573,6 +617,14 @@ const NETFLOW_QUERY: &str = "
       AND src_visibility = 'all' AND dst_visibility = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY bucket_start ORDER BY bucket_start LIMIT 1";
+
+const COVERAGE_QUERY: &str = "
+    SELECT source_id, bucket_start, bucket_end, coverage_state,
+           observed_units, expected_units
+    FROM bucket_coverage
+    WHERE source_id IN (?) AND granularity = '5m'
+      AND bucket_start >= ? AND bucket_start < ?
+    ORDER BY source_id, bucket_start LIMIT 1";
 
 const ADDRESS_QUERY: &str = "
     SELECT source_id, bucket_start, bucket_end, granularity,
@@ -729,6 +781,15 @@ mod tests {
                 .unwrap();
             connection
                 .execute(
+                    "INSERT INTO bucket_coverage (
+                        source_id, granularity, bucket_start, bucket_end,
+                        coverage_state, observed_units, expected_units, rejected_units
+                     ) VALUES ('r1', ?1, 100, ?2, 'complete', 1, 1, 0)",
+                    params![granularity, end],
+                )
+                .unwrap();
+            connection
+                .execute(
                     "INSERT INTO protocol_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
                     src_visibility, dst_visibility, unique_protocols_count, protocols_list
@@ -772,6 +833,38 @@ mod tests {
         .unwrap();
         assert_eq!(report.source_id, "r1");
         assert_eq!((report.bucket_start, report.bucket_end), (100, 400));
+    }
+
+    #[test]
+    fn coverage_only_database_is_a_valid_inspectable_product() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("unknown.sqlite");
+        let connection = Connection::open(&database).unwrap();
+        init_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO datasets (
+                    id, label, default_start_date, source_mode, discovery_mode, sort_order
+                 ) VALUES ('fixture', 'Fixture', '2025-01-01', 'single', 'directory', 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO bucket_coverage (
+                    source_id, granularity, bucket_start, bucket_end,
+                    coverage_state, observed_units, expected_units, rejected_units
+                 ) VALUES ('r1', '5m', 100, 400, 'unknown', 0, 1, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let report = verify_database(&database, &VerifyOptions::default()).unwrap();
+
+        assert_eq!(report.source_id, "r1");
+        assert_eq!((report.bucket_start, report.bucket_end), (100, 400));
+        assert_eq!(report.row_counts["traffic_stats"], 0);
     }
 
     #[test]

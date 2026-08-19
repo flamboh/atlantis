@@ -7,14 +7,16 @@
 	import { createRequestGate, getSourceLineDash } from './flow-characteristics';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 	import type {
+		BucketCoverage,
 		FlowCharacteristicsResponse,
 		FlowVisibility,
 		IpGranularity,
 		NetflowIpFamily,
-		ObservationStatsBucket,
-		PortCardinalityBucket,
+		ObservationStats,
+		PortCardinalityStats,
 		PortRange,
-		PortSide
+		PortSide,
+		TimeBucket
 	} from '$lib/types/types';
 
 	const props = $props<{
@@ -58,46 +60,49 @@
 	const granularity: IpGranularity = $derived(
 		GROUP_BY_TO_GRANULARITY[props.groupBy as GroupByOption]
 	);
-	const observationRows = $derived(
-		(data?.observationBuckets ?? []).filter((row) => row.ipFamily === observationFamily)
-	);
-	const observationStarts = $derived(uniqueStarts(observationRows));
+	const observationBuckets = $derived(data?.observationBuckets ?? []);
+	const observationStarts = $derived(uniqueStarts(observationBuckets));
+	const observationCoverage = $derived(coverageByStart(observationBuckets, observationStarts));
 	const durationSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average duration',
-			values: valuesByStart(observationRows, observationStarts, 'averageDurationMs'),
-			color: '#2563eb'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageDurationMs'),
+			color: '#2563eb',
+			coverage: observationCoverage
 		}
 	]);
 	const ttlSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average minimum TTL',
-			values: valuesByStart(observationRows, observationStarts, 'averageMinTtl'),
-			color: '#7c3aed'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMinTtl'),
+			color: '#7c3aed',
+			coverage: observationCoverage
 		},
 		{
 			label: 'Average maximum TTL',
-			values: valuesByStart(observationRows, observationStarts, 'averageMaxTtl'),
-			color: '#db2777'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMaxTtl'),
+			color: '#db2777',
+			coverage: observationCoverage
 		}
 	]);
-	const selectedPortRows = $derived(
-		(data?.portBuckets ?? []).filter(
-			(row) =>
-				row.ipFamily === portFamily && activePortSeries.has(`${row.portSide}-${row.portRange}`)
-		)
+	const portStarts = $derived(
+		uniqueStarts((data?.portTimelines ?? []).flatMap((timeline) => timeline.buckets))
 	);
-	const portStarts = $derived(uniqueStarts(selectedPortRows));
 	const portSeries = $derived.by<MetricLineSeries[]>(() => {
 		const multipleSources = (data?.resolvedSources.length ?? 0) > 1;
 		return (data?.resolvedSources ?? []).flatMap((sourceId, sourceIndex) =>
 			PORT_OPTIONS.filter(({ side, range }) => activePortSeries.has(`${side}-${range}`)).map(
-				({ side, range, label }) => ({
-					label: multipleSources ? `${sourceId} · ${label}` : label,
-					values: portValuesByStart(selectedPortRows, portStarts, sourceId, side, range),
-					color: PORT_COLORS[`${side}-${range}`],
-					dash: getSourceLineDash(sourceIndex, multipleSources)
-				})
+				({ side, range, label }) => {
+					const timeline =
+						data?.portTimelines.find((candidate) => candidate.sourceId === sourceId)?.buckets ?? [];
+					return {
+						label: multipleSources ? `${sourceId} · ${label}` : label,
+						values: portValuesByStart(timeline, portStarts, portFamily, side, range),
+						color: PORT_COLORS[`${side}-${range}`],
+						dash: getSourceLineDash(sourceIndex, multipleSources),
+						coverage: coverageByStart(timeline, portStarts)
+					};
+				}
 			)
 		);
 	});
@@ -114,30 +119,40 @@
 		return [...new Set(rows.map((row) => row.bucketStart))].sort((left, right) => left - right);
 	}
 
-	function valuesByStart(
-		rows: ObservationStatsBucket[],
-		starts: number[],
+	function observationValuesByStart(
+		buckets: TimeBucket<ObservationStats[]>[],
+		family: NetflowIpFamily,
 		key: 'averageDurationMs' | 'averageMinTtl' | 'averageMaxTtl'
 	): Array<number | null> {
-		const values = new Map(rows.map((row) => [row.bucketStart, row[key]]));
-		return starts.map((start) => values.get(start) ?? null);
+		return buckets.map(
+			(bucket) => bucket.data?.find((row) => row.ipFamily === family)?.[key] ?? null
+		);
 	}
 
 	function portValuesByStart(
-		rows: PortCardinalityBucket[],
+		buckets: TimeBucket<PortCardinalityStats[]>[],
 		starts: number[],
-		sourceId: string,
+		family: Exclude<NetflowIpFamily, 'all'>,
 		side: PortSide,
 		range: PortRange
 	): Array<number | null> {
-		const values = new Map(
-			rows
-				.filter(
-					(row) => row.sourceId === sourceId && row.portSide === side && row.portRange === range
-				)
-				.map((row) => [row.bucketStart, row.uniquePortCount])
+		const bucketsByStart = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket]));
+		return starts.map((start) => {
+			const data = bucketsByStart.get(start)?.data;
+			if (data === null || data === undefined) return null;
+			return (
+				data.find(
+					(row) => row.ipFamily === family && row.portSide === side && row.portRange === range
+				)?.uniquePortCount ?? 0
+			);
+		});
+	}
+
+	function coverageByStart<T>(buckets: TimeBucket<T>[], starts: number[]): BucketCoverage[] {
+		const coverage = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket.coverage]));
+		return starts.map(
+			(start) => coverage.get(start) ?? { state: 'unknown', observedUnits: 0, expectedUnits: 0 }
 		);
-		return starts.map((start) => values.get(start) ?? null);
 	}
 
 	function togglePortSeries(side: PortSide, range: PortRange) {

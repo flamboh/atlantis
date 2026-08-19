@@ -30,6 +30,13 @@ const TABLES: &[TableSpec] = &[
         CandidateOnlyPolicy::MissingReferenceBucketOrDenseZero,
     ),
     TableSpec::new(
+        "bucket_coverage",
+        &["granularity", "bucket_start", "source_id", "bucket_end"],
+        &[],
+        &[],
+        CandidateOnlyPolicy::Never,
+    ),
+    TableSpec::new(
         "protocol_stats",
         &[
             "granularity",

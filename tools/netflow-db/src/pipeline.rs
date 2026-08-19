@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::{
     config::{ConfigError, CsvSourceConfig},
+    coverage::BucketCoverage,
     domain::{
         BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
         StatisticalBucketIncludeProfile,
@@ -25,18 +26,20 @@ use crate::{
     nfdump,
     provenance::{
         ExpectedAbsence, FileSnapshot, InputRevision, ProvenanceError, capture_file_revision,
-        csv_decoder_fingerprint, gap_input_revision, nfcapd_decoder_fingerprint,
-        revision_for_locator, verify_file_snapshot,
+        csv_decoder_fingerprint, nfcapd_decoder_fingerprint, revision_for_locator,
+        verify_file_snapshot,
     },
     publish::{PublishError, WriteBucketsProfile, write_buckets, write_buckets_profiled},
     registry::{Dataset, DatasetRegistry, DatasetSource, RegistryError, is_safe_path_component},
     storage::{
-        DatabaseOperationLock, DatasetMetadata, InputBucket, InputKind, InputStatus,
-        ProductIdentity, SourceDefinition, StatsBucketKey, StorageError, bind_nfcapd_source_layout,
-        bind_product_identity, cached_content_fingerprint, complete_input_scan,
-        connect_pipeline_writer, delete_stats_bucket_keys, earliest_traffic_bucket_start,
-        init_schema, input_scan_fully_processed, mark_input_bucket_status,
-        nfcapd_logical_bucket_processed, set_dataset_default_start_date, upsert_dataset_metadata,
+        BucketCoverageRow, DatabaseOperationLock, DatasetMetadata, InputBucket, InputEvidenceRow,
+        InputEvidenceState, InputKind, InputStatus, ProductIdentity, SourceDefinition,
+        StatsBucketKey, StorageError, bind_nfcapd_source_layout, bind_product_identity,
+        cached_content_fingerprint, complete_input_scan, connect_pipeline_writer,
+        delete_stats_bucket_keys, earliest_traffic_bucket_start, init_schema,
+        input_scan_fully_processed, insert_bucket_coverage_rows, mark_input_bucket_status,
+        nfcapd_logical_bucket_processed, query_bucket_coverage, query_input_evidence,
+        replace_input_evidence, set_dataset_default_start_date, upsert_dataset_metadata,
         upsert_input_bucket,
     },
 };
@@ -60,6 +63,7 @@ pub struct PipelineRequest {
     pub nfdump: String,
     pub force: bool,
     pub run_maad: bool,
+    pub require_complete: bool,
 }
 
 impl PipelineRequest {
@@ -78,6 +82,7 @@ impl PipelineRequest {
             nfdump: "nfdump".into(),
             force: false,
             run_maad: true,
+            require_complete: false,
         }
     }
 }
@@ -88,6 +93,9 @@ pub struct PipelineReport {
     pub skipped_inputs: usize,
     pub five_minute_buckets: usize,
     pub rollup_buckets: usize,
+    pub complete_five_minute_buckets: usize,
+    pub partial_five_minute_buckets: usize,
+    pub unknown_five_minute_buckets: usize,
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +126,8 @@ pub enum PipelineError {
     Storage(#[from] StorageError),
     #[error("invalid pipeline time: {0}")]
     Time(String),
+    #[error("requested scope contains {0} incomplete five-minute coverage buckets")]
+    IncompleteCoverage(i64),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -170,8 +180,6 @@ enum InputSpec {
         start_time: Option<String>,
         #[serde(default)]
         end_time: Option<String>,
-        #[serde(default = "default_true")]
-        zero_fill_gaps: bool,
         #[serde(default)]
         force: bool,
     },
@@ -186,14 +194,11 @@ struct ResolvedPipeline {
     selection: FlowSelection,
     inputs: Vec<InputSpec>,
     datasets: Vec<Dataset>,
+    require_complete: bool,
 }
 
 fn default_timezone() -> String {
     DEFAULT_TIMEZONE.into()
-}
-
-const fn default_true() -> bool {
-    true
 }
 
 pub fn run(
@@ -246,6 +251,7 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
             selection,
             inputs: config.inputs,
             datasets: config.datasets,
+            require_complete: request.require_complete,
         });
     }
 
@@ -285,10 +291,10 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
             end_date: request.end_date.clone(),
             start_time: request.start_time.clone(),
             end_time: request.end_time.clone(),
-            zero_fill_gaps: true,
             force: request.force,
         }],
         datasets: vec![dataset],
+        require_complete: request.require_complete,
     })
 }
 
@@ -306,7 +312,7 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
     initialize_metadata(&connection, &pipeline)?;
 
     let mut report = PipelineReport::default();
-    let explicit_csv = pipeline
+    let mut csv_inputs = pipeline
         .inputs
         .iter()
         .filter_map(|input| match input {
@@ -331,11 +337,11 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
                 mapping_path,
             } => {
                 let mapping = CsvSourceConfig::load(mapping_path)?;
-                let inputs = ingest::discover_csv_inputs(root_path, mapping_path, &mapping)?;
-                merge_report(
-                    &mut report,
-                    process_csv_inputs(&connection, &inputs, &pipeline)?,
-                );
+                csv_inputs.extend(ingest::discover_csv_inputs(
+                    root_path,
+                    mapping_path,
+                    &mapping,
+                )?);
             }
             InputSpec::NfcapdTree {
                 root_path,
@@ -345,7 +351,6 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
                 end_date,
                 start_time,
                 end_time,
-                zero_fill_gaps,
                 force,
             } => process_nfcapd_tree(
                 &connection,
@@ -356,7 +361,6 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
                 end_date.as_deref(),
                 start_time.as_deref(),
                 end_time.as_deref(),
-                *zero_fill_gaps,
                 *force,
                 &pipeline,
                 &mut report,
@@ -365,13 +369,20 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
     }
     merge_report(
         &mut report,
-        process_csv_inputs(&connection, &explicit_csv, &pipeline)?,
+        process_csv_inputs(&connection, &csv_inputs, &pipeline)?,
     );
     merge_report(
         &mut report,
         process_explicit_nfcapd_inputs(&connection, &explicit_nfcapd, &pipeline)?,
     );
     infer_default_start_dates(&connection, &pipeline)?;
+    populate_coverage_summary(&connection, &mut report)?;
+    if pipeline.require_complete {
+        let incomplete = count_incomplete_requested_coverage(&connection, &pipeline)?;
+        if incomplete != 0 {
+            return Err(PipelineError::IncompleteCoverage(incomplete));
+        }
+    }
     Ok(report)
 }
 
@@ -502,23 +513,170 @@ fn merge_report(total: &mut PipelineReport, addition: PipelineReport) {
     total.rollup_buckets += addition.rollup_buckets;
 }
 
+fn populate_coverage_summary(
+    connection: &Connection,
+    report: &mut PipelineReport,
+) -> Result<(), PipelineError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT coverage_state, COUNT(*)
+             FROM bucket_coverage
+             WHERE granularity = '5m'
+             GROUP BY coverage_state",
+        )
+        .map_err(StorageError::from)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(StorageError::from)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(StorageError::from)?;
+    for (state, count) in rows {
+        let count = usize::try_from(count)
+            .map_err(|_| PipelineError::InvalidConfig("coverage summary count overflow".into()))?;
+        match state.as_str() {
+            "complete" => report.complete_five_minute_buckets = count,
+            "partial" => report.partial_five_minute_buckets = count,
+            "unknown" => report.unknown_five_minute_buckets = count,
+            _ => {
+                return Err(PipelineError::InvalidConfig(format!(
+                    "invalid five-minute coverage state in database: {state:?}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CoverageScope {
+    source_ids: Vec<String>,
+    start: i64,
+    end: i64,
+}
+
+/// A finite native request can be checked independently of incomplete data
+/// already stored outside that request. CSV and literal-input configurations
+/// have no separately declared time window, so their configured product is
+/// the strict scope.
+fn requested_coverage_scopes(
+    pipeline: &ResolvedPipeline,
+) -> Result<Option<Vec<CoverageScope>>, PipelineError> {
+    let mut scopes = Vec::new();
+    for input in &pipeline.inputs {
+        let InputSpec::NfcapdTree {
+            root_path,
+            source_ids,
+            sources,
+            start_date,
+            end_date,
+            start_time,
+            end_time,
+            ..
+        } = input
+        else {
+            return Ok(None);
+        };
+        let selected_start = parse_date_start(start_date, &pipeline.timezone)?;
+        let start = match start_time {
+            Some(value) => parse_local_datetime(value, &pipeline.timezone)?,
+            None => selected_start,
+        };
+        let end = match (end_time, end_date) {
+            (Some(value), _) => parse_local_datetime(value, &pipeline.timezone)?,
+            (None, Some(value)) => next_date_start(value, &pipeline.timezone)?,
+            (None, None) => return Ok(None),
+        };
+        let source_ids = normalize_sources(root_path, source_ids, sources)?
+            .into_iter()
+            .map(|source| source.source_id)
+            .collect();
+        scopes.push(CoverageScope {
+            source_ids,
+            start,
+            end,
+        });
+    }
+    Ok(Some(scopes))
+}
+
+fn count_incomplete_requested_coverage(
+    connection: &Connection,
+    pipeline: &ResolvedPipeline,
+) -> Result<i64, PipelineError> {
+    let Some(scopes) = requested_coverage_scopes(pipeline)? else {
+        return connection
+            .query_row(
+                "SELECT COUNT(*) FROM bucket_coverage
+                 WHERE granularity = '5m' AND coverage_state <> 'complete'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(StorageError::from)
+            .map_err(PipelineError::from);
+    };
+
+    connection
+        .execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS requested_coverage_scope (
+                source_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                bucket_end INTEGER NOT NULL,
+                PRIMARY KEY (source_id, bucket_start, bucket_end)
+             );
+             DELETE FROM requested_coverage_scope;",
+        )
+        .map_err(StorageError::from)?;
+    for scope in scopes {
+        for source_id in scope.source_ids {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO requested_coverage_scope (
+                        source_id, bucket_start, bucket_end
+                     ) VALUES (?1, ?2, ?3)",
+                    params![source_id, scope.start, scope.end],
+                )
+                .map_err(StorageError::from)?;
+        }
+    }
+    connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM bucket_coverage AS coverage
+             WHERE coverage.granularity = '5m'
+               AND coverage.coverage_state <> 'complete'
+               AND EXISTS (
+                   SELECT 1 FROM requested_coverage_scope AS scope
+                   WHERE scope.source_id = coverage.source_id
+                     AND coverage.bucket_start >= scope.bucket_start
+                     AND coverage.bucket_start < scope.bucket_end
+               )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(StorageError::from)
+        .map_err(PipelineError::from)
+}
+
 fn bind_identity(
     connection: &Connection,
     pipeline: &ResolvedPipeline,
 ) -> Result<(), PipelineError> {
     let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
     let schema = json!({
-        "version": 2,
+        "version": 3,
         "tables": [
             {"name":"traffic_stats","version":2},
             {"name":"protocol_stats","version":1},
             {"name":"address_count_stats","version":1},
             {"name":"port_count_stats","version":1},
-            {"name":"address_structure_stats","version":1}
+            {"name":"address_structure_stats","version":1},
+            {"name":"bucket_coverage","version":1}
         ]
     });
     let result_config = json!({
-        "version": 2,
+        "version": 3,
         "timezone": pipeline.timezone,
         "nfcapd_decoder": {
             "protocol_version": nfdump::CONTRACT_VERSION,
@@ -605,7 +763,8 @@ fn process_csv_inputs(
     pipeline: &ResolvedPipeline,
 ) -> Result<PipelineReport, PipelineError> {
     let mut prepared = Vec::new();
-    let mut report = PipelineReport::default();
+    let mut skipped_inputs = 0_usize;
+    let mut needs_rescan = false;
     for input in inputs {
         let mapping = CsvSourceConfig::load(&input.mapping_path)?;
         let (revision, snapshot) = prepare_file_revision(
@@ -615,23 +774,41 @@ fn process_csv_inputs(
             csv_decoder_fingerprint(&mapping)?,
         )?;
         if input_scan_fully_processed(connection, InputKind::Csv, &revision.locator, &revision)? {
-            report.skipped_inputs += 1;
+            skipped_inputs += 1;
         } else {
-            prepared.push(PreparedCsvInput {
-                path: input.path.clone(),
-                mapping,
-                revision,
-                snapshot,
-            });
+            needs_rescan = true;
         }
+        prepared.push(PreparedCsvInput {
+            path: input.path.clone(),
+            mapping,
+            revision,
+            snapshot,
+        });
     }
-    if prepared.is_empty() {
-        return Ok(report);
+    if !needs_rescan {
+        return Ok(PipelineReport {
+            skipped_inputs,
+            ..PipelineReport::default()
+        });
     }
     prepared.sort_unstable_by(|left, right| left.path.cmp(&right.path));
 
     let mut aggregates = AggregateBuckets::default();
+    let mut report = PipelineReport::default();
     with_transaction(connection, || {
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE csv_bucket_stage (
+                    source_id TEXT NOT NULL,
+                    bucket_start INTEGER NOT NULL,
+                    input_locator TEXT NOT NULL,
+                    revision_fingerprint TEXT,
+                    payload BLOB NOT NULL
+                );
+                CREATE INDEX csv_bucket_stage_order
+                ON csv_bucket_stage(source_id, bucket_start);",
+            )
+            .map_err(StorageError::from)?;
         for input in &prepared {
             process_csv(
                 connection,
@@ -640,10 +817,10 @@ fn process_csv_inputs(
                 &input.revision,
                 &input.snapshot,
                 pipeline,
-                &mut aggregates,
                 &mut report,
             )?;
         }
+        publish_csv_stage(connection, pipeline, &mut aggregates, &mut report)?;
         publish_rollups(connection, aggregates, pipeline, &mut report)
     })?;
     Ok(report)
@@ -657,20 +834,17 @@ fn process_csv(
     revision: &InputRevision,
     snapshot: &FileSnapshot,
     pipeline: &ResolvedPipeline,
-    aggregates: &mut AggregateBuckets,
     report: &mut PipelineReport,
 ) -> Result<(), PipelineError> {
-    let mut published = 0_usize;
+    connection
+        .execute(
+            "DELETE FROM processed_inputs
+             WHERE input_kind = 'csv' AND scan_locator = ?1",
+            params![revision.locator],
+        )
+        .map_err(StorageError::from)?;
     let completion = match ingest::scan_csv(path, mapping, &pipeline.selection, |event| {
         let bucket_revision = revision_for_locator(revision, &event.input_locator)?;
-        aggregates.reject_persisted_siblings(connection, &event.bucket, &pipeline.timezone)?;
-        reject_overlapping_bucket(
-            connection,
-            &event.bucket,
-            InputKind::Csv,
-            &event.scan_locator,
-            false,
-        )?;
         let owner = InputBucket {
             input_kind: InputKind::Csv,
             input_locator: event.input_locator.clone(),
@@ -682,11 +856,6 @@ fn process_csv(
             file_snapshot: Some(snapshot.clone()),
         };
         upsert_input_bucket(connection, &owner, false)?;
-        write_buckets(
-            connection,
-            std::slice::from_ref(&event.bucket),
-            pipeline.run_maad,
-        )?;
         mark_input_bucket_status(
             connection,
             InputKind::Csv,
@@ -697,9 +866,22 @@ fn process_csv(
             &bucket_revision,
             None,
         )?;
-        aggregates.include(&event.bucket, &pipeline.timezone)?;
-        report.rollup_buckets += aggregates.flush_complete(connection, pipeline.run_maad)?;
-        published += 1;
+        let payload = serde_json::to_vec(&event.bucket)?;
+        connection
+            .execute(
+                "INSERT INTO csv_bucket_stage (
+                    source_id, bucket_start, input_locator,
+                    revision_fingerprint, payload
+                ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    event.bucket.key.source_id,
+                    event.bucket.key.bucket_start,
+                    event.input_locator,
+                    bucket_revision.fingerprint,
+                    payload,
+                ],
+            )
+            .map_err(StorageError::from)?;
         Ok::<_, PipelineError>(())
     }) {
         Ok(completion) => completion,
@@ -721,7 +903,239 @@ fn process_csv(
     )?;
     verify_file_snapshot(path, snapshot)?;
     report.input_scans += 1;
-    report.five_minute_buckets += published;
+    Ok(())
+}
+
+struct CsvStageMember {
+    bucket: CanonicalBucket,
+    input_locator: String,
+    revision_fingerprint: Option<String>,
+}
+
+/// Merge all staged CSV buckets in source/time order. The stage is indexed on
+/// disk, so only one overlapping bucket group is held in memory at a time.
+fn publish_csv_stage(
+    connection: &Connection,
+    pipeline: &ResolvedPipeline,
+    aggregates: &mut AggregateBuckets,
+    report: &mut PipelineReport,
+) -> Result<(), PipelineError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT source_id, bucket_start, input_locator,
+                    revision_fingerprint, payload
+             FROM csv_bucket_stage
+             ORDER BY source_id, bucket_start, input_locator",
+        )
+        .map_err(StorageError::from)?;
+    let mut rows = statement.query([]).map_err(StorageError::from)?;
+    let mut group: Option<(String, i64, Vec<CsvStageMember>)> = None;
+    let mut current_source = None;
+    let mut next_expected = None;
+    loop {
+        let Some((source_id, bucket_start, input_locator, revision_fingerprint, payload)) = rows
+            .next()
+            .map_err(StorageError::from)?
+            .map(|row| {
+                Ok::<_, rusqlite::Error>((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            })
+            .transpose()
+            .map_err(StorageError::from)?
+        else {
+            break;
+        };
+        let member = CsvStageMember {
+            bucket: serde_json::from_slice(&payload)?,
+            input_locator,
+            revision_fingerprint,
+        };
+        match group.as_mut() {
+            Some((group_source, group_start, members))
+                if group_source == &source_id && *group_start == bucket_start =>
+            {
+                members.push(member);
+            }
+            _ => {
+                if let Some((group_source, group_start, members)) = group.take() {
+                    publish_csv_stage_group(
+                        connection,
+                        pipeline,
+                        aggregates,
+                        report,
+                        &group_source,
+                        group_start,
+                        &members,
+                        &mut current_source,
+                        &mut next_expected,
+                    )?;
+                }
+                group = Some((source_id, bucket_start, vec![member]));
+            }
+        }
+    }
+    drop(rows);
+    drop(statement);
+    if let Some((group_source, group_start, members)) = group {
+        publish_csv_stage_group(
+            connection,
+            pipeline,
+            aggregates,
+            report,
+            &group_source,
+            group_start,
+            &members,
+            &mut current_source,
+            &mut next_expected,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_csv_stage_group(
+    connection: &Connection,
+    pipeline: &ResolvedPipeline,
+    aggregates: &mut AggregateBuckets,
+    report: &mut PipelineReport,
+    source_id: &str,
+    bucket_start: i64,
+    members: &[CsvStageMember],
+    current_source: &mut Option<String>,
+    next_expected: &mut Option<i64>,
+) -> Result<(), PipelineError> {
+    if current_source.as_deref() != Some(source_id) {
+        *current_source = Some(source_id.to_owned());
+        *next_expected = None;
+    } else {
+        let mut expected = next_expected.ok_or_else(|| {
+            PipelineError::InvalidConfig("CSV stage lost its source envelope".into())
+        })?;
+        while expected < bucket_start {
+            let (bucket, evidence) = merged_csv_bucket(source_id, expected, &[])?;
+            publish_csv_bucket(connection, &bucket, &evidence, pipeline, aggregates, report)?;
+            expected = expected.checked_add(FIVE_MINUTES).ok_or_else(|| {
+                PipelineError::InvalidConfig("CSV source envelope exceeds time range".into())
+            })?;
+        }
+    }
+    let (bucket, evidence) = merged_csv_bucket(source_id, bucket_start, members)?;
+    publish_csv_bucket(connection, &bucket, &evidence, pipeline, aggregates, report)?;
+    *next_expected = Some(bucket_start.checked_add(FIVE_MINUTES).ok_or_else(|| {
+        PipelineError::InvalidConfig("CSV source envelope exceeds time range".into())
+    })?);
+    Ok(())
+}
+
+fn merged_csv_bucket(
+    source_id: &str,
+    bucket_start: i64,
+    members: &[CsvStageMember],
+) -> Result<(CanonicalBucket, InputEvidenceRow), PipelineError> {
+    let key = BucketKey::new(
+        source_id,
+        Granularity::FiveMinutes,
+        bucket_start,
+        bucket_start + FIVE_MINUTES,
+    );
+    let any_observed = members
+        .iter()
+        .any(|member| member.bucket.coverage.observed_units() != 0);
+    let any_rejected = members
+        .iter()
+        .any(|member| member.bucket.coverage.rejected_units() != 0);
+    let mut builder = if any_observed {
+        StatisticalBucket::dense(key)
+    } else {
+        StatisticalBucket::new(key)
+    }
+    .with_coverage(BucketCoverage::empty());
+    for member in members {
+        builder.include(&member.bucket)?;
+    }
+    let coverage = BucketCoverage::new(1, u64::from(any_observed), u64::from(any_rejected))
+        .map_err(DomainError::from)?;
+    let bucket = builder.with_coverage(coverage).finish();
+    let evidence_state = if any_rejected {
+        InputEvidenceState::Rejected
+    } else if any_observed {
+        InputEvidenceState::Observed
+    } else {
+        InputEvidenceState::Missing
+    };
+    let (input_locator, revision_fingerprint) = match members {
+        [member] => (
+            member.input_locator.clone(),
+            member.revision_fingerprint.clone(),
+        ),
+        [] => (format!("csv://{source_id}"), None),
+        _ => (format!("csv://{source_id}"), None),
+    };
+    let evidence = InputEvidenceRow::new(
+        source_id,
+        source_id,
+        bucket_start,
+        bucket_start + FIVE_MINUTES,
+        input_locator,
+        evidence_state,
+        revision_fingerprint,
+    );
+    Ok((bucket, evidence))
+}
+
+fn publish_csv_bucket(
+    connection: &Connection,
+    bucket: &CanonicalBucket,
+    evidence: &InputEvidenceRow,
+    pipeline: &ResolvedPipeline,
+    aggregates: &mut AggregateBuckets,
+    report: &mut PipelineReport,
+) -> Result<(), PipelineError> {
+    reject_cross_kind_overlap(connection, bucket, InputKind::Csv)?;
+    aggregates.reject_persisted_csv_siblings(connection, bucket, &pipeline.timezone)?;
+    write_buckets(connection, std::slice::from_ref(bucket), pipeline.run_maad)?;
+    replace_input_evidence(
+        connection,
+        &bucket.key.source_id,
+        bucket.key.bucket_start,
+        std::slice::from_ref(evidence),
+    )?;
+    aggregates.include(bucket, &pipeline.timezone)?;
+    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.run_maad)?;
+    report.five_minute_buckets += 1;
+    Ok(())
+}
+
+fn reject_cross_kind_overlap(
+    connection: &Connection,
+    bucket: &CanonicalBucket,
+    input_kind: InputKind,
+) -> Result<(), PipelineError> {
+    let conflict = connection
+        .query_row(
+            "SELECT input_kind, input_locator FROM processed_inputs
+             WHERE source_id = ?1 AND bucket_start = ?2 AND input_kind <> ?3
+             ORDER BY input_kind, input_locator LIMIT 1",
+            params![
+                bucket.key.source_id,
+                bucket.key.bucket_start,
+                input_kind.as_str(),
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(StorageError::from)?;
+    if let Some((kind, locator)) = conflict {
+        return Err(PipelineError::InvalidConfig(format!(
+            "overlapping canonical five-minute input for source {:?} at {} conflicts with {kind}:{locator}",
+            bucket.key.source_id, bucket.key.bucket_start
+        )));
+    }
     Ok(())
 }
 
@@ -735,7 +1149,6 @@ fn process_nfcapd_tree(
     end_date: Option<&str>,
     start_time: Option<&str>,
     end_time: Option<&str>,
-    zero_fill_gaps: bool,
     force: bool,
     pipeline: &ResolvedPipeline,
     report: &mut PipelineReport,
@@ -804,7 +1217,6 @@ fn process_nfcapd_tree(
                         bucket_start,
                         &by_member_and_start,
                         &member_bounds,
-                        zero_fill_gaps,
                         end_date.is_some(),
                     )
                 {
@@ -825,7 +1237,6 @@ fn process_nfcapd_tree(
                 &member_bounds,
                 day_start,
                 day_end,
-                zero_fill_gaps,
                 end_date.is_some(),
                 force,
                 pipeline,
@@ -848,7 +1259,6 @@ fn source_has_candidate(
     bucket_start: i64,
     paths: &BTreeMap<(String, i64), PathBuf>,
     member_bounds: &BTreeMap<String, (i64, i64)>,
-    zero_fill_gaps: bool,
     extend_gaps_to_window: bool,
 ) -> bool {
     let has_file = source
@@ -856,13 +1266,12 @@ fn source_has_candidate(
         .iter()
         .any(|member| paths.contains_key(&(member.clone(), bucket_start)));
     has_file
-        || zero_fill_gaps
-            && (extend_gaps_to_window
-                || source.members.iter().any(|member| {
-                    member_bounds.get(member).is_some_and(|(first, last)| {
-                        *first <= bucket_start && bucket_start <= *last
-                    })
-                }))
+        || extend_gaps_to_window
+        || source.members.iter().any(|member| {
+            member_bounds
+                .get(member)
+                .is_some_and(|(first, last)| *first <= bucket_start && bucket_start <= *last)
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -874,7 +1283,6 @@ fn process_nfcapd_tree_day(
     member_bounds: &BTreeMap<String, (i64, i64)>,
     start: i64,
     end: i64,
-    zero_fill_gaps: bool,
     extend_gaps_to_window: bool,
     force: bool,
     pipeline: &ResolvedPipeline,
@@ -901,8 +1309,8 @@ fn process_nfcapd_tree_day(
         sources,
         by_member_and_start,
         member_bounds,
-        zero_fill_gaps,
         extend_gaps_to_window,
+        force,
         revision_pool: &revision_pool,
     };
     let mut bucket_start = start;
@@ -923,7 +1331,6 @@ fn process_nfcapd_tree_day(
                 by_member_and_start,
                 member_bounds,
                 bucket_start,
-                zero_fill_gaps,
                 extend_gaps_to_window,
                 force,
                 pipeline,
@@ -981,33 +1388,55 @@ fn process_nfcapd_tree_day(
                     })
                     .collect::<Vec<_>>();
                 let logical_started = Instant::now();
-                let logical =
-                    logical_source_bucket(&job.source_id, timestamp.bucket_start, &member_buckets)?;
+                let logical = logical_source_bucket(
+                    &job.source_id,
+                    timestamp.bucket_start,
+                    job.expected_units,
+                    &member_buckets,
+                )?;
                 publish_profile.logical_source_elapsed += logical_started.elapsed();
                 let sibling_started = Instant::now();
-                aggregates.reject_persisted_siblings(connection, &logical, &pipeline.timezone)?;
+                if !job.is_repair {
+                    aggregates.reject_persisted_siblings(
+                        connection,
+                        &logical,
+                        &pipeline.timezone,
+                    )?;
+                }
                 publish_profile.persisted_sibling_elapsed += sibling_started.elapsed();
                 let bucket_profile = publish_nfcapd_bucket_profiled(
                     connection,
                     &logical,
                     &job.owners,
                     &job.absences,
+                    &job.evidence,
+                    true,
                     force,
                     pipeline.run_maad,
                 )?;
                 publish_profile.bucket_publish.include(bucket_profile);
-                let aggregate_profile =
-                    aggregates.include_profiled(&logical, &pipeline.timezone)?;
-                publish_profile.aggregate_include.include(aggregate_profile);
-                let flush_started = Instant::now();
-                let (flushed, rollup_write) =
-                    aggregates.flush_complete_profiled(connection, pipeline.run_maad)?;
-                publish_profile.completed_rollup_flush_elapsed += flush_started.elapsed();
-                publish_profile.completed_rollup_write.include(rollup_write);
-                publish_profile.completed_rollup_flushes += 1;
-                if flushed > 0 {
-                    publish_profile.nonempty_rollup_flushes += 1;
-                }
+                let flushed = if job.is_repair {
+                    refresh_rollups_after_five_minute_repair(
+                        connection,
+                        &logical,
+                        &pipeline.timezone,
+                    )?;
+                    0
+                } else {
+                    let aggregate_profile =
+                        aggregates.include_profiled(&logical, &pipeline.timezone)?;
+                    publish_profile.aggregate_include.include(aggregate_profile);
+                    let flush_started = Instant::now();
+                    let (flushed, rollup_write) =
+                        aggregates.flush_complete_profiled(connection, pipeline.run_maad)?;
+                    publish_profile.completed_rollup_flush_elapsed += flush_started.elapsed();
+                    publish_profile.completed_rollup_write.include(rollup_write);
+                    publish_profile.completed_rollup_flushes += 1;
+                    if flushed > 0 {
+                        publish_profile.nonempty_rollup_flushes += 1;
+                    }
+                    flushed
+                };
                 publish_profile.logical_buckets += 1;
                 report.rollup_buckets += flushed;
                 report.five_minute_buckets += 1;
@@ -1044,8 +1473,8 @@ struct NfcapdRevisionContext<'a> {
     sources: &'a [DatasetSource],
     by_member_and_start: &'a BTreeMap<(String, i64), PathBuf>,
     member_bounds: &'a BTreeMap<String, (i64, i64)>,
-    zero_fill_gaps: bool,
     extend_gaps_to_window: bool,
+    force: bool,
     revision_pool: &'a rayon::ThreadPool,
 }
 
@@ -1063,7 +1492,6 @@ fn resolve_nfcapd_batch_revisions(
                 bucket_start,
                 context.by_member_and_start,
                 context.member_bounds,
-                context.zero_fill_gaps,
                 context.extend_gaps_to_window,
             ) {
                 continue;
@@ -1083,12 +1511,16 @@ fn resolve_nfcapd_batch_revisions(
         .map(|path| {
             let locator = path.to_string_lossy().into_owned();
             let observed = FileSnapshot::capture(&path)?;
-            let cached_fingerprint = cached_content_fingerprint(
-                context.connection,
-                InputKind::Nfcapd,
-                &locator,
-                &observed,
-            )?;
+            let cached_fingerprint = if context.force {
+                None
+            } else {
+                cached_content_fingerprint(
+                    context.connection,
+                    InputKind::Nfcapd,
+                    &locator,
+                    &observed,
+                )?
+            };
             Ok::<_, PipelineError>(NfcapdRevisionProbe {
                 path,
                 observed,
@@ -1140,7 +1572,6 @@ fn prepare_nfcapd_tree_timestamp(
     by_member_and_start: &BTreeMap<(String, i64), PathBuf>,
     member_bounds: &BTreeMap<String, (i64, i64)>,
     bucket_start: i64,
-    zero_fill_gaps: bool,
     extend_gaps_to_window: bool,
     force: bool,
     pipeline: &ResolvedPipeline,
@@ -1155,7 +1586,6 @@ fn prepare_nfcapd_tree_timestamp(
             bucket_start,
             by_member_and_start,
             member_bounds,
-            zero_fill_gaps,
             extend_gaps_to_window,
         ) {
             continue;
@@ -1185,42 +1615,78 @@ fn prepare_nfcapd_tree_timestamp(
             owners.push(owner);
         }
         let mut absences = Vec::new();
+        let mut evidence = Vec::with_capacity(source.members.len());
+        for ((member, path), owner) in present.iter().zip(&owners) {
+            evidence.push(InputEvidenceRow::new(
+                &source.source_id,
+                member,
+                bucket_start,
+                bucket_start + FIVE_MINUTES,
+                path.to_string_lossy(),
+                InputEvidenceState::Observed,
+                Some(owner.revision.fingerprint.clone()),
+            ));
+        }
         for member in &source.members {
             if !present.iter().any(|(present, _)| present == member) {
                 let expected =
                     expected_nfcapd_path(root, member, bucket_start, &pipeline.timezone)?;
                 absences.push(ExpectedAbsence::capture(&expected)?);
+                evidence.push(InputEvidenceRow::new(
+                    &source.source_id,
+                    member,
+                    bucket_start,
+                    bucket_start + FIVE_MINUTES,
+                    expected.to_string_lossy(),
+                    InputEvidenceState::Missing,
+                    None,
+                ));
             }
         }
-        if present.is_empty() {
-            owners.push(PreparedRevision {
-                revision: gap_input_revision(
-                    "nfcapd",
-                    &nfcapd_gap_locator(&source.source_id, bucket_start, &pipeline.timezone)?,
-                )?,
-                snapshot: None,
-            });
+        evidence.sort_unstable_by(|left, right| left.unit_id.cmp(&right.unit_id));
+        let previous_evidence = query_input_evidence(connection, &source.source_id, bucket_start)?;
+        let observed_input_disappeared = previous_evidence.iter().any(|previous| {
+            previous.evidence_state == InputEvidenceState::Observed
+                && evidence.iter().any(|current| {
+                    current.unit_id == previous.unit_id
+                        && current.evidence_state == InputEvidenceState::Missing
+                })
+        });
+        if observed_input_disappeared {
+            tracing::warn!(
+                source_id = source.source_id,
+                bucket_start,
+                "preserving prior bucket because an observed input is now missing"
+            );
+            report.skipped_inputs += 1;
+            continue;
         }
+        let is_repair = !force && !previous_evidence.is_empty() && previous_evidence != evidence;
         let revisions = owners
             .iter()
             .map(|owner| owner.revision.clone())
             .collect::<Vec<_>>();
         if !force
-            && nfcapd_logical_bucket_processed(
-                connection,
-                &source.source_id,
-                bucket_start,
-                &revisions,
-            )?
+            && previous_evidence == evidence
+            && (revisions.is_empty()
+                || nfcapd_logical_bucket_processed(
+                    connection,
+                    &source.source_id,
+                    bucket_start,
+                    &revisions,
+                )?)
         {
             report.skipped_inputs += 1;
             continue;
         }
         jobs.push(PreparedTreeJob {
             source_id: source.source_id.clone(),
+            expected_units: source.members.len(),
             present,
             owners,
             absences,
+            evidence,
+            is_repair,
         });
     }
     Ok(PreparedTreeTimestamp {
@@ -1369,6 +1835,16 @@ fn process_nfcapd(
         &bucket,
         std::slice::from_ref(owner),
         &[],
+        &[InputEvidenceRow::new(
+            source_id,
+            source_id,
+            bucket_start,
+            bucket_start + FIVE_MINUTES,
+            &owner.revision.locator,
+            InputEvidenceState::Observed,
+            Some(owner.revision.fingerprint.clone()),
+        )],
+        false,
         false,
         pipeline.run_maad,
     )?;
@@ -1381,7 +1857,7 @@ fn process_nfcapd(
 #[allow(clippy::too_many_arguments)]
 fn process_nfcapd_gap(
     connection: &Connection,
-    locator_path: &Path,
+    _locator_path: &Path,
     expected_path: Option<&Path>,
     source_id: &str,
     bucket_start: i64,
@@ -1389,39 +1865,41 @@ fn process_nfcapd_gap(
     aggregates: &mut AggregateBuckets,
     report: &mut PipelineReport,
 ) -> Result<(), PipelineError> {
-    let locator = locator_path.to_string_lossy().into_owned();
     let expected_path = expected_path.ok_or_else(|| {
         PipelineError::InvalidConfig(
             "explicit nfcapd gap requires expected_path for absence verification".into(),
         )
     })?;
     let absence = ExpectedAbsence::capture(expected_path)?;
-    let revision = gap_input_revision("nfcapd", &locator)?;
-    if nfcapd_logical_bucket_processed(
-        connection,
+    let evidence = [InputEvidenceRow::new(
+        source_id,
         source_id,
         bucket_start,
-        std::slice::from_ref(&revision),
-    )? {
+        bucket_start + FIVE_MINUTES,
+        expected_path.to_string_lossy(),
+        InputEvidenceState::Missing,
+        None,
+    )];
+    if query_input_evidence(connection, source_id, bucket_start)? == evidence {
         report.skipped_inputs += 1;
         return Ok(());
     }
-    let bucket = StatisticalBucket::dense(BucketKey::new(
+    let bucket = StatisticalBucket::new(BucketKey::new(
         source_id,
         Granularity::FiveMinutes,
         bucket_start,
         bucket_start + FIVE_MINUTES,
     ))
+    .with_coverage(BucketCoverage::new(1, 0, 0).map_err(DomainError::from)?)
     .finish();
     aggregates.reject_persisted_siblings(connection, &bucket, &pipeline.timezone)?;
     publish_nfcapd_bucket(
         connection,
         &bucket,
-        &[PreparedRevision {
-            revision,
-            snapshot: None,
-        }],
+        &[],
         &[absence],
+        &evidence,
+        false,
         false,
         pipeline.run_maad,
     )?;
@@ -1499,23 +1977,37 @@ fn normalize_sources(
 fn merge_source_bucket(
     source_id: &str,
     bucket_start: i64,
+    expected_units: usize,
     members: &[&CanonicalBucket],
 ) -> Result<CanonicalBucket, PipelineError> {
-    let mut builder = StatisticalBucket::dense(BucketKey::new(
+    let key = BucketKey::new(
         source_id,
         Granularity::FiveMinutes,
         bucket_start,
         bucket_start + FIVE_MINUTES,
-    ));
+    );
+    let mut builder = if members.is_empty() {
+        StatisticalBucket::new(key)
+    } else {
+        StatisticalBucket::dense(key)
+    }
+    .with_coverage(BucketCoverage::empty());
     for member in members {
         builder.include(member)?;
     }
-    Ok(builder.finish())
+    let coverage = BucketCoverage::new(
+        u64::try_from(expected_units).unwrap_or(u64::MAX),
+        u64::try_from(members.len()).unwrap_or(u64::MAX),
+        0,
+    )
+    .map_err(DomainError::from)?;
+    Ok(builder.with_coverage(coverage).finish())
 }
 
 fn logical_source_bucket<'a>(
     source_id: &str,
     bucket_start: i64,
+    expected_units: usize,
     members: &[&'a CanonicalBucket],
 ) -> Result<Cow<'a, CanonicalBucket>, PipelineError> {
     let expected_key = BucketKey::new(
@@ -1524,7 +2016,8 @@ fn logical_source_bucket<'a>(
         bucket_start,
         bucket_start + FIVE_MINUTES,
     );
-    if let [member] = members
+    if expected_units == 1
+        && let [member] = members
         && member.key == expected_key
     {
         return Ok(Cow::Borrowed(member));
@@ -1532,6 +2025,7 @@ fn logical_source_bucket<'a>(
     Ok(Cow::Owned(merge_source_bucket(
         source_id,
         bucket_start,
+        expected_units,
         members,
     )?))
 }
@@ -1823,9 +2317,12 @@ struct PreparedRevision {
 
 struct PreparedTreeJob {
     source_id: String,
+    expected_units: usize,
     present: Vec<(String, PathBuf)>,
     owners: Vec<PreparedRevision>,
     absences: Vec<ExpectedAbsence>,
+    evidence: Vec<InputEvidenceRow>,
+    is_repair: bool,
 }
 
 struct PreparedTreeTimestamp {
@@ -1834,23 +2331,38 @@ struct PreparedTreeTimestamp {
     jobs: Vec<PreparedTreeJob>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_nfcapd_bucket(
     connection: &Connection,
     bucket: &CanonicalBucket,
     owners: &[PreparedRevision],
     absences: &[ExpectedAbsence],
+    evidence: &[InputEvidenceRow],
+    allow_coverage_repair: bool,
     force: bool,
     run_maad: bool,
 ) -> Result<(), PipelineError> {
-    publish_nfcapd_bucket_profiled(connection, bucket, owners, absences, force, run_maad)
-        .map(|_| ())
+    publish_nfcapd_bucket_profiled(
+        connection,
+        bucket,
+        owners,
+        absences,
+        evidence,
+        allow_coverage_repair,
+        force,
+        run_maad,
+    )
+    .map(|_| ())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_nfcapd_bucket_profiled(
     connection: &Connection,
     bucket: &CanonicalBucket,
     owners: &[PreparedRevision],
     absences: &[ExpectedAbsence],
+    evidence: &[InputEvidenceRow],
+    allow_coverage_repair: bool,
     force: bool,
     run_maad: bool,
 ) -> Result<NfcapdBucketPublishProfile, PipelineError> {
@@ -1871,7 +2383,13 @@ fn publish_nfcapd_bucket_profiled(
     }
     profile.preflight_elapsed += preflight_started.elapsed();
     let overlap_started = Instant::now();
-    reject_overlapping_bucket(connection, bucket, InputKind::Nfcapd, "", force)?;
+    reject_overlapping_bucket(
+        connection,
+        bucket,
+        InputKind::Nfcapd,
+        "",
+        force || allow_coverage_repair,
+    )?;
     profile.overlap_elapsed += overlap_started.elapsed();
     if force {
         let force_delete_started = Instant::now();
@@ -1899,6 +2417,12 @@ fn publish_nfcapd_bucket_profiled(
         }
         profile.owner_upsert_elapsed += owner_upsert_started.elapsed();
         profile.write = write_buckets_profiled(connection, std::slice::from_ref(bucket), run_maad)?;
+        replace_input_evidence(
+            connection,
+            &bucket.key.source_id,
+            bucket.key.bucket_start,
+            evidence,
+        )?;
         let owner_status_started = Instant::now();
         for prepared in owners {
             let revision = &prepared.revision;
@@ -1988,6 +2512,25 @@ impl AggregateBuckets {
         child: &CanonicalBucket,
         timezone: &str,
     ) -> Result<(), PipelineError> {
+        self.reject_persisted_siblings_inner(connection, child, timezone, false)
+    }
+
+    fn reject_persisted_csv_siblings(
+        &self,
+        connection: &Connection,
+        child: &CanonicalBucket,
+        timezone: &str,
+    ) -> Result<(), PipelineError> {
+        self.reject_persisted_siblings_inner(connection, child, timezone, true)
+    }
+
+    fn reject_persisted_siblings_inner(
+        &self,
+        connection: &Connection,
+        child: &CanonicalBucket,
+        timezone: &str,
+        allow_staged_csv_keys: bool,
+    ) -> Result<(), PipelineError> {
         let (day_start, day_end) =
             aggregate_bounds(child.key.bucket_start, Granularity::OneDay, timezone)?;
         let mut statement = connection
@@ -2005,17 +2548,33 @@ impl AggregateBuckets {
             .map_err(StorageError::from)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(StorageError::from)?;
-        if let Some(external) = persisted.into_iter().find(|bucket_start| {
-            *bucket_start != child.key.bucket_start
-                && !self
+        for bucket_start in persisted {
+            if bucket_start == child.key.bucket_start
+                || self
                     .owned_keys
-                    .contains(&(child.key.source_id.clone(), *bucket_start))
-                && !self
+                    .contains(&(child.key.source_id.clone(), bucket_start))
+                || self
                     .current_run_keys
-                    .contains(&(child.key.source_id.clone(), *bucket_start))
-        }) {
+                    .contains(&(child.key.source_id.clone(), bucket_start))
+            {
+                continue;
+            }
+            if allow_staged_csv_keys
+                && connection
+                    .query_row(
+                        "SELECT 1 FROM csv_bucket_stage
+                         WHERE source_id = ?1 AND bucket_start = ?2 LIMIT 1",
+                        params![child.key.source_id, bucket_start],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(StorageError::from)?
+                    .is_some()
+            {
+                continue;
+            }
             return Err(PipelineError::InvalidConfig(format!(
-                "cannot reopen a persisted aggregate interval exactly: source={:?} bucket_start={} shares its local day with persisted five-minute bucket {external} from another transaction",
+                "cannot reopen a persisted aggregate interval exactly: source={:?} bucket_start={} shares its local day with persisted five-minute bucket {bucket_start} from another transaction",
                 child.key.source_id, child.key.bucket_start
             )));
         }
@@ -2057,7 +2616,7 @@ impl AggregateBuckets {
             let key = (child.key.source_id.clone(), granularity, start, end);
             let builder_started = Instant::now();
             let builder = self.builders.entry(key.clone()).or_insert_with(|| {
-                StatisticalBucket::dense(BucketKey::new(&key.0, key.1, key.2, key.3))
+                StatisticalBucket::new(BucketKey::new(&key.0, key.1, key.2, key.3))
             });
             let builder_elapsed = builder_started.elapsed();
             let bucket = builder.include_profiled(child)?;
@@ -2107,20 +2666,13 @@ impl AggregateBuckets {
     }
 
     fn finish(self) -> (Vec<CanonicalBucket>, Vec<StatsBucketKey>) {
-        let mut complete = Vec::new();
-        let mut incomplete = Vec::new();
-        for bucket in self.builders.into_values().map(|builder| builder.finish()) {
-            if bucket.has_complete_five_minute_coverage() {
-                complete.push(bucket);
-            } else {
-                incomplete.push(StatsBucketKey::new(
-                    &bucket.key.source_id,
-                    bucket.key.granularity.as_str(),
-                    bucket.key.bucket_start,
-                ));
-            }
-        }
-        (complete, incomplete)
+        (
+            self.builders
+                .into_values()
+                .map(|builder| builder.finish())
+                .collect(),
+            Vec::new(),
+        )
     }
 }
 
@@ -2156,6 +2708,80 @@ fn publish_rollups_profiled(
         incomplete_keys: profile_count(incomplete.len()),
         rollup_buckets: profile_count(rollups.len()),
     })
+}
+
+/// A repaired five-minute bucket is exact, but persisted coarse unique-count
+/// and MAAD rows cannot be patched from scalar results. Keep additive capture
+/// coverage current and remove only the affected derived metric rows.
+fn refresh_rollups_after_five_minute_repair(
+    connection: &Connection,
+    child: &CanonicalBucket,
+    timezone: &str,
+) -> Result<(), PipelineError> {
+    const DERIVED_TABLES: [&str; 5] = [
+        "traffic_stats",
+        "protocol_stats",
+        "address_count_stats",
+        "port_count_stats",
+        "address_structure_stats",
+    ];
+
+    for granularity in [
+        Granularity::ThirtyMinutes,
+        Granularity::OneHour,
+        Granularity::OneDay,
+    ] {
+        let (start, end) = aggregate_bounds(child.key.bucket_start, granularity, timezone)?;
+        for table in DERIVED_TABLES {
+            connection
+                .execute(
+                    &format!(
+                        "DELETE FROM {table}
+                         WHERE source_id = ?1 AND granularity = ?2 AND bucket_start = ?3"
+                    ),
+                    params![child.key.source_id, granularity.as_str(), start],
+                )
+                .map_err(StorageError::from)?;
+        }
+
+        let children = query_bucket_coverage(
+            connection,
+            &child.key.source_id,
+            Granularity::FiveMinutes.as_str(),
+            start,
+            end,
+        )?;
+        let expected_children =
+            usize::try_from((end - start).div_euclid(FIVE_MINUTES)).unwrap_or(usize::MAX);
+        if children.len() != expected_children {
+            connection
+                .execute(
+                    "DELETE FROM bucket_coverage
+                     WHERE source_id = ?1 AND granularity = ?2 AND bucket_start = ?3",
+                    params![child.key.source_id, granularity.as_str(), start],
+                )
+                .map_err(StorageError::from)?;
+            continue;
+        }
+
+        let mut coverage = BucketCoverage::empty();
+        for row in children {
+            coverage
+                .include(row.coverage()?)
+                .map_err(DomainError::from)?;
+        }
+        insert_bucket_coverage_rows(
+            connection,
+            &[BucketCoverageRow::new(
+                &child.key.source_id,
+                granularity.as_str(),
+                start,
+                end,
+                coverage,
+            )],
+        )?;
+    }
+    Ok(())
 }
 
 fn aggregate_bounds(
@@ -2305,20 +2931,6 @@ fn validate_window(
     Ok(())
 }
 
-fn nfcapd_gap_locator(
-    source_id: &str,
-    bucket_start: i64,
-    timezone: &str,
-) -> Result<String, PipelineError> {
-    let timestamp = Timestamp::from_second(bucket_start)
-        .and_then(|timestamp| timestamp.in_tz(timezone))
-        .map_err(|error| PipelineError::Time(error.to_string()))?;
-    Ok(format!(
-        "gap://nfcapd/{source_id}/{}",
-        timestamp.strftime("%Y%m%d%H%M")
-    ))
-}
-
 fn expected_nfcapd_path(
     root: &Path,
     member: &str,
@@ -2348,7 +2960,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::domain::{AddressSide, FlowObservation, IpVersion, Scope, Visibility};
+    use crate::{
+        coverage::CoverageState,
+        domain::{AddressSide, FlowObservation, IpVersion, Scope, Visibility},
+    };
 
     #[cfg(unix)]
     fn write_fake_nfdump(executable: &Path, setup: &str) {
@@ -2391,10 +3006,10 @@ mod tests {
         let cc = build("cc_ir1_gw", [198, 51, 100, 1]);
         let oh = build("oh_ir1_gw", [198, 51, 100, 2]);
 
-        let singleton = logical_source_bucket("cc_ir1_gw", 0, &[&cc]).unwrap();
+        let singleton = logical_source_bucket("cc_ir1_gw", 0, 1, &[&cc]).unwrap();
         assert!(matches!(singleton, Cow::Borrowed(_)));
 
-        let combined = logical_source_bucket("uoregon_all", 0, &[&cc, &oh]).unwrap();
+        let combined = logical_source_bucket("uoregon_all", 0, 2, &[&cc, &oh]).unwrap();
         assert!(matches!(combined, Cow::Owned(_)));
         let all_v4 = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
         assert_eq!(
@@ -2407,6 +3022,15 @@ mod tests {
                 .flows,
             2
         );
+        assert_eq!(combined.coverage.state(), CoverageState::Complete);
+
+        let partial = logical_source_bucket("uoregon_all", 0, 2, &[&cc]).unwrap();
+        assert_eq!(partial.coverage.state(), CoverageState::Partial);
+        assert_eq!(partial.coverage.observed_units(), 1);
+
+        let unknown = logical_source_bucket("uoregon_all", 0, 2, &[]).unwrap();
+        assert_eq!(unknown.coverage.state(), CoverageState::Unknown);
+        assert!(unknown.traffic.is_empty());
         assert_eq!(
             combined
                 .addresses
@@ -2431,6 +3055,91 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn strict_coverage_checks_only_the_finite_native_request() {
+        let temporary = tempdir().unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let capture_root = temporary.path().join("captures");
+        fs::create_dir_all(capture_root.join("r1")).unwrap();
+        let inside = parse_date_start("2025-01-01", "UTC").unwrap();
+        let outside = parse_date_start("2025-01-03", "UTC").unwrap();
+        for (source_id, bucket_start) in [("r1", inside), ("r1", outside), ("unrequested", inside)]
+        {
+            connection
+                .execute(
+                    "INSERT INTO bucket_coverage (
+                        source_id, granularity, bucket_start, bucket_end,
+                        coverage_state, observed_units, expected_units, rejected_units
+                     ) VALUES (?1, '5m', ?2, ?3, 'unknown', 0, 1, 0)",
+                    params![source_id, bucket_start, bucket_start + FIVE_MINUTES],
+                )
+                .unwrap();
+        }
+        let pipeline = ResolvedPipeline {
+            database_path: temporary.path().join("netflow.sqlite"),
+            timezone: "UTC".into(),
+            run_maad: false,
+            nfdump: "nfdump".into(),
+            selection: FlowSelection::default(),
+            inputs: vec![InputSpec::NfcapdTree {
+                root_path: capture_root,
+                source_ids: vec!["r1".into()],
+                sources: Vec::new(),
+                start_date: "2025-01-01".into(),
+                end_date: Some("2025-01-01".into()),
+                start_time: None,
+                end_time: None,
+                force: false,
+            }],
+            datasets: Vec::new(),
+            require_complete: true,
+        };
+
+        assert_eq!(
+            count_incomplete_requested_coverage(&connection, &pipeline).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn coarse_rollups_keep_observed_zeroes_without_fabricating_unknown_metrics() {
+        let unknown = StatisticalBucket::new(BucketKey::new(
+            "r1",
+            Granularity::FiveMinutes,
+            0,
+            FIVE_MINUTES,
+        ))
+        .with_coverage(BucketCoverage::new(1, 0, 0).unwrap())
+        .finish();
+        let mut unknown_aggregates = AggregateBuckets::default();
+        unknown_aggregates.include(&unknown, "UTC").unwrap();
+        let (unknown_rollups, _) = unknown_aggregates.finish();
+        assert_eq!(unknown_rollups.len(), 3);
+        assert!(
+            unknown_rollups
+                .iter()
+                .all(|bucket| bucket.traffic.is_empty())
+        );
+
+        let observed_zero = StatisticalBucket::dense(BucketKey::new(
+            "r1",
+            Granularity::FiveMinutes,
+            0,
+            FIVE_MINUTES,
+        ))
+        .with_coverage(BucketCoverage::complete_unit())
+        .finish();
+        let mut observed_aggregates = AggregateBuckets::default();
+        observed_aggregates.include(&observed_zero, "UTC").unwrap();
+        let (observed_rollups, _) = observed_aggregates.finish();
+        assert_eq!(observed_rollups.len(), 3);
+        assert!(observed_rollups.iter().all(|bucket| {
+            !bucket.traffic.is_empty()
+                && bucket.traffic.iter().all(|entry| entry.metrics.flows == 0)
+        }));
     }
 
     #[test]
@@ -2481,7 +3190,7 @@ mod tests {
     }
 
     #[test]
-    fn config_run_publishes_dense_five_minute_buckets_and_only_complete_rollups() {
+    fn config_run_publishes_csv_gaps_as_coverage_only_buckets() {
         let temporary = tempdir().unwrap();
         let mapping = temporary.path().join("mapping.json");
         let input = temporary.path().join("flows.csv");
@@ -2532,7 +3241,10 @@ mod tests {
         let report = run(PipelineRequest::config(&config)).unwrap();
 
         assert_eq!(report.five_minute_buckets, 6);
-        assert_eq!(report.rollup_buckets, 1);
+        assert_eq!(report.complete_five_minute_buckets, 2);
+        assert_eq!(report.partial_five_minute_buckets, 0);
+        assert_eq!(report.unknown_five_minute_buckets, 4);
+        assert_eq!(report.rollup_buckets, 3);
         let connection = Connection::open(&database).unwrap();
         assert_eq!(
             connection
@@ -2542,7 +3254,18 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            6
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage
+                     WHERE granularity = '5m' AND coverage_state = 'unknown'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            4
         );
         assert_eq!(
             connection
@@ -2557,12 +3280,30 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
+                    "SELECT coverage_state FROM bucket_coverage
+                     WHERE granularity = '30m'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "partial"
+        );
+
+        let mut strict = PipelineRequest::config(&config);
+        strict.require_complete = true;
+        assert!(matches!(
+            run(strict),
+            Err(PipelineError::IncompleteCoverage(4))
+        ));
+        assert_eq!(
+            connection
+                .query_row(
                     "SELECT COUNT(*) FROM traffic_stats WHERE granularity IN ('1h', '1d')",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            0
+            20
         );
     }
 
@@ -2729,6 +3470,13 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
+            13
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM bucket_coverage", [], |row| row
+                    .get::<_, i64>(0),)
+                .unwrap(),
             361
         );
     }
@@ -2786,11 +3534,11 @@ mod tests {
 
         assert_eq!(report.input_scans, 2);
         assert_eq!(report.five_minute_buckets, 6);
-        assert_eq!(report.rollup_buckets, 1);
+        assert_eq!(report.rollup_buckets, 3);
     }
 
     #[test]
-    fn overlapping_csv_batch_rolls_back_the_whole_explicit_transaction() {
+    fn overlapping_csv_batch_merges_metrics_and_coverage() {
         let temporary = tempdir().unwrap();
         let mapping = temporary.path().join("mapping.json");
         let first = temporary.path().join("first.csv");
@@ -2831,9 +3579,11 @@ mod tests {
         )
         .unwrap();
 
-        let error = run(PipelineRequest::config(&config)).unwrap_err();
-
-        assert!(error.to_string().contains("overlapping canonical"));
+        let report = run(PipelineRequest::config(&config)).unwrap();
+        assert_eq!(report.five_minute_buckets, 1);
+        assert_eq!(report.complete_five_minute_buckets, 1);
+        assert_eq!(report.partial_five_minute_buckets, 0);
+        assert_eq!(report.unknown_five_minute_buckets, 0);
         let connection = Connection::open(database).unwrap();
         assert_eq!(
             connection
@@ -2841,15 +3591,115 @@ mod tests {
                     row.get::<_, i64>(0)
                 })
                 .unwrap(),
-            0
+            2
         );
         assert_eq!(
             connection
-                .query_row("SELECT COUNT(*) FROM traffic_stats", [], |row| {
-                    row.get::<_, i64>(0)
-                })
+                .query_row(
+                    "SELECT flows FROM traffic_stats
+                     WHERE granularity = '5m' AND source_id = 'r1'
+                       AND bucket_start = 1736899200 AND ip_version = 4
+                       AND src_visibility = 'all' AND dst_visibility = 'all'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
                 .unwrap(),
-            0
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT expected_units, observed_units, rejected_units
+                     FROM bucket_coverage
+                     WHERE granularity = '5m' AND source_id = 'r1'
+                       AND bucket_start = 1736899200",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn csv_files_fill_unknown_buckets_across_global_source_envelope() {
+        let temporary = tempdir().unwrap();
+        let mapping = temporary.path().join("mapping.json");
+        let first = temporary.path().join("first.csv");
+        let second = temporary.path().join("second.csv");
+        let database = temporary.path().join("netflow.sqlite");
+        let config = temporary.path().join("pipeline.json");
+        fs::write(
+            &mapping,
+            serde_json::to_vec(&json!({
+                "has_header": true,
+                "timestamp_format": "datetime",
+                "timestamp_timezone": "UTC",
+                "columns": {"time_end":"time", "src_ip":"src", "dst_ip":"dst"},
+                "source_id": {"value": "r1"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &first,
+            "time,src,dst\n2025-01-15 00:00:00,192.0.2.1,198.51.100.1\n",
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            "time,src,dst\n2025-01-15 00:25:00,192.0.2.2,198.51.100.2\n",
+        )
+        .unwrap();
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "database_path": database,
+                "timezone": "UTC",
+                "run_maad": false,
+                "inputs": [
+                    {"input_kind": "csv", "path": first, "mapping_path": mapping},
+                    {"input_kind": "csv", "path": second, "mapping_path": mapping}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = run(PipelineRequest::config(&config)).unwrap();
+        assert_eq!(report.five_minute_buckets, 6);
+        assert_eq!(report.complete_five_minute_buckets, 2);
+        assert_eq!(report.partial_five_minute_buckets, 0);
+        assert_eq!(report.unknown_five_minute_buckets, 4);
+        let connection = Connection::open(database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage
+                     WHERE source_id = 'r1' AND granularity = '5m'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            6
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage
+                     WHERE source_id = 'r1' AND granularity = '5m'
+                       AND coverage_state = 'unknown'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            4
         );
     }
 
@@ -3038,6 +3888,80 @@ mod tests {
         assert_ne!(changed.content_fingerprint, original.content_fingerprint);
     }
 
+    #[test]
+    fn force_nfcapd_revision_resolution_rehashes_matching_snapshots() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("nfcapd.202501010000");
+        fs::write(&path, "actual bytes").unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        let locator = path.to_string_lossy().into_owned();
+        let stale = InputRevision::create("nfcapd", &locator, "stale", "decoder").unwrap();
+        upsert_input_bucket(
+            &connection,
+            &InputBucket {
+                input_kind: InputKind::Nfcapd,
+                input_locator: locator.clone(),
+                scan_locator: locator.clone(),
+                source_id: "r1".into(),
+                bucket_start: 0,
+                bucket_end: FIVE_MINUTES,
+                revision: stale,
+                file_snapshot: Some(snapshot),
+            },
+            false,
+        )
+        .unwrap();
+        mark_input_bucket_status(
+            &connection,
+            InputKind::Nfcapd,
+            &locator,
+            "r1",
+            0,
+            InputStatus::Processed,
+            &InputRevision::create("nfcapd", &locator, "stale", "decoder").unwrap(),
+            None,
+        )
+        .unwrap();
+
+        let sources = [DatasetSource {
+            source_id: "r1".into(),
+            members: vec!["r1".into()],
+        }];
+        let paths = BTreeMap::from([(("r1".into(), 0), path.clone())]);
+        let bounds = BTreeMap::from([("r1".into(), (0, 0))]);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let normal_context = NfcapdRevisionContext {
+            connection: &connection,
+            sources: &sources,
+            by_member_and_start: &paths,
+            member_bounds: &bounds,
+            extend_gaps_to_window: false,
+            force: false,
+            revision_pool: &pool,
+        };
+        let cached = resolve_nfcapd_batch_revisions(&normal_context, &[0])
+            .unwrap()
+            .remove(&path)
+            .unwrap();
+        assert_eq!(cached.revision.content_fingerprint, "stale");
+
+        let forced_context = NfcapdRevisionContext {
+            force: true,
+            ..normal_context
+        };
+        let forced = resolve_nfcapd_batch_revisions(&forced_context, &[0])
+            .unwrap()
+            .remove(&path)
+            .unwrap();
+        let (actual_digest, _) = capture_file_revision(&path).unwrap();
+        assert_eq!(forced.revision.content_fingerprint, actual_digest);
+    }
+
     #[cfg(unix)]
     #[test]
     fn nfcapd_tree_commits_completed_days_before_a_later_day_fails() {
@@ -3065,8 +3989,7 @@ mod tests {
                     "root_path":root,
                     "source_ids":["r1"],
                     "start_date":"2025-01-01",
-                    "end_date":"2025-01-02",
-                    "zero_fill_gaps":false
+                    "end_date":"2025-01-02"
                 }]
             }))
             .unwrap(),
@@ -3151,8 +4074,7 @@ mod tests {
                     "root_path":root,
                     "source_ids":["r1"],
                     "start_date":"2025-11-02",
-                    "end_date":"2025-11-02",
-                    "zero_fill_gaps":true
+                    "end_date":"2025-11-02"
                 }]
             }))
             .unwrap(),
@@ -3172,7 +4094,40 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
+            1,
+            "missing inputs are evidence, not synthetic processed revisions"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage WHERE granularity = '5m'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
             288
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage
+                     WHERE granularity = '5m' AND coverage_state = 'unknown'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            287
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM traffic_stats WHERE granularity = '5m'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            10,
+            "unknown buckets must not fabricate zero-valued metric rows"
         );
         assert_eq!(
             connection
@@ -3188,7 +4143,129 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn implicit_tree_end_zero_fills_only_within_each_members_observed_bounds() {
+    fn newly_arrived_member_repairs_five_minute_coverage_without_erasing_disappeared_inputs() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("captures");
+        let first = root.join("r1/2025/01/01/nfcapd.202501010000");
+        let second = root.join("r2/2025/01/01/nfcapd.202501010000");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, "first").unwrap();
+        let decoder = temporary.path().join("fake-nfdump");
+        write_fake_nfdump(&decoder, "");
+        let database = temporary.path().join("netflow.sqlite");
+        let config = temporary.path().join("pipeline.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "database_path":database,
+                "timezone":"UTC",
+                "nfdump":decoder,
+                "run_maad":false,
+                "inputs":[{
+                    "input_kind":"nfcapd_tree",
+                    "root_path":root,
+                    "sources":[{"source_id":"both", "members":["r1", "r2"]}],
+                    "start_date":"2025-01-01",
+                    "end_date":"2025-01-01"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(PipelineRequest::config(&config)).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT coverage_state FROM bucket_coverage
+                     WHERE source_id = 'both' AND granularity = '5m'
+                       AND bucket_start = 1735689600",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "partial"
+        );
+        drop(connection);
+
+        fs::write(&second, "second").unwrap();
+        run(PipelineRequest::config(&config)).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT coverage_state FROM bucket_coverage
+                     WHERE source_id = 'both' AND granularity = '5m'
+                       AND bucket_start = 1735689600",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "complete"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT flows FROM traffic_stats
+                     WHERE source_id = 'both' AND granularity = '5m'
+                       AND bucket_start = 1735689600 AND ip_version = 4
+                       AND src_visibility = 'all' AND dst_visibility = 'all'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM traffic_stats
+                     WHERE source_id = 'both' AND granularity <> '5m'
+                       AND bucket_start = 1735689600",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "repair invalidates coarse derived rows that cannot be patched exactly"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM bucket_coverage
+                     WHERE source_id = 'both' AND granularity <> '5m'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            73,
+            "capture coverage remains available when derived metrics are invalidated"
+        );
+        drop(connection);
+
+        fs::remove_file(&first).unwrap();
+        run(PipelineRequest::config(&config)).unwrap();
+        let connection = Connection::open(database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT observed_units FROM bucket_coverage
+                     WHERE source_id = 'both' AND granularity = '5m'
+                       AND bucket_start = 1735689600",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2,
+            "a disappearing file must not erase prior observations"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn implicit_tree_end_models_only_each_members_observed_bounds() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("captures");
         let first = root.join("r1/2025/01/01/nfcapd.202501010000");
@@ -3212,8 +4289,7 @@ mod tests {
                     "input_kind":"nfcapd_tree",
                     "root_path":root,
                     "source_ids":["r1", "r2"],
-                    "start_date":"2025-01-01",
-                    "zero_fill_gaps":true
+                    "start_date":"2025-01-01"
                 }]
             }))
             .unwrap(),

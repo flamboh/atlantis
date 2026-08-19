@@ -19,17 +19,20 @@ use std::os::unix::fs::OpenOptionsExt;
 use tempfile::Builder;
 use thiserror::Error;
 
+use crate::coverage::{BucketCoverage, CoverageError, CoverageState};
 use crate::provenance::{
     FileSnapshot, InputRevision, ProvenanceError, canonical_json, fingerprint,
 };
 
 pub const BUSY_TIMEOUT_MS: u64 = 60_000;
-pub const STATS_TABLE_NAMES: [&str; 5] = [
+/// Tables that form the portable pipeline product.
+pub const STATS_TABLE_NAMES: [&str; 6] = [
     "traffic_stats",
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
     "address_structure_stats",
+    "bucket_coverage",
 ];
 
 #[derive(Debug, Error)]
@@ -40,6 +43,8 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Provenance(#[from] ProvenanceError),
+    #[error(transparent)]
+    Coverage(#[from] CoverageError),
     #[error("Cannot start {operation}: {active_operation} is active for {database}")]
     DatabaseOperationLocked {
         operation: String,
@@ -197,6 +202,7 @@ pub fn in_transaction<T>(
 /// Initialize every table owned by the pipeline persistence layer.
 pub fn init_schema(connection: &Connection) -> Result<(), StorageError> {
     init_processed_inputs_table(connection)?;
+    init_input_evidence_table(connection)?;
     init_stats_tables(connection)?;
     init_datasets_table(connection)?;
     init_pipeline_product_table(connection)?;
@@ -293,6 +299,215 @@ pub struct InputBucket {
 pub struct InputBucketRef {
     pub source_id: String,
     pub bucket_start: i64,
+}
+
+/// Evidence for one physical or logical input unit in one five-minute bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEvidenceState {
+    Observed,
+    Missing,
+    Rejected,
+}
+
+impl InputEvidenceState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Missing => "missing",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputEvidenceRow {
+    pub source_id: String,
+    pub unit_id: String,
+    pub bucket_start: i64,
+    pub bucket_end: i64,
+    pub input_locator: String,
+    pub evidence_state: InputEvidenceState,
+    pub revision_fingerprint: Option<String>,
+}
+
+impl InputEvidenceRow {
+    #[must_use]
+    pub fn new(
+        source_id: impl Into<String>,
+        unit_id: impl Into<String>,
+        bucket_start: i64,
+        bucket_end: i64,
+        input_locator: impl Into<String>,
+        evidence_state: InputEvidenceState,
+        revision_fingerprint: Option<String>,
+    ) -> Self {
+        Self {
+            source_id: source_id.into(),
+            unit_id: unit_id.into(),
+            bucket_start,
+            bucket_end,
+            input_locator: input_locator.into(),
+            evidence_state,
+            revision_fingerprint,
+        }
+    }
+}
+
+/// Initialize operational input evidence. This table is deliberately separate
+/// from `processed_inputs`, which remains the revision cache used for restarts.
+pub fn init_input_evidence_table(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS input_evidence (
+            source_id TEXT NOT NULL,
+            unit_id TEXT NOT NULL,
+            bucket_start INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL CHECK (bucket_end = bucket_start + 300),
+            input_locator TEXT NOT NULL,
+            evidence_state TEXT NOT NULL CHECK (evidence_state IN ('observed', 'missing', 'rejected')),
+            revision_fingerprint TEXT,
+            PRIMARY KEY (source_id, unit_id, bucket_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_input_evidence_source_bucket
+        ON input_evidence(source_id, bucket_start, unit_id);
+        ",
+    )?;
+    Ok(())
+}
+
+fn validate_input_evidence_row(
+    row: &InputEvidenceRow,
+    expected_source_id: Option<&str>,
+    expected_bucket_start: Option<i64>,
+) -> Result<(), StorageError> {
+    if row.bucket_end != row.bucket_start.saturating_add(300) {
+        return Err(StorageError::InvalidInput(format!(
+            "input evidence bucket must span exactly five minutes: {}..{}",
+            row.bucket_start, row.bucket_end
+        )));
+    }
+    if expected_source_id.is_some_and(|source_id| source_id != row.source_id)
+        || expected_bucket_start.is_some_and(|bucket_start| bucket_start != row.bucket_start)
+    {
+        return Err(StorageError::InvalidInput(
+            "input evidence replacement rows must share the requested source and bucket".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn input_evidence_state(value: &str) -> Result<InputEvidenceState, StorageError> {
+    match value {
+        "observed" => Ok(InputEvidenceState::Observed),
+        "missing" => Ok(InputEvidenceState::Missing),
+        "rejected" => Ok(InputEvidenceState::Rejected),
+        _ => Err(StorageError::InvalidInput(format!(
+            "invalid input evidence state: {value:?}"
+        ))),
+    }
+}
+
+/// Upsert evidence rows. Callers publishing a bucket should generally use
+/// [`replace_input_evidence`] so stale units cannot survive a restart.
+pub fn insert_input_evidence_rows(
+    connection: &Connection,
+    rows: &[InputEvidenceRow],
+) -> Result<(), StorageError> {
+    for row in rows {
+        validate_input_evidence_row(row, None, None)?;
+    }
+    let mut statement = connection.prepare_cached(
+        "
+        INSERT OR REPLACE INTO input_evidence (
+            source_id, unit_id, bucket_start, bucket_end, input_locator,
+            evidence_state, revision_fingerprint
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+    for row in rows {
+        statement.execute(params![
+            row.source_id,
+            row.unit_id,
+            row.bucket_start,
+            row.bucket_end,
+            row.input_locator,
+            row.evidence_state.as_str(),
+            row.revision_fingerprint,
+        ])?;
+    }
+    Ok(())
+}
+
+/// Replace all evidence units for one source and five-minute bucket.
+///
+/// The caller owns the surrounding transaction when this is part of a bucket
+/// publication; the delete and inserts then commit atomically with the stats.
+pub fn replace_input_evidence(
+    connection: &Connection,
+    source_id: &str,
+    bucket_start: i64,
+    rows: &[InputEvidenceRow],
+) -> Result<(), StorageError> {
+    for row in rows {
+        validate_input_evidence_row(row, Some(source_id), Some(bucket_start))?;
+    }
+    connection.execute(
+        "DELETE FROM input_evidence WHERE source_id = ?1 AND bucket_start = ?2",
+        params![source_id, bucket_start],
+    )?;
+    insert_input_evidence_rows(connection, rows)
+}
+
+pub fn query_input_evidence(
+    connection: &Connection,
+    source_id: &str,
+    bucket_start: i64,
+) -> Result<Vec<InputEvidenceRow>, StorageError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT source_id, unit_id, bucket_start, bucket_end, input_locator,
+               evidence_state, revision_fingerprint
+        FROM input_evidence
+        WHERE source_id = ?1 AND bucket_start = ?2
+        ORDER BY unit_id
+        ",
+    )?;
+    let rows = statement
+        .query_map(params![source_id, bucket_start], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(
+            |(
+                source_id,
+                unit_id,
+                bucket_start,
+                bucket_end,
+                input_locator,
+                evidence_state,
+                revision_fingerprint,
+            )| {
+                Ok(InputEvidenceRow {
+                    source_id,
+                    unit_id,
+                    bucket_start,
+                    bucket_end,
+                    input_locator,
+                    evidence_state: input_evidence_state(&evidence_state)?,
+                    revision_fingerprint,
+                })
+            },
+        )
+        .collect()
 }
 
 pub fn init_processed_inputs_table(connection: &Connection) -> Result<(), StorageError> {
@@ -1158,7 +1373,39 @@ fn table_has_rows_where(
         .is_some())
 }
 
+/// Initialize canonical per-bucket capture coverage.
+pub fn init_bucket_coverage_table(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS bucket_coverage (
+            source_id TEXT NOT NULL,
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            bucket_start INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
+            coverage_state TEXT NOT NULL CHECK (coverage_state IN ('complete', 'partial', 'unknown')),
+            observed_units INTEGER NOT NULL CHECK (observed_units >= 0),
+            expected_units INTEGER NOT NULL CHECK (expected_units > 0),
+            rejected_units INTEGER NOT NULL CHECK (rejected_units >= 0),
+            CHECK (observed_units <= expected_units),
+            CHECK (rejected_units <= expected_units),
+            CHECK (
+                (coverage_state = 'complete' AND observed_units = expected_units AND rejected_units = 0)
+                OR (coverage_state = 'unknown' AND observed_units = 0 AND rejected_units = 0)
+                OR (coverage_state = 'partial'
+                    AND NOT (observed_units = expected_units AND rejected_units = 0)
+                    AND NOT (observed_units = 0 AND rejected_units = 0))
+            ),
+            PRIMARY KEY (source_id, granularity, bucket_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_bucket_coverage_query
+        ON bucket_coverage(granularity, bucket_start, source_id);
+        ",
+    )?;
+    Ok(())
+}
+
 pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
+    init_bucket_coverage_table(connection)?;
     connection.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS traffic_stats (
@@ -1268,6 +1515,206 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         ",
     )?;
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BucketCoverageRow {
+    pub source_id: String,
+    pub granularity: String,
+    pub bucket_start: i64,
+    pub bucket_end: i64,
+    pub coverage_state: CoverageState,
+    pub observed_units: u64,
+    pub expected_units: u64,
+    pub rejected_units: u64,
+}
+
+impl BucketCoverageRow {
+    #[must_use]
+    pub fn new(
+        source_id: impl Into<String>,
+        granularity: impl Into<String>,
+        bucket_start: i64,
+        bucket_end: i64,
+        coverage: BucketCoverage,
+    ) -> Self {
+        Self {
+            source_id: source_id.into(),
+            granularity: granularity.into(),
+            bucket_start,
+            bucket_end,
+            coverage_state: coverage.state(),
+            observed_units: coverage.observed_units(),
+            expected_units: coverage.expected_units(),
+            rejected_units: coverage.rejected_units(),
+        }
+    }
+
+    pub fn coverage(&self) -> Result<BucketCoverage, StorageError> {
+        Ok(BucketCoverage::new(
+            self.expected_units,
+            self.observed_units,
+            self.rejected_units,
+        )?)
+    }
+}
+
+fn coverage_state_as_str(state: CoverageState) -> &'static str {
+    match state {
+        CoverageState::Complete => "complete",
+        CoverageState::Partial => "partial",
+        CoverageState::Unknown => "unknown",
+    }
+}
+
+fn parse_coverage_state(value: &str) -> Result<CoverageState, StorageError> {
+    match value {
+        "complete" => Ok(CoverageState::Complete),
+        "partial" => Ok(CoverageState::Partial),
+        "unknown" => Ok(CoverageState::Unknown),
+        _ => Err(StorageError::InvalidInput(format!(
+            "invalid bucket coverage state: {value:?}"
+        ))),
+    }
+}
+
+fn sqlite_unit_count(value: u64, field: &str) -> Result<i64, StorageError> {
+    i64::try_from(value).map_err(|_| {
+        StorageError::InvalidInput(format!(
+            "bucket coverage {field} exceeds SQLite INTEGER range"
+        ))
+    })
+}
+
+fn validate_bucket_coverage_row(row: &BucketCoverageRow) -> Result<(i64, i64, i64), StorageError> {
+    if row.bucket_end <= row.bucket_start {
+        return Err(StorageError::InvalidInput(format!(
+            "bucket coverage interval must be non-empty: {}..{}",
+            row.bucket_start, row.bucket_end
+        )));
+    }
+    let coverage = row.coverage()?;
+    if row.coverage_state != coverage.state() {
+        return Err(StorageError::InvalidInput(format!(
+            "bucket coverage state {:?} does not match its unit counts",
+            row.coverage_state
+        )));
+    }
+    Ok((
+        sqlite_unit_count(row.observed_units, "observed_units")?,
+        sqlite_unit_count(row.expected_units, "expected_units")?,
+        sqlite_unit_count(row.rejected_units, "rejected_units")?,
+    ))
+}
+
+pub fn insert_bucket_coverage_rows(
+    connection: &Connection,
+    rows: &[BucketCoverageRow],
+) -> Result<(), StorageError> {
+    let validated = rows
+        .iter()
+        .map(validate_bucket_coverage_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut statement = connection.prepare_cached(
+        "
+        INSERT OR REPLACE INTO bucket_coverage (
+            source_id, granularity, bucket_start, bucket_end, coverage_state,
+            observed_units, expected_units, rejected_units
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ",
+    )?;
+    for (row, (observed_units, expected_units, rejected_units)) in rows.iter().zip(validated) {
+        statement.execute(params![
+            row.source_id,
+            row.granularity,
+            row.bucket_start,
+            row.bucket_end,
+            coverage_state_as_str(row.coverage_state),
+            observed_units,
+            expected_units,
+            rejected_units,
+        ])?;
+    }
+    Ok(())
+}
+
+type StoredBucketCoverage = (String, String, i64, i64, String, i64, i64, i64);
+
+fn bucket_coverage_row(row: StoredBucketCoverage) -> Result<BucketCoverageRow, StorageError> {
+    let (
+        source_id,
+        granularity,
+        bucket_start,
+        bucket_end,
+        coverage_state,
+        observed_units,
+        expected_units,
+        rejected_units,
+    ) = row;
+    let observed_units = u64::try_from(observed_units).map_err(|_| {
+        StorageError::InvalidInput("bucket coverage observed_units cannot be negative".into())
+    })?;
+    let expected_units = u64::try_from(expected_units).map_err(|_| {
+        StorageError::InvalidInput("bucket coverage expected_units cannot be negative".into())
+    })?;
+    let rejected_units = u64::try_from(rejected_units).map_err(|_| {
+        StorageError::InvalidInput("bucket coverage rejected_units cannot be negative".into())
+    })?;
+    let coverage_state = parse_coverage_state(&coverage_state)?;
+    let row = BucketCoverageRow {
+        source_id,
+        granularity,
+        bucket_start,
+        bucket_end,
+        coverage_state,
+        observed_units,
+        expected_units,
+        rejected_units,
+    };
+    validate_bucket_coverage_row(&row)?;
+    Ok(row)
+}
+
+pub fn query_bucket_coverage(
+    connection: &Connection,
+    source_id: &str,
+    granularity: &str,
+    start_ts: i64,
+    end_exclusive_ts: i64,
+) -> Result<Vec<BucketCoverageRow>, StorageError> {
+    if end_exclusive_ts <= start_ts {
+        return Err(StorageError::InvalidInput(
+            "bucket coverage query end must be after start".into(),
+        ));
+    }
+    let mut statement = connection.prepare(
+        "
+        SELECT source_id, granularity, bucket_start, bucket_end, coverage_state,
+               observed_units, expected_units, rejected_units
+        FROM bucket_coverage
+        WHERE source_id = ?1 AND granularity = ?2
+          AND bucket_start >= ?3 AND bucket_start < ?4
+        ORDER BY bucket_start
+        ",
+    )?;
+    let rows = statement
+        .query_map(
+            params![source_id, granularity, start_ts, end_exclusive_ts],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().map(bucket_coverage_row).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2325,6 +2772,123 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn bucket_coverage_round_trips_and_is_deleted_with_stats() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        let coverage = BucketCoverageRow::new(
+            "r1",
+            "5m",
+            0,
+            300,
+            crate::coverage::BucketCoverage::new(2, 1, 0).unwrap(),
+        );
+        insert_bucket_coverage_rows(&connection, std::slice::from_ref(&coverage)).unwrap();
+
+        assert_eq!(
+            query_bucket_coverage(&connection, "r1", "5m", 0, 300).unwrap(),
+            vec![coverage]
+        );
+
+        insert_traffic_stats_rows(&connection, &[TrafficStatsRow::example()]).unwrap();
+        delete_stats_bucket_keys(&connection, &[StatsBucketKey::new("r1", "5m", 0)]).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM bucket_coverage", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM traffic_stats", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn bucket_coverage_enforces_count_and_state_integrity() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_bucket_coverage_table(&connection).unwrap();
+        let invalid = [
+            ("complete", 1_i64, 2_i64, 0_i64),
+            ("unknown", 2_i64, 1_i64, 0_i64),
+            ("partial", 2_i64, 2_i64, 0_i64),
+            ("partial", 0_i64, 0_i64, 0_i64),
+        ];
+        for (state, expected, observed, rejected) in invalid {
+            assert!(
+                connection
+                    .execute(
+                        "INSERT INTO bucket_coverage (
+                            source_id, granularity, bucket_start, bucket_end,
+                            coverage_state, observed_units, expected_units, rejected_units
+                         ) VALUES ('r1', '5m', 0, 300, ?1, ?2, ?3, ?4)",
+                        params![state, observed, expected, rejected],
+                    )
+                    .is_err(),
+                "invalid coverage row should be rejected: {state} {expected} {observed} {rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn input_evidence_replacement_round_trips_and_removes_stale_units() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_input_evidence_table(&connection).unwrap();
+        let observed = InputEvidenceRow::new(
+            "r1",
+            "member-a",
+            0,
+            300,
+            "/captures/member-a.0000",
+            InputEvidenceState::Observed,
+            Some("revision-a".into()),
+        );
+        let missing = InputEvidenceRow::new(
+            "r1",
+            "member-b",
+            0,
+            300,
+            "/captures/member-b.0000",
+            InputEvidenceState::Missing,
+            None,
+        );
+        replace_input_evidence(&connection, "r1", 0, &[observed.clone(), missing]).unwrap();
+        assert_eq!(
+            query_input_evidence(&connection, "r1", 0).unwrap(),
+            vec![
+                observed.clone(),
+                InputEvidenceRow {
+                    source_id: "r1".into(),
+                    unit_id: "member-b".into(),
+                    bucket_start: 0,
+                    bucket_end: 300,
+                    input_locator: "/captures/member-b.0000".into(),
+                    evidence_state: InputEvidenceState::Missing,
+                    revision_fingerprint: None,
+                }
+            ]
+        );
+
+        let rejected = InputEvidenceRow::new(
+            "r1",
+            "member-a",
+            0,
+            300,
+            "/captures/member-a.0000",
+            InputEvidenceState::Rejected,
+            Some("revision-b".into()),
+        );
+        replace_input_evidence(&connection, "r1", 0, std::slice::from_ref(&rejected)).unwrap();
+        assert_eq!(
+            query_input_evidence(&connection, "r1", 0).unwrap(),
+            vec![rejected]
+        );
     }
 
     #[test]

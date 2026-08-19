@@ -7,10 +7,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use fixedbitset::FixedBitSet;
 
-use crate::domain::{
-    AddressSet, AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection,
-    Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols, ScopedTraffic,
-    TrafficMetrics, Visibility,
+use crate::{
+    coverage::BucketCoverage,
+    domain::{
+        AddressSet, AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection,
+        Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols,
+        ScopedTraffic, TrafficMetrics, Visibility,
+    },
 };
 
 pub(crate) const OUTPUT_MODE: &str = "atlantis";
@@ -859,6 +862,7 @@ fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBuc
     }
     CanonicalBucket {
         key,
+        coverage: BucketCoverage::complete_unit(),
         traffic,
         protocols,
         addresses,

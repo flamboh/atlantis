@@ -24,7 +24,10 @@
 		beginRangeDrag,
 		updateRangeDrag,
 		endRangeDrag,
-		buildMirroredSelectionStyle
+		buildMirroredSelectionStyle,
+		getCoveragePointStyle,
+		getCoverageTooltipLines,
+		isCoverageSegmentDashed
 	} from './chart-utils';
 	import {
 		parseLabelToPSTComponents,
@@ -201,7 +204,10 @@
 			const index = element.index;
 			const dataset = chart.data.datasets[datasetIndex] as ChartDataset;
 			const label = chart.data.labels?.[index] as string;
-			const value = dataset.data[index] as number;
+			const value = dataset.data[index];
+			if (typeof value !== 'number') {
+				return null;
+			}
 			return {
 				dataset: {
 					label: dataset.label,
@@ -249,6 +255,11 @@
 		if (!bucket) {
 			return [];
 		}
+		const payload = bucket.data;
+		const coverageLines = getCoverageTooltipLines(bucket.coverage);
+		if (!payload) {
+			return coverageLines;
+		}
 
 		const visibleFamilies = new SvelteSet<MetricFamily>();
 		for (const item of items) {
@@ -260,16 +271,16 @@
 
 		const lines: string[] = [];
 		if (visibleFamilies.has('flows')) {
-			lines.push(`Total Flows: ${formatMetricValue(bucket.flows, 'flows')}`);
+			lines.push(`Total Flows: ${formatMetricValue(payload.flows, 'flows')}`);
 		}
 		if (visibleFamilies.has('packets')) {
-			lines.push(`Total Packets: ${formatMetricValue(bucket.packets, 'packets')}`);
+			lines.push(`Total Packets: ${formatMetricValue(payload.packets, 'packets')}`);
 		}
 		if (visibleFamilies.has('bytes')) {
-			lines.push(`Total Bytes: ${formatMetricValue(bucket.bytes, 'bytes')}`);
+			lines.push(`Total Bytes: ${formatMetricValue(payload.bytes, 'bytes')}`);
 		}
 
-		return lines;
+		return [...lines, ...coverageLines];
 	}
 
 	function handleChartClick(
@@ -443,8 +454,9 @@
 				if (!field) {
 					continue;
 				}
-				const data = results.map((item) => item[field]);
+				const data = results.map((item) => item.data?.[field] ?? null);
 				const color = predefinedColors[colorIndex % predefinedColors.length];
+				const pointStyles = results.map((item) => getCoveragePointStyle(item.coverage, color));
 				colorIndex++;
 
 				datasets.push({
@@ -456,7 +468,19 @@
 						: color,
 					fill: isStackedChart ? 'origin' : false,
 					tension: 0.1,
-					radius: 0,
+					pointRadius: data.map((value, index) =>
+						value === null ? 0 : (pointStyles[index]?.radius ?? 0)
+					),
+					pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
+					pointBorderColor: pointStyles.map((style) => style.borderColor),
+					pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+					spanGaps: false,
+					segment: {
+						borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
+							isCoverageSegmentDashed(results[context.p0DataIndex], results[context.p1DataIndex])
+								? [6, 4]
+								: []
+					},
 					hitRadius: 2,
 					hoverRadius: 5
 				});
@@ -591,8 +615,11 @@
 						borderWidth: 1,
 						callbacks: {
 							label: (context: TooltipItem<'line'>) => {
+								if (context.parsed.y === null) {
+									return `${context.dataset.label}: No data`;
+								}
 								const family = getMetricFamily(context.dataset.label ?? '') ?? 'flows';
-								const value = Number(context.parsed.y ?? 0);
+								const value = context.parsed.y;
 								return `${context.dataset.label}: ${formatMetricValue(value, family)}`;
 							},
 							footer: (items: TooltipItem<'line'>[]) => getTooltipTotalLines(items)

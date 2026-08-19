@@ -5,6 +5,7 @@ import {
 	type ProtocolStatsBucket,
 	type ProtocolStatsResponse
 } from '$lib/types/types';
+import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
 import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
 
@@ -42,11 +43,31 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
-		const rows = await db.all<ProtocolStatsBucket>(query, queryParams);
-		const response: ProtocolStatsResponse = {
-			buckets: rows.map((row) => ({
-				...row,
+		const rows = await db.all<
+			ProtocolStatsBucket & { router: string; bucketStart: number; bucketEnd: number }
+		>(query, queryParams);
+		const timelines = await buildCoverageTimelines({
+			db,
+			granularity,
+			start,
+			end,
+			partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
+			rows,
+			getPartitionKey: (row) => row.router,
+			toData: ({ bucketStart: _bucketStart, bucketEnd: _bucketEnd, router: _router, ...data }) => ({
+				...data,
 				granularity
+			}),
+			emptyData: () => ({
+				granularity,
+				uniqueProtocolsIpv4: 0,
+				uniqueProtocolsIpv6: 0
+			})
+		});
+		const response: ProtocolStatsResponse = {
+			timelines: routers.map((router) => ({
+				router,
+				buckets: timelines.get(router) ?? []
 			})),
 			availableGranularities: [...IP_GRANULARITIES],
 			requestedRouters: routers

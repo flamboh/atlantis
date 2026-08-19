@@ -51,6 +51,7 @@ If a step fails, read [Troubleshooting](docs/user/troubleshooting.md).
 
 - [Install and use ATLANTIS](docs/user/README.md)
 - [Develop ATLANTIS](docs/code/README.md)
+- [Domain context and invariants](CONTEXT.md)
 
 For a new setup, use these procedures:
 

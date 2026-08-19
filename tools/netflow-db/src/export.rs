@@ -338,6 +338,18 @@ fn validate_source(connection: &Connection) -> Result<(), ExportError> {
 }
 
 fn required_columns(table: &str) -> Vec<&'static str> {
+    if table == "bucket_coverage" {
+        return vec![
+            "source_id",
+            "granularity",
+            "bucket_start",
+            "bucket_end",
+            "coverage_state",
+            "observed_units",
+            "expected_units",
+            "rejected_units",
+        ];
+    }
     let mut columns = COMMON_COLUMNS.to_vec();
     columns.extend(match table {
         "traffic_stats" => vec![
@@ -736,7 +748,8 @@ fn read_pipeline_product(connection: &Connection) -> Result<PipelineProduct, Exp
         {"name": "protocol_stats", "version": 1},
         {"name": "address_count_stats", "version": 1},
         {"name": "port_count_stats", "version": 1},
-        {"name": "address_structure_stats", "version": 1}
+        {"name": "address_structure_stats", "version": 1},
+        {"name": "bucket_coverage", "version": 1}
     ]});
     if schema != expected_schema {
         return Err(ExportError::InvalidProduct(
@@ -1016,7 +1029,8 @@ mod tests {
                 {"name": "protocol_stats", "version": 1},
                 {"name": "address_count_stats", "version": 1},
                 {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1}
+                {"name": "address_structure_stats", "version": 1},
+                {"name": "bucket_coverage", "version": 1}
             ]}),
             &serde_json::json!({"version": 1, "kind": "all"}),
             &serde_json::json!({"version": 2}),
@@ -1045,6 +1059,15 @@ mod tests {
                     0, 0, NULL
                  )",
                     params![bucket_start, flows],
+                )
+                .unwrap();
+            source_connection
+                .execute(
+                    "INSERT INTO bucket_coverage (
+                        source_id, granularity, bucket_start, bucket_end,
+                        coverage_state, observed_units, expected_units, rejected_units
+                     ) VALUES ('r1', '5m', ?1, ?1 + 300, 'complete', 1, 1, 0)",
+                    [bucket_start],
                 )
                 .unwrap();
         }
@@ -1089,6 +1112,31 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(rows, [(100, 2), (199, 3)]);
+        let coverage = output
+            .prepare(
+                "SELECT bucket_start, coverage_state, observed_units, expected_units, rejected_units
+                 FROM bucket_coverage ORDER BY bucket_start",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            coverage,
+            vec![
+                (100, "complete".into(), 1, 1, 0),
+                (199, "complete".into(), 1, 1, 0)
+            ]
+        );
         for suffix in ["-journal", "-wal", "-shm"] {
             assert!(
                 !stale_target
@@ -1110,7 +1158,8 @@ mod tests {
                 {"name": "protocol_stats", "version": 1},
                 {"name": "address_count_stats", "version": 1},
                 {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1}
+                {"name": "address_structure_stats", "version": 1},
+                {"name": "bucket_coverage", "version": 1}
             ]}),
             &FlowSelection::from_payload(Some(&serde_json::json!({
                 "version":1,

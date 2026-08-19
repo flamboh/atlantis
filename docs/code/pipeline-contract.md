@@ -34,7 +34,8 @@ The pipeline rejects changed content at a completed input locator. It does not s
 
 The pipeline checks device, inode, size, modification time, and change time around hashing. Unchanged input can reuse its saved digest.
 
-The pipeline also checks synthetic gaps before publication. A new file at a gap locator stops the transaction.
+The pipeline also checks native gaps before publication. A new file at a previously absent locator
+stops the transaction so the run can process that evidence instead.
 
 The `--force` option is the explicit rewrite mechanism for nfcapd input.
 
@@ -43,6 +44,24 @@ The `--force` option is the explicit rewrite mechanism for nfcapd input.
 Canonical nfcapd runs bind the logical-source membership to the database. A logical source can contain one or more physical members.
 
 Use a new database after you rename a source or change its members. A bounded run cannot safely change older buckets.
+
+## Capture coverage
+
+Capture evidence is stored independently from metric values. Every source bucket has a coverage
+state of `complete`, `partial`, or `unknown`, backed by additive expected, observed, and rejected
+unit counts. Unknown coverage is not an observed zero.
+
+The canonical five-minute coverage unit is one physical member for nfcapd input and one resolved
+source across all configured CSV inputs. Overlapping CSV inputs therefore contribute one unit per
+source bucket. Coarser coverage is the additive rollup of those units.
+
+Missing nfcapd files and internal CSV gaps publish coverage without fabricated zero statistics.
+Successfully decoded empty nfcapd files and valid rows removed by flow selection remain complete
+observed-zero buckets. CSV files establish bounds only through usable row timestamps; empty or
+header-only files establish no bounds.
+
+Partial products are valid by default. `--require-complete` reports failure after publication if the
+requested five-minute coverage is incomplete, leaving the database available for inspection.
 
 ## Time and aggregation
 

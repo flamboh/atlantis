@@ -28,6 +28,25 @@ export const localSchemaSql = `
 		PRIMARY KEY(input_kind, input_locator, source_id, bucket_start)
 	);
 
+	CREATE TABLE IF NOT EXISTS bucket_coverage (
+		source_id TEXT NOT NULL,
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL CHECK(bucket_end > bucket_start),
+		coverage_state TEXT NOT NULL CHECK(coverage_state IN ('complete', 'partial', 'unknown')),
+		observed_units INTEGER NOT NULL CHECK(observed_units >= 0 AND observed_units <= expected_units),
+		expected_units INTEGER NOT NULL CHECK(expected_units > 0),
+		rejected_units INTEGER NOT NULL CHECK(rejected_units >= 0 AND rejected_units <= expected_units),
+		CHECK(
+			(coverage_state = 'complete' AND observed_units = expected_units AND rejected_units = 0)
+			OR (coverage_state = 'unknown' AND observed_units = 0 AND rejected_units = 0)
+			OR (coverage_state = 'partial'
+				AND NOT (observed_units = expected_units AND rejected_units = 0)
+				AND NOT (observed_units = 0 AND rejected_units = 0))
+		),
+		PRIMARY KEY(source_id, granularity, bucket_start)
+	) WITHOUT ROWID;
+
 	CREATE TABLE IF NOT EXISTS traffic_stats (
 		source_id TEXT NOT NULL,
 		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
@@ -131,6 +150,8 @@ export const localSchemaSql = `
 
 	CREATE INDEX IF NOT EXISTS idx_processed_inputs_source_bucket
 		ON processed_inputs (source_id, bucket_start);
+	CREATE INDEX IF NOT EXISTS idx_bucket_coverage_query
+		ON bucket_coverage (granularity, bucket_start, source_id);
 	CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
 		ON traffic_stats (
 			granularity, bucket_start, source_id, ip_version,

@@ -17,9 +17,10 @@ use crate::{
     },
     maad,
     storage::{
-        AddressCountStatsRow, AddressStructureStatsRow, PortCountStatsRow, ProtocolStatsRow,
-        StatsBucketKey, StatsDimensions, StorageError, TrafficStatsRow, delete_stats_bucket_keys,
-        insert_address_count_stats_rows, insert_address_structure_stats_rows,
+        AddressCountStatsRow, AddressStructureStatsRow, BucketCoverageRow, PortCountStatsRow,
+        ProtocolStatsRow, StatsBucketKey, StatsDimensions, StorageError, TrafficStatsRow,
+        delete_stats_bucket_keys, insert_address_count_stats_rows,
+        insert_address_structure_stats_rows, insert_bucket_coverage_rows,
         insert_port_count_stats_rows, insert_protocol_stats_rows, insert_traffic_stats_rows,
     },
 };
@@ -112,7 +113,7 @@ struct ScalarRowsProfile {
     port_count_insert_elapsed: Duration,
 }
 
-/// Build all complete 30m, 1h, and local-day aggregates touched by the input.
+/// Build every 30m, 1h, and local-day aggregate touched by the input envelope.
 pub fn build_rollups(
     raw: &[CanonicalBucket],
     day_floor: impl Fn(i64) -> i64,
@@ -138,7 +139,7 @@ pub fn build_rollups(
         ] {
             let key = (child.key.source_id.clone(), granularity, start);
             let builder = builders.entry(key.clone()).or_insert_with(|| {
-                StatisticalBucket::dense(BucketKey::new(key.0.clone(), granularity, start, end))
+                StatisticalBucket::new(BucketKey::new(key.0.clone(), granularity, start, end))
             });
             builder.include(child)?;
         }
@@ -146,7 +147,6 @@ pub fn build_rollups(
     Ok(builders
         .into_values()
         .map(|builder| builder.finish())
-        .filter(CanonicalBucket::has_complete_five_minute_coverage)
         .collect())
 }
 
@@ -183,6 +183,19 @@ pub(crate) fn write_buckets_profiled(
     let delete_started = Instant::now();
     delete_stats_bucket_keys(connection, &keys)?;
     profile.delete_elapsed += delete_started.elapsed();
+    let coverage_rows = buckets
+        .iter()
+        .map(|bucket| {
+            BucketCoverageRow::new(
+                &bucket.key.source_id,
+                bucket.key.granularity.as_str(),
+                bucket.key.bucket_start,
+                bucket.key.bucket_end,
+                bucket.coverage,
+            )
+        })
+        .collect::<Vec<_>>();
+    insert_bucket_coverage_rows(connection, &coverage_rows)?;
     for bucket in buckets {
         let canonical_rows_started = Instant::now();
         let rows = bucket.rows();
@@ -387,6 +400,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        coverage::{BucketCoverage, CoverageState},
         domain::{AddressSide, FlowObservation, IpVersion, Scope, ScopedAddressesFact, Visibility},
         storage::init_stats_tables,
     };
@@ -494,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn rollups_skip_incomplete_larger_windows() {
+    fn rollups_keep_touched_edges_without_extending_the_input_envelope() {
         let raw = (0..6)
             .map(|index| {
                 StatisticalBucket::dense(BucketKey::new(
@@ -509,8 +523,69 @@ mod tests {
 
         let rollups = build_rollups(&raw, |_| 0).unwrap();
 
-        assert_eq!(rollups.len(), 1);
-        assert_eq!(rollups[0].key.granularity, Granularity::ThirtyMinutes);
+        assert_eq!(rollups.len(), 3);
+        for rollup in rollups {
+            assert_eq!(rollup.coverage, BucketCoverage::new(6, 6, 0).unwrap());
+        }
+    }
+
+    #[test]
+    fn rollups_publish_structurally_complete_windows_with_partial_coverage() {
+        let raw = (0..6)
+            .map(|index| {
+                let key = BucketKey::new(
+                    "r1",
+                    Granularity::FiveMinutes,
+                    index * 300,
+                    (index + 1) * 300,
+                );
+                if index == 2 {
+                    StatisticalBucket::new(key)
+                        .with_coverage(BucketCoverage::new(1, 0, 0).unwrap())
+                        .finish()
+                } else {
+                    StatisticalBucket::dense(key).finish()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let rollups = build_rollups(&raw, |_| 0).unwrap();
+        let thirty_minutes = rollups
+            .iter()
+            .find(|bucket| bucket.key.granularity == Granularity::ThirtyMinutes)
+            .unwrap();
+
+        assert_eq!(thirty_minutes.coverage.state(), CoverageState::Partial);
+        assert_eq!(thirty_minutes.coverage.expected_units(), 6);
+        assert_eq!(thirty_minutes.coverage.observed_units(), 5);
+    }
+
+    #[test]
+    fn all_unknown_rollup_has_coverage_without_synthetic_metrics() {
+        let raw = (0..6)
+            .map(|index| {
+                StatisticalBucket::new(BucketKey::new(
+                    "r1",
+                    Granularity::FiveMinutes,
+                    index * 300,
+                    (index + 1) * 300,
+                ))
+                .with_coverage(BucketCoverage::new(1, 0, 0).unwrap())
+                .finish()
+            })
+            .collect::<Vec<_>>();
+
+        let rollups = build_rollups(&raw, |_| 0).unwrap();
+        let thirty_minutes = rollups
+            .iter()
+            .find(|bucket| bucket.key.granularity == Granularity::ThirtyMinutes)
+            .unwrap();
+
+        assert_eq!(thirty_minutes.coverage.state(), CoverageState::Unknown);
+        assert!(thirty_minutes.traffic.is_empty());
+        assert!(thirty_minutes.protocols.is_empty());
+        assert!(thirty_minutes.addresses.is_empty());
+        assert!(thirty_minutes.ports.is_empty());
     }
 
     #[test]

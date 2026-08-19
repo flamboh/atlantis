@@ -16,12 +16,16 @@ use command_group::CommandGroup;
 use csv::ReaderBuilder;
 use flate2::read::MultiGzDecoder;
 use jiff::civil::DateTime;
+use rusqlite::{Connection, OptionalExtension, params};
+use tempfile::NamedTempFile;
 use thiserror::Error;
 
 use crate::{
     config::{CsvSourceConfig, InputOrder},
+    coverage::BucketCoverage,
     domain::{
-        BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity, StatisticalBucket,
+        BucketKey, CanonicalBucket, DomainError, FlowObservation, FlowSelection, Granularity,
+        StatisticalBucket,
     },
     nfdump,
     normalize::{NormalizeError, field_indexes, normalize_csv_values},
@@ -48,6 +52,8 @@ pub enum IngestError {
     },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("CSV staging database error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Domain(#[from] DomainError),
     #[error("unable to start nfdump executable {executable:?}: {source}")]
@@ -215,24 +221,51 @@ pub fn scan_csv<E>(
 ) -> Result<CsvScanComplete, ProducerError<E>> {
     let path = path.as_ref();
     let scan_locator = path.to_string_lossy().into_owned();
-    let mut state = CsvScanState::new(scan_locator.clone());
+    match &config.input_order {
+        InputOrder::TimestampAscending => {
+            let mut state = CsvScanState::new(scan_locator.clone());
+            scan_csv_inputs(
+                path,
+                &scan_locator,
+                config,
+                selection,
+                &mut state,
+                &mut emit,
+            )?;
+            state.finish(emit)
+        }
+        InputOrder::Unsorted => {
+            let mut state = UnsortedCsvScanState::new(scan_locator.clone())?;
+            scan_csv_inputs(
+                path,
+                &scan_locator,
+                config,
+                selection,
+                &mut state,
+                &mut emit,
+            )?;
+            state.finish(emit)
+        }
+    }
+}
+
+fn scan_csv_inputs<E, S: CsvScanAccumulator>(
+    path: &Path,
+    scan_locator: &str,
+    config: &CsvSourceConfig,
+    selection: &FlowSelection,
+    state: &mut S,
+    emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
+) -> Result<(), ProducerError<E>> {
     if is_tar_archive(path) {
-        scan_tar(path, config, selection, &mut state, &mut emit)?;
+        scan_tar(path, config, selection, state, emit)
     } else {
         let file = fs::File::open(path).map_err(|source| IngestError::Io {
             path: path.to_owned(),
             source,
         })?;
-        scan_csv_reader(
-            file,
-            &scan_locator,
-            config,
-            selection,
-            &mut state,
-            &mut emit,
-        )?;
+        scan_csv_reader(file, scan_locator, config, selection, state, emit)
     }
-    state.finish(emit)
 }
 
 fn is_tar_archive(path: &Path) -> bool {
@@ -244,11 +277,11 @@ fn is_tar_archive(path: &Path) -> bool {
     name.ends_with(".tar.gz") || name.ends_with(".tgz")
 }
 
-fn scan_tar<E>(
+fn scan_tar<E, S: CsvScanAccumulator>(
     path: &Path,
     config: &CsvSourceConfig,
     selection: &FlowSelection,
-    state: &mut CsvScanState,
+    state: &mut S,
     emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
 ) -> Result<(), ProducerError<E>> {
     let file = fs::File::open(path).map_err(|source| IngestError::Io {
@@ -289,12 +322,12 @@ fn scan_tar<E>(
     Ok(())
 }
 
-fn scan_csv_reader<E>(
+fn scan_csv_reader<E, S: CsvScanAccumulator>(
     reader: impl Read,
     locator: &str,
     config: &CsvSourceConfig,
     selection: &FlowSelection,
-    state: &mut CsvScanState,
+    state: &mut S,
     emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
 ) -> Result<(), ProducerError<E>> {
     let mut reader = ReaderBuilder::new()
@@ -333,7 +366,7 @@ fn scan_csv_reader<E>(
         }
         if record.len() != expected_columns {
             if config.skip_bad_column_count {
-                state.skipped_bad_column_count += 1;
+                state.note_skipped_bad_column_count();
                 continue;
             }
             return Err(IngestError::CsvRow {
@@ -350,13 +383,20 @@ fn scan_csv_reader<E>(
         let values = record.iter().map(str::to_owned).collect::<Vec<_>>();
         let observed = coverage_from_values(&values, config, &indexes);
         if let Some((source_id, bucket_start)) = &observed {
-            state.observe(source_id, *bucket_start);
+            state.observe(source_id, *bucket_start)?;
         }
         match normalize_csv_values(&values, config, &indexes) {
-            Ok(row) if selection.matches(&row.observation) => state.accept(row)?,
-            Ok(_) => {}
+            Ok(row) => {
+                state.mark_valid(&row.source_id, row.bucket_start)?;
+                if selection.matches(&row.observation) {
+                    state.accept(row)?;
+                }
+            }
             Err(error) => {
-                state.rejected_rows += 1;
+                state.note_rejected_row();
+                if let Some((source_id, bucket_start)) = &observed {
+                    state.mark_rejected(source_id, *bucket_start)?;
+                }
                 tracing::warn!(locator, line, error = %error, "rejected CSV row");
             }
         }
@@ -422,12 +462,36 @@ fn coverage_from_values(
     ))
 }
 
+trait CsvScanAccumulator {
+    fn note_skipped_bad_column_count(&mut self);
+
+    fn note_rejected_row(&mut self);
+
+    fn observe(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError>;
+
+    fn mark_valid(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError>;
+
+    fn mark_rejected(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError>;
+
+    fn accept(&mut self, row: crate::normalize::NormalizedRow) -> Result<(), IngestError>;
+
+    fn emit_ordered<E>(
+        &mut self,
+        source_id: &str,
+        bucket_start: i64,
+        lag_buckets: u64,
+        emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
+    ) -> Result<(), ProducerError<E>>;
+}
+
 struct CsvScanState {
     scan_locator: String,
     buckets: BTreeMap<(String, i64), StatisticalBucket>,
     bounds: BTreeMap<String, (i64, i64)>,
     next_emit: BTreeMap<String, i64>,
     has_emitted: BTreeSet<String>,
+    valid_buckets: BTreeSet<(String, i64)>,
+    rejected_buckets: BTreeSet<(String, i64)>,
     rejected_rows: u64,
     skipped_bad_column_count: u64,
 }
@@ -440,9 +504,21 @@ impl CsvScanState {
             bounds: BTreeMap::new(),
             next_emit: BTreeMap::new(),
             has_emitted: BTreeSet::new(),
+            valid_buckets: BTreeSet::new(),
+            rejected_buckets: BTreeSet::new(),
             rejected_rows: 0,
             skipped_bad_column_count: 0,
         }
+    }
+
+    fn mark_valid(&mut self, source_id: &str, bucket_start: i64) {
+        self.valid_buckets
+            .insert((source_id.to_owned(), bucket_start));
+    }
+
+    fn mark_rejected(&mut self, source_id: &str, bucket_start: i64) {
+        self.rejected_buckets
+            .insert((source_id.to_owned(), bucket_start));
     }
 
     fn observe(&mut self, source_id: &str, bucket_start: i64) {
@@ -511,24 +587,26 @@ impl CsvScanState {
             return Ok(());
         };
         while next <= last_start {
-            let (bucket, input_locator) = match self.buckets.remove(&(source_id.to_owned(), next)) {
-                Some(bucket) => (bucket.finish(), self.scan_locator.clone()),
-                None => {
-                    let key = BucketKey::new(
-                        source_id,
-                        Granularity::FiveMinutes,
-                        next,
-                        next + BUCKET_SECONDS,
-                    );
-                    (
-                        StatisticalBucket::dense(key).finish(),
-                        csv_gap_locator(&self.scan_locator, source_id, next),
-                    )
-                }
+            let unit = (source_id.to_owned(), next);
+            let observed = self.valid_buckets.remove(&unit);
+            let rejected = self.rejected_buckets.remove(&unit);
+            let coverage = BucketCoverage::new(1, u64::from(observed), u64::from(rejected))
+                .map_err(DomainError::from)
+                .map_err(IngestError::from)?;
+            let key = BucketKey::new(
+                source_id,
+                Granularity::FiveMinutes,
+                next,
+                next + BUCKET_SECONDS,
+            );
+            let bucket = match self.buckets.remove(&unit) {
+                Some(bucket) => bucket.with_coverage(coverage).finish(),
+                None if observed => StatisticalBucket::dense(key).finish(),
+                None => StatisticalBucket::new(key).with_coverage(coverage).finish(),
             };
             emit(CsvBucketReady {
                 scan_locator: self.scan_locator.clone(),
-                input_locator,
+                input_locator: self.scan_locator.clone(),
                 bucket,
             })
             .map_err(ProducerError::Sink)?;
@@ -555,26 +633,365 @@ impl CsvScanState {
     }
 }
 
-#[must_use]
-pub fn csv_gap_locator(scan_locator: &str, source_id: &str, bucket_start: i64) -> String {
-    format!(
-        "gap://csv/{}/{}/{bucket_start}",
-        percent_encode(scan_locator),
-        percent_encode(source_id)
-    )
+impl CsvScanAccumulator for CsvScanState {
+    fn note_skipped_bad_column_count(&mut self) {
+        self.skipped_bad_column_count += 1;
+    }
+
+    fn note_rejected_row(&mut self) {
+        self.rejected_rows += 1;
+    }
+
+    fn observe(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        Self::observe(self, source_id, bucket_start);
+        Ok(())
+    }
+
+    fn mark_valid(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        Self::mark_valid(self, source_id, bucket_start);
+        Ok(())
+    }
+
+    fn mark_rejected(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        Self::mark_rejected(self, source_id, bucket_start);
+        Ok(())
+    }
+
+    fn accept(&mut self, row: crate::normalize::NormalizedRow) -> Result<(), IngestError> {
+        Self::accept(self, row)
+    }
+
+    fn emit_ordered<E>(
+        &mut self,
+        source_id: &str,
+        bucket_start: i64,
+        lag_buckets: u64,
+        emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
+    ) -> Result<(), ProducerError<E>> {
+        Self::emit_ordered(self, source_id, bucket_start, lag_buckets, emit)
+    }
 }
 
-fn percent_encode(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .map(|byte| match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                char::from(*byte).to_string()
-            }
-            byte => format!("%{byte:02X}"),
+const UNSORTED_STAGE_SCHEMA: &str = r#"
+PRAGMA cache_size = -8192;
+PRAGMA temp_store = FILE;
+CREATE TABLE bounds (
+    source_id TEXT PRIMARY KEY NOT NULL,
+    lower_bound INTEGER NOT NULL,
+    upper_bound INTEGER NOT NULL
+);
+CREATE TABLE coverage (
+    source_id TEXT NOT NULL,
+    bucket_start INTEGER NOT NULL,
+    valid INTEGER NOT NULL DEFAULT 0,
+    rejected INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source_id, bucket_start)
+);
+CREATE TABLE accepted_rows (
+    id INTEGER PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    bucket_start INTEGER NOT NULL,
+    src_ip TEXT NOT NULL,
+    dst_ip TEXT NOT NULL,
+    protocol INTEGER NOT NULL,
+    packets INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    src_tos INTEGER NOT NULL,
+    time_received_ms INTEGER,
+    time_end_ms INTEGER,
+    time_start_ms INTEGER,
+    src_port INTEGER,
+    dst_port INTEGER,
+    dst_tos INTEGER NOT NULL,
+    duration_ms INTEGER,
+    min_ttl INTEGER,
+    max_ttl INTEGER,
+    flow_count INTEGER NOT NULL
+);
+CREATE INDEX accepted_rows_bucket
+    ON accepted_rows (source_id, bucket_start, id);
+"#;
+
+struct UnsortedCsvScanState {
+    scan_locator: String,
+    connection: Connection,
+    _temporary: NamedTempFile,
+    rejected_rows: u64,
+    skipped_bad_column_count: u64,
+}
+
+impl UnsortedCsvScanState {
+    fn new(scan_locator: String) -> Result<Self, IngestError> {
+        let temporary = NamedTempFile::new().map_err(|source| IngestError::Io {
+            path: PathBuf::from("<temporary CSV staging database>"),
+            source,
+        })?;
+        let connection = Connection::open(temporary.path())?;
+        connection.execute_batch(UNSORTED_STAGE_SCHEMA)?;
+        connection.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(Self {
+            scan_locator,
+            connection,
+            _temporary: temporary,
+            rejected_rows: 0,
+            skipped_bad_column_count: 0,
         })
-        .collect()
+    }
+
+    fn emit_bucket<E>(
+        &mut self,
+        source_id: &str,
+        bucket_start: i64,
+        emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
+    ) -> Result<(), ProducerError<E>> {
+        let key = BucketKey::new(
+            source_id,
+            Granularity::FiveMinutes,
+            bucket_start,
+            bucket_start + BUCKET_SECONDS,
+        );
+        let mut bucket = None;
+        {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT src_ip, dst_ip, protocol, packets, bytes, src_tos, \
+                 time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, \
+                 dst_tos, duration_ms, min_ttl, max_ttl, flow_count \
+                 FROM accepted_rows \
+                 WHERE source_id = ?1 AND bucket_start = ?2 \
+                 ORDER BY id",
+                )
+                .map_err(IngestError::from)?;
+            let mut rows = statement
+                .query(params![source_id, bucket_start])
+                .map_err(IngestError::from)?;
+            while let Some(row) = rows.next().map_err(IngestError::from)? {
+                let observation = staged_observation(row)?;
+                let bucket = bucket.get_or_insert_with(|| StatisticalBucket::dense(key.clone()));
+                bucket.add(observation).map_err(IngestError::from)?;
+            }
+        }
+
+        let (valid, rejected) = self
+            .connection
+            .query_row(
+                "SELECT valid, rejected FROM coverage \
+                 WHERE source_id = ?1 AND bucket_start = ?2",
+                params![source_id, bucket_start],
+                |row| Ok((row.get::<_, i64>(0)? != 0, row.get::<_, i64>(1)? != 0)),
+            )
+            .optional()
+            .map_err(IngestError::from)?
+            .unwrap_or((false, false));
+        let coverage = BucketCoverage::new(1, u64::from(valid), u64::from(rejected))
+            .map_err(DomainError::from)
+            .map_err(IngestError::from)?;
+        let bucket = match bucket {
+            Some(bucket) => bucket.with_coverage(coverage).finish(),
+            None if valid => StatisticalBucket::dense(key).finish(),
+            None => StatisticalBucket::new(key).with_coverage(coverage).finish(),
+        };
+        emit(CsvBucketReady {
+            scan_locator: self.scan_locator.clone(),
+            input_locator: self.scan_locator.clone(),
+            bucket,
+        })
+        .map_err(ProducerError::Sink)?;
+        Ok(())
+    }
+
+    fn bounds(&self) -> Result<BTreeMap<String, (i64, i64)>, IngestError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT source_id, lower_bound, upper_bound FROM bounds ORDER BY source_id")?;
+        let mut rows = statement.query([])?;
+        let mut bounds = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            bounds.insert(row.get(0)?, (row.get(1)?, row.get(2)?));
+        }
+        Ok(bounds)
+    }
+
+    fn finish<E>(
+        mut self,
+        mut emit: impl FnMut(CsvBucketReady) -> Result<(), E>,
+    ) -> Result<CsvScanComplete, ProducerError<E>> {
+        self.connection
+            .execute_batch("COMMIT")
+            .map_err(IngestError::from)?;
+        let observed_bounds = self.bounds()?;
+
+        // Replay one source bucket at a time. The source rows, bounds, and
+        // coverage flags stay on disk; only the current StatisticalBucket is
+        // materialized while invoking the existing sink callback.
+        for (source_id, (lower, upper)) in &observed_bounds {
+            let mut bucket_start = *lower;
+            while bucket_start <= *upper {
+                self.emit_bucket(source_id, bucket_start, &mut emit)?;
+                let Some(next) = bucket_start.checked_add(BUCKET_SECONDS) else {
+                    break;
+                };
+                bucket_start = next;
+            }
+        }
+        Ok(CsvScanComplete {
+            scan_locator: self.scan_locator,
+            rejected_rows: self.rejected_rows,
+            skipped_bad_column_count: self.skipped_bad_column_count,
+            observed_bounds,
+        })
+    }
+}
+
+impl CsvScanAccumulator for UnsortedCsvScanState {
+    fn note_skipped_bad_column_count(&mut self) {
+        self.skipped_bad_column_count += 1;
+    }
+
+    fn note_rejected_row(&mut self) {
+        self.rejected_rows += 1;
+    }
+
+    fn observe(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        self.connection.execute(
+            "INSERT INTO bounds (source_id, lower_bound, upper_bound) VALUES (?1, ?2, ?2) \
+             ON CONFLICT(source_id) DO UPDATE SET \
+                 lower_bound = MIN(lower_bound, excluded.lower_bound), \
+                 upper_bound = MAX(upper_bound, excluded.upper_bound)",
+            params![source_id, bucket_start],
+        )?;
+        Ok(())
+    }
+
+    fn mark_valid(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        self.connection.execute(
+            "INSERT INTO coverage (source_id, bucket_start, valid) VALUES (?1, ?2, 1) \
+             ON CONFLICT(source_id, bucket_start) DO UPDATE SET valid = 1",
+            params![source_id, bucket_start],
+        )?;
+        Ok(())
+    }
+
+    fn mark_rejected(&mut self, source_id: &str, bucket_start: i64) -> Result<(), IngestError> {
+        self.connection.execute(
+            "INSERT INTO coverage (source_id, bucket_start, rejected) VALUES (?1, ?2, 1) \
+             ON CONFLICT(source_id, bucket_start) DO UPDATE SET rejected = 1",
+            params![source_id, bucket_start],
+        )?;
+        Ok(())
+    }
+
+    fn accept(&mut self, row: crate::normalize::NormalizedRow) -> Result<(), IngestError> {
+        let crate::normalize::NormalizedRow {
+            source_id,
+            bucket_start,
+            observation,
+            ..
+        } = row;
+        self.connection.execute(
+            "INSERT INTO accepted_rows (\
+                 source_id, bucket_start, src_ip, dst_ip, protocol, packets, bytes, src_tos, \
+                 time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, dst_tos, \
+                 duration_ms, min_ttl, max_ttl, flow_count\
+             ) VALUES (\
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18\
+             )",
+            params![
+                source_id,
+                bucket_start,
+                observation.src_ip.to_string(),
+                observation.dst_ip.to_string(),
+                i64::from(observation.protocol),
+                observation.packets,
+                observation.bytes,
+                i64::from(observation.src_tos),
+                observation.time_received_ms,
+                observation.time_end_ms,
+                observation.time_start_ms,
+                observation.src_port.map(i64::from),
+                observation.dst_port.map(i64::from),
+                i64::from(observation.dst_tos),
+                observation.duration_ms,
+                observation.min_ttl.map(i64::from),
+                observation.max_ttl.map(i64::from),
+                observation.flow_count,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn emit_ordered<E>(
+        &mut self,
+        _source_id: &str,
+        _bucket_start: i64,
+        _lag_buckets: u64,
+        _emit: &mut impl FnMut(CsvBucketReady) -> Result<(), E>,
+    ) -> Result<(), ProducerError<E>> {
+        Ok(())
+    }
+}
+
+fn staged_observation(row: &rusqlite::Row<'_>) -> Result<FlowObservation, IngestError> {
+    let src_ip = row
+        .get::<_, String>(0)?
+        .parse()
+        .map_err(|error| IngestError::InvalidInput(format!("invalid staged source IP: {error}")))?;
+    let dst_ip = row.get::<_, String>(1)?.parse().map_err(|error| {
+        IngestError::InvalidInput(format!("invalid staged destination IP: {error}"))
+    })?;
+    let protocol = staged_u8(row.get(2)?, "protocol")?;
+    let packets = row.get(3)?;
+    let bytes = row.get(4)?;
+    let src_tos = staged_u8(row.get(5)?, "src_tos")?;
+    let time_received_ms = row.get(6)?;
+    let time_end_ms = row.get(7)?;
+    let time_start_ms = row.get(8)?;
+    let src_port = staged_optional_u16(row.get(9)?, "src_port")?;
+    let dst_port = staged_optional_u16(row.get(10)?, "dst_port")?;
+    let dst_tos = staged_u8(row.get(11)?, "dst_tos")?;
+    let duration_ms = row.get(12)?;
+    let min_ttl = staged_optional_u8(row.get(13)?, "min_ttl")?;
+    let max_ttl = staged_optional_u8(row.get(14)?, "max_ttl")?;
+    let flow_count = row.get(15)?;
+    Ok(FlowObservation {
+        src_ip,
+        dst_ip,
+        protocol,
+        packets,
+        bytes,
+        src_tos,
+        time_received_ms,
+        time_end_ms,
+        time_start_ms,
+        src_port,
+        dst_port,
+        dst_tos,
+        duration_ms,
+        min_ttl,
+        max_ttl,
+        flow_count,
+    })
+}
+
+fn staged_u8(value: i64, field: &str) -> Result<u8, IngestError> {
+    value
+        .try_into()
+        .map_err(|_| IngestError::InvalidInput(format!("invalid staged {field} value {value}")))
+}
+
+fn staged_optional_u8(value: Option<i64>, field: &str) -> Result<Option<u8>, IngestError> {
+    value.map(|value| staged_u8(value, field)).transpose()
+}
+
+fn staged_optional_u16(value: Option<i64>, field: &str) -> Result<Option<u16>, IngestError> {
+    value
+        .map(|value| {
+            value.try_into().map_err(|_| {
+                IngestError::InvalidInput(format!("invalid staged {field} value {value}"))
+            })
+        })
+        .transpose()
 }
 
 /// Discover canonical `<root>/<source>/YYYY/MM/DD/nfcapd.YYYYMMDDHHMM` inputs.
@@ -874,6 +1291,7 @@ mod tests {
 
     use super::*;
     use crate::config::{CsvSourceConfig, InputOrder};
+    use crate::coverage::CoverageState;
     use crate::domain::{IpVersion, Scope, Visibility};
 
     const ONE_V4_BINARY_STREAM: [u8; 92] = [
@@ -949,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_emits_selected_rows_and_dense_coverage_for_rejected_rows() {
+    fn scan_distinguishes_rejected_missing_and_selected_out_buckets() {
         let directory = tempdir().unwrap();
         let input = directory.path().join("flows.csv");
         fs::write(
@@ -958,7 +1376,7 @@ mod tests {
                 "received,src,dst,packets,bytes,protocol\n",
                 "0,192.0.2.1,198.51.100.1,2,128,TCP\n",
                 "300,invalid,198.51.100.1,4,256,UDP\n",
-                "600,203.0.113.5,198.51.100.2,8,512,UDP\n",
+                "900,203.0.113.5,198.51.100.2,8,512,UDP\n",
             ),
         )
         .unwrap();
@@ -977,14 +1395,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(complete.rejected_rows, 1);
-        assert_eq!(complete.observed_bounds["sensor-a"], (0, 600));
-        assert_eq!(buckets.len(), 3);
+        assert_eq!(complete.observed_bounds["sensor-a"], (0, 900));
+        assert_eq!(buckets.len(), 4);
         assert_eq!(buckets[0].bucket.key.bucket_start, 0);
-        assert_eq!(
-            buckets[1].input_locator,
-            csv_gap_locator(input.to_str().unwrap(), "sensor-a", 300)
-        );
+        assert_eq!(buckets[1].bucket.key.bucket_start, 300);
         assert_eq!(buckets[2].bucket.key.bucket_start, 600);
+        assert_eq!(buckets[3].bucket.key.bucket_start, 900);
+        assert_eq!(buckets[0].bucket.coverage.state(), CoverageState::Complete);
+        assert_eq!(buckets[1].bucket.coverage.state(), CoverageState::Partial);
+        assert_eq!(buckets[2].bucket.coverage.state(), CoverageState::Unknown);
+        assert_eq!(buckets[3].bucket.coverage.state(), CoverageState::Complete);
+        assert!(buckets[1].bucket.traffic.is_empty());
+        assert!(buckets[2].bucket.traffic.is_empty());
         let scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
         assert_eq!(
             buckets[0]
@@ -998,18 +1420,7 @@ mod tests {
             1
         );
         assert_eq!(
-            buckets[1]
-                .bucket
-                .traffic
-                .iter()
-                .find(|entry| entry.scope == scope)
-                .unwrap()
-                .metrics
-                .flows,
-            0
-        );
-        assert_eq!(
-            buckets[2]
+            buckets[3]
                 .bucket
                 .traffic
                 .iter()
@@ -1019,6 +1430,67 @@ mod tests {
                 .flows,
             0,
             "selection excludes the valid third row without losing coverage"
+        );
+    }
+
+    #[test]
+    fn unsorted_scan_replays_far_apart_rows_in_order_with_coverage() {
+        let directory = tempdir().unwrap();
+        let input = directory.path().join("unsorted.csv");
+        fs::write(
+            &input,
+            concat!(
+                "received,src,dst,packets,bytes,protocol\n",
+                "3600,203.0.113.5,198.51.100.1,2,128,TCP\n",
+                "900,invalid,198.51.100.1,4,256,UDP\n",
+                "1800,192.0.2.1,198.51.100.1,8,512,UDP\n",
+                "0,192.0.2.1,198.51.100.1,1,64,TCP\n",
+            ),
+        )
+        .unwrap();
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "version": 1,
+            "kind": "flows",
+            "ip_prefix": "192.0.2.0/24",
+        })))
+        .unwrap();
+        let mut config = config();
+        config.input_order = InputOrder::Unsorted;
+        let mut buckets = Vec::new();
+
+        let complete = scan_csv(&input, &config, &selection, |ready| {
+            buckets.push(ready.bucket);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+        let starts = buckets
+            .iter()
+            .map(|bucket| bucket.key.bucket_start)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            starts,
+            (0..=3600)
+                .step_by(usize::try_from(BUCKET_SECONDS).unwrap())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(complete.rejected_rows, 1);
+        assert_eq!(complete.observed_bounds["sensor-a"], (0, 3600));
+        assert_eq!(buckets[0].coverage.state(), CoverageState::Complete);
+        assert_eq!(buckets[3].coverage.state(), CoverageState::Partial);
+        assert_eq!(buckets[3].traffic.len(), 0);
+        assert_eq!(buckets[6].coverage.state(), CoverageState::Complete);
+        assert_eq!(buckets[12].coverage.state(), CoverageState::Complete);
+        let scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+        assert_eq!(
+            buckets[12]
+                .traffic
+                .iter()
+                .find(|entry| entry.scope == scope)
+                .unwrap()
+                .metrics
+                .flows,
+            0
         );
     }
 
