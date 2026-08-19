@@ -4,7 +4,7 @@ This procedure prepares a checkout for code changes.
 
 ## Install the project
 
-1. Install the required tools from the [web setup](../user/setup-web.md#required-tools).
+1. Install all the tools in [Requirements](../user/requirements.md), including the development section.
 
 2. Install the JavaScript dependencies.
 

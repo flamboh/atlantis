@@ -6,7 +6,7 @@ This document lists the common first-setup failures.
 
 Node.js was not on `PATH` during `bun install`. Without Node.js, Bun runs the `better-sqlite3` install script itself, cannot download the prebuilt binary, and tries a source compilation that usually fails. The dashboard then cannot open a database.
 
-Install Node.js 22 (see the [required tools](setup-web.md#required-tools)), then reinstall:
+Install Node.js 22 (see [Requirements](requirements.md)), then reinstall:
 
 ```bash
 rm -rf node_modules

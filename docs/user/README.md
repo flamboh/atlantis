@@ -13,10 +13,11 @@ Have this available:
 
 ## First use
 
-1. [Install the tools and the dependencies](setup-web.md).
-2. [Define a dataset](datasets.md) that points at your captures.
-3. [Build and verify the database](setup-pipeline.md).
-4. [Run the dashboard](setup-web.md#run-the-dashboard).
+1. Install the [required tools](requirements.md).
+2. [Install the project dependencies](setup-web.md).
+3. [Define a dataset](datasets.md) that points at your captures.
+4. [Build and verify the database](setup-pipeline.md).
+5. [Run the dashboard](setup-web.md#run-the-dashboard).
 
 If a step fails, read [Troubleshooting](troubleshooting.md).
 

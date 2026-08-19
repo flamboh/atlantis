@@ -10,6 +10,8 @@ Use a new output database when you change selection rules or result semantics. T
 
 nfcapd input needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
 
+The build needs the [nfdump fork tools](requirements.md#nfdump-fork). The build script checks for them and names any tool that is missing.
+
 1. Initialize the Git submodules.
 
    ```bash

@@ -4,21 +4,7 @@ These instructions guide installing the project tools and running the dashboard.
 
 ## Required tools
 
-Install these tools:
-
-| Tool    | Version                   | Source of truth       |
-| ------- | ------------------------- | --------------------- |
-| Bun     | 1.2.16                    | `package.json`        |
-| Node.js | 22.16.0                   | `.node-version`       |
-| rustup  | Current stable version    | rustup installation   |
-| Rust    | 1.97.1                    | `rust-toolchain.toml` |
-| Git     | Current supported version | Git installation      |
-
-rustup reads `rust-toolchain.toml` and installs the pinned Rust toolchain automatically.
-
-The pipeline also needs the nfdump fork build tools: autoconf, automake, libtool, flex, bison, make, a C compiler, `pkg-config`, Python 3, and `tar`. [Pipeline setup](setup-pipeline.md) uses them to build the fork.
-
-The repository has a `shell.nix` file. It supplies Bun, rustup, the nfdump build tools, and the Playwright browser dependencies.
+Install the tools in [Requirements](requirements.md) first. The dashboard needs Git, Bun, and Node.js.
 
 ## Install the dependencies
 
