@@ -34,8 +34,9 @@ use crate::{
         DatabaseOperationLock, DatasetMetadata, InputBucket, InputKind, InputStatus,
         ProductIdentity, SourceDefinition, StatsBucketKey, StorageError, bind_nfcapd_source_layout,
         bind_product_identity, cached_content_fingerprint, complete_input_scan,
-        connect_pipeline_writer, delete_stats_bucket_keys, init_schema, input_scan_fully_processed,
-        mark_input_bucket_status, nfcapd_logical_bucket_processed, upsert_dataset_metadata,
+        connect_pipeline_writer, delete_stats_bucket_keys, earliest_traffic_bucket_start,
+        init_schema, input_scan_fully_processed, mark_input_bucket_status,
+        nfcapd_logical_bucket_processed, set_dataset_default_start_date, upsert_dataset_metadata,
         upsert_input_bucket,
     },
 };
@@ -370,7 +371,46 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
         &mut report,
         process_explicit_nfcapd_inputs(&connection, &explicit_nfcapd, &pipeline)?,
     );
+    infer_default_start_dates(&connection, &pipeline)?;
     Ok(report)
+}
+
+/// Give every dataset without a configured `default_start_date` the earliest ingested local day.
+///
+/// This runs after ingestion so that newly ingested earlier days move the stored date back. Until
+/// the database holds traffic, the row keeps the fallback that [`upsert_dataset_metadata`] wrote.
+fn infer_default_start_dates(
+    connection: &Connection,
+    pipeline: &ResolvedPipeline,
+) -> Result<(), PipelineError> {
+    let inferred = pipeline
+        .datasets
+        .iter()
+        .filter(|dataset| dataset.default_start_date.trim().is_empty())
+        .collect::<Vec<_>>();
+    if inferred.is_empty() {
+        return Ok(());
+    }
+    let Some(bucket_start) = earliest_traffic_bucket_start(connection)? else {
+        return Ok(());
+    };
+    let date = local_date(bucket_start, &pipeline.timezone)?;
+    with_transaction(connection, || {
+        for dataset in inferred {
+            set_dataset_default_start_date(connection, &dataset.dataset_id, &date)?;
+        }
+        Ok(())
+    })
+}
+
+/// Local calendar day that contains `timestamp`, formatted as `YYYY-MM-DD`.
+fn local_date(timestamp: i64, timezone: &str) -> Result<String, PipelineError> {
+    Ok(Timestamp::from_second(timestamp)
+        .map_err(|error| PipelineError::Time(error.to_string()))?
+        .in_tz(timezone)
+        .map_err(|error| PipelineError::Time(error.to_string()))?
+        .date()
+        .to_string())
 }
 
 fn with_transaction<T>(
@@ -2523,6 +2563,105 @@ mod tests {
                 )
                 .unwrap(),
             0
+        );
+    }
+
+    /// Run a one-dataset pipeline over optional CSV rows and read back the stored start date.
+    fn stored_default_start_date(dataset: Value, csv_rows: &str) -> String {
+        let temporary = tempdir().unwrap();
+        let mapping = temporary.path().join("mapping.json");
+        let input = temporary.path().join("flows.csv");
+        let database = temporary.path().join("netflow.sqlite");
+        let config = temporary.path().join("pipeline.json");
+        fs::write(
+            &mapping,
+            serde_json::to_vec(&json!({
+                "has_header": true,
+                "timestamp_format": "datetime",
+                "timestamp_timezone": "UTC",
+                "columns": {
+                    "time_end": "time",
+                    "src_ip": "src",
+                    "dst_ip": "dst",
+                    "protocol": "protocol",
+                    "packets": "packets",
+                    "bytes": "bytes"
+                },
+                "source_id": {"value": "r1"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inputs = if csv_rows.is_empty() {
+            json!([])
+        } else {
+            fs::write(
+                &input,
+                format!("time,src,dst,protocol,packets,bytes\n{csv_rows}"),
+            )
+            .unwrap();
+            json!([{"input_kind": "csv", "path": input, "mapping_path": mapping}])
+        };
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "database_path": database,
+                "timezone": "America/Los_Angeles",
+                "run_maad": false,
+                "inputs": inputs,
+                "datasets": [dataset]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        run(PipelineRequest::config(&config)).unwrap();
+
+        Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT default_start_date FROM datasets WHERE id = 'example'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn unset_start_date_becomes_the_earliest_ingested_local_day() {
+        // 2025-01-15 00:00 UTC is still 2025-01-14 in the pipeline timezone.
+        assert_eq!(
+            stored_default_start_date(
+                json!({"dataset_id": "example", "root_path": "/captures"}),
+                "2025-01-15 00:00:00,192.0.2.1,198.51.100.1,6,1,10\n",
+            ),
+            "2025-01-14"
+        );
+    }
+
+    #[test]
+    fn configured_start_date_survives_ingestion() {
+        assert_eq!(
+            stored_default_start_date(
+                json!({
+                    "dataset_id": "example",
+                    "root_path": "/captures",
+                    "default_start_date": "2024-12-25"
+                }),
+                "2025-01-15 00:00:00,192.0.2.1,198.51.100.1,6,1,10\n",
+            ),
+            "2024-12-25"
+        );
+    }
+
+    #[test]
+    fn unset_start_date_falls_back_when_nothing_is_ingested() {
+        assert_eq!(
+            stored_default_start_date(
+                json!({"dataset_id": "example", "root_path": "/captures"}),
+                ""
+            ),
+            crate::storage::FALLBACK_DEFAULT_START_DATE
         );
     }
 

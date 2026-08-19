@@ -36,6 +36,8 @@ pub struct Dataset {
     #[serde(default)]
     pub label: String,
     pub root_path: PathBuf,
+    /// Output database. Empty means `data/<dataset_id>/netflow.sqlite` under the repository root.
+    #[serde(default)]
     pub db_path: PathBuf,
     #[serde(default)]
     pub default_start_date: String,
@@ -61,6 +63,9 @@ impl Dataset {
             self.label = title(&self.dataset_id);
         }
         self.root_path = expand_path(&self.root_path, repository_root)?;
+        if self.db_path.as_os_str().to_string_lossy().trim().is_empty() {
+            self.db_path = default_db_path(&self.dataset_id);
+        }
         self.db_path = expand_path(&self.db_path, repository_root)?;
         if !matches!(self.source_mode.as_str(), "subdirs" | "static") {
             return Err(RegistryError::Invalid(format!(
@@ -248,6 +253,11 @@ fn title(value: &str) -> String {
         .join(" ")
 }
 
+/// Repository-relative database location that the dashboard discovers automatically.
+fn default_db_path(dataset_id: &str) -> PathBuf {
+    Path::new("data").join(dataset_id).join("netflow.sqlite")
+}
+
 fn default_source_mode() -> String {
     "subdirs".into()
 }
@@ -288,6 +298,24 @@ mod tests {
                 source_id: "r1".into(),
                 members: vec!["r1".into()]
             }]
+        );
+    }
+
+    #[test]
+    fn registry_defaults_db_path_to_the_discovered_dataset_location() {
+        let root = tempdir().unwrap();
+        let list = root.path().join("datasets.json");
+        fs::write(
+            &list,
+            r#"[{"dataset_id":" sample_data ","root_path":"/captures","source_ids":["r1"]}]"#,
+        )
+        .unwrap();
+
+        let registry = DatasetRegistry::load(&list, root.path()).unwrap();
+
+        assert_eq!(
+            registry.get("sample_data").unwrap().db_path,
+            root.path().join("data/sample_data/netflow.sqlite")
         );
     }
 }

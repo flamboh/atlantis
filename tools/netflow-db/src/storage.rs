@@ -1721,6 +1721,9 @@ impl AddressStructureStatsRow {
     }
 }
 
+/// Last-resort dashboard start date, used only when a dataset has no configured date and no data.
+pub const FALLBACK_DEFAULT_START_DATE: &str = "2025-02-01";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatasetMetadata {
     pub dataset_id: String,
@@ -1738,7 +1741,7 @@ impl DatasetMetadata {
         Self {
             label: dataset_id.clone(),
             dataset_id,
-            default_start_date: "2025-02-01".to_owned(),
+            default_start_date: FALLBACK_DEFAULT_START_DATE.to_owned(),
             source_mode: "static".to_owned(),
             discovery_mode: "static".to_owned(),
             sort_order: 0,
@@ -1788,8 +1791,8 @@ pub fn upsert_dataset_metadata(
     } else {
         &dataset.label
     };
-    let default_start_date = if dataset.default_start_date.is_empty() {
-        "2025-02-01"
+    let default_start_date = if dataset.default_start_date.trim().is_empty() {
+        FALLBACK_DEFAULT_START_DATE
     } else {
         dataset.default_start_date.trim()
     };
@@ -1817,6 +1820,28 @@ pub fn upsert_dataset_metadata(
         params![dataset_id, label, default_start_date, source_mode, discovery_mode, dataset.sort_order],
     )?;
     upsert_source_members(connection, dataset_id, &dataset.sources)
+}
+
+/// Overwrite the stored dashboard start date for one dataset.
+pub fn set_dataset_default_start_date(
+    connection: &Connection,
+    dataset_id: &str,
+    default_start_date: &str,
+) -> Result<(), StorageError> {
+    connection.execute(
+        "UPDATE datasets SET default_start_date = ?2 WHERE id = ?1",
+        params![dataset_id.trim(), default_start_date.trim()],
+    )?;
+    Ok(())
+}
+
+/// Earliest five-minute bucket recorded in `traffic_stats`, or `None` when nothing is ingested.
+pub fn earliest_traffic_bucket_start(connection: &Connection) -> Result<Option<i64>, StorageError> {
+    Ok(connection.query_row(
+        "SELECT MIN(bucket_start) FROM traffic_stats WHERE granularity = '5m'",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )?)
 }
 
 /// Replace logical source membership metadata for one dataset.
