@@ -152,10 +152,6 @@ async function discoverLocalSqlitePaths(): Promise<string[]> {
 		}
 	}
 
-	if (dbPaths.size === 0) {
-		throw new Error('No local SQLite datasets found under data/*/netflow.sqlite');
-	}
-
 	return [...dbPaths].sort();
 }
 
@@ -233,15 +229,9 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 
 async function listLocalDatasetRows(): Promise<LocalDatasetRow[]> {
 	const dbPaths = await discoverLocalSqlitePaths();
-	const datasets = (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
+	return (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
 		.flat()
 		.sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
-
-	if (datasets.length === 0) {
-		throw new Error('No local datasets configured in discovered SQLite databases');
-	}
-
-	return datasets;
 }
 
 async function getLocalDatasetRow(datasetId: string): Promise<LocalDatasetRow> {
@@ -469,8 +459,14 @@ function inferMemberIdFromInputLocator(inputLocator: string): string | null {
 }
 
 export async function listDatasetSummaries(platform?: App.Platform): Promise<DatasetSummary[]> {
-	const defaultDatasetId = await getDefaultDatasetId(platform);
+	// Zero datasets is a valid state (fresh checkout before the pipeline runs);
+	// the dashboard shows setup guidance instead of an error.
 	const datasets = await listDatasetRows(platform);
+	if (datasets.length === 0) {
+		return [];
+	}
+
+	const defaultDatasetId = await getDefaultDatasetId(platform);
 
 	return Promise.all(
 		datasets.map(async (dataset) => {

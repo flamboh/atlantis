@@ -18,9 +18,19 @@
 <main class="mx-auto flex max-w-[95vw] flex-col gap-4 px-4 py-8 sm:px-2 lg:px-4">
 	{#if data.datasets.length === 0}
 		<section
-			class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white p-6 text-gray-500 shadow-sm dark:text-gray-400 dark:shadow-none"
+			class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white p-6 shadow-sm dark:shadow-none"
 		>
-			No datasets are configured.
+			<h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">No datasets found</h1>
+			<p class="mt-3 text-sm text-gray-600 dark:text-gray-400">
+				The dashboard reads SQLite databases at
+				<code class="font-mono text-gray-500 dark:text-gray-500"
+					>data/&lt;dataset-id&gt;/netflow.sqlite</code
+				>. Build one from your NetFlow data with the pipeline, then reload this page.
+			</p>
+			<p class="mt-3 text-sm text-gray-600 dark:text-gray-400">
+				See <code class="font-mono text-gray-500 dark:text-gray-500">docs/user/README.md</code> in the
+				repository for the setup procedure.
+			</p>
 		</section>
 	{:else}
 		<div class="grid gap-4 md:grid-cols-2">

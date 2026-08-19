@@ -206,6 +206,16 @@ describe('dataset server helpers', () => {
 		await expect(datasets.getDatasetConfig('missing')).rejects.toThrow(/Unknown dataset 'missing'/);
 	});
 
+	it('returns an empty summary list when no local databases exist', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-none-'));
+		fs.mkdirSync(path.join(workspace, 'data'));
+		process.chdir(workspace);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([]);
+	});
+
 	it('discovers local sqlite datasets from data directories', async () => {
 		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-scan-'));
 		const alphaDir = path.join(workspace, 'data', 'alpha');
