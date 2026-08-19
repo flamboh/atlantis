@@ -6,7 +6,7 @@ ATLANTIS reads nfcapd captures from a NetFlow collector. The pipeline converts t
 
 ## Quick start
 
-You need nfcapd capture files on disk. The [dataset configuration](docs/user/datasets.md) document shows the expected directory layout.
+First, install the [required tools](docs/user/setup-web.md#required-tools) — both Bun and Node.js are necessary. You also need nfcapd capture files on disk; the [dataset configuration](docs/user/datasets.md) document shows the expected directory layout.
 
 ```bash
 git clone https://github.com/flamboh/atlantis.git

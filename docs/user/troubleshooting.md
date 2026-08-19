@@ -2,6 +2,19 @@
 
 This document lists the common first-setup failures.
 
+## `bun install` warns `'better-sqlite3' is not yet supported in Bun`
+
+Node.js was not on `PATH` during `bun install`. Without Node.js, Bun runs the `better-sqlite3` install script itself, cannot download the prebuilt binary, and tries a source compilation that usually fails. The dashboard then cannot open a database.
+
+Install Node.js 22 (see the [required tools](setup-web.md#required-tools)), then reinstall:
+
+```bash
+rm -rf node_modules
+bun install
+```
+
+With Node.js on `PATH`, the warning does not appear and no compiler is necessary.
+
 ## A pipeline command shows no output for minutes
 
 The first `./scripts/netflow-db.sh` run compiles the Rust pipeline in release mode. The compilation takes several minutes and happens one time. Later runs start immediately.
