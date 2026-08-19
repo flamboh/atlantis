@@ -82,6 +82,14 @@ Apply migrations to a local D1 database:
 bun run --cwd apps/web d1:migrations:apply:local
 ```
 
+To develop the dashboard against the local D1 database, export the driver before you start it:
+
+```bash
+ATLANTIS_DB_DRIVER=d1 bun run dev:web
+```
+
+Without this variable, local development uses SQLite and does not start the Workers runtime.
+
 Apply migrations to the configured remote D1 database:
 
 ```bash

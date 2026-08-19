@@ -35,8 +35,6 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
    cp .env.example .env
    ```
 
-   This step is necessary. Without `ATLANTIS_DB_DRIVER=sqlite` from the template, the local server tries to read a Cloudflare D1 database and fails.
-
 2. In `.env`, set `DEFAULT_DATASET` to your dataset ID. This step is optional. Without it, the dashboard uses the first discovered dataset.
 
 3. Start the dashboard.

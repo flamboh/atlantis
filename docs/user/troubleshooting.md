@@ -53,13 +53,14 @@ The dashboard did not discover a database at `data/<dataset-id>/netflow.sqlite`.
 
 ## The dashboard shows "Failed to list datasets"
 
-The server did not read your SQLite data. The usual cause is a missing `.env` file: without `ATLANTIS_DB_DRIVER=sqlite`, the local server tries to read a Cloudflare D1 database.
+The server discovered a database but could not read it. Check these items:
 
-```bash
-cp .env.example .env
-```
+- Each file at `data/<dataset-id>/netflow.sqlite` is a database that the pipeline produced. Run the [verify command](setup-pipeline.md#verify-the-output) against it.
+- If you exported `ATLANTIS_DB_DRIVER=d1`, the local D1 database needs the migrations from [Operations](operations.md#manage-d1-migrations).
 
-Then restart `bun run dev:web`.
+## `Could not start dynamically linked executable: ... workerd`
+
+This error comes from the Cloudflare Workers runtime on NixOS. Local SQLite development does not start it. The runtime only starts when you develop against local D1 with `ATLANTIS_DB_DRIVER=d1`; for that, enable [`programs.nix-ld`](https://nix.dev/permalink/stub-ld) in your NixOS configuration.
 
 ## The charts are empty
 
