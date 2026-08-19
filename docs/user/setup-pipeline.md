@@ -1,14 +1,14 @@
 # Pipeline setup
 
-The pipeline is the Rust `atlantis-netflow-db` crate. It converts CSV or nfcapd input into a compatible SQLite database.
+The pipeline is the Rust `atlantis-netflow-db` crate. It converts nfcapd or CSV input into a compatible SQLite database.
 
-`scripts/netflow-db.sh` is the pipeline entry point. It runs the crate with `cargo run --locked --release`, which compiles it when necessary. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
+`scripts/netflow-db.sh` is the pipeline entry point. It runs the crate with `cargo run --locked --release`, which compiles it when necessary. The first run compiles the Rust dependencies and takes several minutes. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
 
 Use a new output database when you change selection rules or result semantics. The pipeline rejects incompatible reuse.
 
 ## Build the nfdump fork
 
-Native nfcapd input needs the pinned Atlantis nfdump fork. CSV input does not.
+nfcapd input needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
 
 1. Initialize the Git submodules.
 
@@ -22,7 +22,7 @@ Native nfcapd input needs the pinned Atlantis nfdump fork. CSV input does not.
    ./vendor/scripts/compile-nfdump.sh
    ```
 
-The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored.
+The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored. Pass this path to each pipeline command with `--nfdump`; the pipeline does not find it automatically.
 
 ## Process a dataset
 
@@ -32,17 +32,17 @@ Run a bounded import while you test the configuration:
 
 ```bash
 ./scripts/netflow-db.sh pipeline \
-  --dataset uoregon \
-  --start-date 2025-02-11 \
-  --end-date 2025-02-12 \
+  --dataset example \
+  --start-date 2025-02-01 \
+  --end-date 2025-02-01 \
   --nfdump target/nfdump/libexec/nfdump
 ```
 
-The start date and end date are inclusive. If you omit the end date, the pipeline uses the latest available day.
+The start date and end date are inclusive, so this command processes one day. If you omit the end date, the pipeline processes each day through the latest available day.
 
-`--nfdump` names the nfdump executable. Use the staged fork path for native input.
+Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 address sets, and they power the address-structure charts. Use `--no-maad` to skip them.
 
-Dataset mode calculates MAAD statistics in process by default. Use `--no-maad` to skip them.
+If a command fails, read [Troubleshooting](troubleshooting.md).
 
 ## Select flows
 
@@ -50,10 +50,10 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
 
 ```bash
 ./scripts/netflow-db.sh pipeline \
-  --dataset uoregon \
-  --start-date 2025-02-11 \
-  --end-date 2025-02-12 \
-  --database-path data/uoregon-public/netflow.sqlite \
+  --dataset example \
+  --start-date 2025-02-01 \
+  --end-date 2025-02-01 \
+  --database-path data/example-public/netflow.sqlite \
   --ip-prefix 192.0.2.0/24 \
   --src-visibility literal \
   --nfdump target/nfdump/libexec/nfdump
@@ -90,7 +90,7 @@ Put flow selection in the top-level `selection` object:
 }
 ```
 
-For native input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it.
+For nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it.
 
 ## Common options
 
@@ -111,8 +111,8 @@ Time limits must align with local-day boundaries.
 Run the compatibility check after the pipeline finishes:
 
 ```bash
-./scripts/netflow-db.sh verify data/uoregon/netflow.sqlite \
-  --dataset-id uoregon \
+./scripts/netflow-db.sh verify data/example/netflow.sqlite \
+  --dataset-id example \
   --require-data \
   --require-maad-data \
   --require-processed \

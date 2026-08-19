@@ -1,6 +1,6 @@
 # Web setup
 
-These instructions guide installing the project tools.
+These instructions guide installing the project tools and running the dashboard.
 
 ## Required tools
 
@@ -16,11 +16,7 @@ Install these tools:
 
 rustup reads `rust-toolchain.toml` and installs the pinned Rust toolchain automatically.
 
-The pipeline has more requirements. Install them only when you build a database from native nfcapd input:
-
-- The `vendor/nfdump` Git submodule
-- The nfdump fork build tools: autoconf, automake, libtool, flex, bison, make, a C compiler, `pkg-config`, Python 3, and `tar`
-- NetFlow or CSV input data
+The pipeline also needs the nfdump fork build tools: autoconf, automake, libtool, flex, bison, make, a C compiler, `pkg-config`, Python 3, and `tar`. [Pipeline setup](setup-pipeline.md) uses them to build the fork.
 
 The repository has a `shell.nix` file. It supplies Bun, rustup, the nfdump build tools, and the Playwright browser dependencies.
 
@@ -39,22 +35,7 @@ The repository has a `shell.nix` file. It supplies Bun, rustup, the nfdump build
    bun install --frozen-lockfile
    ```
 
-## Progress check before data processing
-
-These commands do not read your NetFlow data.
-
-```bash
-bun run format:check
-bun run lint
-bun run typecheck
-bun run --cwd apps/landing lint
-bun run build:web
-bun run build:landing
-```
-
-The root `format:check`, `lint`, and `typecheck` commands also check the Rust workspace. The first run compiles the Rust dependencies and takes several minutes.
-
-These checks confirm that the source code and dependencies are valid. They should all be green at this point.
+To change the code and run the full project checks, read [Development](../code/development.md).
 
 ## Run the dashboard
 
@@ -68,12 +49,9 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
    cp .env.example .env
    ```
 
-2. Set these values in `.env`.
+   This step is necessary. Without `ATLANTIS_DB_DRIVER=sqlite` from the template, the local server tries to read a Cloudflare D1 database and fails.
 
-   ```dotenv
-   ATLANTIS_DB_DRIVER=sqlite
-   DEFAULT_DATASET=your-dataset-id
-   ```
+2. In `.env`, set `DEFAULT_DATASET` to your dataset ID. This step is optional. Without it, the dashboard uses the first discovered dataset.
 
 3. Start the dashboard.
 
@@ -83,9 +61,9 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
 
 4. Open `http://localhost:5173`.
 
-The dashboard starts on the dataset from `DEFAULT_DATASET`. When that ID is absent, the dashboard uses the first discovered dataset.
+The dashboard shows one card for each dataset. Select a card to see the charts.
 
-Put each database at `data/<dataset-id>/netflow.sqlite`. They are automatically discovered.
+The dashboard automatically discovers each database at `data/<dataset-id>/netflow.sqlite`. Before the pipeline creates a database, the dashboard shows a "No datasets found" message with setup guidance.
 
 ## Run both sites
 

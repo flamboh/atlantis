@@ -1,6 +1,6 @@
 # Query a database
 
-Each dataset uses one SQLite database. The configured `db_path` gives its location.
+Each dataset uses one SQLite database at `data/<dataset-id>/netflow.sqlite`. A dataset that sets `db_path` uses that location instead.
 
 ## Open a database
 

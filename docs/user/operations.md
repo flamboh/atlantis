@@ -2,6 +2,8 @@
 
 Use these procedures to verify and publish a database. This document also gives the available Cloudflare deployment commands.
 
+The D1 and deployment sections apply to the hosted ATLANTIS deployment and need Cloudflare access. A local installation does not use them.
+
 ## Verify a SQLite database
 
 Run all release checks against the candidate database:

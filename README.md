@@ -2,17 +2,38 @@
 
 Network telemetry visualization platform for analyzing large-scale NetFlow data. SvelteKit frontend, SQLite backend, Rust ingestion pipeline.
 
-ATLANTIS requires NetFlow data. The pipeline converts this data into the database that the dashboard reads.
+ATLANTIS reads nfcapd captures from a NetFlow collector. The pipeline converts the captures into a SQLite database, and the dashboard visualizes that database.
 
 ## Quick start
 
+You need nfcapd capture files on disk. The [dataset configuration](docs/user/datasets.md) document shows the expected directory layout.
+
 ```bash
+git clone https://github.com/flamboh/atlantis.git
+cd atlantis
 bun install
+
+# Build the pinned nfdump fork. A system nfdump installation does not work.
+git submodule update --init --recursive
+./vendor/scripts/compile-nfdump.sh
+
+# Point datasets.json at your captures, then set DEFAULT_DATASET in .env.
 cp .env.example .env
-cp datasets.json.example datasets.json   # configure your dataset paths
-./scripts/netflow-db.sh pipeline --dataset uoregon --start-date 2025-02-11
-bun run dev                              # start the web app
+cp datasets.json.example datasets.json
+
+# Build a database from one day of captures. The first run compiles the
+# Rust pipeline and takes several minutes. Run in a persistent shell like tmux
+./scripts/netflow-db.sh pipeline \
+  --dataset example \
+  --start-date 2025-02-01 \
+  --end-date 2025-02-01 \
+  --nfdump target/nfdump/libexec/nfdump
+
+# Start the dashboard, then open http://localhost:5173.
+bun run dev:web
 ```
+
+If a step fails, read [Troubleshooting](docs/user/troubleshooting.md).
 
 ## Documentation
 
