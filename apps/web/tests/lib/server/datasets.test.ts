@@ -81,7 +81,6 @@ describe('dataset server helpers', () => {
 				label: 'Alpha Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 2,
 				isDefault: true
 			}
 		]);
@@ -89,6 +88,27 @@ describe('dataset server helpers', () => {
 		await expect(
 			datasets.getRequestedDataset(new URL('http://localhost/api?dataset=alpha'))
 		).resolves.toBe('alpha');
+	});
+
+	it('lists dataset summaries without reading traffic statistics', async () => {
+		const dbPath = createSqliteFixture();
+		const dropResult = spawnSync('sqlite3', [dbPath, 'DROP TABLE traffic_stats;'], {
+			encoding: 'utf-8'
+		});
+		expect(dropResult.status, dropResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
+			{
+				datasetId: 'alpha',
+				label: 'Alpha Label',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				isDefault: true
+			}
+		]);
 	});
 
 	it('opens local dataset databases as strictly readonly', async () => {
@@ -234,7 +254,6 @@ describe('dataset server helpers', () => {
 				label: 'Alpha',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 1,
 				isDefault: true
 			},
 			{
@@ -242,7 +261,6 @@ describe('dataset server helpers', () => {
 				label: 'Beta',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 1,
 				isDefault: false
 			}
 		]);

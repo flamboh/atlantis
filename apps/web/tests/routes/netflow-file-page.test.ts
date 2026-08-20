@@ -13,7 +13,6 @@ describe('/netflow/files/[slug] page load', () => {
 						label: 'Alpha',
 						defaultStartDate: '2025-02-11',
 						discoveryMode: 'db',
-						sourceCount: 1,
 						isDefault: true
 					}
 				],

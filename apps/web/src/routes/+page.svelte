@@ -44,8 +44,6 @@
 					<p class="mt-3 text-sm text-gray-600 dark:text-gray-400">
 						<span class="font-mono text-gray-500 dark:text-gray-500">{dataset.datasetId}</span>
 						·
-						{dataset.sourceCount} source{dataset.sourceCount === 1 ? '' : 's'}
-						·
 						{dataset.discoveryMode}
 					</p>
 				</button>

@@ -468,24 +468,13 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 
 	const defaultDatasetId = await getDefaultDatasetId(platform);
 
-	return Promise.all(
-		datasets.map(async (dataset) => {
-			const db = await getDatasetDb(dataset.id, platform);
-			const sourceRows = await db.all<{ sourceCount: number }>(
-				"SELECT COUNT(DISTINCT source_id) AS sourceCount FROM traffic_stats WHERE granularity = '5m'"
-			);
-			const sourceCount = sourceRows[0]?.sourceCount ?? 0;
-
-			return {
-				datasetId: dataset.id,
-				label: dataset.label,
-				defaultStartDate: dataset.defaultStartDate,
-				discoveryMode: dataset.discoveryMode,
-				sourceCount,
-				isDefault: dataset.id === defaultDatasetId
-			};
-		})
-	);
+	return datasets.map((dataset) => ({
+		datasetId: dataset.id,
+		label: dataset.label,
+		defaultStartDate: dataset.defaultStartDate,
+		discoveryMode: dataset.discoveryMode,
+		isDefault: dataset.id === defaultDatasetId
+	}));
 }
 
 export async function getRequestedDataset(url: URL, platform?: App.Platform): Promise<string> {

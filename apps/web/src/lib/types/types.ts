@@ -3,7 +3,6 @@ export interface DatasetSummary {
 	label: string;
 	defaultStartDate: string;
 	discoveryMode: string;
-	sourceCount: number;
 	isDefault: boolean;
 }
 
