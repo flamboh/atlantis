@@ -1,0 +1,277 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const ALERT_SCHEMA = `
+	CREATE TABLE feed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+	CREATE TABLE windows (
+		window_start INTEGER PRIMARY KEY,
+		window_end INTEGER NOT NULL,
+		member_files INTEGER NOT NULL,
+		address_count INTEGER NOT NULL,
+		alert_count INTEGER NOT NULL,
+		alpha_min REAL,
+		alpha_max REAL,
+		alpha_median REAL,
+		processed_at INTEGER NOT NULL
+	);
+	CREATE TABLE alerts (
+		window_start INTEGER NOT NULL REFERENCES windows(window_start) ON DELETE CASCADE,
+		address TEXT NOT NULL,
+		alpha REAL NOT NULL,
+		tail TEXT NOT NULL CHECK (tail IN ('high', 'low')),
+		rank INTEGER NOT NULL,
+		r2 REAL NOT NULL,
+		prefix_levels INTEGER NOT NULL,
+		PRIMARY KEY (window_start, tail, rank)
+	);
+	CREATE INDEX alerts_address ON alerts(address, window_start);
+`;
+
+type Fixture = {
+	directory: string;
+	netflowPath: string;
+	alertsPath: string;
+};
+
+async function loadAlertsModule() {
+	vi.resetModules();
+	return import('../../../src/lib/server/alerts');
+}
+
+function createDatasetFixture(datasetId = 'alpha'): Fixture {
+	const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'alerts-test-'));
+	const netflowPath = path.join(directory, 'netflow.sqlite');
+	const db = new Database(netflowPath);
+	db.exec(`
+		CREATE TABLE datasets (
+			id TEXT PRIMARY KEY NOT NULL,
+			label TEXT NOT NULL,
+			default_start_date TEXT NOT NULL,
+			source_mode TEXT DEFAULT 'static' NOT NULL,
+			discovery_mode TEXT DEFAULT 'static' NOT NULL,
+			sort_order INTEGER DEFAULT 0 NOT NULL
+		);
+	`);
+	db.prepare(
+		`INSERT INTO datasets (
+			id, label, default_start_date, source_mode, discovery_mode, sort_order
+		) VALUES (?, ?, '2025-03-01', 'static', 'live', 0)`
+	).run(datasetId, 'Alpha Label');
+	db.close();
+
+	return {
+		directory,
+		netflowPath,
+		alertsPath: path.join(directory, 'alerts.sqlite')
+	};
+}
+
+function seedAlertsDatabase(fixture: Fixture, windowCount = 2): void {
+	const db = new Database(fixture.alertsPath);
+	db.exec(ALERT_SCHEMA);
+	const insertMeta = db.prepare('INSERT INTO feed_meta (key, value) VALUES (?, ?)');
+	for (const [key, value] of [
+		['schema_version', '1'],
+		['dataset_id', 'alpha'],
+		['threshold_high', '3.5'],
+		['threshold_low', '0.4'],
+		['max_per_tail', '25']
+	] as const) {
+		insertMeta.run(key, value);
+	}
+
+	const insertWindow = db.prepare(`
+		INSERT INTO windows (
+			window_start,
+			window_end,
+			member_files,
+			address_count,
+			alert_count,
+			alpha_min,
+			alpha_max,
+			alpha_median,
+			processed_at
+		) VALUES (?, ?, 3, ?, ?, NULL, NULL, NULL, ?)
+	`);
+	const seedWindows = db.transaction(() => {
+		for (let index = 0; index < windowCount; index += 1) {
+			const windowStart = 1_700_000_000 + index * 300;
+			const isLatestFixtureWindow = index === 1;
+			insertWindow.run(
+				windowStart,
+				windowStart + 300,
+				48_000 + index,
+				isLatestFixtureWindow ? 3 : index === 0 ? 1 : 0,
+				windowStart + 320
+			);
+		}
+	});
+	seedWindows();
+
+	if (windowCount >= 1) {
+		db.prepare(
+			`INSERT INTO alerts (
+				window_start, address, alpha, tail, rank, r2, prefix_levels
+			) VALUES (?, '9.9.9.9', 0.21, 'low', 1, 0.91, 24)`
+		).run(1_700_000_000);
+	}
+	if (windowCount >= 2) {
+		const insertAlert = db.prepare(`
+			INSERT INTO alerts (
+				window_start, address, alpha, tail, rank, r2, prefix_levels
+			) VALUES (?, ?, ?, ?, ?, ?, 24)
+		`);
+		const latestWindowStart = 1_700_000_300;
+		insertAlert.run(latestWindowStart, '1.1.1.2', 3.7, 'high', 2, 0.94);
+		insertAlert.run(latestWindowStart, '2.2.2.2', 0.2, 'low', 1, 0.89);
+		insertAlert.run(latestWindowStart, '1.1.1.1', 3.9, 'high', 1, 0.98);
+	}
+	db.close();
+}
+
+describe('alerts server helper', () => {
+	const originalCwd = process.cwd();
+
+	afterEach(() => {
+		process.chdir(originalCwd);
+		vi.unstubAllEnvs();
+	});
+
+	it('returns feed metadata, reverse-chronological windows, and tail-rank ordered alerts', async () => {
+		const fixture = createDatasetFixture();
+		seedAlertsDatabase(fixture);
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
+			feed: {
+				present: true,
+				latestWindowStart: 1_700_000_300,
+				latestProcessedAt: 1_700_000_620,
+				thresholds: { high: 3.5, low: 0.4 }
+			},
+			windows: [
+				{
+					windowStart: 1_700_000_300,
+					windowEnd: 1_700_000_600,
+					addressCount: 48_001,
+					alertCount: 3,
+					alerts: [
+						{ address: '1.1.1.1', alpha: 3.9, tail: 'high', rank: 1, r2: 0.98 },
+						{ address: '1.1.1.2', alpha: 3.7, tail: 'high', rank: 2, r2: 0.94 },
+						{ address: '2.2.2.2', alpha: 0.2, tail: 'low', rank: 1, r2: 0.89 }
+					]
+				},
+				{
+					windowStart: 1_700_000_000,
+					windowEnd: 1_700_000_300,
+					addressCount: 48_000,
+					alertCount: 1,
+					alerts: [{ address: '9.9.9.9', alpha: 0.21, tail: 'low', rank: 1, r2: 0.91 }]
+				}
+			]
+		});
+	});
+
+	it('returns absent when a discovered dataset has no alerts database', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'alerts-discovery-'));
+		const datasetDirectory = path.join(workspace, 'data', 'alpha');
+		fs.mkdirSync(datasetDirectory, { recursive: true });
+		const fixture = createDatasetFixture();
+		fs.renameSync(fixture.netflowPath, path.join(datasetDirectory, 'netflow.sqlite'));
+		process.chdir(workspace);
+		const alerts = await loadAlertsModule();
+
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
+			feed: { present: false },
+			windows: []
+		});
+	});
+
+	it('does not throw when a configured dataset database has no sibling alerts database', async () => {
+		const fixture = createDatasetFixture();
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
+			feed: { present: false },
+			windows: []
+		});
+	});
+
+	it('opens a feed file that appears after an earlier absent result', async () => {
+		const fixture = createDatasetFixture();
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toMatchObject({
+			feed: { present: false }
+		});
+		seedAlertsDatabase(fixture);
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toMatchObject({
+			feed: { present: true },
+			windows: [{ windowStart: 1_700_000_300 }, { windowStart: 1_700_000_000 }]
+		});
+	});
+
+	it('evicts a cached feed handle when its file disappears', async () => {
+		const fixture = createDatasetFixture();
+		seedAlertsDatabase(fixture);
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toMatchObject({
+			feed: { present: true }
+		});
+		fs.unlinkSync(fixture.alertsPath);
+		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
+			feed: { present: false },
+			windows: []
+		});
+	});
+
+	it('filters nested alerts by tail without dropping windows or changing stored counts', async () => {
+		const fixture = createDatasetFixture();
+		seedAlertsDatabase(fixture);
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		const result = await alerts.getAlertsFeedForDataset('alpha', { tail: 'high' });
+		expect(result.windows).toMatchObject([
+			{
+				windowStart: 1_700_000_300,
+				alertCount: 3,
+				alerts: [
+					{ tail: 'high', rank: 1 },
+					{ tail: 'high', rank: 2 }
+				]
+			},
+			{ windowStart: 1_700_000_000, alertCount: 1, alerts: [] }
+		]);
+	});
+
+	it('uses before as an exclusive window-start cursor', async () => {
+		const fixture = createDatasetFixture();
+		seedAlertsDatabase(fixture);
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		const result = await alerts.getAlertsFeedForDataset('alpha', { before: 1_700_000_300 });
+		expect(result.windows.map((window) => window.windowStart)).toEqual([1_700_000_000]);
+	});
+
+	it('clamps window limits to the inclusive range from 1 through 288', async () => {
+		const fixture = createDatasetFixture();
+		seedAlertsDatabase(fixture, 289);
+		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
+		const alerts = await loadAlertsModule();
+
+		const lower = await alerts.getAlertsFeedForDataset('alpha', { limitWindows: 0 });
+		const upper = await alerts.getAlertsFeedForDataset('alpha', { limitWindows: 999 });
+		expect(lower.windows).toHaveLength(1);
+		expect(upper.windows).toHaveLength(288);
+	});
+});

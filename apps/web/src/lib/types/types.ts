@@ -11,6 +11,38 @@ export interface DatasetSummariesResponse {
 	error: string | null;
 }
 
+export type AlertTail = 'high' | 'low';
+
+export interface AlertFeedAlert {
+	address: string;
+	alpha: number;
+	tail: AlertTail;
+	rank: number;
+	r2: number;
+}
+
+export interface AlertFeedWindow {
+	windowStart: number;
+	windowEnd: number;
+	addressCount: number;
+	alertCount: number;
+	alerts: AlertFeedAlert[];
+}
+
+export type AlertFeedStatus =
+	| { present: false }
+	| {
+			present: true;
+			latestWindowStart: number | null;
+			latestProcessedAt: number | null;
+			thresholds: { high: number; low: number };
+	  };
+
+export interface AlertsFeedResponse {
+	feed: AlertFeedStatus;
+	windows: AlertFeedWindow[];
+}
+
 export type CoverageState = 'complete' | 'partial' | 'unknown';
 
 export interface BucketCoverage {
