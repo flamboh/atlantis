@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
 import { loadDatasetSummariesFromFetch } from '$lib/datasets';
+import type { AlertsFeedResponse } from '$lib/types/types';
 
 export const load: PageLoad = async ({ params, fetch }) => {
 	const { dataset } = params;
@@ -33,10 +34,26 @@ export const load: PageLoad = async ({ params, fetch }) => {
 		throw error(500, 'Invalid source metadata response');
 	}
 
+	let alertsSummary: AlertsFeedResponse | null = null;
+	try {
+		const alertsResponse = await fetch(
+			`/api/alerts?dataset=${encodeURIComponent(dataset)}&tail=high&horizon=24h&sort=extreme&limit=5`
+		);
+		if (alertsResponse.ok) {
+			const alertsPayload = (await alertsResponse.json()) as AlertsFeedResponse;
+			if (alertsPayload.feed.present) {
+				alertsSummary = alertsPayload;
+			}
+		}
+	} catch {
+		// Alerts are optional; keep rendering the dashboard when the feed is unavailable.
+	}
+
 	return {
 		datasetId: selectedDataset.datasetId,
 		title: selectedDataset.label,
 		defaultStartDate: selectedDataset.defaultStartDate,
-		routers: routersPayload
+		routers: routersPayload,
+		...(alertsSummary ? { alertsSummary } : {})
 	};
 };

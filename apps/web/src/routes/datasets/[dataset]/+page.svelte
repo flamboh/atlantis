@@ -10,4 +10,5 @@
 	title={data.title}
 	defaultStartDate={data.defaultStartDate}
 	routers={data.routers}
+	initialAlerts={data.alertsSummary}
 />

@@ -2,6 +2,7 @@
 	import { afterNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import type { PageProps } from './$types';
+	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
 	import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
 
 	type TailSelection = AlertTail;
@@ -66,7 +67,7 @@
 		data.datasets.find((dataset) => dataset.datasetId === data.selectedDataset)?.label ??
 			data.selectedDataset
 	);
-	const feedCommand = $derived(`netflow-db feed ${data.selectedDataset || '<dataset-id>'}`);
+	const feedCommand = $derived(`netflow-db feed ${data.selectedDataset}`);
 	const canShowMore = $derived(
 		feedResponse.addresses.length < feedResponse.totalAddresses && limit < MAX_LIMIT
 	);
@@ -158,10 +159,6 @@
 		requestLimit: number,
 		showLoading: boolean
 	): Promise<boolean> {
-		if (!data.selectedDataset) {
-			return false;
-		}
-
 		const generation = ++requestGeneration;
 		if (showLoading) {
 			loading = true;
@@ -323,6 +320,7 @@
 			{statusText}
 		</p>
 	</header>
+	<DatasetTabs datasetId={data.selectedDataset} active="alerts" />
 
 	{#if fetchError}
 		<div
