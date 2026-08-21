@@ -19,6 +19,22 @@ export interface BucketCoverage {
 	expectedUnits: number;
 }
 
+export interface CoverageTimelineBucket {
+	bucketStart: number;
+	bucketEnd: number;
+	coverage: BucketCoverage;
+}
+
+export interface CoverageTimeline {
+	sourceId: string;
+	buckets: CoverageTimelineBucket[];
+}
+
+export interface NetflowCoverageResponse {
+	timelines: CoverageTimeline[];
+	requestedRouters: string[];
+}
+
 export type TimeBucket<T> = {
 	bucketStart: number;
 	bucketEnd: number;

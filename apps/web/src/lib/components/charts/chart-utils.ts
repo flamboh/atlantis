@@ -241,6 +241,31 @@ export function formatLabels(results: NetflowDataPoint[], groupBy: GroupByOption
 	});
 }
 
+export type TemporalDataBounds = {
+	min: number;
+	max: number;
+};
+
+/** Find the first and last timestamps that contain renderable chart data. */
+export function findTemporalDataBounds<T>(
+	items: readonly T[],
+	getTimestamp: (item: T) => number,
+	hasData: (item: T) => boolean
+): TemporalDataBounds | null {
+	let min = Infinity;
+	let max = -Infinity;
+
+	for (const item of items) {
+		if (!hasData(item)) continue;
+		const timestamp = getTimestamp(item);
+		if (!Number.isFinite(timestamp)) continue;
+		min = Math.min(min, timestamp);
+		max = Math.max(max, timestamp);
+	}
+
+	return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+}
+
 export function getXAxisTitle(groupBy: GroupByOption): string {
 	switch (groupBy) {
 		case 'date':
@@ -544,48 +569,10 @@ export function buildTemporalChartPoints<T>(
 	}));
 }
 
-/** Return the visual treatment used for a complete or partial data point. */
-export function getCoveragePointStyle(
-	coverage: ChartCoverage,
-	color: string
-): {
-	backgroundColor: string;
-	borderColor: string;
-	borderWidth: number;
-	radius: number;
-} {
-	if (coverage.state !== 'partial') {
-		return {
-			backgroundColor: color,
-			borderColor: color,
-			borderWidth: 1,
-			radius: 0
-		};
-	}
-
-	return {
-		backgroundColor: 'transparent',
-		borderColor: color,
-		borderWidth: 2,
-		radius: 4
-	};
-}
-
 /** Partial buckets make both adjoining line segments visibly uncertain. */
 export function isCoverageSegmentDashed(
 	left: { coverage?: ChartCoverage } | null | undefined,
 	right: { coverage?: ChartCoverage } | null | undefined
 ): boolean {
 	return left?.coverage?.state === 'partial' || right?.coverage?.state === 'partial';
-}
-
-export function getCoverageTooltipLines(coverage: ChartCoverage | null | undefined): string[] {
-	if (!coverage || coverage.state === 'complete') {
-		return [];
-	}
-
-	return [
-		`Coverage: ${coverage.state}`,
-		`Observed units: ${coverage.observedUnits.toLocaleString()} / ${coverage.expectedUnits.toLocaleString()}`
-	];
 }

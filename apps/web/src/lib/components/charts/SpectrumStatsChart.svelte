@@ -7,13 +7,7 @@
 	import type { ActiveElement, ChartEvent } from 'chart.js';
 	import type { GroupByOption } from '$lib/components/netflow/types.ts';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
-	import type {
-		FlowVisibility,
-		IpGranularity,
-		SpectrumPoint,
-		TimeBucket,
-		BucketCoverage
-	} from '$lib/types/types';
+	import type { FlowVisibility, IpGranularity, SpectrumPoint, TimeBucket } from '$lib/types/types';
 	import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
 	import {
 		generateSlugFromLabel,
@@ -28,8 +22,7 @@
 		updateRangeDrag,
 		endRangeDrag,
 		buildMirroredSelectionStyle,
-		getCoveragePointStyle,
-		getCoverageTooltipLines
+		findTemporalDataBounds
 	} from './chart-utils';
 	import {
 		formatIpGranularityTick,
@@ -332,16 +325,6 @@
 		return `left:${left}px; top:${top}px; width:${tooltipWidth}px;`;
 	}
 
-	function getCoverageLinesForLabel(label: string): string[] {
-		const index = (chart?.data.labels as string[] | undefined)?.indexOf(label) ?? -1;
-		const bucketStart = bucketStarts[index];
-		const bucket =
-			bucketStart === undefined
-				? undefined
-				: buckets.find((item) => item.bucketStart === bucketStart);
-		return bucket ? getCoverageTooltipLines(bucket.coverage) : [];
-	}
-
 	// Color gradient function based on f value
 	// Purple (low f) -> Blue -> Cyan -> Green -> Yellow (high f)
 	function getColorForF(f: number, minF: number, maxF: number): string {
@@ -535,7 +518,6 @@
 		y: number;
 		f: number;
 		timeLabel: string;
-		coverage: BucketCoverage;
 	}
 
 	function buildDatasets(
@@ -578,10 +560,6 @@
 		// Build data points: each (time, alpha) has an f value for coloring
 		const data: DataPoint[] = [];
 
-		const coverageByBucketStart = new Map(
-			selectedBuckets.map((bucket) => [bucket.bucketStart, bucket.coverage])
-		);
-
 		bucketStarts.forEach((bucketStart) => {
 			const points = pointsByBucketStart[bucketStart];
 			if (!points || points.length === 0) return;
@@ -593,12 +571,7 @@
 					x: bucketStart,
 					y: point.alpha,
 					f: point.f,
-					timeLabel,
-					coverage: coverageByBucketStart.get(bucketStart) ?? {
-						state: 'unknown',
-						observedUnits: 0,
-						expectedUnits: 0
-					}
+					timeLabel
 				});
 			});
 		});
@@ -639,6 +612,12 @@
 			syncCrosshairPositions();
 			return;
 		}
+		const dataBounds = findTemporalDataBounds(
+			data,
+			(point) => point.x,
+			() => true
+		);
+		if (!dataBounds) return;
 
 		const labels = bucketStarts.map((bucketStart) =>
 			formatTemporalBucketLabel(bucketStart, currentGranularity)
@@ -646,13 +625,9 @@
 
 		// Create scatter dataset with individual point colors based on f
 		const pointColors = data.map((d) => getColorForF(d.f, minF, maxF));
-		const pointStyles = data.map((d, index) =>
-			getCoveragePointStyle(d.coverage, pointColors[index] ?? pointColors[0] ?? 'transparent')
-		);
 		const chartPoints = data.map((d) => ({
 			x: d.x,
-			y: d.y,
-			coverage: d.coverage
+			y: d.y
 		}));
 
 		const granularity = currentGranularity;
@@ -668,10 +643,7 @@
 							data: chartPoints,
 							backgroundColor: pointColors,
 							borderColor: pointColors,
-							pointRadius: data.map((d) => (d.coverage.state === 'partial' ? 4 : 1)),
-							pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
-							pointBorderColor: pointStyles.map((style) => style.borderColor),
-							pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+							pointRadius: 1,
 							pointHoverRadius: 2
 						}
 					]
@@ -697,8 +669,8 @@
 					scales: {
 						x: {
 							type: 'linear',
-							min: bucketStarts[0],
-							max: bucketStarts[bucketStarts.length - 1],
+							min: dataBounds.min,
+							max: dataBounds.max,
 							title: {
 								display: true,
 								text: `Time (${granularity})`,
@@ -756,18 +728,15 @@
 					data: chartPoints,
 					backgroundColor: pointColors,
 					borderColor: pointColors,
-					pointRadius: data.map((d) => (d.coverage.state === 'partial' ? 4 : 1)),
-					pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
-					pointBorderColor: pointStyles.map((style) => style.borderColor),
-					pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+					pointRadius: 1,
 					pointHoverRadius: 2
 				}
 			];
 			chart.options.scales = {
 				x: {
 					type: 'linear',
-					min: bucketStarts[0],
-					max: bucketStarts[bucketStarts.length - 1],
+					min: dataBounds.min,
+					max: dataBounds.max,
 					title: { display: true, text: `Time (${granularity})`, color: textColor },
 					ticks: {
 						color: textColor,
@@ -1089,9 +1058,6 @@
 							style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
 						>
 							<div>{localHoverLabel}</div>
-							{#each getCoverageLinesForLabel(localHoverLabel) as line (line)}
-								<div>{line}</div>
-							{/each}
 						</div>
 					{/if}
 					{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}

@@ -6,8 +6,7 @@
 	import { formatIpGranularityTick, formatTemporalBucketLabel } from './ip-time-axis';
 	import { theme } from '$lib/stores/theme.svelte';
 	import {
-		getCoveragePointStyle,
-		getCoverageTooltipLines,
+		findTemporalDataBounds,
 		isCoverageSegmentDashed,
 		type ChartCoverage
 	} from './chart-utils';
@@ -66,6 +65,22 @@
 			chart = null;
 			return;
 		}
+		const indexedBuckets: Array<{ bucketStart: number; index: number }> = props.bucketStarts.map(
+			(bucketStart: number, index: number) => ({ bucketStart, index })
+		);
+		const dataBounds = findTemporalDataBounds(
+			indexedBuckets,
+			(item) => item.bucketStart,
+			(item) =>
+				props.series.some(
+					(series: MetricLineSeries) => typeof series.values[item.index] === 'number'
+				)
+		);
+		if (!dataBounds) {
+			chart?.destroy();
+			chart = null;
+			return;
+		}
 		const palette = colors();
 		const datasets = props.series.map((series: MetricLineSeries) => {
 			const data: MetricLinePoint[] = props.bucketStarts.map(
@@ -83,28 +98,13 @@
 					};
 				}
 			);
-			const pointStyles = data.map((point: MetricLinePoint) =>
-				getCoveragePointStyle(point.coverage, series.color)
-			);
-
 			return {
 				label: series.label,
 				data,
 				borderColor: series.color,
 				backgroundColor: series.color,
 				borderDash: series.dash ?? [],
-				pointRadius: data.map((point: MetricLinePoint, index: number) =>
-					point.y === null ? 0 : (pointStyles[index]?.radius ?? 0)
-				),
-				pointBackgroundColor: pointStyles.map(
-					(style: (typeof pointStyles)[number]) => style.backgroundColor
-				),
-				pointBorderColor: pointStyles.map(
-					(style: (typeof pointStyles)[number]) => style.borderColor
-				),
-				pointBorderWidth: pointStyles.map(
-					(style: (typeof pointStyles)[number]) => style.borderWidth
-				),
+				pointRadius: 0,
 				pointHoverRadius: 4,
 				spanGaps: false,
 				segment: {
@@ -141,11 +141,6 @@
 						borderColor: palette.tooltipBorder,
 						borderWidth: 1,
 						callbacks: {
-							afterLabel: (context: { raw: unknown }) => {
-								const raw = context.raw;
-								if (typeof raw !== 'object' || raw === null || !('coverage' in raw)) return [];
-								return getCoverageTooltipLines((raw as { coverage: ChartCoverage }).coverage);
-							},
 							label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) =>
 								`${context.dataset.label ?? ''}: ${context.parsed.y === null ? 'No data' : formatValue(context.parsed.y)}`
 						}
@@ -154,8 +149,8 @@
 				scales: {
 					x: {
 						type: 'linear',
-						min: props.bucketStarts[0],
-						max: props.bucketStarts[props.bucketStarts.length - 1],
+						min: dataBounds.min,
+						max: dataBounds.max,
 						ticks: {
 							color: palette.text,
 							autoSkip: false,

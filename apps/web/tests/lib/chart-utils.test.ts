@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	clampGroupByToDateRange,
 	buildTemporalChartPoints,
-	getCoveragePointStyle,
-	getCoverageTooltipLines,
+	findTemporalDataBounds,
 	isCoverageSegmentDashed,
 	getMaxAllowedGranularityForDateRange,
 	isGranularityAllowedForDateRange
@@ -75,25 +74,36 @@ describe('coverage-aware chart data', () => {
 		expect(points[1]?.coverage).toEqual(partialCoverage);
 	});
 
-	it('styles partial points as hollow and dashes adjoining segments', () => {
+	it('bounds charts to outer data while preserving zero and internal gaps', () => {
+		const buckets = [
+			{ bucketStart: 100, data: null },
+			{ bucketStart: 160, data: 0 },
+			{ bucketStart: 220, data: null },
+			{ bucketStart: 280, data: 4 },
+			{ bucketStart: 340, data: null }
+		];
+
+		expect(
+			findTemporalDataBounds(
+				buckets,
+				(bucket) => bucket.bucketStart,
+				(bucket) => bucket.data !== null
+			)
+		).toEqual({ min: 160, max: 280 });
+		expect(
+			findTemporalDataBounds(
+				buckets,
+				(bucket) => bucket.bucketStart,
+				() => false
+			)
+		).toBeNull();
+	});
+
+	it('dashes segments adjoining partial buckets', () => {
 		const partialPoint = { coverage: partialCoverage };
 		const completePoint = { coverage: completeCoverage };
 
-		expect(getCoveragePointStyle(partialCoverage, '#2563eb')).toEqual({
-			backgroundColor: 'transparent',
-			borderColor: '#2563eb',
-			borderWidth: 2,
-			radius: 4
-		});
 		expect(isCoverageSegmentDashed(partialPoint, completePoint)).toBe(true);
 		expect(isCoverageSegmentDashed(completePoint, completePoint)).toBe(false);
-	});
-
-	it('exposes observed and expected units for partial coverage tooltips', () => {
-		expect(getCoverageTooltipLines(partialCoverage)).toEqual([
-			'Coverage: partial',
-			'Observed units: 8 / 12'
-		]);
-		expect(getCoverageTooltipLines(completeCoverage)).toEqual([]);
 	});
 });

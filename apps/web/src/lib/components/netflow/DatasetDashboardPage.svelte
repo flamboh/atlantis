@@ -6,6 +6,7 @@
 	import ProtocolChart from '$lib/components/charts/ProtocolChart.svelte';
 	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
 	import SpectrumStatsChart from '$lib/components/charts/SpectrumStatsChart.svelte';
+	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
@@ -50,15 +51,16 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
-	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum';
+	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum' | 'coverage';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = [
 		'dashboard',
 		'characteristics',
 		'ip',
 		'protocol',
-		'spectrum'
+		'spectrum',
+		'coverage'
 	];
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v3';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v4';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
@@ -463,7 +465,7 @@
 							protocolMetrics = event.detail.metrics;
 						}}
 					/>
-				{:else}
+				{:else if chartId === 'spectrum'}
 					<SpectrumStatsChart
 						dataset={props.dataset}
 						{startDate}
@@ -482,6 +484,15 @@
 						on:addressTypeChange={(event) => {
 							selectedSpectrumAddressType = event.detail.addressType;
 						}}
+					/>
+				{:else}
+					<CoverageStrip
+						dataset={props.dataset}
+						{startDate}
+						{endDate}
+						groupBy={selectedGroupBy}
+						routers={selectedRouters}
+						{routersLoaded}
 					/>
 				{/if}
 			</section>

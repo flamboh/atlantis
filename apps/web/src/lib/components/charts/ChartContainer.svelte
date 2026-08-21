@@ -25,8 +25,7 @@
 		updateRangeDrag,
 		endRangeDrag,
 		buildMirroredSelectionStyle,
-		getCoveragePointStyle,
-		getCoverageTooltipLines,
+		findTemporalDataBounds,
 		isCoverageSegmentDashed
 	} from './chart-utils';
 	import {
@@ -256,9 +255,8 @@
 			return [];
 		}
 		const payload = bucket.data;
-		const coverageLines = getCoverageTooltipLines(bucket.coverage);
 		if (!payload) {
-			return coverageLines;
+			return [];
 		}
 
 		const visibleFamilies = new SvelteSet<MetricFamily>();
@@ -280,7 +278,7 @@
 			lines.push(`Total Bytes: ${formatMetricValue(payload.bytes, 'bytes')}`);
 		}
 
-		return [...lines, ...coverageLines];
+		return lines;
 	}
 
 	function handleChartClick(
@@ -411,7 +409,17 @@
 			tooltipTextColor,
 			tooltipBorderColor
 		} = getChartColors();
-		const labels = formatLabels(results, groupBy);
+		const dataBounds = findTemporalDataBounds(
+			results,
+			(result) => result.bucketStart,
+			(result) => result.data !== null
+		);
+		const visibleResults = dataBounds
+			? results.filter(
+					(result) => result.bucketStart >= dataBounds.min && result.bucketStart <= dataBounds.max
+				)
+			: [];
+		const labels = formatLabels(visibleResults, groupBy);
 		const getLabelPST = (idx: number): PSTDateComponents | null =>
 			getLabelPSTFromLabels(labels, idx);
 		const xAxisTitle = getXAxisTitle(groupBy);
@@ -454,9 +462,8 @@
 				if (!field) {
 					continue;
 				}
-				const data = results.map((item) => item.data?.[field] ?? null);
+				const data = visibleResults.map((item) => item.data?.[field] ?? null);
 				const color = predefinedColors[colorIndex % predefinedColors.length];
-				const pointStyles = results.map((item) => getCoveragePointStyle(item.coverage, color));
 				colorIndex++;
 
 				datasets.push({
@@ -468,16 +475,14 @@
 						: color,
 					fill: isStackedChart ? 'origin' : false,
 					tension: 0.1,
-					pointRadius: data.map((value, index) =>
-						value === null ? 0 : (pointStyles[index]?.radius ?? 0)
-					),
-					pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
-					pointBorderColor: pointStyles.map((style) => style.borderColor),
-					pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+					pointRadius: 0,
 					spanGaps: false,
 					segment: {
 						borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
-							isCoverageSegmentDashed(results[context.p0DataIndex], results[context.p1DataIndex])
+							isCoverageSegmentDashed(
+								visibleResults[context.p0DataIndex],
+								visibleResults[context.p1DataIndex]
+							)
 								? [6, 4]
 								: []
 					},

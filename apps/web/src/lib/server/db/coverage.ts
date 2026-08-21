@@ -1,5 +1,11 @@
 import type { ReadonlyDatasetDb } from '$lib/server/datasets';
-import type { BucketCoverage, CoverageState, IpGranularity, TimeBucket } from '$lib/types/types';
+import type {
+	BucketCoverage,
+	CoverageState,
+	CoverageTimeline,
+	IpGranularity,
+	TimeBucket
+} from '$lib/types/types';
 import { createDateFromPSTComponents, epochToPSTComponents } from '$lib/utils/timezone';
 
 const GRANULARITY_SECONDS: Record<IpGranularity, number> = {
@@ -49,6 +55,14 @@ export type BuildCoverageTimelinesOptions<TData, TRow extends TimelineRow> = {
 	getPartitionKey: (row: TRow) => string;
 	toData: (row: TRow) => TData;
 	emptyData: (partitionKey: string) => TData | null;
+};
+
+export type BuildCoverageOnlyTimelinesOptions = {
+	db: ReadonlyDatasetDb;
+	granularity: IpGranularity;
+	start: number;
+	end: number;
+	sourceIds: readonly string[];
 };
 
 /**
@@ -184,6 +198,38 @@ export async function buildCoverageTimelines<TData, TRow extends TimelineRow>(
 	}
 
 	return timelines;
+}
+
+/**
+ * Build source-separated coverage timelines without carrying a metric payload.
+ * This shares bucket aggregation and civil-day handling with metric routes.
+ */
+export async function buildCoverageOnlyTimelines(
+	options: BuildCoverageOnlyTimelinesOptions
+): Promise<CoverageTimeline[]> {
+	const { db, granularity, start, end, sourceIds } = options;
+	const timelines = await buildCoverageTimelines<null, TimelineRow>({
+		db,
+		granularity,
+		start,
+		end,
+		partitions: sourceIds.map((sourceId) => ({ key: sourceId, sourceIds: [sourceId] })),
+		rows: [],
+		getPartitionKey: () => '',
+		toData: () => null,
+		emptyData: () => null
+	});
+
+	return sourceIds.map((sourceId) => ({
+		sourceId,
+		buckets: (timelines.get(sourceId) ?? []).map(
+			({ bucketStart, bucketEnd, coverage }): CoverageTimeline['buckets'][number] => ({
+				bucketStart,
+				bucketEnd,
+				coverage
+			})
+		)
+	}));
 }
 
 function nextBucketEnd(bucketStart: number, granularity: IpGranularity): number {

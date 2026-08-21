@@ -223,6 +223,18 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 			ORDER BY sort_order ASC, id ASC
 		`
 	);
+	// Backups and obsolete products can remain under data/, but the current dashboard requires
+	// explicit coverage and must not let an older database shadow a current product with the same ID.
+	const schema = await db.get<{ hasCoverage: number }>(
+		`SELECT EXISTS(
+			SELECT 1
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'bucket_coverage'
+		) AS hasCoverage`
+	);
+	if (schema?.hasCoverage !== 1) {
+		return [];
+	}
 
 	return rows.map((row) => ({ ...row, dbPath }));
 }
