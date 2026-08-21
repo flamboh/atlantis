@@ -7,11 +7,6 @@
 
 @theme {
 	--font-body: 'Inter', sans-serif;
-
-	--color-dark-bg: #0a0a0a;
-	--color-dark-surface: #111111;
-	--color-dark-subtle: #1a1a1a;
-	--color-dark-border: #2d2d2d;
 	--font-sans: 'Inter', sans-serif;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
