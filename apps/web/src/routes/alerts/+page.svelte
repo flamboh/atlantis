@@ -108,6 +108,9 @@
 		return dateTimeFormatter.format(new Date(timestamp * 1000));
 	}
 
+	// "New" = the address's first appearance in the entire retained history
+	// (firstSeen is retention-wide, not horizon-scoped) is within the last few
+	// windows — it just entered the anomalous set for the first time.
 	function isNewAddress(firstSeen: number): boolean {
 		return (
 			feedResponse.feed.present &&
@@ -472,6 +475,7 @@
 								</span>
 								{#if isNewAddress(alert.firstSeen)}
 									<span
+										title={`First flagged ${formatRelativeTime(alert.firstSeen)} — never seen in the retained history before that`}
 										class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
 									>
 										new

@@ -336,7 +336,6 @@ function readAddresses(
 							ORDER BY severity DESC, window_start DESC, rank ASC
 						) AS peak_rank,
 						MAX(window_start) OVER (PARTITION BY address) AS last_seen,
-						MIN(window_start) OVER (PARTITION BY address) AS first_seen,
 						COUNT(*) OVER (PARTITION BY address) AS times_flagged
 					FROM scoped
 				)
@@ -347,7 +346,11 @@ function readAddresses(
 					window_start AS peakWindowStart,
 					r2 AS peakR2,
 					last_seen AS lastSeen,
-					first_seen AS firstSeen,
+					-- Novelty is judged against the whole retained history, not the
+					-- horizon or tail filter: "new" means never flagged before at all.
+					(SELECT MIN(history.window_start)
+						FROM alerts AS history
+						WHERE history.address = ranked.address) AS firstSeen,
 					times_flagged AS timesFlagged,
 					COUNT(*) OVER () AS totalAddresses
 				FROM ranked

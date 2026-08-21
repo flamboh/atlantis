@@ -117,6 +117,9 @@ function seedAlerts(fixture: Fixture): void {
 		) VALUES (?, ?, ?, ?, ?, ?, 24)
 	`);
 	insertAlert.run(113_899, 'outside-24h', 12, 'high', 1, 0.5);
+	// history for high-address outside every horizon: firstSeen must be
+	// retention-wide (113_899) while in-horizon aggregates ignore this row.
+	insertAlert.run(113_899, 'high-address', 2.05, 'high', 2, 0.5);
 	insertAlert.run(196_600, 'old-high', 6, 'high', 1, 0.6);
 	insertAlert.run(196_700, 'repeat', 2.5, 'high', 1, 0.7);
 	insertAlert.run(199_700, 'repeat', 4.5, 'high', 1, 0.91);
@@ -188,7 +191,8 @@ describe('/api/alerts GET', () => {
 					peakWindowStart: LATEST_WINDOW_START,
 					peakR2: 0.93,
 					lastSeen: LATEST_WINDOW_START,
-					firstSeen: LATEST_WINDOW_START,
+					// retention-wide, not horizon-scoped: the 113_899 history row
+					firstSeen: 113_899,
 					timesFlagged: 1
 				},
 				{
