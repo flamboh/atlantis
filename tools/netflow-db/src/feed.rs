@@ -38,10 +38,12 @@ const SECONDS_PER_DAY: i64 = 24 * SECONDS_PER_HOUR;
 // not carry a timezone, and registry-driven pipeline runs use this default.
 const TIMEZONE: &str = "America/Los_Angeles";
 
-// TODO: These are uncalibrated placeholders. A future calibration pass will
-// replace them with thresholds derived from representative datasets.
-const DEFAULT_THRESHOLD_HIGH: f64 = 3.5;
-const DEFAULT_THRESHOLD_LOW: f64 = 0.4;
+// Calibrated on 200 uOregon five-minute windows spanning 2025-06 through
+// 2026-06 after conformance against the Haskell reference; a typical window
+// records ~20 alerts (p10-p90: 14-25) across both tails at these values.
+// Methodology and sensitivity: docs/agent/singularity-calibration.md.
+const DEFAULT_THRESHOLD_HIGH: f64 = 2.0;
+const DEFAULT_THRESHOLD_LOW: f64 = 0.3;
 
 const ALERT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS feed_meta (

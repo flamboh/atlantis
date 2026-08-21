@@ -17,8 +17,8 @@ use netflow_db::{
     },
     prepare::{PrepareOptions, prepare_archive},
     registry::DatasetRegistry,
-    storage::{backup_database, promote_database},
     singularity,
+    storage::{backup_database, promote_database},
     verify::{VerifyOptions, verify_database},
 };
 
