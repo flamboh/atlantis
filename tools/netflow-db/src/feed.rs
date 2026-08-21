@@ -574,6 +574,7 @@ fn parse_backfill_duration(value: &str) -> Result<i64, FeedError> {
     }
     let amount = amount.parse::<i64>().map_err(|_| invalid_backfill(value))?;
     let unit_seconds = match unit {
+        'm' => 60,
         'h' => SECONDS_PER_HOUR,
         'd' => SECONDS_PER_DAY,
         _ => return Err(invalid_backfill(value)),
@@ -585,7 +586,7 @@ fn parse_backfill_duration(value: &str) -> Result<i64, FeedError> {
 
 fn invalid_backfill(value: &str) -> FeedError {
     FeedError::InvalidConfig(format!(
-        "invalid backfill duration {value:?}; expected an integer followed by 'h' or 'd'"
+        "invalid backfill duration {value:?}; expected an integer followed by 'm', 'h', or 'd'"
     ))
 }
 
@@ -745,7 +746,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_hour_and_day_backfills() {
+    fn parses_minute_hour_and_day_backfills() {
+        assert_eq!(parse_backfill_duration("15m").unwrap(), 15 * 60);
         assert_eq!(
             parse_backfill_duration("36h").unwrap(),
             36 * SECONDS_PER_HOUR
