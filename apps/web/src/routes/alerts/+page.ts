@@ -25,7 +25,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		};
 		if (selectedDataset) {
 			const response = await fetch(
-				`/api/alerts?dataset=${encodeURIComponent(selectedDataset)}&horizon=24h&sort=extreme&limit=100`
+				`/api/alerts?dataset=${encodeURIComponent(selectedDataset)}&tail=high&horizon=24h&sort=extreme&limit=100`
 			);
 			const payload = (await response.json()) as AlertsFeedResponse | ErrorResponse;
 			if (!response.ok || 'error' in payload) {

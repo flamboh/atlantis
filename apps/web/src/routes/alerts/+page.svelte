@@ -4,7 +4,7 @@
 	import type { PageProps } from './$types';
 	import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
 
-	type TailSelection = 'all' | AlertTail;
+	type TailSelection = AlertTail;
 	type ErrorResponse = { data: null; error: string };
 
 	const PAGE_SIZE = 100;
@@ -19,10 +19,13 @@
 	const CONTROL_BUTTON_INACTIVE_CLASS =
 		'text-gray-700 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100';
 	const CONTROL_BUTTON_ACTIVE_CLASS = 'bg-blue-600 text-white shadow-sm';
-	const TAIL_OPTIONS: Array<{ value: TailSelection; label: string }> = [
-		{ value: 'all', label: 'All' },
-		{ value: 'high', label: 'High α' },
-		{ value: 'low', label: 'Low α' }
+	const TAIL_OPTIONS: Array<{ value: TailSelection; label: string; title: string }> = [
+		{
+			value: 'high',
+			label: 'High α',
+			title: 'Isolated addresses in sparse regions of address space'
+		},
+		{ value: 'low', label: 'Low α', title: 'Addresses deep inside dense clusters' }
 	];
 	const HORIZON_OPTIONS: Array<{ value: AlertHorizon; label: string }> = [
 		{ value: '1h', label: '1h' },
@@ -47,7 +50,7 @@
 	let { data }: PageProps = $props();
 	let activeDataset = $state(untrack(() => data.selectedDataset));
 	let feedResponse = $state<AlertsFeedResponse>(untrack(() => data.alerts));
-	let selectedTail = $state<TailSelection>('all');
+	let selectedTail = $state<TailSelection>('high');
 	let selectedHorizon = $state<AlertHorizon>('24h');
 	let selectedSort = $state<AlertSort>('extreme');
 	let limit = $state(PAGE_SIZE);
@@ -127,13 +130,11 @@
 	): string {
 		const params = [
 			`dataset=${encodeURIComponent(data.selectedDataset)}`,
+			`tail=${tail}`,
 			`horizon=${horizon}`,
 			`sort=${sort}`,
 			`limit=${requestLimit}`
 		];
-		if (tail !== 'all') {
-			params.push(`tail=${tail}`);
-		}
 		return `/api/alerts?${params.join('&')}`;
 	}
 
@@ -259,7 +260,7 @@
 		requestGeneration += 1;
 		activeDataset = data.selectedDataset;
 		feedResponse = data.alerts;
-		selectedTail = 'all';
+		selectedTail = 'high';
 		selectedHorizon = '24h';
 		selectedSort = 'extreme';
 		limit = PAGE_SIZE;
@@ -367,7 +368,7 @@
 				<div class="flex flex-col gap-1">
 					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Alpha</span>
 					<div
-						class={`${CONTROL_GROUP_CLASS} grid-cols-3`}
+						class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
 						role="group"
 						aria-label="Filter alerts by alpha tail"
 					>
@@ -375,6 +376,7 @@
 							<button
 								type="button"
 								onclick={() => selectTail(option.value)}
+								title={option.title}
 								class={`${CONTROL_BUTTON_CLASS} ${
 									selectedTail === option.value
 										? CONTROL_BUTTON_ACTIVE_CLASS
@@ -516,18 +518,6 @@
 									<div class="flex min-w-0 items-center gap-2">
 										<span class="truncate font-mono text-gray-900 dark:text-gray-100">
 											{alert.address}
-										</span>
-										<span
-											title={alert.tail === 'high'
-												? 'High α — isolated address in a sparse region of address space'
-												: 'Low α — address deep inside a dense cluster'}
-											class={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-												alert.tail === 'high'
-													? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
-													: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
-											}`}
-										>
-											{alert.tail === 'high' ? 'High' : 'Low'}
 										</span>
 										{#if isNewAddress(alert.firstSeen)}
 											<span
