@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getAlertsFeedForDataset } from '$lib/server/alerts';
 import { getRequestedDataset } from '$lib/server/datasets';
-import type { AlertsFeedResponse, AlertTail } from '$lib/types/types';
+import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
 
 type ErrorResponse = {
 	data: null;
@@ -34,24 +34,37 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	}
 	const tail = tailParam as AlertTail | null;
 
-	const parsedLimitWindows = parseInteger(url.searchParams.get('limitWindows'));
-	if (parsedLimitWindows === null) {
-		return errorResponse('Invalid limitWindows parameter', 400);
+	const horizonParam = url.searchParams.get('horizon') ?? '24h';
+	if (
+		horizonParam !== '1h' &&
+		horizonParam !== '6h' &&
+		horizonParam !== '24h' &&
+		horizonParam !== '7d'
+	) {
+		return errorResponse('Invalid horizon parameter', 400);
 	}
-	const limitWindows = Math.min(288, Math.max(1, parsedLimitWindows ?? 24));
+	const horizon = horizonParam as AlertHorizon;
 
-	const before = parseInteger(url.searchParams.get('before'));
-	if (before === null) {
-		return errorResponse('Invalid before parameter', 400);
+	const sortParam = url.searchParams.get('sort') ?? 'extreme';
+	if (sortParam !== 'extreme' && sortParam !== 'recent') {
+		return errorResponse('Invalid sort parameter', 400);
 	}
+	const sort = sortParam as AlertSort;
+
+	const parsedLimit = parseInteger(url.searchParams.get('limit'));
+	if (parsedLimit === null) {
+		return errorResponse('Invalid limit parameter', 400);
+	}
+	const limit = Math.min(500, Math.max(1, parsedLimit ?? 100));
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		const response: AlertsFeedResponse = await getAlertsFeedForDataset(dataset, {
 			platform,
 			tail: tail ?? undefined,
-			limitWindows,
-			before
+			horizon,
+			sort,
+			limit
 		});
 		return json(response);
 	} catch (error) {

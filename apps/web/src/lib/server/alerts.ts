@@ -1,8 +1,9 @@
 import { env as privateEnv } from '$env/dynamic/private';
 import type Database from 'better-sqlite3';
 import type {
-	AlertFeedAlert,
-	AlertFeedWindow,
+	AlertFeedAddress,
+	AlertHorizon,
+	AlertSort,
 	AlertsFeedResponse,
 	AlertTail
 } from '$lib/types/types';
@@ -26,20 +27,26 @@ type FeedMetaRow = {
 	value: string;
 };
 
-type WindowRow = {
+type LatestWindowRow = {
 	windowStart: number;
 	windowEnd: number;
 	addressCount: number;
-	alertCount: number;
-};
-
-type LatestWindowRow = {
-	windowStart: number;
 	processedAt: number;
 };
 
-const DEFAULT_LIMIT_WINDOWS = 24;
-const MAX_LIMIT_WINDOWS = 288;
+type AddressRow = AlertFeedAddress & {
+	totalAddresses: number;
+};
+
+const HORIZON_SECONDS: Record<AlertHorizon, number> = {
+	'1h': 60 * 60,
+	'6h': 6 * 60 * 60,
+	'24h': 24 * 60 * 60,
+	'7d': 7 * 24 * 60 * 60
+};
+const DEFAULT_HORIZON: AlertHorizon = '24h';
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 500;
 const REQUIRED_TABLES = ['alerts', 'feed_meta', 'windows'] as const;
 const REQUIRED_META_KEYS = [
 	'schema_version',
@@ -54,12 +61,18 @@ const localDbCache = new Map<string, LocalDbCacheEntry>();
 export type AlertsFeedOptions = {
 	platform?: App.Platform;
 	tail?: AlertTail;
-	limitWindows?: number;
-	before?: number;
+	horizon?: AlertHorizon;
+	sort?: AlertSort;
+	limit?: number;
 };
 
-function absentFeed(): AlertsFeedResponse {
-	return { feed: { present: false }, windows: [] };
+function absentFeed(horizonSeconds: number): AlertsFeedResponse {
+	return {
+		feed: { present: false },
+		horizonSeconds,
+		totalAddresses: 0,
+		addresses: []
+	};
 }
 
 function getEnv(name: string): string | undefined {
@@ -209,11 +222,11 @@ async function getLocalDb(dbPath: string): Promise<SqliteClient> {
 	}
 }
 
-function clampLimitWindows(limitWindows: number | undefined): number {
-	if (limitWindows === undefined || !Number.isFinite(limitWindows)) {
-		return DEFAULT_LIMIT_WINDOWS;
+function clampLimit(limit: number | undefined): number {
+	if (limit === undefined || !Number.isFinite(limit)) {
+		return DEFAULT_LIMIT;
 	}
-	return Math.min(MAX_LIMIT_WINDOWS, Math.max(1, Math.trunc(limitWindows)));
+	return Math.min(MAX_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
 function readFeedMetadata(
@@ -272,99 +285,154 @@ function readFeedMetadata(
 	return { thresholdHigh, thresholdLow };
 }
 
-function readAlertsForWindow(
+function readAddresses(
 	db: SqliteClient,
-	windowStart: number,
-	tail: AlertTail | undefined
-): AlertFeedAlert[] {
-	const whereTail = tail ? 'AND tail = ?' : '';
-	const params: QueryParam[] = tail ? [windowStart, tail] : [windowStart];
-	return db
-		.prepare(
-			`
-				SELECT address, alpha, tail, rank, r2
-				FROM alerts
-				WHERE window_start = ?
-				${whereTail}
-				ORDER BY CASE tail WHEN 'high' THEN 0 ELSE 1 END, rank ASC
-			`
-		)
-		.all(...params) as AlertFeedAlert[];
-}
+	options: Pick<AlertsFeedOptions, 'tail' | 'sort' | 'limit'>,
+	horizonStart: number,
+	thresholdHigh: number,
+	thresholdLow: number
+): { totalAddresses: number; addresses: AlertFeedAddress[] } {
+	const whereTail = options.tail ? 'AND tail = ?' : '';
+	const sortOrder =
+		options.sort === 'recent'
+			? 'lastSeen DESC, severity DESC, address ASC'
+			: 'severity DESC, address ASC';
+	const limit = clampLimit(options.limit);
+	const params: QueryParam[] = [thresholdHigh, thresholdLow, horizonStart];
+	if (options.tail) {
+		params.push(options.tail);
+	}
+	params.push(limit);
 
-function readWindows(
-	db: SqliteClient,
-	options: Pick<AlertsFeedOptions, 'tail' | 'limitWindows' | 'before'>
-): AlertFeedWindow[] {
-	const limitWindows = clampLimitWindows(options.limitWindows);
-	const beforeClause = options.before === undefined ? '' : 'WHERE window_start < ?';
-	const params: QueryParam[] =
-		options.before === undefined ? [limitWindows] : [options.before, limitWindows];
 	const rows = db
 		.prepare(
 			`
+				WITH scoped AS (
+					SELECT
+						address,
+						alpha,
+						tail,
+						rank,
+						r2,
+						window_start,
+						CASE tail
+							WHEN 'high' THEN alpha - ?
+							ELSE ? - alpha
+						END AS severity
+					FROM alerts
+					WHERE window_start >= ?
+				${whereTail}
+				),
+				ranked AS (
+					SELECT
+						address,
+						alpha,
+						tail,
+						r2,
+						window_start,
+						severity,
+						ROW_NUMBER() OVER (
+							PARTITION BY address
+							ORDER BY severity DESC, window_start DESC, rank ASC
+						) AS peak_rank,
+						MAX(window_start) OVER (PARTITION BY address) AS last_seen,
+						MIN(window_start) OVER (PARTITION BY address) AS first_seen,
+						COUNT(*) OVER (PARTITION BY address) AS times_flagged
+					FROM scoped
+				)
 				SELECT
-					window_start AS windowStart,
-					window_end AS windowEnd,
-					address_count AS addressCount,
-					alert_count AS alertCount
-				FROM windows
-				${beforeClause}
-				ORDER BY window_start DESC
+					address,
+					tail,
+					alpha AS peakAlpha,
+					window_start AS peakWindowStart,
+					r2 AS peakR2,
+					last_seen AS lastSeen,
+					first_seen AS firstSeen,
+					times_flagged AS timesFlagged,
+					COUNT(*) OVER () AS totalAddresses
+				FROM ranked
+				WHERE peak_rank = 1
+				ORDER BY ${sortOrder}
 				LIMIT ?
 			`
 		)
-		.all(...params) as WindowRow[];
+		.all(...params) as AddressRow[];
 
-	return rows.map((row) => ({
-		...row,
-		alerts: readAlertsForWindow(db, row.windowStart, options.tail)
-	}));
+	return {
+		totalAddresses: rows[0]?.totalAddresses ?? 0,
+		addresses: rows.map((row) => ({
+			address: row.address,
+			tail: row.tail,
+			peakAlpha: row.peakAlpha,
+			peakWindowStart: row.peakWindowStart,
+			peakR2: row.peakR2,
+			lastSeen: row.lastSeen,
+			firstSeen: row.firstSeen,
+			timesFlagged: row.timesFlagged
+		}))
+	};
 }
 
 export async function getAlertsFeedForDataset(
 	datasetId: string,
 	options: AlertsFeedOptions = {}
 ): Promise<AlertsFeedResponse> {
+	const horizonSeconds = HORIZON_SECONDS[options.horizon ?? DEFAULT_HORIZON];
 	if (shouldUseD1(options.platform)) {
-		return absentFeed();
+		return absentFeed(horizonSeconds);
 	}
 
 	let alertsDbPath: string | undefined;
 	try {
 		const datasetDirectory = await resolveDatasetDirectory(datasetId);
 		if (!datasetDirectory) {
-			return absentFeed();
+			return absentFeed(horizonSeconds);
 		}
 
 		const path = await import('node:path');
 		alertsDbPath = path.join(datasetDirectory, 'alerts.sqlite');
 		const db = await getLocalDb(alertsDbPath);
-		const metadata = readFeedMetadata(db, datasetId);
+		const { thresholdHigh, thresholdLow } = readFeedMetadata(db, datasetId);
 		const latestWindow = db
 			.prepare(
 				`
-					SELECT window_start AS windowStart, processed_at AS processedAt
+					SELECT
+						window_start AS windowStart,
+						window_end AS windowEnd,
+						address_count AS addressCount,
+						processed_at AS processedAt
 					FROM windows
 					ORDER BY window_start DESC
 					LIMIT 1
 				`
 			)
 			.get() as LatestWindowRow | undefined;
+		const result = latestWindow
+			? readAddresses(
+					db,
+					options,
+					latestWindow.windowEnd - horizonSeconds,
+					thresholdHigh,
+					thresholdLow
+				)
+			: { totalAddresses: 0, addresses: [] };
 
 		return {
 			feed: {
 				present: true,
 				latestWindowStart: latestWindow?.windowStart ?? null,
+				latestWindowEnd: latestWindow?.windowEnd ?? null,
+				latestAddressCount: latestWindow?.addressCount ?? null,
 				latestProcessedAt: latestWindow?.processedAt ?? null,
-				thresholds: { high: metadata.thresholdHigh, low: metadata.thresholdLow }
+				thresholds: { high: thresholdHigh, low: thresholdLow }
 			},
-			windows: readWindows(db, options)
+			horizonSeconds,
+			...result
 		};
 	} catch {
 		if (alertsDbPath) {
 			evictLocalDb(alertsDbPath);
 		}
-		return absentFeed();
+		return absentFeed(horizonSeconds);
 	}
 }

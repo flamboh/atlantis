@@ -17,10 +17,15 @@ export const load: PageLoad = async ({ fetch, url }) => {
 				? requestedDataset
 				: resolveDefaultDatasetId(datasets);
 
-		let alerts: AlertsFeedResponse = { feed: { present: false }, windows: [] };
+		let alerts: AlertsFeedResponse = {
+			feed: { present: false },
+			horizonSeconds: 86_400,
+			totalAddresses: 0,
+			addresses: []
+		};
 		if (selectedDataset) {
 			const response = await fetch(
-				`/api/alerts?dataset=${encodeURIComponent(selectedDataset)}&limitWindows=24`
+				`/api/alerts?dataset=${encodeURIComponent(selectedDataset)}&horizon=24h&sort=extreme&limit=100`
 			);
 			const payload = (await response.json()) as AlertsFeedResponse | ErrorResponse;
 			if (!response.ok || 'error' in payload) {

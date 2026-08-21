@@ -140,7 +140,7 @@ describe('alerts server helper', () => {
 		vi.unstubAllEnvs();
 	});
 
-	it('returns feed metadata, reverse-chronological windows, and tail-rank ordered alerts', async () => {
+	it('returns feed metadata and severity-ordered address aggregates', async () => {
 		const fixture = createDatasetFixture();
 		seedAlertsDatabase(fixture);
 		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
@@ -150,27 +150,53 @@ describe('alerts server helper', () => {
 			feed: {
 				present: true,
 				latestWindowStart: 1_700_000_300,
+				latestWindowEnd: 1_700_000_600,
+				latestAddressCount: 48_001,
 				latestProcessedAt: 1_700_000_620,
 				thresholds: { high: 3.5, low: 0.4 }
 			},
-			windows: [
+			horizonSeconds: 86_400,
+			totalAddresses: 4,
+			addresses: [
 				{
-					windowStart: 1_700_000_300,
-					windowEnd: 1_700_000_600,
-					addressCount: 48_001,
-					alertCount: 3,
-					alerts: [
-						{ address: '1.1.1.1', alpha: 3.9, tail: 'high', rank: 1, r2: 0.98 },
-						{ address: '1.1.1.2', alpha: 3.7, tail: 'high', rank: 2, r2: 0.94 },
-						{ address: '2.2.2.2', alpha: 0.2, tail: 'low', rank: 1, r2: 0.89 }
-					]
+					address: '1.1.1.1',
+					tail: 'high',
+					peakAlpha: 3.9,
+					peakWindowStart: 1_700_000_300,
+					peakR2: 0.98,
+					lastSeen: 1_700_000_300,
+					firstSeen: 1_700_000_300,
+					timesFlagged: 1
 				},
 				{
-					windowStart: 1_700_000_000,
-					windowEnd: 1_700_000_300,
-					addressCount: 48_000,
-					alertCount: 1,
-					alerts: [{ address: '9.9.9.9', alpha: 0.21, tail: 'low', rank: 1, r2: 0.91 }]
+					address: '1.1.1.2',
+					tail: 'high',
+					peakAlpha: 3.7,
+					peakWindowStart: 1_700_000_300,
+					peakR2: 0.94,
+					lastSeen: 1_700_000_300,
+					firstSeen: 1_700_000_300,
+					timesFlagged: 1
+				},
+				{
+					address: '2.2.2.2',
+					tail: 'low',
+					peakAlpha: 0.2,
+					peakWindowStart: 1_700_000_300,
+					peakR2: 0.89,
+					lastSeen: 1_700_000_300,
+					firstSeen: 1_700_000_300,
+					timesFlagged: 1
+				},
+				{
+					address: '9.9.9.9',
+					tail: 'low',
+					peakAlpha: 0.21,
+					peakWindowStart: 1_700_000_000,
+					peakR2: 0.91,
+					lastSeen: 1_700_000_000,
+					firstSeen: 1_700_000_000,
+					timesFlagged: 1
 				}
 			]
 		});
@@ -187,7 +213,9 @@ describe('alerts server helper', () => {
 
 		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
 			feed: { present: false },
-			windows: []
+			horizonSeconds: 86_400,
+			totalAddresses: 0,
+			addresses: []
 		});
 	});
 
@@ -198,7 +226,9 @@ describe('alerts server helper', () => {
 
 		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
 			feed: { present: false },
-			windows: []
+			horizonSeconds: 86_400,
+			totalAddresses: 0,
+			addresses: []
 		});
 	});
 
@@ -213,7 +243,11 @@ describe('alerts server helper', () => {
 		seedAlertsDatabase(fixture);
 		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toMatchObject({
 			feed: { present: true },
-			windows: [{ windowStart: 1_700_000_300 }, { windowStart: 1_700_000_000 }]
+			totalAddresses: 4,
+			addresses: expect.arrayContaining([
+				expect.objectContaining({ address: '1.1.1.1' }),
+				expect.objectContaining({ address: '9.9.9.9' })
+			])
 		});
 	});
 
@@ -229,49 +263,61 @@ describe('alerts server helper', () => {
 		fs.unlinkSync(fixture.alertsPath);
 		await expect(alerts.getAlertsFeedForDataset('alpha')).resolves.toEqual({
 			feed: { present: false },
-			windows: []
+			horizonSeconds: 86_400,
+			totalAddresses: 0,
+			addresses: []
 		});
 	});
 
-	it('filters nested alerts by tail without dropping windows or changing stored counts', async () => {
+	it('filters rows by tail before returning address aggregates', async () => {
 		const fixture = createDatasetFixture();
 		seedAlertsDatabase(fixture);
 		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
 		const alerts = await loadAlertsModule();
 
 		const result = await alerts.getAlertsFeedForDataset('alpha', { tail: 'high' });
-		expect(result.windows).toMatchObject([
-			{
-				windowStart: 1_700_000_300,
-				alertCount: 3,
-				alerts: [
-					{ tail: 'high', rank: 1 },
-					{ tail: 'high', rank: 2 }
-				]
-			},
-			{ windowStart: 1_700_000_000, alertCount: 1, alerts: [] }
+		expect(result.totalAddresses).toBe(2);
+		expect(result.addresses).toMatchObject([
+			{ address: '1.1.1.1', tail: 'high' },
+			{ address: '1.1.1.2', tail: 'high' }
 		]);
 	});
 
-	it('uses before as an exclusive window-start cursor', async () => {
+	it('sorts recent addresses by last seen before severity', async () => {
 		const fixture = createDatasetFixture();
 		seedAlertsDatabase(fixture);
 		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
 		const alerts = await loadAlertsModule();
 
-		const result = await alerts.getAlertsFeedForDataset('alpha', { before: 1_700_000_300 });
-		expect(result.windows.map((window) => window.windowStart)).toEqual([1_700_000_000]);
+		const result = await alerts.getAlertsFeedForDataset('alpha', { sort: 'recent' });
+		expect(result.addresses.map(({ address }) => address)).toEqual([
+			'1.1.1.1',
+			'1.1.1.2',
+			'2.2.2.2',
+			'9.9.9.9'
+		]);
 	});
 
-	it('clamps window limits to the inclusive range from 1 through 288', async () => {
+	it('clamps address limits to the inclusive range from 1 through 500', async () => {
 		const fixture = createDatasetFixture();
-		seedAlertsDatabase(fixture, 289);
+		seedAlertsDatabase(fixture, 600);
+		const db = new Database(fixture.alertsPath);
+		const insertAlert = db.prepare(`
+			INSERT INTO alerts (
+				window_start, address, alpha, tail, rank, r2, prefix_levels
+			) VALUES (?, ?, 3.6, 'high', 1, 0.8, 24)
+		`);
+		for (let index = 2; index < 600; index += 1) {
+			insertAlert.run(1_700_000_000 + index * 300, `address-${index}`);
+		}
+		db.close();
 		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
 		const alerts = await loadAlertsModule();
 
-		const lower = await alerts.getAlertsFeedForDataset('alpha', { limitWindows: 0 });
-		const upper = await alerts.getAlertsFeedForDataset('alpha', { limitWindows: 999 });
-		expect(lower.windows).toHaveLength(1);
-		expect(upper.windows).toHaveLength(288);
+		const lower = await alerts.getAlertsFeedForDataset('alpha', { horizon: '7d', limit: 0 });
+		const upper = await alerts.getAlertsFeedForDataset('alpha', { horizon: '7d', limit: 999 });
+		expect(lower.addresses).toHaveLength(1);
+		expect(upper.addresses).toHaveLength(500);
+		expect(upper.totalAddresses).toBe(602);
 	});
 });

@@ -13,20 +13,19 @@ export interface DatasetSummariesResponse {
 
 export type AlertTail = 'high' | 'low';
 
-export interface AlertFeedAlert {
-	address: string;
-	alpha: number;
-	tail: AlertTail;
-	rank: number;
-	r2: number;
-}
+export type AlertHorizon = '1h' | '6h' | '24h' | '7d';
 
-export interface AlertFeedWindow {
-	windowStart: number;
-	windowEnd: number;
-	addressCount: number;
-	alertCount: number;
-	alerts: AlertFeedAlert[];
+export type AlertSort = 'extreme' | 'recent';
+
+export interface AlertFeedAddress {
+	address: string;
+	tail: AlertTail;
+	peakAlpha: number;
+	peakWindowStart: number;
+	peakR2: number;
+	lastSeen: number;
+	firstSeen: number;
+	timesFlagged: number;
 }
 
 export type AlertFeedStatus =
@@ -34,13 +33,17 @@ export type AlertFeedStatus =
 	| {
 			present: true;
 			latestWindowStart: number | null;
+			latestWindowEnd: number | null;
+			latestAddressCount: number | null;
 			latestProcessedAt: number | null;
 			thresholds: { high: number; low: number };
 	  };
 
 export interface AlertsFeedResponse {
 	feed: AlertFeedStatus;
-	windows: AlertFeedWindow[];
+	horizonSeconds: number;
+	totalAddresses: number;
+	addresses: AlertFeedAddress[];
 }
 
 export type CoverageState = 'complete' | 'partial' | 'unknown';
