@@ -54,7 +54,6 @@
 	let selectedHorizon = $state<AlertHorizon>('24h');
 	let selectedSort = $state<AlertSort>('extreme');
 	let limit = $state(PAGE_SIZE);
-	let autoRefresh = $state(true);
 	let now = $state(Date.now());
 	let loading = $state(false);
 	let loadingMore = $state(false);
@@ -274,10 +273,6 @@
 
 	// The initial page comes from +page.ts. This one effect only owns polling and tab visibility.
 	$effect(() => {
-		if (!autoRefresh) {
-			return;
-		}
-
 		let interval: ReturnType<typeof setInterval> | undefined;
 		const stopTimer = () => {
 			if (interval !== undefined) {
@@ -441,35 +436,15 @@
 				{#if feedResponse.feed.present && feedResponse.feed.thresholds}
 					<div class="flex flex-col gap-1">
 						<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Thresholds</span>
-						<div
-							class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
+						<p
+							class="flex min-h-7 items-center pb-1 text-sm text-gray-500 tabular-nums dark:text-gray-400"
 							title="The feed records an address when its alpha crosses either calibrated bound"
 						>
-							<span
-								class={`${CONTROL_BUTTON_CLASS} cursor-default text-gray-700 tabular-nums dark:text-gray-300`}
-							>
-								α ≥ {feedResponse.feed.thresholds.high}
-							</span>
-							<span
-								class={`${CONTROL_BUTTON_CLASS} cursor-default text-gray-700 tabular-nums dark:text-gray-300`}
-							>
-								α ≤ {feedResponse.feed.thresholds.low}
-							</span>
-						</div>
+							α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds.low}
+						</p>
 					</div>
 				{/if}
 			</div>
-
-			<label
-				class="flex cursor-pointer items-center gap-2 pb-1 text-sm text-gray-700 dark:text-gray-300"
-			>
-				<input
-					type="checkbox"
-					bind:checked={autoRefresh}
-					class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-				/>
-				Auto-refresh
-			</label>
 		</div>
 
 		{#if feedResponse.addresses.length === 0}
@@ -504,6 +479,7 @@
 							>
 								Latest α
 							</th>
+							<th class="px-4 py-2 text-right font-medium">First seen</th>
 							<th class="px-4 py-2 text-right font-medium">Last seen</th>
 							<th class="px-4 py-2 text-right font-medium" title="Windows flagged in this horizon">
 								Flagged
@@ -546,6 +522,12 @@
 									}`}
 								>
 									{alert.latestAlpha.toFixed(3)}
+								</td>
+								<td
+									title={dateTimeFormatter.format(new Date(alert.firstSeen * 1000))}
+									class="px-4 py-3 text-right whitespace-nowrap text-gray-500 tabular-nums dark:text-gray-400"
+								>
+									{formatRelativeTime(alert.firstSeen)}
 								</td>
 								<td
 									title={dateTimeFormatter.format(new Date(alert.lastSeen * 1000))}
