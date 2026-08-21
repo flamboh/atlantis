@@ -417,6 +417,9 @@
 											α {alert.alpha.toFixed(3)}
 										</span>
 										<span
+											title={alert.tail === 'high'
+												? 'High α — isolated address in a sparse region of address space'
+												: 'Low α — address deep inside a dense cluster'}
 											class={`justify-self-end rounded-full px-2 py-0.5 text-xs font-medium ${
 												alert.tail === 'high'
 													? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
