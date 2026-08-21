@@ -11,13 +11,14 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use netflow_db::{
     compare::{CompareOptions, compare_databases},
     export::{ExtractRequest, extract_window, validate_extract_plan},
-    maad,
+    feed, maad,
     operations::{
         UgrAssetKind, scrape_ugr16_urls, select_web_verification_window, verify_web_routes,
     },
     prepare::{PrepareOptions, prepare_archive},
     registry::DatasetRegistry,
     storage::{backup_database, promote_database},
+    singularity,
     verify::{VerifyOptions, verify_database},
 };
 
@@ -48,6 +49,10 @@ enum Command {
     VerifyWebRoutes(WebVerifyArgs),
     /// Compute MAAD JSON from IPv4 addresses, one per line.
     Maad(MaadArgs),
+    /// Score IPv4 addresses (one per line) by Singularity alpha, as CSV.
+    Singularity(SingularityArgs),
+    /// Maintain a rolling Singularity alert feed over live five-minute captures.
+    Feed(FeedArgs),
     /// Print the persisted pipeline contract version.
     ContractVersion,
 }
@@ -235,6 +240,47 @@ struct MaadArgs {
     input: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct SingularityArgs {
+    /// Read addresses from this file instead of standard input.
+    input: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct FeedArgs {
+    /// Dataset id from the datasets registry.
+    dataset: String,
+    /// Registry path override (defaults to datasets.json discovery).
+    #[arg(long)]
+    datasets: Option<PathBuf>,
+    /// Alert database path (defaults to alerts.sqlite beside the dataset's database).
+    #[arg(long)]
+    database_path: Option<PathBuf>,
+    #[arg(long, default_value = "nfdump")]
+    nfdump: String,
+    /// Seconds between capture-tree scans.
+    #[arg(long, default_value_t = 30)]
+    poll_seconds: u64,
+    /// Days of alerts to retain.
+    #[arg(long, default_value_t = 7)]
+    retention_days: u32,
+    /// Maximum alerts recorded per tail per window.
+    #[arg(long, default_value_t = 20)]
+    max_per_tail: u32,
+    /// Alpha at or above which an address alerts (defaults to the calibrated value).
+    #[arg(long)]
+    threshold_high: Option<f64>,
+    /// Alpha at or below which an address alerts (defaults to the calibrated value).
+    #[arg(long)]
+    threshold_low: Option<f64>,
+    /// Also process historical windows this far back (e.g. "36h", "7d").
+    #[arg(long)]
+    backfill: Option<String>,
+    /// Process available windows once and exit instead of polling.
+    #[arg(long)]
+    once: bool,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -262,6 +308,20 @@ fn main() -> Result<()> {
         Command::ScrapeUgr16(args) => run_scrape(args)?,
         Command::VerifyWebRoutes(args) => run_web_verify(args)?,
         Command::Maad(args) => run_maad(args)?,
+        Command::Singularity(args) => run_singularity(args)?,
+        Command::Feed(args) => feed::run(feed::FeedOptions {
+            dataset_id: args.dataset,
+            registry_path: args.datasets,
+            database_path: args.database_path,
+            nfdump: args.nfdump,
+            poll_seconds: args.poll_seconds,
+            retention_days: args.retention_days,
+            max_per_tail: args.max_per_tail,
+            threshold_high: args.threshold_high,
+            threshold_low: args.threshold_low,
+            backfill: args.backfill,
+            once: args.once,
+        })?,
         Command::ContractVersion => println!("{}", netflow_db::PIPELINE_CONTRACT_VERSION),
     }
     Ok(())
@@ -511,7 +571,22 @@ fn run_web_verify(args: WebVerifyArgs) -> Result<()> {
 }
 
 fn run_maad(args: MaadArgs) -> Result<()> {
-    let input: Box<dyn BufRead> = match args.input {
+    let addresses = read_ipv4_lines(args.input)?;
+    maad::write_json(&maad::compute(addresses), io::stdout().lock())?;
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn run_singularity(args: SingularityArgs) -> Result<()> {
+    let addresses = read_ipv4_lines(args.input)?;
+    singularity::write_csv(&singularity::score(addresses), io::stdout().lock())?;
+    io::stdout().flush()?;
+    Ok(())
+}
+
+/// Read IPv4 addresses, one per line, from a file or standard input.
+fn read_ipv4_lines(input: Option<PathBuf>) -> Result<Vec<Ipv4Addr>> {
+    let input: Box<dyn BufRead> = match input {
         Some(path) => Box::new(BufReader::new(
             File::open(&path).with_context(|| format!("unable to open {}", path.display()))?,
         )),
@@ -530,9 +605,7 @@ fn run_maad(args: MaadArgs) -> Result<()> {
                 .with_context(|| format!("invalid IPv4 address {value:?}"))?,
         );
     }
-    maad::write_json(&maad::compute(addresses), io::stdout().lock())?;
-    io::stdout().flush()?;
-    Ok(())
+    Ok(addresses)
 }
 
 fn parse_boundary(raw: &str, timezone: &str) -> Result<i64> {
