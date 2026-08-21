@@ -164,6 +164,7 @@ describe('alerts server helper', () => {
 					peakAlpha: 3.9,
 					peakWindowStart: 1_700_000_300,
 					peakR2: 0.98,
+					latestAlpha: 3.9,
 					lastSeen: 1_700_000_300,
 					firstSeen: 1_700_000_300,
 					timesFlagged: 1
@@ -174,6 +175,7 @@ describe('alerts server helper', () => {
 					peakAlpha: 3.7,
 					peakWindowStart: 1_700_000_300,
 					peakR2: 0.94,
+					latestAlpha: 3.7,
 					lastSeen: 1_700_000_300,
 					firstSeen: 1_700_000_300,
 					timesFlagged: 1
@@ -184,6 +186,7 @@ describe('alerts server helper', () => {
 					peakAlpha: 0.2,
 					peakWindowStart: 1_700_000_300,
 					peakR2: 0.89,
+					latestAlpha: 0.2,
 					lastSeen: 1_700_000_300,
 					firstSeen: 1_700_000_300,
 					timesFlagged: 1
@@ -194,6 +197,7 @@ describe('alerts server helper', () => {
 					peakAlpha: 0.21,
 					peakWindowStart: 1_700_000_000,
 					peakR2: 0.91,
+					latestAlpha: 0.21,
 					lastSeen: 1_700_000_000,
 					firstSeen: 1_700_000_000,
 					timesFlagged: 1

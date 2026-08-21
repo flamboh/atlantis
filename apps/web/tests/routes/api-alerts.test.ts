@@ -180,6 +180,7 @@ describe('/api/alerts GET', () => {
 					peakAlpha: 4.5,
 					peakWindowStart: 199_700,
 					peakR2: 0.91,
+					latestAlpha: 2.2,
 					lastSeen: LATEST_WINDOW_START,
 					firstSeen: 196_700,
 					timesFlagged: 3
@@ -190,6 +191,7 @@ describe('/api/alerts GET', () => {
 					peakAlpha: 2.8,
 					peakWindowStart: LATEST_WINDOW_START,
 					peakR2: 0.93,
+					latestAlpha: 2.8,
 					lastSeen: LATEST_WINDOW_START,
 					// retention-wide, not horizon-scoped: the 113_899 history row
 					firstSeen: 113_899,
@@ -201,6 +203,7 @@ describe('/api/alerts GET', () => {
 					peakAlpha: 0,
 					peakWindowStart: 199_700,
 					peakR2: 0.87,
+					latestAlpha: 0,
 					lastSeen: 199_700,
 					firstSeen: 199_700,
 					timesFlagged: 1
@@ -211,6 +214,7 @@ describe('/api/alerts GET', () => {
 					peakAlpha: 0.1,
 					peakWindowStart: LATEST_WINDOW_START,
 					peakR2: 0.95,
+					latestAlpha: 0.1,
 					lastSeen: LATEST_WINDOW_START,
 					firstSeen: 199_700,
 					timesFlagged: 2

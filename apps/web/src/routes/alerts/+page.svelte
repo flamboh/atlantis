@@ -365,11 +365,11 @@
 		<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
 			<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
 				<div class="flex flex-col gap-1">
-					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Tail</span>
+					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Alpha</span>
 					<div
 						class={`${CONTROL_GROUP_CLASS} grid-cols-3`}
 						role="group"
-						aria-label="Filter alerts by tail"
+						aria-label="Filter alerts by alpha tail"
 					>
 						{#each TAIL_OPTIONS as option (option.value)}
 							<button
@@ -449,10 +449,6 @@
 			</label>
 		</div>
 
-		{#if loading}
-			<p class="text-sm text-gray-500 dark:text-gray-400" aria-live="polite">Updating alerts…</p>
-		{/if}
-
 		{#if feedResponse.addresses.length === 0}
 			<div
 				class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white px-4 py-3 text-sm text-gray-500 shadow-sm dark:text-gray-400"
@@ -461,8 +457,9 @@
 			</div>
 		{:else}
 			<section
-				class="dark:border-dark-border dark:bg-dark-surface overflow-hidden rounded-lg border bg-white shadow-sm"
+				class={`dark:border-dark-border dark:bg-dark-surface overflow-hidden rounded-lg border bg-white shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
 				aria-label="Anomalous addresses"
+				aria-busy={loading}
 			>
 				<div class="dark:divide-dark-border divide-y divide-gray-100">
 					{#each feedResponse.addresses as alert (alert.address)}
@@ -484,8 +481,23 @@
 							</div>
 
 							<div class="flex items-center justify-end gap-2">
-								<span class="text-right text-gray-700 tabular-nums dark:text-gray-300">
+								<span
+									class={`text-right tabular-nums ${
+										selectedSort === 'extreme'
+											? 'font-medium text-gray-900 dark:text-gray-100'
+											: 'text-gray-400 dark:text-gray-500'
+									}`}
+								>
 									peak α {alert.peakAlpha.toFixed(3)}
+								</span>
+								<span
+									class={`text-right tabular-nums ${
+										selectedSort === 'recent'
+											? 'font-medium text-gray-900 dark:text-gray-100'
+											: 'text-gray-400 dark:text-gray-500'
+									}`}
+								>
+									latest α {alert.latestAlpha.toFixed(3)}
 								</span>
 								<span
 									title={alert.tail === 'high'

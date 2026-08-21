@@ -23,6 +23,8 @@ export interface AlertFeedAddress {
 	peakAlpha: number;
 	peakWindowStart: number;
 	peakR2: number;
+	/** Alpha of the address's most recent crossing within the horizon. */
+	latestAlpha: number;
 	lastSeen: number;
 	firstSeen: number;
 	timesFlagged: number;
