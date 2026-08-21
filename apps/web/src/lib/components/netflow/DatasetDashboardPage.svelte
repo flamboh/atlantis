@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import AlertsSummaryCard from '$lib/components/alerts/AlertsSummaryCard.svelte';
 	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
 	import PrimaryFilters from '$lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
@@ -19,7 +18,6 @@
 		type FlowScopeKey,
 		type IpGranularity,
 		type IpMetricKey,
-		type AlertsFeedResponse,
 		type ProtocolMetricKey
 	} from '$lib/types/types';
 	import { watch } from 'runed';
@@ -31,7 +29,6 @@
 		defaultStartDate: string;
 		routers?: string[];
 		title?: string;
-		initialAlerts?: AlertsFeedResponse | null;
 	}>();
 
 	const params = (() =>
@@ -393,8 +390,6 @@
 		on:scopeChange={handleScopeChange}
 		on:resetView={handleResetView}
 	/>
-	<AlertsSummaryCard datasetId={props.dataset} initialFeed={props.initialAlerts} />
-
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
 		{#each chartOrder as chartId (chartId)}
 			<section
