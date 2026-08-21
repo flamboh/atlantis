@@ -435,6 +435,27 @@
 						{/each}
 					</div>
 				</div>
+
+				{#if feedResponse.feed.present && feedResponse.feed.thresholds}
+					<div class="flex flex-col gap-1">
+						<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Thresholds</span>
+						<div
+							class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
+							title="The feed records an address when its alpha crosses either calibrated bound"
+						>
+							<span
+								class={`${CONTROL_BUTTON_CLASS} cursor-default text-gray-700 tabular-nums dark:text-gray-300`}
+							>
+								α ≥ {feedResponse.feed.thresholds.high}
+							</span>
+							<span
+								class={`${CONTROL_BUTTON_CLASS} cursor-default text-gray-700 tabular-nums dark:text-gray-300`}
+							>
+								α ≤ {feedResponse.feed.thresholds.low}
+							</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<label
@@ -457,80 +478,104 @@
 			</div>
 		{:else}
 			<section
-				class={`dark:border-dark-border dark:bg-dark-surface overflow-hidden rounded-lg border bg-white shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
+				class={`dark:border-dark-border dark:bg-dark-surface overflow-x-auto rounded-lg border bg-white shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
 				aria-label="Anomalous addresses"
 				aria-busy={loading}
 			>
-				<div class="dark:divide-dark-border divide-y divide-gray-100">
-					{#each feedResponse.addresses as alert (alert.address)}
-						<div
-							class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-1 px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]"
+				<table class="w-full text-sm">
+					<thead>
+						<tr
+							class="dark:border-dark-border border-b text-xs font-medium text-gray-500 dark:text-gray-400"
 						>
-							<div class="flex min-w-0 items-center gap-2">
-								<span class="truncate font-mono text-gray-900 dark:text-gray-100">
-									{alert.address}
-								</span>
-								{#if isNewAddress(alert.firstSeen)}
-									<span
-										title={`First flagged ${formatRelativeTime(alert.firstSeen)} — never seen in the retained history before that`}
-										class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-									>
-										new
-									</span>
-								{/if}
-							</div>
-
-							<div class="flex items-center justify-end gap-2">
-								<span
-									class={`text-right tabular-nums ${
+							<th class="w-full px-4 py-2 text-left font-medium">Address</th>
+							<th
+								class={`px-4 py-2 text-right font-medium whitespace-nowrap ${
+									selectedSort === 'extreme' ? 'text-gray-900 dark:text-gray-100' : ''
+								}`}
+							>
+								Peak α
+							</th>
+							<th
+								class={`px-4 py-2 text-right font-medium whitespace-nowrap ${
+									selectedSort === 'recent' ? 'text-gray-900 dark:text-gray-100' : ''
+								}`}
+							>
+								Latest α
+							</th>
+							<th class="px-4 py-2 text-right font-medium">Last seen</th>
+							<th class="px-4 py-2 text-right font-medium" title="Windows flagged in this horizon">
+								Flagged
+							</th>
+							<th class="px-4 py-2 text-right font-medium">r²</th>
+						</tr>
+					</thead>
+					<tbody class="dark:divide-dark-border divide-y divide-gray-100">
+						{#each feedResponse.addresses as alert (alert.address)}
+							<tr>
+								<td class="px-4 py-3">
+									<div class="flex min-w-0 items-center gap-2">
+										<span class="truncate font-mono text-gray-900 dark:text-gray-100">
+											{alert.address}
+										</span>
+										<span
+											title={alert.tail === 'high'
+												? 'High α — isolated address in a sparse region of address space'
+												: 'Low α — address deep inside a dense cluster'}
+											class={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+												alert.tail === 'high'
+													? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+													: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
+											}`}
+										>
+											{alert.tail === 'high' ? 'High' : 'Low'}
+										</span>
+										{#if isNewAddress(alert.firstSeen)}
+											<span
+												title={`First flagged ${formatRelativeTime(alert.firstSeen)} — never seen in the retained history before that`}
+												class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+											>
+												new
+											</span>
+										{/if}
+									</div>
+								</td>
+								<td
+									class={`px-4 py-3 text-right tabular-nums ${
 										selectedSort === 'extreme'
 											? 'font-medium text-gray-900 dark:text-gray-100'
 											: 'text-gray-400 dark:text-gray-500'
 									}`}
 								>
-									peak α {alert.peakAlpha.toFixed(3)}
-								</span>
-								<span
-									class={`text-right tabular-nums ${
+									{alert.peakAlpha.toFixed(3)}
+								</td>
+								<td
+									class={`px-4 py-3 text-right tabular-nums ${
 										selectedSort === 'recent'
 											? 'font-medium text-gray-900 dark:text-gray-100'
 											: 'text-gray-400 dark:text-gray-500'
 									}`}
 								>
-									latest α {alert.latestAlpha.toFixed(3)}
-								</span>
-								<span
-									title={alert.tail === 'high'
-										? 'High α — isolated address in a sparse region of address space'
-										: 'Low α — address deep inside a dense cluster'}
-									class={`rounded-full px-2 py-0.5 text-xs font-medium ${
-										alert.tail === 'high'
-											? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
-											: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
-									}`}
+									{alert.latestAlpha.toFixed(3)}
+								</td>
+								<td
+									title={dateTimeFormatter.format(new Date(alert.lastSeen * 1000))}
+									class="px-4 py-3 text-right whitespace-nowrap text-gray-500 tabular-nums dark:text-gray-400"
 								>
-									{alert.tail === 'high' ? 'High' : 'Low'}
-								</span>
-							</div>
-
-							<span
-								title={dateTimeFormatter.format(new Date(alert.lastSeen * 1000))}
-								class="col-start-1 text-xs text-gray-500 tabular-nums sm:col-auto sm:text-sm dark:text-gray-400"
-							>
-								{formatRelativeTime(alert.lastSeen)}
-							</span>
-							<span
-								title={`flagged in ${countFormatter.format(alert.timesFlagged)} windows in this horizon`}
-								class="text-right text-gray-600 tabular-nums dark:text-gray-300"
-							>
-								{countFormatter.format(alert.timesFlagged)}×
-							</span>
-							<span class="text-right text-gray-500 tabular-nums dark:text-gray-400">
-								r² {alert.peakR2.toFixed(2)}
-							</span>
-						</div>
-					{/each}
-				</div>
+									{formatRelativeTime(alert.lastSeen)}
+								</td>
+								<td
+									title={`flagged in ${countFormatter.format(alert.timesFlagged)} windows in this horizon`}
+									class="px-4 py-3 text-right text-gray-600 tabular-nums dark:text-gray-300"
+								>
+									{countFormatter.format(alert.timesFlagged)}×
+								</td>
+								<td class="px-4 py-3 text-right text-gray-500 tabular-nums dark:text-gray-400">
+									{alert.peakR2.toFixed(2)}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			</section>
 		{/if}
 
