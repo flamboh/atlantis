@@ -1,6 +1,6 @@
 import type { Chart } from 'chart.js';
 import type { GroupByOption, NetflowDataPoint } from '$lib/components/netflow/types.ts';
-import type { RangeSelectionState } from '$lib/stores/rangeSelection';
+import type { RangeSelectionState } from '$lib/stores/rangeSelection.svelte';
 import {
 	parseLabelToPSTComponents,
 	parseLabelToDateForDrilldown,

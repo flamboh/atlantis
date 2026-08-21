@@ -184,9 +184,9 @@
 </script>
 
 <section class="flex min-h-72 flex-col" aria-label={props.title}>
-	<h4 class="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">{props.title}</h4>
+	<h4 class="text-foreground mb-2 text-sm font-semibold">{props.title}</h4>
 	{#if props.bucketStarts.length === 0 || props.series.length === 0}
-		<div class="flex flex-1 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+		<div class="text-muted-foreground flex flex-1 items-center justify-center text-sm">
 			No data for this metric
 		</div>
 	{:else}

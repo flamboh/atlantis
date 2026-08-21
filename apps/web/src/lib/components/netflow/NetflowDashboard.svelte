@@ -1,7 +1,6 @@
 <script lang="ts">
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import * as Card from '$lib/components/ui/card';
-	import { createEventDispatcher } from 'svelte';
 	import { goto } from '$app/navigation';
 	import ChartContainer from '$lib/components/charts/ChartContainer.svelte';
 	import MetricSelector from '$lib/components/filters/MetricSelector.svelte';
@@ -39,12 +38,9 @@
 		dataOptions: DataOption[];
 		srcVisibility: FlowVisibility;
 		dstVisibility: FlowVisibility;
-	}>();
-
-	const dispatch = createEventDispatcher<{
-		dateChange: { startDate: string; endDate: string };
-		groupByChange: { groupBy: GroupByOption };
-		dataOptionsChange: { options: DataOption[] };
+		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
+		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
 	}>();
 	const IP_FAMILY_LABELS: Record<NetflowIpFamily, string> = {
 		all: 'All',
@@ -231,8 +227,8 @@
 	}
 
 	function handleDrillDown(newGroupBy: GroupByOption, newStartDate: string, newEndDate: string) {
-		dispatch('groupByChange', { groupBy: newGroupBy });
-		dispatch('dateChange', { startDate: newStartDate, endDate: newEndDate });
+		props.onGroupByChange?.({ groupBy: newGroupBy });
+		props.onDateChange?.({ startDate: newStartDate, endDate: newEndDate });
 	}
 
 	function handleNavigateToFile(slug: string) {
@@ -247,7 +243,7 @@
 	}
 
 	function handleDataOptionsChange(nextOptions: DataOption[]) {
-		dispatch('dataOptionsChange', { options: nextOptions });
+		props.onDataOptionsChange?.({ options: nextOptions });
 	}
 
 	$effect(() => {

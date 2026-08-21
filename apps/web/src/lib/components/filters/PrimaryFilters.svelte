@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
@@ -29,36 +28,33 @@
 		routers: RouterConfig;
 		flowScope: FlowScopeKey;
 		groupByOptions?: GroupBySelectOption[];
-	}>();
-
-	const dispatch = createEventDispatcher<{
-		startDateChange: { startDate: string };
-		endDateChange: { endDate: string };
-		groupByChange: { groupBy: GroupByOption };
-		routersChange: { routers: RouterConfig };
-		scopeChange: { scope: FlowScopeKey };
-		resetView: Record<string, never>;
+		onStartDateChange?: (payload: { startDate: string }) => void;
+		onEndDateChange?: (payload: { endDate: string }) => void;
+		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
+		onScopeChange?: (payload: { scope: FlowScopeKey }) => void;
+		onResetView?: () => void;
 	}>();
 
 	function handleStartDateChange(date: string) {
-		dispatch('startDateChange', { startDate: date });
+		props.onStartDateChange?.({ startDate: date });
 	}
 
 	function handleEndDateChange(date: string) {
-		dispatch('endDateChange', { endDate: date });
+		props.onEndDateChange?.({ endDate: date });
 	}
 
 	function handleRoutersChange(nextRouters: RouterConfig) {
-		dispatch('routersChange', { routers: nextRouters });
+		props.onRoutersChange?.({ routers: nextRouters });
 	}
 
 	function handleScopeChange(event: Event) {
 		const target = event.currentTarget as HTMLSelectElement;
-		dispatch('scopeChange', { scope: target.value as FlowScopeKey });
+		props.onScopeChange?.({ scope: target.value as FlowScopeKey });
 	}
 
 	function handleResetView() {
-		dispatch('resetView', {});
+		props.onResetView?.();
 	}
 
 	const navigationTip = 'Click chart to drill down. Drag across chart to drill into a date range.';
@@ -123,7 +119,7 @@
 		<SegmentedControl
 			options={segmentedGroupByOptions}
 			value={props.groupBy}
-			onValueChange={(value) => dispatch('groupByChange', { groupBy: value })}
+			onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
 			class="min-w-[17rem] grid-cols-4"
 			buttonClass="px-3 py-1 text-sm"
 		/>

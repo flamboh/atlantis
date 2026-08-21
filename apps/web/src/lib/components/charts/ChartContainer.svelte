@@ -6,8 +6,9 @@
 	import { resolve } from '$app/paths';
 	import { Chart } from './chart-registry';
 	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
+	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
 	import {
@@ -66,21 +67,16 @@
 	let rangeDrag = $state(createRangeDragState());
 	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
 	let selectionWidth = $derived(Math.abs(rangeDrag.dragCurrentX - rangeDrag.dragStartX));
-	let mirroredRange = $state<RangeSelectionState | null>(null);
+	let mirroredRange = $derived(rangeSelection.selection);
+	let rangeMoveFrame: number | null = null;
+	let pendingRangeMoveEvent: MouseEvent | null = null;
 
 	type MetricFamily = 'flows' | 'packets' | 'bytes';
-
-	$effect(() => {
-		const unsubscribe = rangeSelectionStore.subscribe((value) => {
-			mirroredRange = value;
-		});
-		return unsubscribe;
-	});
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
 		const labels = getSelectionLabels(chart, startIndex, endIndex);
 		if (!labels) return;
-		rangeSelectionStore.set({ sourceChartId: CHART_ID, ...labels });
+		rangeSelection.set({ sourceChartId: CHART_ID, ...labels });
 	}
 
 	function applyRangeDrilldown(startIndex: number, endIndex: number) {
@@ -110,16 +106,49 @@
 	}
 
 	function handleRangeMouseDown(event: MouseEvent) {
+		cancelPendingRangeMove();
 		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
 	}
 
+	function applyPendingRangeMove() {
+		rangeMoveFrame = null;
+		const event = pendingRangeMoveEvent;
+		pendingRangeMoveEvent = null;
+		if (event) {
+			updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		}
+	}
+
+	function cancelPendingRangeMove() {
+		if (rangeMoveFrame !== null) {
+			cancelDrawFrame(rangeMoveFrame);
+			rangeMoveFrame = null;
+		}
+		pendingRangeMoveEvent = null;
+	}
+
+	function flushPendingRangeMove() {
+		if (rangeMoveFrame === null) {
+			return;
+		}
+		cancelDrawFrame(rangeMoveFrame);
+		applyPendingRangeMove();
+	}
+
 	function handleRangeMouseMove(event: MouseEvent) {
-		updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		if (!rangeDrag.isDraggingRange) {
+			return;
+		}
+		pendingRangeMoveEvent = event;
+		if (rangeMoveFrame === null) {
+			rangeMoveFrame = requestDrawFrame(applyPendingRangeMove);
+		}
 	}
 
 	function finishRangeSelection() {
+		flushPendingRangeMove();
 		endRangeDrag(rangeDrag, chart, applyRangeDrilldown);
-		rangeSelectionStore.set(null);
+		rangeSelection.clear();
 	}
 
 	let mirroredSelectionStyle = $derived(
@@ -813,9 +842,10 @@
 	});
 
 	onDestroy(() => {
+		cancelPendingRangeMove();
 		crosshairStore.unregister(CHART_ID);
 		if (mirroredRange?.sourceChartId === CHART_ID) {
-			rangeSelectionStore.set(null);
+			rangeSelection.clear();
 		}
 		chart?.destroy();
 		chart = null;
@@ -858,13 +888,13 @@
 	<canvas bind:this={chartCanvas} class="h-full w-full"></canvas>
 	{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}
 		<div
-			class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
+			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
 			style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${rangeDrag.selectionTop}px; height:${rangeDrag.selectionHeight}px;`}
 		></div>
 	{/if}
 	{#if !rangeDrag.isDraggingRange && mirroredSelectionStyle !== null}
 		<div
-			class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
+			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
 			style={mirroredSelectionStyle}
 		></div>
 	{/if}

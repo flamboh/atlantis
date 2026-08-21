@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -219,14 +220,14 @@
 	);
 </script>
 
-<div class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm">
+<div class="border-border bg-card text-card-foreground rounded-lg border shadow-sm">
 	<div
-		class="dark:border-dark-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
+		class="border-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
 		draggable="true"
 		data-drag-handle
 	>
-		<h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Flow Characteristics</h3>
-		<p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+		<h3 class="text-foreground text-lg font-semibold">Flow Characteristics</h3>
+		<p class="text-muted-foreground mt-1 text-sm">
 			Weighted flow observations and exact unique port counts
 		</p>
 		<DragGrip />
@@ -234,25 +235,25 @@
 
 	<div class="space-y-5 p-4">
 		{#if loading}
-			<div class="flex min-h-72 items-center justify-center text-gray-500 dark:text-gray-400">
+			<div class="text-muted-foreground flex min-h-72 items-center justify-center">
 				Loading flow characteristics…
 			</div>
 		{:else if error}
-			<div class="flex min-h-72 items-center justify-center text-red-600 dark:text-red-400">
+			<div class="text-destructive flex min-h-72 items-center justify-center">
 				{error}
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center justify-between gap-3">
-				<h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Observations</h4>
+				<h4 class="text-foreground text-sm font-semibold">Observations</h4>
 				<div
-					class="dark:border-dark-border dark:bg-dark-subtle flex rounded-md border bg-gray-50 p-1"
+					class="border-border bg-muted flex rounded-md border p-1"
 					role="group"
 					aria-label="Observation IP family"
 				>
 					{#each ['all', 'ipv4', 'ipv6'] as const as family (family)}
 						<button
 							type="button"
-							class={`min-h-8 rounded px-3 text-xs font-medium ${observationFamily === family ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}
+							class={`min-h-8 rounded px-3 text-xs font-medium ${observationFamily === family ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
 							aria-pressed={observationFamily === family}
 							onclick={() => (observationFamily = family)}
 						>
@@ -281,24 +282,24 @@
 				/>
 			</div>
 
-			<div class="dark:border-dark-border border-t pt-5">
+			<div class="border-border border-t pt-5">
 				<div class="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 					<div>
-						<h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Unique Ports</h4>
-						<p class="text-xs text-gray-500 dark:text-gray-400">
+						<h4 class="text-foreground text-sm font-semibold">Unique Ports</h4>
+						<p class="text-muted-foreground text-xs">
 							Cardinality is resolved from an exact logical source; separate sources are never
 							added.
 						</p>
 					</div>
 					<div
-						class="dark:border-dark-border dark:bg-dark-subtle flex rounded-md border bg-gray-50 p-1"
+						class="border-border bg-muted flex rounded-md border p-1"
 						role="group"
 						aria-label="Port IP family"
 					>
 						{#each ['ipv4', 'ipv6'] as const as family (family)}
 							<button
 								type="button"
-								class={`min-h-8 rounded px-3 text-xs font-medium ${portFamily === family ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}
+								class={`min-h-8 rounded px-3 text-xs font-medium ${portFamily === family ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
 								aria-pressed={portFamily === family}
 								onclick={() => (portFamily = family)}>{family.toUpperCase()}</button
 							>
@@ -312,15 +313,13 @@
 				>
 					{#each PORT_OPTIONS as option (`${option.side}-${option.range}`)}
 						<label
-							class="dark:border-dark-border flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm"
+							class="border-border flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm"
 						>
-							<input
-								type="checkbox"
+							<Checkbox
 								checked={activePortSeries.has(`${option.side}-${option.range}`)}
-								onchange={() => togglePortSeries(option.side, option.range)}
-								class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+								onCheckedChange={() => togglePortSeries(option.side, option.range)}
 							/>
-							<span class="text-gray-700 dark:text-gray-300">{option.label}</span>
+							<span class="text-foreground">{option.label}</span>
 						</label>
 					{/each}
 				</div>

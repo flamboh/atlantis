@@ -1,28 +1,53 @@
-<script lang="ts">
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import { createEventDispatcher, onDestroy, tick } from 'svelte';
+<script lang="ts" generics="Kind extends BreakdownChartKind">
+	import { onDestroy, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { Chart } from './chart-registry';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
-	import type { GroupByOption } from '$lib/components/netflow/types.ts';
+	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import ChartCard from './ChartCard.svelte';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
-	import type { FlowVisibility, IpGranularity, SpectrumPoint, TimeBucket } from '$lib/types/types';
-	import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
+	import type {
+		BucketCoverage,
+		FlowVisibility,
+		IpGranularity,
+		IpMetricKey,
+		ProtocolMetricKey,
+		SpectrumPoint,
+		TimeBucket
+	} from '$lib/types/types';
+	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
+	import {
+		BREAKDOWN_CHART_CONFIGS,
+		readLineMetric,
+		type BreakdownChartKind,
+		type BreakdownChartConfig,
+		type BreakdownMetricKey,
+		type LineBucketData
+	} from './breakdown-chart-config';
 	import {
 		generateSlugFromLabel,
 		parseClickedLabel,
+		formatNumber,
 		Y_AXIS_WIDTH,
 		MIN_DRAG_PIXELS,
 		groupByBucketDurationMs,
 		chooseAdaptiveGranularity,
 		createRangeDragState,
 		getSelectionLabels,
+		indexFromPixelX,
 		beginRangeDrag,
 		updateRangeDrag,
 		endRangeDrag,
 		buildMirroredSelectionStyle,
-		findTemporalDataBounds
+		findTemporalDataBounds,
+		getChartBucketCoverage,
+		getCoveragePointStyle,
+		getCoverageTooltipLines,
+		isCoverageSegmentDashed,
+		type ChartCoverage
 	} from './chart-utils';
 	import {
 		formatIpGranularityTick,
@@ -31,16 +56,15 @@
 	} from './ip-time-axis';
 	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
 	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
+	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
 	} from '$lib/utils/window-cache';
-
-	const CHART_ID = 'spectrum';
 
 	const IP_TO_GROUP_BY: Record<IpGranularity, GroupByOption> = {
 		'1d': 'date',
@@ -56,7 +80,14 @@
 		'5min': null
 	};
 
+	type MetricsForKind<ChartKind extends BreakdownChartKind> = ChartKind extends 'ip'
+		? IpMetricKey[]
+		: ChartKind extends 'protocol'
+			? ProtocolMetricKey[]
+			: never[];
+
 	const props = $props<{
+		kind: Kind;
 		dataset?: string;
 		startDate?: string;
 		endDate?: string;
@@ -64,45 +95,58 @@
 		router?: string;
 		addressType?: 'sa' | 'da';
 		availableRouters?: string[];
+		routers?: RouterConfig;
+		activeMetrics?: MetricsForKind<Kind>;
 		srcVisibility?: FlowVisibility;
 		dstVisibility?: FlowVisibility;
+		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
+		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onRouterChange?: (payload: { router: string }) => void;
+		onAddressTypeChange?: (payload: { addressType: 'sa' | 'da' }) => void;
+		onMetricsChange?: (payload: { metrics: MetricsForKind<Kind> }) => void;
 	}>();
+	function getConfig(kind: BreakdownChartKind): BreakdownChartConfig {
+		return BREAKDOWN_CHART_CONFIGS[kind];
+	}
 
-	const dispatch = createEventDispatcher<{
-		dateChange: { startDate: string; endDate: string };
-		groupByChange: { groupBy: GroupByOption };
-		routerChange: { router: string };
-		addressTypeChange: { addressType: 'sa' | 'da' };
-	}>();
+	const config = $derived(getConfig(props.kind));
+	const CHART_ID = $derived(config.chartId);
 
 	const today = new Date();
 	const formatDate = (date: Date): string => formatDateAsPSTDateString(date);
 	const getInitialAddressType = () => props.addressType ?? 'sa';
 	const getInitialRouter = () => (props.router ?? '').trim();
-	const getInitialGranularity = () => props.granularity ?? '1h';
+	const getInitialGranularity = () => props.granularity ?? config.defaultGranularity;
+	const getInitialMetrics = () => props.activeMetrics ?? config.defaultMetrics;
 
-	type SpectrumChartBucket = TimeBucket<SpectrumStatsPayload>;
-	type CachedSpectrumBucket = {
+	type BreakdownBucketData = LineBucketData | SpectrumStatsPayload;
+	type BreakdownChartBucket = TimeBucket<BreakdownBucketData>;
+	type CachedBreakdownBucket = {
 		router: string;
-		bucket: SpectrumChartBucket;
+		bucket: BreakdownChartBucket;
 	};
 
 	let currentRouter = $state(getInitialRouter());
-	let cachedBuckets = $state<CachedSpectrumBucket[]>([]);
+	let cachedBuckets = $state<CachedBreakdownBucket[]>([]);
 	let buckets = $derived(
-		cachedBuckets.filter((record) => record.router === currentRouter).map((record) => record.bucket)
+		cachedBuckets
+			.filter((record) => props.kind !== 'spectrum' || record.router === currentRouter)
+			.map((record) => record.bucket)
 	);
+	let activeMetrics = $state<BreakdownMetricKey[]>([...getInitialMetrics()]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
-	let chart: Chart<'scatter', { x: number; y: number }[], unknown> | null = null;
+	let chart: Chart | null = null;
 	let rangeDrag = $state(createRangeDragState());
 	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
 	let selectionWidth = $derived(Math.abs(rangeDrag.dragStartX - rangeDrag.dragCurrentX));
-	let mirroredRange = $state<RangeSelectionState | null>(null);
+	let mirroredRange = $derived(rangeSelection.selection);
+	let pointerMoveFrame: number | null = null;
+	let pendingPointerMoveEvent: MouseEvent | null = null;
 	let localHoverLabel = $state<string | null>(null);
 	let externalHoverLabel = $state<string | null>(null);
 	let localHoverX = $state<number | null>(null);
@@ -111,8 +155,8 @@
 	let showLocalTooltip = $state(false);
 	let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	function pointsForBucket(bucket: SpectrumChartBucket): SpectrumPoint[] {
-		if (!bucket.data) return [];
+	function pointsForBucket(bucket: BreakdownChartBucket): SpectrumPoint[] {
+		if (!bucket.data || !('spectrumSa' in bucket.data)) return [];
 		return addressType === 'sa' ? bucket.data.spectrumSa : bucket.data.spectrumDa;
 	}
 
@@ -136,13 +180,6 @@
 			return points.length > 0;
 		})
 	);
-
-	$effect(() => {
-		const unsubscribe = rangeSelectionStore.subscribe((value) => {
-			mirroredRange = value;
-		});
-		return unsubscribe;
-	});
 
 	$effect(() => {
 		const unsubscribe = crosshairStore.subscribe(({ label, sourceChartId }) => {
@@ -186,8 +223,20 @@
 			return;
 		}
 
-		const { textColor, gridColor, gridHighlightColor } = getChartColors();
-		const scales = chart.options.scales;
+		const {
+			textColor,
+			gridColor,
+			gridHighlightColor,
+			tooltipBackgroundColor,
+			tooltipTextColor,
+			tooltipBorderColor
+		} = getChartColors();
+		type ThemeableScale = {
+			title?: Record<string, unknown>;
+			ticks?: Record<string, unknown>;
+			grid?: Record<string, unknown>;
+		};
+		const scales = chart.options.scales as { x?: ThemeableScale; y?: ThemeableScale } | undefined;
 
 		if (scales?.x) {
 			scales.x.title = { ...scales.x.title, color: textColor };
@@ -199,6 +248,37 @@
 			scales.y.title = { ...scales.y.title, color: textColor };
 			scales.y.ticks = { ...scales.y.ticks, color: textColor };
 			scales.y.grid = { ...scales.y.grid, color: gridColor };
+		}
+
+		if (props.kind !== 'spectrum') {
+			chart.options.plugins = {
+				...chart.options.plugins,
+				legend: { position: 'top', labels: { color: textColor } },
+				verticalCrosshair: {
+					enabled: true,
+					line: {
+						color: 'rgba(100, 100, 100, 0.8)',
+						width: 1,
+						dash: [3, 3]
+					},
+					tooltip: {
+						enabled: true,
+						delay: 500,
+						backgroundColor: tooltipBackgroundColor,
+						textColor: tooltipTextColor,
+						borderColor: tooltipBorderColor,
+						borderWidth: 1,
+						borderRadius: 4,
+						padding: 8,
+						fontSize: 12,
+						fontFamily: 'system-ui, sans-serif'
+					},
+					sync: {
+						onHover: (label: string | null) => crosshairStore.setHover(label, CHART_ID),
+						getExternalLabel: () => crosshairStore.getExternalLabel(CHART_ID)
+					}
+				}
+			} as Record<string, unknown>;
 		}
 
 		chart.update('none');
@@ -337,6 +417,9 @@
 
 	function destroyChart() {
 		if (chart) {
+			if (props.kind !== 'spectrum') {
+				crosshairStore.unregister(CHART_ID);
+			}
 			chart.destroy();
 			chart = null;
 		}
@@ -350,9 +433,41 @@
 		externalHoverX = null;
 	}
 
+	function deriveSelectedRouters(routerConfig: RouterConfig | undefined): string[] {
+		if (!routerConfig) {
+			return [];
+		}
+		return Object.entries(routerConfig)
+			.filter(([, enabled]) => enabled)
+			.map(([name]) => name.trim())
+			.filter((name) => name.length > 0)
+			.sort();
+	}
+
+	function buildColors(metricIndex: number, routerIndex: number) {
+		const metric = config.metrics[metricIndex];
+		if (!metric) {
+			return { stroke: 'transparent', fill: 'transparent' };
+		}
+		const hue = (metric.color.hue + routerIndex * config.routerHueStep) % 360;
+		const stroke = `hsl(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%)`;
+		const fill = `hsla(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%, ${config.fillAlpha})`;
+		return { stroke, fill };
+	}
+
+	function handleMetricToggle(metric: BreakdownMetricKey) {
+		const nextMetrics = activeMetrics.includes(metric)
+			? activeMetrics.filter((item) => item !== metric)
+			: [...activeMetrics, metric];
+		activeMetrics = nextMetrics;
+		props.onMetricsChange?.({
+			metrics: nextMetrics as MetricsForKind<Kind>
+		});
+	}
+
 	function emitDrilldown(nextGroupBy: GroupByOption, start: Date, end: Date) {
-		dispatch('groupByChange', { groupBy: nextGroupBy });
-		dispatch('dateChange', {
+		props.onGroupByChange?.({ groupBy: nextGroupBy });
+		props.onDateChange?.({
 			startDate: formatDate(start),
 			endDate: formatDate(end)
 		});
@@ -362,7 +477,7 @@
 		if (router === (props.router ?? '')) {
 			return;
 		}
-		dispatch('routerChange', { router });
+		props.onRouterChange?.({ router });
 	}
 
 	function handleAddressTypeChange(nextAddressType: 'sa' | 'da') {
@@ -373,13 +488,13 @@
 		if (chart) {
 			renderChart();
 		}
-		dispatch('addressTypeChange', { addressType: nextAddressType });
+		props.onAddressTypeChange?.({ addressType: nextAddressType });
 	}
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
 		const labels = getSelectionLabels(chart, startIndex, endIndex);
 		if (!labels) return;
-		rangeSelectionStore.set({ sourceChartId: CHART_ID, ...labels });
+		rangeSelection.set({ sourceChartId: CHART_ID, ...labels });
 	}
 
 	function applyRangeDrilldown(startIndex: number, endIndex: number) {
@@ -404,18 +519,56 @@
 	}
 
 	function handleRangeMouseDown(event: MouseEvent) {
-		clearLocalHover();
+		cancelPendingPointerMove();
+		if (props.kind === 'spectrum') {
+			clearLocalHover();
+		}
 		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
 	}
 
-	function handleRangeMouseMove(event: MouseEvent) {
+	function applyPendingPointerMove() {
+		pointerMoveFrame = null;
+		const event = pendingPointerMoveEvent;
+		pendingPointerMoveEvent = null;
+		if (!event) {
+			return;
+		}
 		updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
-		updateLocalCrosshair(event);
+		if (props.kind === 'spectrum') {
+			updateLocalCrosshair(event);
+		}
+	}
+
+	function cancelPendingPointerMove() {
+		if (pointerMoveFrame !== null) {
+			cancelDrawFrame(pointerMoveFrame);
+			pointerMoveFrame = null;
+		}
+		pendingPointerMoveEvent = null;
+	}
+
+	function flushPendingPointerMove() {
+		if (pointerMoveFrame === null) {
+			return;
+		}
+		cancelDrawFrame(pointerMoveFrame);
+		applyPendingPointerMove();
+	}
+
+	function handleRangeMouseMove(event: MouseEvent) {
+		if (!rangeDrag.isDraggingRange && props.kind !== 'spectrum') {
+			return;
+		}
+		pendingPointerMoveEvent = event;
+		if (pointerMoveFrame === null) {
+			pointerMoveFrame = requestDrawFrame(applyPendingPointerMove);
+		}
 	}
 
 	function finishRangeSelection() {
+		flushPendingPointerMove();
 		endRangeDrag(rangeDrag, chart, applyRangeDrilldown);
-		rangeSelectionStore.set(null);
+		rangeSelection.clear();
 	}
 
 	function handlePointerLeave() {
@@ -459,15 +612,20 @@
 
 		const canvasPosition = getRelativePosition(event, chart);
 		const dataX = chart.scales.x.getValueForPixel(canvasPosition.x);
-
 		const labelIndex =
-			typeof dataX === 'number' && Number.isFinite(dataX) ? nearestBucketIndex(dataX) : null;
+			props.kind === 'spectrum'
+				? typeof dataX === 'number' && Number.isFinite(dataX)
+					? nearestBucketIndex(dataX)
+					: null
+				: indexFromPixelX(chart, canvasPosition.x);
 		const fallbackIndex =
-			activeElements.length > 0
-				? nearestBucketIndex(
-						bucketStarts[Math.min(activeElements[0]?.index ?? 0, bucketStarts.length - 1)] ?? 0
-					)
-				: null;
+			activeElements.length === 0
+				? null
+				: props.kind === 'spectrum'
+					? nearestBucketIndex(
+							bucketStarts[Math.min(activeElements[0]?.index ?? 0, bucketStarts.length - 1)] ?? 0
+						)
+					: activeElements[0].index;
 		const targetIndex = labelIndex ?? fallbackIndex;
 		const label = targetIndex !== null ? getLabelFromIndex(targetIndex) : labels[0];
 
@@ -477,7 +635,9 @@
 
 		const clickedDate = parseClickedLabel(label, groupBy);
 		if (!(clickedDate instanceof Date) || Number.isNaN(clickedDate.getTime())) {
-			console.warn('Unable to parse clicked label for drilldown', { label, groupBy });
+			if (props.kind !== 'protocol') {
+				console.warn('Unable to parse clicked label for drilldown', { label, groupBy });
+			}
 			return;
 		}
 		const activeLabel = fallbackIndex !== null ? getLabelFromIndex(fallbackIndex) : null;
@@ -521,7 +681,7 @@
 	}
 
 	function buildDatasets(
-		selectedBuckets: SpectrumChartBucket[],
+		selectedBuckets: BreakdownChartBucket[],
 		bucketStarts: number[]
 	): {
 		data: DataPoint[];
@@ -579,7 +739,216 @@
 		return { data, minF, maxF, minAlpha, maxAlpha };
 	}
 
-	function renderChart() {
+	function buildLineScales(textColor: string, gridColor: string, gridHighlightColor: string) {
+		return {
+			x: {
+				type: 'linear' as const,
+				min: bucketStarts[0],
+				max: bucketStarts[bucketStarts.length - 1],
+				title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
+				ticks: {
+					color: textColor,
+					autoSkip: false,
+					maxRotation: 45,
+					minRotation: 45,
+					sampleSize: 12,
+					callback: (value: string | number) =>
+						formatIpGranularityTick(Number(value), currentGranularity, 0)
+				},
+				grid: {
+					color: (context: { tick?: { value?: number } }) =>
+						shouldHighlightIpGranularityGrid(
+							Number(context.tick?.value ?? 0),
+							currentGranularity,
+							0
+						)
+							? gridColor
+							: gridHighlightColor
+				}
+			},
+			y: {
+				beginAtZero: true,
+				afterFit(axis: { width: number }) {
+					axis.width = Y_AXIS_WIDTH;
+				},
+				title: { display: true, text: config.yAxisTitle, color: textColor },
+				ticks: config.formatYAxisTicks
+					? {
+							color: textColor,
+							callback: (value: string | number) => formatNumber(Number(value))
+						}
+					: { color: textColor },
+				grid: { color: gridColor }
+			}
+		};
+	}
+
+	function buildLinePlugins(
+		textColor: string,
+		tooltipBackgroundColor: string,
+		tooltipTextColor: string,
+		tooltipBorderColor: string
+	) {
+		return {
+			legend: { position: 'top', labels: { color: textColor } },
+			tooltip: {
+				callbacks: {
+					afterLabel: (context: { raw: unknown }) =>
+						getCoverageTooltipLines(getChartBucketCoverage(context.raw))
+				}
+			},
+			verticalCrosshair: {
+				enabled: true,
+				line: {
+					color: 'rgba(100, 100, 100, 0.8)',
+					width: 1,
+					dash: [3, 3]
+				},
+				tooltip: {
+					enabled: true,
+					delay: 500,
+					backgroundColor: tooltipBackgroundColor,
+					textColor: tooltipTextColor,
+					borderColor: tooltipBorderColor,
+					borderWidth: 1,
+					borderRadius: 4,
+					padding: 8,
+					fontSize: 12,
+					fontFamily: 'system-ui, sans-serif'
+				},
+				sync: {
+					onHover: (label: string | null) => crosshairStore.setHover(label, CHART_ID),
+					getExternalLabel: () => crosshairStore.getExternalLabel(CHART_ID)
+				}
+			}
+		} as Record<string, unknown>;
+	}
+
+	function renderLineChart() {
+		const {
+			textColor,
+			gridColor,
+			gridHighlightColor,
+			tooltipBackgroundColor,
+			tooltipTextColor,
+			tooltipBorderColor
+		} = getChartColors();
+		const selectedRouters = new Set(deriveSelectedRouters(props.routers));
+		const selectedBuckets = cachedBuckets.filter((record) => selectedRouters.has(record.router));
+
+		if (activeMetrics.length === 0 || selectedBuckets.length === 0) {
+			destroyChart();
+			return;
+		}
+
+		const canvas = chartCanvas;
+		if (!canvas) return;
+
+		bucketStarts = Array.from(
+			new Set(selectedBuckets.map((record) => record.bucket.bucketStart))
+		).sort((left, right) => left - right);
+		const routers = Array.from(new Set(selectedBuckets.map((record) => record.router))).sort();
+		const labels = bucketStarts.map((bucketStart) =>
+			formatTemporalBucketLabel(bucketStart, currentGranularity)
+		);
+		const bucketByRouterAndStart = new Map(
+			selectedBuckets.map((record) => [`${record.router}-${record.bucket.bucketStart}`, record])
+		);
+
+		const datasets = routers.flatMap((router, routerIndex) =>
+			config.metrics
+				.filter((metric) => activeMetrics.includes(metric.key))
+				.map((metric) => {
+					const configIndex = config.metrics.findIndex((candidate) => candidate.key === metric.key);
+					const { stroke, fill } = buildColors(configIndex, routerIndex);
+					const data = bucketStarts.map((bucketStart) => {
+						const record = bucketByRouterAndStart.get(`${router}-${bucketStart}`);
+						const bucket = record?.bucket;
+						const coverage = getChartBucketCoverage(bucket) ?? {
+							state: 'unknown',
+							observedUnits: 0,
+							expectedUnits: 0
+						};
+						return {
+							x: bucketStart,
+							y: readLineMetric((bucket?.data as LineBucketData | null) ?? null, metric.key),
+							bucketStart,
+							bucketEnd: bucket?.bucketEnd ?? bucketStart,
+							coverage
+						};
+					});
+					const pointStyles = data.map((point) => getCoveragePointStyle(point.coverage, stroke));
+					return {
+						label: `${router} · ${metric.seriesLabel}`,
+						data,
+						borderColor: stroke,
+						backgroundColor: fill,
+						tension: 0.3,
+						fill: false,
+						pointRadius: data.map((point, index) =>
+							point.y === null ? 0 : (pointStyles[index]?.radius ?? 0)
+						),
+						pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
+						pointBorderColor: pointStyles.map((style) => style.borderColor),
+						pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+						pointHoverRadius: 4,
+						spanGaps: false,
+						segment: {
+							borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
+								isCoverageSegmentDashed(
+									context.p0.raw as { coverage?: ChartCoverage },
+									context.p1.raw as { coverage?: ChartCoverage }
+								)
+									? [6, 4]
+									: []
+						},
+						parsing: false
+					};
+				})
+		);
+
+		if (datasets.length === 0 || labels.length === 0) {
+			if (chart) {
+				chart.data.labels = [];
+				chart.data.datasets = [];
+				chart.update();
+			}
+			return;
+		}
+
+		const scales = buildLineScales(textColor, gridColor, gridHighlightColor);
+		const plugins = buildLinePlugins(
+			textColor,
+			tooltipBackgroundColor,
+			tooltipTextColor,
+			tooltipBorderColor
+		);
+		if (!chart) {
+			chart = new Chart(canvas, {
+				type: 'line',
+				data: { labels, datasets },
+				options: {
+					onClick: handleChartClick,
+					responsive: true,
+					maintainAspectRatio: false,
+					animation: false,
+					interaction: { mode: 'index', intersect: false },
+					plugins,
+					scales
+				}
+			} as never);
+			crosshairStore.register(CHART_ID, chart);
+		} else {
+			chart.data.labels = labels;
+			chart.data.datasets = datasets as never[];
+			chart.options.scales = scales as never;
+			chart.options.onClick = handleChartClick;
+			chart.options.plugins = plugins;
+			chart.update('none');
+		}
+	}
+
+	function renderSpectrumChart() {
 		const { textColor, gridColor, gridHighlightColor } = getChartColors();
 		const canvas = chartCanvas;
 		if (!canvas) {
@@ -782,6 +1151,14 @@
 		syncCrosshairPositions();
 	}
 
+	function renderChart() {
+		if (props.kind === 'spectrum') {
+			renderSpectrumChart();
+		} else {
+			renderLineChart();
+		}
+	}
+
 	type FilterInputs = {
 		startDate: string;
 		endDate: string;
@@ -792,6 +1169,7 @@
 	};
 
 	let lastFiltersKey = '';
+	let lastIncomingMetricsKey = '';
 	let requestToken = 0;
 
 	function getRequestedRange(filters: FilterInputs): TimeRange {
@@ -830,12 +1208,12 @@
 		});
 
 		try {
-			await ensureCachedWindow<CachedSpectrumBucket>({
+			await ensureCachedWindow<CachedBreakdownBucket>({
 				key: cacheKey,
 				requestedRange,
 				fetchRange: async (range) => {
 					const response = await fetch(
-						`/api/netflow/spectrum-stats?${new URLSearchParams({
+						`${config.endpoint}?${new URLSearchParams({
 							...Object.fromEntries(params.entries()),
 							startDate: range.start.toString(),
 							endDate: range.end.toString()
@@ -843,9 +1221,11 @@
 					);
 					if (!response.ok) {
 						const message = await response.text();
-						throw new Error(message || 'Failed to load spectrum statistics');
+						throw new Error(message || config.fetchErrorCopy);
 					}
-					const data: SpectrumStatsResponse = await response.json();
+					const data = (await response.json()) as {
+						timelines: Array<{ router: string; buckets: BreakdownChartBucket[] }>;
+					};
 					return data.timelines.flatMap((timeline) =>
 						timeline.buckets.map((bucket) => ({
 							router: timeline.router,
@@ -861,7 +1241,7 @@
 			if (token !== requestToken) {
 				return;
 			}
-			cachedBuckets = readCachedWindow<CachedSpectrumBucket>(
+			cachedBuckets = readCachedWindow<CachedBreakdownBucket>(
 				cacheKey,
 				requestedRange,
 				(record, range) => {
@@ -875,7 +1255,7 @@
 			if (token !== requestToken) {
 				return;
 			}
-			error = err instanceof Error ? err.message : 'Unexpected error loading spectrum statistics';
+			error = err instanceof Error ? err.message : config.unexpectedErrorCopy;
 			cachedBuckets = [];
 			loading = false;
 			destroyChart();
@@ -883,8 +1263,9 @@
 	}
 
 	onDestroy(() => {
+		cancelPendingPointerMove();
 		if (mirroredRange?.sourceChartId === CHART_ID) {
-			rangeSelectionStore.set(null);
+			rangeSelection.clear();
 		}
 		destroyChart();
 	});
@@ -899,6 +1280,59 @@
 	});
 
 	$effect(() => {
+		if (props.kind === 'spectrum') {
+			return;
+		}
+		const incomingMetrics = props.activeMetrics ?? config.defaultMetrics;
+		const nextKey = JSON.stringify(incomingMetrics);
+		if (nextKey === lastIncomingMetricsKey) {
+			return;
+		}
+		lastIncomingMetricsKey = nextKey;
+		activeMetrics = [...incomingMetrics];
+		void (async () => {
+			await tick();
+			renderChart();
+		})();
+	});
+
+	$effect(() => {
+		if (props.kind !== 'spectrum') {
+			const routerConfig = props.routers;
+			if (!routerConfig || Object.keys(routerConfig).length === 0) {
+				return;
+			}
+			const selectedRouters = deriveSelectedRouters(routerConfig);
+			const filters: FilterInputs = {
+				startDate: props.startDate ?? '2025-01-01',
+				endDate: props.endDate ?? formatDate(today),
+				granularity: props.granularity ?? config.defaultGranularity,
+				routers: selectedRouters,
+				srcVisibility: props.srcVisibility ?? 'all',
+				dstVisibility: props.dstVisibility ?? 'all'
+			};
+
+			currentGranularity = filters.granularity;
+			if (selectedRouters.length === 0) {
+				error = config.noSourceCopy;
+				cachedBuckets = [];
+				destroyChart();
+				lastFiltersKey = JSON.stringify({ ...filters, selectedRouters });
+				loading = false;
+				return;
+			}
+
+			error = null;
+			const nextKey = JSON.stringify({ ...filters, selectedRouters });
+			if (nextKey === lastFiltersKey) {
+				return;
+			}
+			lastFiltersKey = nextKey;
+			const token = ++requestToken;
+			loadData(filters, token);
+			return;
+		}
+
 		const availableRouters = (props.availableRouters ?? [])
 			.map((router: string) => router.trim())
 			.filter((router: string) => router.length > 0);
@@ -929,7 +1363,7 @@
 		const filters: FilterInputs = {
 			startDate: startDateProp ?? '2025-01-01',
 			endDate: endDateProp ?? formatDate(today),
-			granularity: granularityProp ?? '1h',
+			granularity: granularityProp ?? config.defaultGranularity,
 			routers: availableRouters,
 			srcVisibility,
 			dstVisibility
@@ -938,7 +1372,7 @@
 		currentGranularity = filters.granularity;
 
 		if (filters.routers.length === 0) {
-			error = 'Select at least one source to view spectrum statistics';
+			error = config.noSourceCopy;
 			cachedBuckets = [];
 			destroyChart();
 			lastFiltersKey = JSON.stringify(filters);
@@ -957,123 +1391,106 @@
 	});
 </script>
 
-<div class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm">
-	<div
-		class="dark:border-dark-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
-		draggable="true"
-		data-drag-handle
-	>
-		<h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Spectrum</h3>
-		<DragGrip />
-	</div>
-	<div class="p-4">
-		<div class="mb-4 space-y-2">
-			<div class="flex min-h-6 flex-wrap items-center gap-4">
-				{#if (props.availableRouters ?? []).length === 0}
-					{#each Array(4) as _, index (index)}
-						<span
-							class="dark:bg-dark-border inline-block h-4 w-24 animate-pulse rounded bg-gray-200"
-							aria-hidden="true"
-						></span>
-					{/each}
-				{:else}
-					{#each props.availableRouters ?? [] as routerName (routerName)}
-						<label class="flex cursor-pointer items-center gap-2">
+<ChartCard
+	title={config.title}
+	size={props.kind === 'spectrum' ? 'spectrum' : 'default'}
+	{loading}
+	{error}
+	noMetrics={props.kind === 'spectrum'
+		? buckets.length > 0 && !hasSelectedSpectrumData
+		: activeMetrics.length === 0}
+	empty={buckets.length === 0}
+	loadingCopy={config.loadingCopy}
+	noMetricsCopy={props.kind === 'spectrum'
+		? `No ${addressType === 'sa' ? 'source' : 'destination'} spectrum data for the selected source.`
+		: config.noMetricsCopy}
+	emptyCopy={config.emptyCopy}
+	isDraggingRange={rangeDrag.isDraggingRange}
+	{selectionLeft}
+	{selectionWidth}
+	selectionTop={rangeDrag.selectionTop}
+	selectionHeight={rangeDrag.selectionHeight}
+	{mirroredSelectionStyle}
+	minDragPixels={MIN_DRAG_PIXELS}
+	onmousedown={handleRangeMouseDown}
+	onmousemove={handleRangeMouseMove}
+	onmouseup={finishRangeSelection}
+	onmouseleave={props.kind === 'spectrum' ? handlePointerLeave : finishRangeSelection}
+>
+	{#snippet controls()}
+		{#if props.kind === 'spectrum'}
+			<div class="space-y-2">
+				<div class="flex min-h-6 flex-wrap items-center gap-4">
+					{#if (props.availableRouters ?? []).length === 0}
+						{#each Array(4) as _, index (index)}
+							<Skeleton class="inline-block h-4 w-24" aria-hidden="true" />
+						{/each}
+					{:else}
+						{#each props.availableRouters ?? [] as routerName (routerName)}
+							<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
+								<input
+									type="radio"
+									name="spectrum-router-local"
+									checked={props.router === routerName}
+									onchange={() => handleRouterChange(routerName)}
+									class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
+								/>
+								<span>{routerName}</span>
+							</label>
+						{/each}
+					{/if}
+				</div>
+				<div class="flex flex-wrap items-center gap-4">
+					{#each [['sa', 'Source IPv4'], ['da', 'Destination IPv4']] as const as addressOption (addressOption[0])}
+						<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
 							<input
 								type="radio"
-								name="spectrum-router-local"
-								checked={props.router === routerName}
-								onchange={() => handleRouterChange(routerName)}
-								class="h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
+								name="spectrum-address-type-local"
+								checked={addressType === addressOption[0]}
+								onchange={() => handleAddressTypeChange(addressOption[0])}
+								class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
 							/>
-							<span class="text-sm text-gray-700 dark:text-gray-300">{routerName}</span>
+							<span>{addressOption[1]}</span>
 						</label>
 					{/each}
-				{/if}
+				</div>
 			</div>
+		{:else}
 			<div class="flex flex-wrap items-center gap-4">
-				<label class="flex cursor-pointer items-center gap-2">
-					<input
-						type="radio"
-						name="spectrum-address-type-local"
-						checked={addressType === 'sa'}
-						onchange={() => handleAddressTypeChange('sa')}
-						class="h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
-					/>
-					<span class="text-sm text-gray-700 dark:text-gray-300">Source IPv4</span>
-				</label>
-				<label class="flex cursor-pointer items-center gap-2">
-					<input
-						type="radio"
-						name="spectrum-address-type-local"
-						checked={addressType === 'da'}
-						onchange={() => handleAddressTypeChange('da')}
-						class="h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
-					/>
-					<span class="text-sm text-gray-700 dark:text-gray-300">Destination IPv4</span>
-				</label>
+				{#each config.metrics as metric (metric.key)}
+					<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
+						<Checkbox
+							checked={activeMetrics.includes(metric.key)}
+							onCheckedChange={() => handleMetricToggle(metric.key)}
+						/>
+						<span>{metric.label}</span>
+					</label>
+				{/each}
 			</div>
-		</div>
+		{/if}
+	{/snippet}
 
-		<div
-			class="dark:border-dark-border dark:bg-dark-subtle/60 relative h-[400px] min-h-[300px] resize-y overflow-auto rounded-md border border-gray-200 bg-white/60"
-			role="presentation"
-			onmousedown={handleRangeMouseDown}
-			onmousemove={handleRangeMouseMove}
-			onmouseup={finishRangeSelection}
-			onmouseleave={handlePointerLeave}
-		>
-			{#if loading}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-gray-500 dark:text-gray-400">Loading spectrum data...</div>
-				</div>
-			{:else if error}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-red-500">{error}</div>
-				</div>
-			{:else if buckets.length === 0}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-gray-500 dark:text-gray-400">
-						No spectrum data for the selected window.
-					</div>
-				</div>
-			{:else if !hasSelectedSpectrumData}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-gray-500 dark:text-gray-400">
-						No {addressType === 'sa' ? 'source' : 'destination'} spectrum data for the selected source.
-					</div>
-				</div>
-			{:else}
-				<div class="h-full">
-					<canvas bind:this={chartCanvas} aria-label="Spectrum chart"></canvas>
-					{#if !rangeDrag.isDraggingRange && activeCrosshairX !== null}
-						<div
-							class="pointer-events-none absolute z-20"
-							style={getCrosshairLineStyle(activeCrosshairX)}
-						></div>
-					{/if}
-					{#if !rangeDrag.isDraggingRange && localHoverX !== null && showLocalTooltip && localHoverLabel}
-						<div
-							class="pointer-events-none absolute z-20 rounded border px-2 py-1 text-xs whitespace-nowrap shadow-sm"
-							style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
-						>
-							<div>{localHoverLabel}</div>
-						</div>
-					{/if}
-					{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}
-						<div
-							class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
-							style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${rangeDrag.selectionTop}px; height:${rangeDrag.selectionHeight}px;`}
-						></div>
-					{/if}
-					{#if !rangeDrag.isDraggingRange && mirroredSelectionStyle !== null}
-						<div
-							class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
-							style={mirroredSelectionStyle}
-						></div>
-					{/if}
+	<canvas bind:this={chartCanvas} aria-label={config.canvasLabel}></canvas>
+
+	{#snippet overlay()}
+		{#if props.kind === 'spectrum'}
+			{#if !rangeDrag.isDraggingRange && activeCrosshairX !== null}
+				<div
+					class="pointer-events-none absolute z-20"
+					style={getCrosshairLineStyle(activeCrosshairX)}
+				></div>
+			{/if}
+			{#if !rangeDrag.isDraggingRange && localHoverX !== null && showLocalTooltip && localHoverLabel}
+				<div
+					class="pointer-events-none absolute z-20 rounded border px-2 py-1 text-xs whitespace-nowrap shadow-sm"
+					style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
+				>
+					<div>{localHoverLabel}</div>
+					{#each getCoverageLinesForLabel(localHoverLabel) as line (line)}
+						<div>{line}</div>
+					{/each}
 				</div>
 			{/if}
-		</div>
-	</div>
-</div>
+		{/if}
+	{/snippet}
+</ChartCard>
