@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
+	import * as Card from '$lib/components/ui/card';
 	import { createEventDispatcher } from 'svelte';
 	import { goto } from '$app/navigation';
 	import ChartContainer from '$lib/components/charts/ChartContainer.svelte';
@@ -296,19 +297,19 @@
 	});
 </script>
 
-<div
-	class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm dark:shadow-none"
->
-	<div
-		class="dark:border-dark-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
+<Card.Root size="sm" class="gap-0 py-0">
+	<Card.Header
+		class="border-border relative cursor-grab border-b py-4 select-none active:cursor-grabbing"
 		draggable="true"
 		data-drag-handle
 	>
-		<h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Traffic Overview</h2>
+		<Card.Title class="text-lg font-semibold">
+			<h2>Traffic Overview</h2>
+		</Card.Title>
 		<DragGrip />
-	</div>
+	</Card.Header>
 
-	<div class="space-y-4 p-4">
+	<Card.Content class="space-y-4 py-4">
 		<MetricSelector
 			dataOptions={props.dataOptions}
 			onDataOptionsChange={handleDataOptionsChange}
@@ -320,13 +321,13 @@
 		/>
 
 		<div
-			class="dark:border-dark-border dark:bg-dark-subtle/60 h-[380px] min-h-[280px] resize-none overflow-hidden rounded-md border border-gray-200 bg-white/60 md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
+			class="border-border bg-background/60 h-[380px] min-h-[280px] resize-none overflow-hidden rounded-md border md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
 		>
 			{#if loading}
 				<div class="flex h-full items-center justify-center">
-					<div class="flex items-center gap-3 text-gray-500 dark:text-gray-400">
+					<div class="text-muted-foreground flex items-center gap-3">
 						<div
-							class="dark:border-dark-border h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-500 dark:border-t-gray-400"
+							class="border-border border-t-muted-foreground h-5 w-5 animate-spin rounded-full border-2"
 							aria-hidden="true"
 						></div>
 						<div>Loading data...</div>
@@ -334,13 +335,11 @@
 				</div>
 			{:else if error}
 				<div class="flex h-full items-center justify-center">
-					<div class="text-red-500">{error}</div>
+					<div class="text-destructive">{error}</div>
 				</div>
 			{:else if results.length === 0}
 				<div class="flex h-full items-center justify-center">
-					<div class="text-gray-500 dark:text-gray-400">
-						No data available for the selected filters
-					</div>
+					<div class="text-muted-foreground">No data available for the selected filters</div>
 				</div>
 			{:else}
 				<ChartContainer
@@ -353,5 +352,5 @@
 				/>
 			{/if}
 		</div>
-	</div>
-</div>
+	</Card.Content>
+</Card.Root>

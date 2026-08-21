@@ -372,7 +372,7 @@
 </svelte:head>
 
 <main class="mx-auto flex max-w-[95vw] flex-col gap-2 px-4 py-4 sm:px-2 lg:px-4">
-	<h1 class="px-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">
+	<h1 class="text-foreground px-1 text-2xl font-semibold">
 		{props.title ?? props.dataset}
 	</h1>
 	<DatasetTabs datasetId={props.dataset} active="dashboard" />
@@ -395,7 +395,7 @@
 			<section
 				role="listitem"
 				data-chart-card
-				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-2 ring-blue-400 ring-offset-2' : ''}`}
+				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import type { RouterConfig } from '$lib/components/netflow/types.ts';
 
 	interface Props {
@@ -19,28 +21,21 @@
 </script>
 
 <div class="router-filter flex flex-wrap items-center gap-3">
-	<span class="text-sm font-medium text-gray-700 dark:text-gray-300">Sources:</span>
+	<span class="text-foreground text-sm font-medium">Sources:</span>
 
 	<div class="flex min-h-0 flex-wrap items-center gap-3">
 		{#if routerNames.length === 0}
 			{#each Array(4) as _, index (index)}
-				<span
-					class="dark:bg-dark-border inline-block h-4 w-24 animate-pulse rounded bg-gray-200"
-					aria-hidden="true"
-				></span>
+				<Skeleton class="inline-block h-4 w-24" aria-hidden="true" />
 			{/each}
 		{:else}
 			{#each routerNames as routerName (routerName)}
-				<label
-					class="dark:hover:bg-dark-subtle flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 hover:bg-gray-50"
-				>
-					<input
-						type="checkbox"
+				<label class="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-1 py-1">
+					<Checkbox
 						checked={routers[routerName]}
-						onchange={() => handleRouterToggle(routerName)}
-						class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+						onCheckedChange={() => handleRouterToggle(routerName)}
 					/>
-					<span class="text-sm text-gray-700 dark:text-gray-300">{routerName}</span>
+					<span class="text-foreground text-sm">{routerName}</span>
 				</label>
 			{/each}
 		{/if}

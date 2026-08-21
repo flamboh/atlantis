@@ -2,7 +2,18 @@
 	import { afterNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import type { PageProps } from './$types';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import {
+		Table,
+		TableBody,
+		TableCell,
+		TableHead,
+		TableHeader,
+		TableRow
+	} from '$lib/components/ui/table';
 	import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
 
 	type TailSelection = AlertTail;
@@ -13,13 +24,6 @@
 	const REFRESH_INTERVAL_MS = 30_000;
 	const LIVE_WINDOW_AGE_MS = 15 * 60_000;
 	const NEW_ADDRESS_AGE_SECONDS = 15 * 60;
-	const CONTROL_GROUP_CLASS =
-		'dark:border-dark-border dark:bg-dark-subtle grid w-full gap-0.5 rounded-md border border-gray-200 bg-gray-50 p-1 sm:w-fit';
-	const CONTROL_BUTTON_CLASS =
-		'flex min-h-7 items-center justify-center rounded px-2.5 py-0.5 text-center text-xs font-medium transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none';
-	const CONTROL_BUTTON_INACTIVE_CLASS =
-		'text-gray-700 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100';
-	const CONTROL_BUTTON_ACTIVE_CLASS = 'bg-blue-600 text-white shadow-sm';
 	const TAIL_OPTIONS: Array<{ value: TailSelection; label: string; title: string }> = [
 		{
 			value: 'high',
@@ -314,128 +318,84 @@
 
 <main class="mx-auto flex max-w-[95vw] flex-col gap-4 px-4 py-8 sm:px-2 lg:px-4">
 	<header>
-		<h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Singularity alerts</h1>
-		<p class="mt-1 text-sm text-gray-600 dark:text-gray-300">{selectedDatasetLabel}</p>
-		<p class="mt-2 text-sm text-gray-500 dark:text-gray-400" aria-live="polite">
+		<h1 class="text-foreground text-2xl font-semibold">Singularity alerts</h1>
+		<p class="text-foreground mt-1 text-sm">{selectedDatasetLabel}</p>
+		<p class="text-muted-foreground mt-2 text-sm" aria-live="polite">
 			{statusText}
 		</p>
 	</header>
 	<DatasetTabs datasetId={data.selectedDataset} active="alerts" />
 
 	{#if fetchError}
-		<div
-			class="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400"
+		<Card
+			class="border-destructive bg-destructive/10 text-destructive gap-0 py-4 ring-0"
 			role="alert"
 		>
-			{fetchError}
-		</div>
+			<CardContent>{fetchError}</CardContent>
+		</Card>
 	{/if}
 
 	{#if !feedResponse.feed.present}
-		<section
-			class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white p-4 text-gray-600 shadow-sm dark:text-gray-400"
-		>
-			<h2 class="font-medium text-gray-900 dark:text-gray-100">The alert feed is not running</h2>
-			<p class="mt-1 text-sm">Start it for this dataset with:</p>
-			<div
-				class="dark:bg-dark-subtle mt-3 flex flex-col gap-2 rounded-md bg-gray-100 p-3 sm:flex-row sm:items-center sm:justify-between"
-			>
-				<code class="overflow-x-auto font-mono text-sm text-gray-900 dark:text-gray-100"
-					>{feedCommand}</code
+		<Card class="text-muted-foreground gap-3 rounded-lg border py-4 shadow-sm ring-0">
+			<CardHeader class="px-4">
+				<CardTitle class="text-foreground font-medium">The alert feed is not running</CardTitle>
+				<p class="text-sm">Start it for this dataset with:</p>
+			</CardHeader>
+			<CardContent class="px-4">
+				<div
+					class="bg-muted flex flex-col gap-2 rounded-md p-3 sm:flex-row sm:items-center sm:justify-between"
 				>
-				<button
-					type="button"
-					onclick={copyCommand}
-					class="shrink-0 rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:outline-none"
-				>
-					{copied ? 'Copied' : 'Copy'}
-				</button>
-			</div>
-			{#if copyError}
-				<p class="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">{copyError}</p>
-			{/if}
-		</section>
+					<code class="text-foreground overflow-x-auto font-mono text-sm">{feedCommand}</code>
+					<Button onclick={copyCommand} size="sm" class="h-7 shrink-0 px-3">
+						{copied ? 'Copied' : 'Copy'}
+					</Button>
+				</div>
+				{#if copyError}
+					<p class="text-destructive mt-2 text-sm" role="alert">{copyError}</p>
+				{/if}
+			</CardContent>
+		</Card>
 	{:else}
 		<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
 			<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
 				<div class="flex flex-col gap-1">
-					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Alpha</span>
-					<div
-						class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
-						role="group"
-						aria-label="Filter alerts by alpha tail"
-					>
-						{#each TAIL_OPTIONS as option (option.value)}
-							<button
-								type="button"
-								onclick={() => selectTail(option.value)}
-								title={option.title}
-								class={`${CONTROL_BUTTON_CLASS} ${
-									selectedTail === option.value
-										? CONTROL_BUTTON_ACTIVE_CLASS
-										: CONTROL_BUTTON_INACTIVE_CLASS
-								}`}
-								aria-pressed={selectedTail === option.value}
-							>
-								{option.label}
-							</button>
-						{/each}
-					</div>
+					<span class="text-muted-foreground text-xs font-medium">Alpha</span>
+					<SegmentedControl
+						options={TAIL_OPTIONS}
+						value={selectedTail}
+						onValueChange={selectTail}
+						class="grid-cols-2"
+						ariaLabel="Filter alerts by alpha tail"
+					/>
 				</div>
 
 				<div class="flex flex-col gap-1">
-					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Horizon</span>
-					<div
-						class={`${CONTROL_GROUP_CLASS} grid-cols-4`}
-						role="group"
-						aria-label="Select alert horizon"
-					>
-						{#each HORIZON_OPTIONS as option (option.value)}
-							<button
-								type="button"
-								onclick={() => selectHorizon(option.value)}
-								class={`${CONTROL_BUTTON_CLASS} ${
-									selectedHorizon === option.value
-										? CONTROL_BUTTON_ACTIVE_CLASS
-										: CONTROL_BUTTON_INACTIVE_CLASS
-								}`}
-								aria-pressed={selectedHorizon === option.value}
-							>
-								{option.label}
-							</button>
-						{/each}
-					</div>
+					<span class="text-muted-foreground text-xs font-medium">Horizon</span>
+					<SegmentedControl
+						options={HORIZON_OPTIONS}
+						value={selectedHorizon}
+						onValueChange={selectHorizon}
+						class="grid-cols-4"
+						ariaLabel="Select alert horizon"
+					/>
 				</div>
 
 				<div class="flex flex-col gap-1">
-					<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Sort</span>
-					<div
-						class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
-						role="group"
-						aria-label="Sort alert addresses"
-					>
-						{#each SORT_OPTIONS as option (option.value)}
-							<button
-								type="button"
-								onclick={() => selectSort(option.value)}
-								class={`${CONTROL_BUTTON_CLASS} ${
-									selectedSort === option.value
-										? CONTROL_BUTTON_ACTIVE_CLASS
-										: CONTROL_BUTTON_INACTIVE_CLASS
-								}`}
-								aria-pressed={selectedSort === option.value}
-							>
-								{option.label}
-							</button>
-						{/each}
-					</div>
+					<span class="text-muted-foreground text-xs font-medium">Sort</span>
+					<SegmentedControl
+						options={SORT_OPTIONS}
+						value={selectedSort}
+						onValueChange={selectSort}
+						class="grid-cols-2"
+						ariaLabel="Sort alert addresses"
+					/>
 				</div>
 
 				{#if feedResponse.feed.present && feedResponse.feed.thresholds}
 					<div class="flex flex-col gap-1">
-						<span class="text-xs font-medium text-gray-500 dark:text-gray-400">Thresholds</span>
+						<span class="text-muted-foreground text-xs font-medium">Thresholds</span>
 						<p
-							class="flex min-h-7 items-center pb-1 text-sm text-gray-500 tabular-nums dark:text-gray-400"
+							class="text-muted-foreground flex min-h-7 items-center pb-1 text-sm tabular-nums"
 							title="The feed records an address when its alpha crosses either calibrated bound"
 						>
 							α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds.low}
@@ -446,121 +406,122 @@
 		</div>
 
 		{#if feedResponse.addresses.length === 0}
-			<div
-				class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white px-4 py-3 text-sm text-gray-500 shadow-sm dark:text-gray-400"
-			>
-				No anomalous addresses in the last {selectedHorizon}.
-			</div>
+			<Card class="text-muted-foreground gap-0 rounded-lg border py-3 text-sm shadow-sm ring-0">
+				<CardContent class="px-4">
+					No anomalous addresses in the last {selectedHorizon}.
+				</CardContent>
+			</Card>
 		{:else}
 			<section
-				class={`dark:border-dark-border dark:bg-dark-surface overflow-x-auto rounded-lg border bg-white shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
+				class={`border-border bg-card text-card-foreground overflow-x-auto rounded-lg border shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
 				aria-label="Anomalous addresses"
 				aria-busy={loading}
 			>
-				<table class="w-full text-sm">
-					<thead>
-						<tr
-							class="dark:border-dark-border border-b text-xs font-medium text-gray-500 dark:text-gray-400"
-						>
-							<th class="w-full px-4 py-2 text-left font-medium">Address</th>
-							<th
+				<Table class="w-full text-sm">
+					<TableHeader>
+						<TableRow class="text-muted-foreground text-xs font-medium hover:bg-transparent">
+							<TableHead class="h-auto w-full px-4 py-2 text-left font-medium">Address</TableHead>
+							<TableHead
 								class={`px-4 py-2 text-right font-medium whitespace-nowrap ${
-									selectedSort === 'extreme' ? 'text-gray-900 dark:text-gray-100' : ''
+									selectedSort === 'extreme' ? 'text-foreground' : ''
 								}`}
 							>
 								Peak α
-							</th>
-							<th
+							</TableHead>
+							<TableHead
 								class={`px-4 py-2 text-right font-medium whitespace-nowrap ${
-									selectedSort === 'recent' ? 'text-gray-900 dark:text-gray-100' : ''
+									selectedSort === 'recent' ? 'text-foreground' : ''
 								}`}
 							>
 								Latest α
-							</th>
-							<th class="px-4 py-2 text-right font-medium">First seen</th>
-							<th class="px-4 py-2 text-right font-medium">Last seen</th>
-							<th class="px-4 py-2 text-right font-medium" title="Windows flagged in this horizon">
+							</TableHead>
+							<TableHead class="h-auto px-4 py-2 text-right font-medium">First seen</TableHead>
+							<TableHead class="h-auto px-4 py-2 text-right font-medium">Last seen</TableHead>
+							<TableHead
+								class="h-auto px-4 py-2 text-right font-medium"
+								title="Windows flagged in this horizon"
+							>
 								Flagged
-							</th>
-							<th class="px-4 py-2 text-right font-medium">r²</th>
-						</tr>
-					</thead>
-					<tbody class="dark:divide-dark-border divide-y divide-gray-100">
+							</TableHead>
+							<TableHead class="h-auto px-4 py-2 text-right font-medium">r²</TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody>
 						{#each feedResponse.addresses as alert (alert.address)}
-							<tr>
-								<td class="px-4 py-3">
+							<TableRow class="hover:bg-transparent">
+								<TableCell class="px-4 py-3">
 									<div class="flex min-w-0 items-center gap-2">
-										<span class="truncate font-mono text-gray-900 dark:text-gray-100">
+										<span class="text-foreground truncate font-mono">
 											{alert.address}
 										</span>
 										{#if isNewAddress(alert.firstSeen)}
 											<span
 												title={`First flagged ${formatRelativeTime(alert.firstSeen)} — never seen in the retained history before that`}
-												class="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+												class="bg-accent text-accent-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
 											>
 												new
 											</span>
 										{/if}
 									</div>
-								</td>
-								<td
+								</TableCell>
+								<TableCell
 									class={`px-4 py-3 text-right tabular-nums ${
 										selectedSort === 'extreme'
-											? 'font-medium text-gray-900 dark:text-gray-100'
-											: 'text-gray-400 dark:text-gray-500'
+											? 'text-foreground font-medium'
+											: 'text-muted-foreground/70'
 									}`}
 								>
 									{alert.peakAlpha.toFixed(3)}
-								</td>
-								<td
+								</TableCell>
+								<TableCell
 									class={`px-4 py-3 text-right tabular-nums ${
 										selectedSort === 'recent'
-											? 'font-medium text-gray-900 dark:text-gray-100'
-											: 'text-gray-400 dark:text-gray-500'
+											? 'text-foreground font-medium'
+											: 'text-muted-foreground/70'
 									}`}
 								>
 									{alert.latestAlpha.toFixed(3)}
-								</td>
-								<td
+								</TableCell>
+								<TableCell
 									title={dateTimeFormatter.format(new Date(alert.firstSeen * 1000))}
-									class="px-4 py-3 text-right whitespace-nowrap text-gray-500 tabular-nums dark:text-gray-400"
+									class="text-muted-foreground px-4 py-3 text-right whitespace-nowrap tabular-nums"
 								>
 									{formatRelativeTime(alert.firstSeen)}
-								</td>
-								<td
+								</TableCell>
+								<TableCell
 									title={dateTimeFormatter.format(new Date(alert.lastSeen * 1000))}
-									class="px-4 py-3 text-right whitespace-nowrap text-gray-500 tabular-nums dark:text-gray-400"
+									class="text-muted-foreground px-4 py-3 text-right whitespace-nowrap tabular-nums"
 								>
 									{formatRelativeTime(alert.lastSeen)}
-								</td>
-								<td
+								</TableCell>
+								<TableCell
 									title={`flagged in ${countFormatter.format(alert.timesFlagged)} windows in this horizon`}
-									class="px-4 py-3 text-right text-gray-600 tabular-nums dark:text-gray-300"
+									class="text-foreground px-4 py-3 text-right tabular-nums"
 								>
 									{countFormatter.format(alert.timesFlagged)}×
-								</td>
-								<td class="px-4 py-3 text-right text-gray-500 tabular-nums dark:text-gray-400">
+								</TableCell>
+								<TableCell class="text-muted-foreground px-4 py-3 text-right tabular-nums">
 									{alert.peakR2.toFixed(2)}
-								</td>
-							</tr>
+								</TableCell>
+							</TableRow>
 						{/each}
-					</tbody>
-				</table>
+					</TableBody>
+				</Table>
 			</section>
 		{/if}
 
 		<div class="flex flex-col items-center gap-2 pt-1">
 			{#if canShowMore}
-				<button
-					type="button"
+				<Button
+					variant="outline"
 					onclick={showMore}
 					disabled={loadingMore}
-					class="dark:border-dark-border dark:bg-dark-surface rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:text-gray-300 dark:hover:bg-gray-800"
+					class="px-4 disabled:cursor-not-allowed disabled:opacity-60"
 				>
 					{loadingMore ? 'Loading…' : 'Show more'}
-				</button>
+				</Button>
 			{/if}
-			<p class="text-xs text-gray-500 dark:text-gray-400">
+			<p class="text-muted-foreground text-xs">
 				showing {countFormatter.format(feedResponse.addresses.length)} of {countFormatter.format(
 					feedResponse.totalAddresses
 				)}

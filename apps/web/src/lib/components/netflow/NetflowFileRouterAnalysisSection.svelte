@@ -19,7 +19,7 @@
 </script>
 
 <div class="space-y-3">
-	<h6 class="text-md font-medium text-gray-700 dark:text-gray-300">{title}</h6>
+	<h6 class="text-md text-foreground font-medium">{title}</h6>
 	<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
 		<div>
 			<NetflowFileAnalysisPane {kind} sideLabel="source" slot={source} />

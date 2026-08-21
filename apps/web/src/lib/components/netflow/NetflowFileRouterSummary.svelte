@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { FileDetailResourceView, NetflowFileRouterRow } from './file-detail-loader.svelte';
 	import type { FileIpCounts } from '$lib/types/types';
+	import * as Card from '$lib/components/ui/card';
 
 	let {
 		row,
@@ -30,35 +31,39 @@
 	}
 </script>
 
-<div class="bg-cisco-blue dark:bg-dark-subtle rounded-t-lg p-4 text-white dark:text-gray-100">
+<Card.Header class="bg-primary text-primary-foreground py-4">
 	<div class="mb-4 grid gap-3 lg:grid-cols-[1fr_auto]">
 		<div>
-			<h3 class="text-lg font-semibold">Source: {row.router}</h3>
-			<p class="mt-1 text-sm break-all text-white/85 dark:text-gray-300">
+			<Card.Title class="text-lg font-semibold">
+				<h3>Source: {row.router}</h3>
+			</Card.Title>
+			<p class="text-primary-foreground/85 mt-1 text-sm break-all">
 				{row.summary.file_path ?? 'No input locator recorded'}
 			</p>
 		</div>
 		<div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:text-right">
 			<div>
-				<p class="font-semibold text-white/70 uppercase dark:text-gray-400">Kind</p>
+				<p class="text-primary-foreground/70 font-semibold uppercase">Kind</p>
 				<p>{row.summary.input_kind ?? 'unknown'}</p>
 			</div>
 			<div>
-				<p class="font-semibold text-white/70 uppercase dark:text-gray-400">Status</p>
+				<p class="text-primary-foreground/70 font-semibold uppercase">Status</p>
 				<p>{row.summary.input_status ?? 'unknown'}</p>
 			</div>
 			<div>
-				<p class="font-semibold text-white/70 uppercase dark:text-gray-400">Bucket</p>
+				<p class="text-primary-foreground/70 font-semibold uppercase">Bucket</p>
 				<p>{formatOptionalTimestamp(row.summary.bucket_start)}</p>
 			</div>
 			<div>
-				<p class="font-semibold text-white/70 uppercase dark:text-gray-400">On Disk</p>
+				<p class="text-primary-foreground/70 font-semibold uppercase">On Disk</p>
 				<p>{row.summary.file_exists_on_disk ? 'yes' : 'no'}</p>
 			</div>
 		</div>
 	</div>
 	{#if row.summary.input_error_message}
-		<p class="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+		<p
+			class="border-destructive/20 bg-background text-destructive mb-4 rounded border px-3 py-2 text-sm"
+		>
 			{row.summary.input_error_message}
 		</p>
 	{/if}
@@ -108,4 +113,4 @@
 			<p>Seq failures: {formatCount(row.summary.sequence_failures)}</p>
 		</div>
 	</div>
-</div>
+</Card.Header>
