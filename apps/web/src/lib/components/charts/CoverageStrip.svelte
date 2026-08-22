@@ -383,26 +383,23 @@
 	});
 </script>
 
-<div
-	class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm dark:shadow-none"
-	data-testid="coverage-strip-card"
->
+<div class="bg-card rounded-lg border shadow-sm" data-testid="coverage-strip-card">
 	<div
-		class="dark:border-dark-border relative cursor-grab border-b p-3 select-none active:cursor-grabbing"
+		class="relative cursor-grab border-b p-3 select-none active:cursor-grabbing"
 		draggable="true"
 		data-drag-handle
 	>
-		<h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Coverage</h2>
+		<h2 class="text-foreground text-sm font-semibold">Coverage</h2>
 		<DragGrip />
 	</div>
 
 	<div class="px-3 py-2">
 		{#if loading}
-			<div class="py-1 text-xs text-gray-500 dark:text-gray-400">Loading coverage...</div>
+			<div class="text-muted-foreground py-1 text-xs">Loading coverage...</div>
 		{:else if error}
 			<div class="py-1 text-xs text-red-500">{error}</div>
 		{:else if visibleTimelines.length === 0}
-			<div class="py-1 text-xs text-gray-500 dark:text-gray-400">No coverage available</div>
+			<div class="text-muted-foreground py-1 text-xs">No coverage available</div>
 		{:else}
 			<div
 				class="relative"
