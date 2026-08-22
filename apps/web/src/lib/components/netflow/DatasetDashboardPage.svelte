@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
 	import PrimaryFilters from '$lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
-	import IPChart from '$lib/components/charts/IPChart.svelte';
-	import ProtocolChart from '$lib/components/charts/ProtocolChart.svelte';
+	import BreakdownChart from '$lib/components/charts/BreakdownChart.svelte';
 	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
-	import SpectrumStatsChart from '$lib/components/charts/SpectrumStatsChart.svelte';
+	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
@@ -50,15 +50,16 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
-	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum';
+	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum' | 'coverage';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = [
 		'dashboard',
 		'characteristics',
 		'ip',
 		'protocol',
-		'spectrum'
+		'spectrum',
+		'coverage'
 	];
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v3';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v4';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
@@ -296,32 +297,32 @@
 		}
 	});
 
-	function handleStartDateChange(event: CustomEvent<{ startDate: string }>) {
-		startDate = event.detail.startDate;
+	function handleStartDateChange(payload: { startDate: string }) {
+		startDate = payload.startDate;
 		params.startDate = startDate;
 	}
 
-	function handleEndDateChange(event: CustomEvent<{ endDate: string }>) {
-		endDate = event.detail.endDate;
+	function handleEndDateChange(payload: { endDate: string }) {
+		endDate = payload.endDate;
 		params.endDate = endDate;
 	}
 
-	function handleDateChange(event: CustomEvent<{ startDate: string; endDate: string }>) {
-		startDate = event.detail.startDate;
-		endDate = event.detail.endDate;
+	function handleDateChange(payload: { startDate: string; endDate: string }) {
+		startDate = payload.startDate;
+		endDate = payload.endDate;
 		params.update({ startDate, endDate });
 	}
 
-	function handleGroupByChange(event: CustomEvent<{ groupBy: GroupByOption }>) {
-		if (event.detail.groupBy === params.groupBy) {
+	function handleGroupByChange(payload: { groupBy: GroupByOption }) {
+		if (payload.groupBy === params.groupBy) {
 			return;
 		}
-		selectedGroupBy = event.detail.groupBy;
+		selectedGroupBy = payload.groupBy;
 		params.groupBy = selectedGroupBy;
 	}
 
-	function handleRoutersChange(event: CustomEvent<{ routers: RouterConfig }>) {
-		const nextRouters = event.detail.routers;
+	function handleRoutersChange(payload: { routers: RouterConfig }) {
+		const nextRouters = payload.routers;
 		selectedRouters = nextRouters;
 		const enabledRouters = getEnabledRouters(nextRouters);
 		if (!enabledRouters.includes(selectedSpectrumRouter)) {
@@ -329,16 +330,16 @@
 		}
 	}
 
-	function handleDataOptionsChange(event: CustomEvent<{ options: DataOption[] }>) {
-		dataOptions = event.detail.options;
+	function handleDataOptionsChange(payload: { options: DataOption[] }) {
+		dataOptions = payload.options;
 	}
 
-	function handleIpMetricsChange(event: CustomEvent<{ metrics: IpMetricKey[] }>) {
-		ipMetrics = event.detail.metrics;
+	function handleIpMetricsChange(payload: { metrics: IpMetricKey[] }) {
+		ipMetrics = payload.metrics;
 	}
 
-	function handleScopeChange(event: CustomEvent<{ scope: FlowScopeKey }>) {
-		const flowScope = FLOW_SCOPE_OPTIONS.find((option) => option.key === event.detail.scope);
+	function handleScopeChange(payload: { scope: FlowScopeKey }) {
+		const flowScope = FLOW_SCOPE_OPTIONS.find((option) => option.key === payload.scope);
 		if (!flowScope) {
 			return;
 		}
@@ -369,9 +370,10 @@
 </svelte:head>
 
 <main class="mx-auto flex max-w-[95vw] flex-col gap-2 px-4 py-4 sm:px-2 lg:px-4">
-	<h1 class="px-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">
+	<h1 class="text-foreground px-1 text-2xl font-semibold">
 		{props.title ?? props.dataset}
 	</h1>
+	<DatasetTabs datasetId={props.dataset} active="dashboard" />
 
 	<PrimaryFilters
 		{startDate}
@@ -379,20 +381,19 @@
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
 		flowScope={flowScopeKey}
-		on:startDateChange={handleStartDateChange}
-		on:endDateChange={handleEndDateChange}
-		on:groupByChange={handleGroupByChange}
-		on:routersChange={handleRoutersChange}
-		on:scopeChange={handleScopeChange}
-		on:resetView={handleResetView}
+		onStartDateChange={handleStartDateChange}
+		onEndDateChange={handleEndDateChange}
+		onGroupByChange={handleGroupByChange}
+		onRoutersChange={handleRoutersChange}
+		onScopeChange={handleScopeChange}
+		onResetView={handleResetView}
 	/>
-
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
 		{#each chartOrder as chartId (chartId)}
 			<section
 				role="listitem"
 				data-chart-card
-				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-2 ring-blue-400 ring-offset-2' : ''}`}
+				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}
@@ -418,9 +419,9 @@
 						{dataOptions}
 						{srcVisibility}
 						{dstVisibility}
-						on:dateChange={handleDateChange}
-						on:groupByChange={handleGroupByChange}
-						on:dataOptionsChange={handleDataOptionsChange}
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onDataOptionsChange={handleDataOptionsChange}
 					/>
 				{:else if chartId === 'characteristics'}
 					<FlowCharacteristicsChart
@@ -434,7 +435,8 @@
 						{dstVisibility}
 					/>
 				{:else if chartId === 'ip'}
-					<IPChart
+					<BreakdownChart
+						kind="ip"
 						dataset={props.dataset}
 						{startDate}
 						{endDate}
@@ -443,12 +445,13 @@
 						activeMetrics={ipMetrics}
 						{srcVisibility}
 						{dstVisibility}
-						on:dateChange={handleDateChange}
-						on:groupByChange={handleGroupByChange}
-						on:metricsChange={handleIpMetricsChange}
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onMetricsChange={handleIpMetricsChange}
 					/>
 				{:else if chartId === 'protocol'}
-					<ProtocolChart
+					<BreakdownChart
+						kind="protocol"
 						dataset={props.dataset}
 						{startDate}
 						{endDate}
@@ -457,14 +460,15 @@
 						activeMetrics={protocolMetrics}
 						{srcVisibility}
 						{dstVisibility}
-						on:dateChange={handleDateChange}
-						on:groupByChange={handleGroupByChange}
-						on:metricsChange={(event) => {
-							protocolMetrics = event.detail.metrics;
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onMetricsChange={(payload) => {
+							protocolMetrics = payload.metrics;
 						}}
 					/>
-				{:else}
-					<SpectrumStatsChart
+				{:else if chartId === 'spectrum'}
+					<BreakdownChart
+						kind="spectrum"
 						dataset={props.dataset}
 						{startDate}
 						{endDate}
@@ -474,14 +478,23 @@
 						availableRouters={availableSpectrumRouters}
 						{srcVisibility}
 						{dstVisibility}
-						on:dateChange={handleDateChange}
-						on:groupByChange={handleGroupByChange}
-						on:routerChange={(event) => {
-							selectedSpectrumRouter = event.detail.router;
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onRouterChange={(payload) => {
+							selectedSpectrumRouter = payload.router;
 						}}
-						on:addressTypeChange={(event) => {
-							selectedSpectrumAddressType = event.detail.addressType;
+						onAddressTypeChange={(payload) => {
+							selectedSpectrumAddressType = payload.addressType;
 						}}
+					/>
+				{:else}
+					<CoverageStrip
+						dataset={props.dataset}
+						{startDate}
+						{endDate}
+						groupBy={selectedGroupBy}
+						routers={selectedRouters}
+						{routersLoaded}
 					/>
 				{/if}
 			</section>

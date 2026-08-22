@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -7,14 +8,16 @@
 	import { createRequestGate, getSourceLineDash } from './flow-characteristics';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 	import type {
+		BucketCoverage,
 		FlowCharacteristicsResponse,
 		FlowVisibility,
 		IpGranularity,
 		NetflowIpFamily,
-		ObservationStatsBucket,
-		PortCardinalityBucket,
+		ObservationStats,
+		PortCardinalityStats,
 		PortRange,
-		PortSide
+		PortSide,
+		TimeBucket
 	} from '$lib/types/types';
 
 	const props = $props<{
@@ -58,46 +61,49 @@
 	const granularity: IpGranularity = $derived(
 		GROUP_BY_TO_GRANULARITY[props.groupBy as GroupByOption]
 	);
-	const observationRows = $derived(
-		(data?.observationBuckets ?? []).filter((row) => row.ipFamily === observationFamily)
-	);
-	const observationStarts = $derived(uniqueStarts(observationRows));
+	const observationBuckets = $derived(data?.observationBuckets ?? []);
+	const observationStarts = $derived(uniqueStarts(observationBuckets));
+	const observationCoverage = $derived(coverageByStart(observationBuckets, observationStarts));
 	const durationSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average duration',
-			values: valuesByStart(observationRows, observationStarts, 'averageDurationMs'),
-			color: '#2563eb'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageDurationMs'),
+			color: '#2563eb',
+			coverage: observationCoverage
 		}
 	]);
 	const ttlSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average minimum TTL',
-			values: valuesByStart(observationRows, observationStarts, 'averageMinTtl'),
-			color: '#7c3aed'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMinTtl'),
+			color: '#7c3aed',
+			coverage: observationCoverage
 		},
 		{
 			label: 'Average maximum TTL',
-			values: valuesByStart(observationRows, observationStarts, 'averageMaxTtl'),
-			color: '#db2777'
+			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMaxTtl'),
+			color: '#db2777',
+			coverage: observationCoverage
 		}
 	]);
-	const selectedPortRows = $derived(
-		(data?.portBuckets ?? []).filter(
-			(row) =>
-				row.ipFamily === portFamily && activePortSeries.has(`${row.portSide}-${row.portRange}`)
-		)
+	const portStarts = $derived(
+		uniqueStarts((data?.portTimelines ?? []).flatMap((timeline) => timeline.buckets))
 	);
-	const portStarts = $derived(uniqueStarts(selectedPortRows));
 	const portSeries = $derived.by<MetricLineSeries[]>(() => {
 		const multipleSources = (data?.resolvedSources.length ?? 0) > 1;
 		return (data?.resolvedSources ?? []).flatMap((sourceId, sourceIndex) =>
 			PORT_OPTIONS.filter(({ side, range }) => activePortSeries.has(`${side}-${range}`)).map(
-				({ side, range, label }) => ({
-					label: multipleSources ? `${sourceId} · ${label}` : label,
-					values: portValuesByStart(selectedPortRows, portStarts, sourceId, side, range),
-					color: PORT_COLORS[`${side}-${range}`],
-					dash: getSourceLineDash(sourceIndex, multipleSources)
-				})
+				({ side, range, label }) => {
+					const timeline =
+						data?.portTimelines.find((candidate) => candidate.sourceId === sourceId)?.buckets ?? [];
+					return {
+						label: multipleSources ? `${sourceId} · ${label}` : label,
+						values: portValuesByStart(timeline, portStarts, portFamily, side, range),
+						color: PORT_COLORS[`${side}-${range}`],
+						dash: getSourceLineDash(sourceIndex, multipleSources),
+						coverage: coverageByStart(timeline, portStarts)
+					};
+				}
 			)
 		);
 	});
@@ -114,30 +120,40 @@
 		return [...new Set(rows.map((row) => row.bucketStart))].sort((left, right) => left - right);
 	}
 
-	function valuesByStart(
-		rows: ObservationStatsBucket[],
-		starts: number[],
+	function observationValuesByStart(
+		buckets: TimeBucket<ObservationStats[]>[],
+		family: NetflowIpFamily,
 		key: 'averageDurationMs' | 'averageMinTtl' | 'averageMaxTtl'
 	): Array<number | null> {
-		const values = new Map(rows.map((row) => [row.bucketStart, row[key]]));
-		return starts.map((start) => values.get(start) ?? null);
+		return buckets.map(
+			(bucket) => bucket.data?.find((row) => row.ipFamily === family)?.[key] ?? null
+		);
 	}
 
 	function portValuesByStart(
-		rows: PortCardinalityBucket[],
+		buckets: TimeBucket<PortCardinalityStats[]>[],
 		starts: number[],
-		sourceId: string,
+		family: Exclude<NetflowIpFamily, 'all'>,
 		side: PortSide,
 		range: PortRange
 	): Array<number | null> {
-		const values = new Map(
-			rows
-				.filter(
-					(row) => row.sourceId === sourceId && row.portSide === side && row.portRange === range
-				)
-				.map((row) => [row.bucketStart, row.uniquePortCount])
+		const bucketsByStart = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket]));
+		return starts.map((start) => {
+			const data = bucketsByStart.get(start)?.data;
+			if (data === null || data === undefined) return null;
+			return (
+				data.find(
+					(row) => row.ipFamily === family && row.portSide === side && row.portRange === range
+				)?.uniquePortCount ?? 0
+			);
+		});
+	}
+
+	function coverageByStart<T>(buckets: TimeBucket<T>[], starts: number[]): BucketCoverage[] {
+		const coverage = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket.coverage]));
+		return starts.map(
+			(start) => coverage.get(start) ?? { state: 'unknown', observedUnits: 0, expectedUnits: 0 }
 		);
-		return starts.map((start) => values.get(start) ?? null);
 	}
 
 	function togglePortSeries(side: PortSide, range: PortRange) {
@@ -204,14 +220,14 @@
 	);
 </script>
 
-<div class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm">
+<div class="border-border bg-card text-card-foreground rounded-lg border shadow-sm">
 	<div
-		class="dark:border-dark-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
+		class="border-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
 		draggable="true"
 		data-drag-handle
 	>
-		<h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Flow Characteristics</h3>
-		<p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+		<h3 class="text-foreground text-lg font-semibold">Flow Characteristics</h3>
+		<p class="text-muted-foreground mt-1 text-sm">
 			Weighted flow observations and exact unique port counts
 		</p>
 		<DragGrip />
@@ -219,25 +235,25 @@
 
 	<div class="space-y-5 p-4">
 		{#if loading}
-			<div class="flex min-h-72 items-center justify-center text-gray-500 dark:text-gray-400">
+			<div class="text-muted-foreground flex min-h-72 items-center justify-center">
 				Loading flow characteristics…
 			</div>
 		{:else if error}
-			<div class="flex min-h-72 items-center justify-center text-red-600 dark:text-red-400">
+			<div class="text-destructive flex min-h-72 items-center justify-center">
 				{error}
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center justify-between gap-3">
-				<h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Observations</h4>
+				<h4 class="text-foreground text-sm font-semibold">Observations</h4>
 				<div
-					class="dark:border-dark-border dark:bg-dark-subtle flex rounded-md border bg-gray-50 p-1"
+					class="border-border bg-muted flex rounded-md border p-1"
 					role="group"
 					aria-label="Observation IP family"
 				>
 					{#each ['all', 'ipv4', 'ipv6'] as const as family (family)}
 						<button
 							type="button"
-							class={`min-h-8 rounded px-3 text-xs font-medium ${observationFamily === family ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}
+							class={`min-h-8 rounded px-3 text-xs font-medium ${observationFamily === family ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
 							aria-pressed={observationFamily === family}
 							onclick={() => (observationFamily = family)}
 						>
@@ -266,24 +282,24 @@
 				/>
 			</div>
 
-			<div class="dark:border-dark-border border-t pt-5">
+			<div class="border-border border-t pt-5">
 				<div class="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 					<div>
-						<h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Unique Ports</h4>
-						<p class="text-xs text-gray-500 dark:text-gray-400">
+						<h4 class="text-foreground text-sm font-semibold">Unique Ports</h4>
+						<p class="text-muted-foreground text-xs">
 							Cardinality is resolved from an exact logical source; separate sources are never
 							added.
 						</p>
 					</div>
 					<div
-						class="dark:border-dark-border dark:bg-dark-subtle flex rounded-md border bg-gray-50 p-1"
+						class="border-border bg-muted flex rounded-md border p-1"
 						role="group"
 						aria-label="Port IP family"
 					>
 						{#each ['ipv4', 'ipv6'] as const as family (family)}
 							<button
 								type="button"
-								class={`min-h-8 rounded px-3 text-xs font-medium ${portFamily === family ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300'}`}
+								class={`min-h-8 rounded px-3 text-xs font-medium ${portFamily === family ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}
 								aria-pressed={portFamily === family}
 								onclick={() => (portFamily = family)}>{family.toUpperCase()}</button
 							>
@@ -297,15 +313,13 @@
 				>
 					{#each PORT_OPTIONS as option (`${option.side}-${option.range}`)}
 						<label
-							class="dark:border-dark-border flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm"
+							class="border-border flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm"
 						>
-							<input
-								type="checkbox"
+							<Checkbox
 								checked={activePortSeries.has(`${option.side}-${option.range}`)}
-								onchange={() => togglePortSeries(option.side, option.range)}
-								class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+								onCheckedChange={() => togglePortSeries(option.side, option.range)}
 							/>
-							<span class="text-gray-700 dark:text-gray-300">{option.label}</span>
+							<span class="text-foreground">{option.label}</span>
 						</label>
 					{/each}
 				</div>

@@ -152,10 +152,6 @@ async function discoverLocalSqlitePaths(): Promise<string[]> {
 		}
 	}
 
-	if (dbPaths.size === 0) {
-		throw new Error('No local SQLite datasets found under data/*/netflow.sqlite');
-	}
-
 	return [...dbPaths].sort();
 }
 
@@ -227,21 +223,27 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 			ORDER BY sort_order ASC, id ASC
 		`
 	);
+	// Backups and obsolete products can remain under data/, but the current dashboard requires
+	// explicit coverage and must not let an older database shadow a current product with the same ID.
+	const schema = await db.get<{ hasCoverage: number }>(
+		`SELECT EXISTS(
+			SELECT 1
+			FROM sqlite_master
+			WHERE type = 'table' AND name = 'bucket_coverage'
+		) AS hasCoverage`
+	);
+	if (schema?.hasCoverage !== 1) {
+		return [];
+	}
 
 	return rows.map((row) => ({ ...row, dbPath }));
 }
 
 async function listLocalDatasetRows(): Promise<LocalDatasetRow[]> {
 	const dbPaths = await discoverLocalSqlitePaths();
-	const datasets = (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
+	return (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
 		.flat()
 		.sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
-
-	if (datasets.length === 0) {
-		throw new Error('No local datasets configured in discovered SQLite databases');
-	}
-
-	return datasets;
 }
 
 async function getLocalDatasetRow(datasetId: string): Promise<LocalDatasetRow> {
@@ -469,27 +471,22 @@ function inferMemberIdFromInputLocator(inputLocator: string): string | null {
 }
 
 export async function listDatasetSummaries(platform?: App.Platform): Promise<DatasetSummary[]> {
-	const defaultDatasetId = await getDefaultDatasetId(platform);
+	// Zero datasets is a valid state (fresh checkout before the pipeline runs);
+	// the dashboard shows setup guidance instead of an error.
 	const datasets = await listDatasetRows(platform);
+	if (datasets.length === 0) {
+		return [];
+	}
 
-	return Promise.all(
-		datasets.map(async (dataset) => {
-			const db = await getDatasetDb(dataset.id, platform);
-			const sourceRows = await db.all<{ sourceCount: number }>(
-				"SELECT COUNT(DISTINCT source_id) AS sourceCount FROM traffic_stats WHERE granularity = '5m'"
-			);
-			const sourceCount = sourceRows[0]?.sourceCount ?? 0;
+	const defaultDatasetId = await getDefaultDatasetId(platform);
 
-			return {
-				datasetId: dataset.id,
-				label: dataset.label,
-				defaultStartDate: dataset.defaultStartDate,
-				discoveryMode: dataset.discoveryMode,
-				sourceCount,
-				isDefault: dataset.id === defaultDatasetId
-			};
-		})
-	);
+	return datasets.map((dataset) => ({
+		datasetId: dataset.id,
+		label: dataset.label,
+		defaultStartDate: dataset.defaultStartDate,
+		discoveryMode: dataset.discoveryMode,
+		isDefault: dataset.id === defaultDatasetId
+	}));
 }
 
 export async function getRequestedDataset(url: URL, platform?: App.Platform): Promise<string> {

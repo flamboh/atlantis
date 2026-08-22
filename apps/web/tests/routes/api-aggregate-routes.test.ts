@@ -32,18 +32,31 @@ describe('aggregate API routes', () => {
 	});
 
 	it('validates ip stats requests and returns grouped data', async () => {
-		const all = vi.fn().mockResolvedValue([
-			{
-				router: 'r1',
-				bucketStart: 100,
-				bucketEnd: 200,
-				saIpv4Count: 3,
-				daIpv4Count: 4,
-				saIpv6Count: 5,
-				daIpv6Count: 6,
-				processedAt: 'now'
-			}
-		]);
+		const all = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{
+					router: 'r1',
+					bucketStart: 100,
+					bucketEnd: 200,
+					saIpv4Count: 3,
+					daIpv4Count: 4,
+					saIpv6Count: 5,
+					daIpv6Count: 6,
+					processedAt: 'now'
+				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'r1',
+					bucketStart: 100,
+					bucketEnd: 200,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
+				}
+			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(getDatasetDb).mockResolvedValue({
 			all
@@ -60,17 +73,24 @@ describe('aggregate API routes', () => {
 
 		expect(badResponse.status).toBe(400);
 		await expect(okResponse.json()).resolves.toEqual({
-			buckets: [
+			timelines: [
 				{
 					router: 'r1',
-					bucketStart: 100,
-					bucketEnd: 200,
-					saIpv4Count: 3,
-					daIpv4Count: 4,
-					saIpv6Count: 5,
-					daIpv6Count: 6,
-					processedAt: 'now',
-					granularity: '5m'
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: {
+								granularity: '5m',
+								saIpv4Count: 3,
+								daIpv4Count: 4,
+								saIpv6Count: 5,
+								daIpv6Count: 6,
+								processedAt: 'now'
+							}
+						}
+					]
 				}
 			],
 			availableGranularities: ['5m', '30m', '1h', '1d'],
@@ -79,7 +99,7 @@ describe('aggregate API routes', () => {
 	});
 
 	it('keeps selected unique-count sources separate', async () => {
-		const all = vi.fn().mockResolvedValue([]);
+		const all = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(getDatasetDb).mockResolvedValue({
 			all
@@ -102,8 +122,42 @@ describe('aggregate API routes', () => {
 			100,
 			200
 		]);
-		await expect(response.json()).resolves.toEqual({
-			buckets: [],
+		await expect(response.json()).resolves.toMatchObject({
+			timelines: [
+				{
+					router: 'cc_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'oh_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'uoregon_all',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				}
+			],
 			availableGranularities: ['5m', '30m', '1h', '1d'],
 			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
 		});
@@ -122,8 +176,65 @@ describe('aggregate API routes', () => {
 		await expect(response.json()).resolves.toEqual({ error: "Unknown dataset 'bad'" });
 	});
 
+	it('returns protocol payloads inside router timelines', async () => {
+		const all = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{
+					router: 'r1',
+					bucketStart: 100,
+					bucketEnd: 200,
+					uniqueProtocolsIpv4: 3,
+					uniqueProtocolsIpv6: 4,
+					processedAt: 'now'
+				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'r1',
+					bucketStart: 100,
+					bucketEnd: 200,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
+				}
+			]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+
+		const response = await getProtocolStats({
+			url: new URL(
+				'http://localhost/api/protocol/stats?routers=r1&granularity=1h&startDate=100&endDate=200'
+			)
+		} as never);
+
+		await expect(response.json()).resolves.toEqual({
+			timelines: [
+				{
+					router: 'r1',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: {
+								granularity: '1h',
+								uniqueProtocolsIpv4: 3,
+								uniqueProtocolsIpv6: 4,
+								processedAt: 'now'
+							}
+						}
+					]
+				}
+			],
+			availableGranularities: ['5m', '30m', '1h', '1d'],
+			requestedRouters: ['r1']
+		});
+	});
+
 	it('keeps selected protocol sources separate', async () => {
-		const all = vi.fn().mockResolvedValue([]);
+		const all = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(getDatasetDb).mockResolvedValue({
 			all
@@ -146,8 +257,42 @@ describe('aggregate API routes', () => {
 			100,
 			200
 		]);
-		await expect(response.json()).resolves.toEqual({
-			buckets: [],
+		await expect(response.json()).resolves.toMatchObject({
+			timelines: [
+				{
+					router: 'cc_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'oh_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'uoregon_all',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				}
+			],
 			availableGranularities: ['5m', '30m', '1h', '1d'],
 			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
 		});
@@ -160,28 +305,72 @@ describe('aggregate API routes', () => {
 				{
 					router: 'r1',
 					bucketStart: 100,
-					addressSide: 'source',
-					valuesJson: '[{"alpha":1,"f":2}]'
+					bucketEnd: 200,
+					spectrumSaJson: '[{"alpha":1,"f":2}]',
+					spectrumDaJson: 'not-json'
 				},
 				{
 					router: 'r1',
+					bucketStart: 200,
+					bucketEnd: 500,
+					spectrumSaJson: 'not-json',
+					spectrumDaJson: null
+				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'r1',
 					bucketStart: 100,
-					addressSide: 'destination',
-					valuesJson: 'not-json'
+					bucketEnd: 200,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
+				},
+				{
+					sourceId: 'r1',
+					bucketStart: 200,
+					bucketEnd: 500,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
 				}
 			])
 			.mockResolvedValueOnce([
 				{
 					router: 'r1',
 					bucketStart: 100,
-					addressSide: 'source',
-					valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]'
+					bucketEnd: 200,
+					structureSaJson: '[{"q":1,"tauTilde":2,"sd":0.5}]',
+					structureDaJson: 'not-json'
 				},
 				{
 					router: 'r1',
+					bucketStart: 200,
+					bucketEnd: 500,
+					structureSaJson: 'not-json',
+					structureDaJson: null
+				}
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'r1',
 					bucketStart: 100,
-					addressSide: 'destination',
-					valuesJson: 'not-json'
+					bucketEnd: 200,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
+				},
+				{
+					sourceId: 'r1',
+					bucketStart: 200,
+					bucketEnd: 500,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
@@ -191,28 +380,61 @@ describe('aggregate API routes', () => {
 
 		const spectrumResponse = await getSpectrumStats({
 			url: new URL(
-				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200'
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=500'
 			)
 		} as never);
 		const structureResponse = await getStructureStats({
 			url: new URL(
-				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200'
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=500'
 			)
 		} as never);
 
 		await expect(spectrumResponse.json()).resolves.toEqual({
-			buckets: [
-				{ bucketStart: 100, router: 'r1', spectrumSa: [{ alpha: 1, f: 2 }], spectrumDa: [] }
+			timelines: [
+				{
+					router: 'r1',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: {
+								spectrumSa: [{ alpha: 1, f: 2 }],
+								spectrumDa: []
+							}
+						},
+						{
+							bucketStart: 200,
+							bucketEnd: 500,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: null
+						}
+					]
+				}
 			],
 			requestedRouters: ['r1']
 		});
 		await expect(structureResponse.json()).resolves.toEqual({
-			buckets: [
+			timelines: [
 				{
-					bucketStart: 100,
 					router: 'r1',
-					structureSa: [{ q: 1, tau: 2, sd: 0.5 }],
-					structureDa: []
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: {
+								structureSa: [{ q: 1, tau: 2, sd: 0.5 }],
+								structureDa: []
+							}
+						},
+						{
+							bucketStart: 200,
+							bucketEnd: 500,
+							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+							data: null
+						}
+					]
 				}
 			],
 			requestedRouters: ['r1']
@@ -244,7 +466,41 @@ describe('aggregate API routes', () => {
 			200
 		]);
 		await expect(response.json()).resolves.toEqual({
-			buckets: [],
+			timelines: [
+				{
+					router: 'cc_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'oh_ir1_gw',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				},
+				{
+					router: 'uoregon_all',
+					buckets: [
+						{
+							bucketStart: 100,
+							bucketEnd: 200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 },
+							data: null
+						}
+					]
+				}
+			],
 			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
 		});
 	});

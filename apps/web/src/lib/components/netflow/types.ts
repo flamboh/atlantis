@@ -1,8 +1,6 @@
-import type { NetflowMetricTotals } from '$lib/types/types';
+import type { NetflowMetricTotals, TimeBucket } from '$lib/types/types';
 
-export interface NetflowDataPoint extends NetflowMetricTotals {
-	bucketStart: number;
-}
+export type NetflowDataPoint = TimeBucket<NetflowMetricTotals>;
 
 export interface DataOption {
 	label: string;
@@ -30,7 +28,7 @@ export interface ChartState {
 export interface ClickedElement {
 	dataset: {
 		label: string;
-		data: number[];
+		data: (number | null)[];
 		backgroundColor?: string;
 		borderColor?: string;
 	};
@@ -42,13 +40,18 @@ export interface ClickedElement {
 
 export interface ChartDataset {
 	label: string;
-	data: number[];
+	data: (number | null)[];
 	backgroundColor?: string | string[];
 	borderColor?: string | string[];
 	borderWidth?: number;
 	fill?: boolean | string;
 	tension?: number;
-	pointRadius?: number;
+	pointRadius?: number | number[];
+	pointBackgroundColor?: string | string[];
+	pointBorderColor?: string | string[];
+	pointBorderWidth?: number | number[];
+	spanGaps?: boolean;
+	segment?: Record<string, unknown>;
 	pointHoverRadius?: number;
 	radius?: number;
 	hitRadius?: number;

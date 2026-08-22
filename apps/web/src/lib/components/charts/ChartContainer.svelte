@@ -6,8 +6,9 @@
 	import { resolve } from '$app/paths';
 	import { Chart } from './chart-registry';
 	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelectionStore, type RangeSelectionState } from '$lib/stores/rangeSelection';
+	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
 	import {
@@ -24,7 +25,9 @@
 		beginRangeDrag,
 		updateRangeDrag,
 		endRangeDrag,
-		buildMirroredSelectionStyle
+		buildMirroredSelectionStyle,
+		findTemporalDataBounds,
+		isCoverageSegmentDashed
 	} from './chart-utils';
 	import {
 		parseLabelToPSTComponents,
@@ -64,21 +67,16 @@
 	let rangeDrag = $state(createRangeDragState());
 	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
 	let selectionWidth = $derived(Math.abs(rangeDrag.dragCurrentX - rangeDrag.dragStartX));
-	let mirroredRange = $state<RangeSelectionState | null>(null);
+	let mirroredRange = $derived(rangeSelection.selection);
+	let rangeMoveFrame: number | null = null;
+	let pendingRangeMoveEvent: MouseEvent | null = null;
 
 	type MetricFamily = 'flows' | 'packets' | 'bytes';
-
-	$effect(() => {
-		const unsubscribe = rangeSelectionStore.subscribe((value) => {
-			mirroredRange = value;
-		});
-		return unsubscribe;
-	});
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
 		const labels = getSelectionLabels(chart, startIndex, endIndex);
 		if (!labels) return;
-		rangeSelectionStore.set({ sourceChartId: CHART_ID, ...labels });
+		rangeSelection.set({ sourceChartId: CHART_ID, ...labels });
 	}
 
 	function applyRangeDrilldown(startIndex: number, endIndex: number) {
@@ -108,16 +106,49 @@
 	}
 
 	function handleRangeMouseDown(event: MouseEvent) {
+		cancelPendingRangeMove();
 		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
 	}
 
+	function applyPendingRangeMove() {
+		rangeMoveFrame = null;
+		const event = pendingRangeMoveEvent;
+		pendingRangeMoveEvent = null;
+		if (event) {
+			updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		}
+	}
+
+	function cancelPendingRangeMove() {
+		if (rangeMoveFrame !== null) {
+			cancelDrawFrame(rangeMoveFrame);
+			rangeMoveFrame = null;
+		}
+		pendingRangeMoveEvent = null;
+	}
+
+	function flushPendingRangeMove() {
+		if (rangeMoveFrame === null) {
+			return;
+		}
+		cancelDrawFrame(rangeMoveFrame);
+		applyPendingRangeMove();
+	}
+
 	function handleRangeMouseMove(event: MouseEvent) {
-		updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		if (!rangeDrag.isDraggingRange) {
+			return;
+		}
+		pendingRangeMoveEvent = event;
+		if (rangeMoveFrame === null) {
+			rangeMoveFrame = requestDrawFrame(applyPendingRangeMove);
+		}
 	}
 
 	function finishRangeSelection() {
+		flushPendingRangeMove();
 		endRangeDrag(rangeDrag, chart, applyRangeDrilldown);
-		rangeSelectionStore.set(null);
+		rangeSelection.clear();
 	}
 
 	let mirroredSelectionStyle = $derived(
@@ -201,7 +232,10 @@
 			const index = element.index;
 			const dataset = chart.data.datasets[datasetIndex] as ChartDataset;
 			const label = chart.data.labels?.[index] as string;
-			const value = dataset.data[index] as number;
+			const value = dataset.data[index];
+			if (typeof value !== 'number') {
+				return null;
+			}
 			return {
 				dataset: {
 					label: dataset.label,
@@ -249,6 +283,10 @@
 		if (!bucket) {
 			return [];
 		}
+		const payload = bucket.data;
+		if (!payload) {
+			return [];
+		}
 
 		const visibleFamilies = new SvelteSet<MetricFamily>();
 		for (const item of items) {
@@ -260,13 +298,13 @@
 
 		const lines: string[] = [];
 		if (visibleFamilies.has('flows')) {
-			lines.push(`Total Flows: ${formatMetricValue(bucket.flows, 'flows')}`);
+			lines.push(`Total Flows: ${formatMetricValue(payload.flows, 'flows')}`);
 		}
 		if (visibleFamilies.has('packets')) {
-			lines.push(`Total Packets: ${formatMetricValue(bucket.packets, 'packets')}`);
+			lines.push(`Total Packets: ${formatMetricValue(payload.packets, 'packets')}`);
 		}
 		if (visibleFamilies.has('bytes')) {
-			lines.push(`Total Bytes: ${formatMetricValue(bucket.bytes, 'bytes')}`);
+			lines.push(`Total Bytes: ${formatMetricValue(payload.bytes, 'bytes')}`);
 		}
 
 		return lines;
@@ -400,7 +438,17 @@
 			tooltipTextColor,
 			tooltipBorderColor
 		} = getChartColors();
-		const labels = formatLabels(results, groupBy);
+		const dataBounds = findTemporalDataBounds(
+			results,
+			(result) => result.bucketStart,
+			(result) => result.data !== null
+		);
+		const visibleResults = dataBounds
+			? results.filter(
+					(result) => result.bucketStart >= dataBounds.min && result.bucketStart <= dataBounds.max
+				)
+			: [];
+		const labels = formatLabels(visibleResults, groupBy);
 		const getLabelPST = (idx: number): PSTDateComponents | null =>
 			getLabelPSTFromLabels(labels, idx);
 		const xAxisTitle = getXAxisTitle(groupBy);
@@ -443,7 +491,7 @@
 				if (!field) {
 					continue;
 				}
-				const data = results.map((item) => item[field]);
+				const data = visibleResults.map((item) => item.data?.[field] ?? null);
 				const color = predefinedColors[colorIndex % predefinedColors.length];
 				colorIndex++;
 
@@ -456,7 +504,17 @@
 						: color,
 					fill: isStackedChart ? 'origin' : false,
 					tension: 0.1,
-					radius: 0,
+					pointRadius: 0,
+					spanGaps: false,
+					segment: {
+						borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
+							isCoverageSegmentDashed(
+								visibleResults[context.p0DataIndex],
+								visibleResults[context.p1DataIndex]
+							)
+								? [6, 4]
+								: []
+					},
 					hitRadius: 2,
 					hoverRadius: 5
 				});
@@ -591,8 +649,11 @@
 						borderWidth: 1,
 						callbacks: {
 							label: (context: TooltipItem<'line'>) => {
+								if (context.parsed.y === null) {
+									return `${context.dataset.label}: No data`;
+								}
 								const family = getMetricFamily(context.dataset.label ?? '') ?? 'flows';
-								const value = Number(context.parsed.y ?? 0);
+								const value = context.parsed.y;
 								return `${context.dataset.label}: ${formatMetricValue(value, family)}`;
 							},
 							footer: (items: TooltipItem<'line'>[]) => getTooltipTotalLines(items)
@@ -781,9 +842,10 @@
 	});
 
 	onDestroy(() => {
+		cancelPendingRangeMove();
 		crosshairStore.unregister(CHART_ID);
 		if (mirroredRange?.sourceChartId === CHART_ID) {
-			rangeSelectionStore.set(null);
+			rangeSelection.clear();
 		}
 		chart?.destroy();
 		chart = null;
@@ -826,13 +888,13 @@
 	<canvas bind:this={chartCanvas} class="h-full w-full"></canvas>
 	{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}
 		<div
-			class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
+			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
 			style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${rangeDrag.selectionTop}px; height:${rangeDrag.selectionHeight}px;`}
 		></div>
 	{/if}
 	{#if !rangeDrag.isDraggingRange && mirroredSelectionStyle !== null}
 		<div
-			class="pointer-events-none absolute border border-gray-500/70 bg-gray-500/20"
+			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
 			style={mirroredSelectionStyle}
 		></div>
 	{/if}

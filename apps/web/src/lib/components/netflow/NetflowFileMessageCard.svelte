@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
+
 	let {
 		message,
 		tone = 'neutral',
@@ -13,20 +16,18 @@
 
 	const classes = $derived(
 		tone === 'danger'
-			? 'rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400'
-			: 'dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white p-4 text-gray-600 shadow-sm dark:text-gray-400'
+			? 'bg-destructive/5 text-destructive ring-destructive/20'
+			: 'text-muted-foreground'
 	);
 </script>
 
-<div class={classes}>
-	<p>{message}</p>
-	{#if action && actionLabel}
-		<button
-			type="button"
-			class="mt-2 rounded bg-red-600 px-3 py-1 text-sm text-white hover:bg-red-700"
-			onclick={action}
-		>
-			{actionLabel}
-		</button>
-	{/if}
-</div>
+<Card.Root size="sm" class={classes}>
+	<Card.Content>
+		<p>{message}</p>
+		{#if action && actionLabel}
+			<Button type="button" variant="destructive" size="sm" class="mt-2" onclick={action}>
+				{actionLabel}
+			</Button>
+		{/if}
+	</Card.Content>
+</Card.Root>

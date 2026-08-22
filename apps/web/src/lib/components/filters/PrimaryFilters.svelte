@@ -1,9 +1,12 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
 	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
 	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import { Button } from '$lib/components/ui/button';
+	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '$lib/types/types';
 
 	interface GroupBySelectOption {
@@ -25,46 +28,37 @@
 		routers: RouterConfig;
 		flowScope: FlowScopeKey;
 		groupByOptions?: GroupBySelectOption[];
-	}>();
-
-	const dispatch = createEventDispatcher<{
-		startDateChange: { startDate: string };
-		endDateChange: { endDate: string };
-		groupByChange: { groupBy: GroupByOption };
-		routersChange: { routers: RouterConfig };
-		scopeChange: { scope: FlowScopeKey };
-		resetView: Record<string, never>;
+		onStartDateChange?: (payload: { startDate: string }) => void;
+		onEndDateChange?: (payload: { endDate: string }) => void;
+		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
+		onScopeChange?: (payload: { scope: FlowScopeKey }) => void;
+		onResetView?: () => void;
 	}>();
 
 	function handleStartDateChange(date: string) {
-		dispatch('startDateChange', { startDate: date });
+		props.onStartDateChange?.({ startDate: date });
 	}
 
 	function handleEndDateChange(date: string) {
-		dispatch('endDateChange', { endDate: date });
+		props.onEndDateChange?.({ endDate: date });
 	}
 
 	function handleRoutersChange(nextRouters: RouterConfig) {
-		dispatch('routersChange', { routers: nextRouters });
+		props.onRoutersChange?.({ routers: nextRouters });
 	}
 
 	function handleScopeChange(event: Event) {
 		const target = event.currentTarget as HTMLSelectElement;
-		dispatch('scopeChange', { scope: target.value as FlowScopeKey });
+		props.onScopeChange?.({ scope: target.value as FlowScopeKey });
 	}
 
 	function handleResetView() {
-		dispatch('resetView', {});
+		props.onResetView?.();
 	}
 
 	const navigationTip = 'Click chart to drill down. Drag across chart to drill into a date range.';
 	const groupByOptions = $derived(props.groupByOptions ?? DEFAULT_GROUP_BY_OPTIONS);
-	const selectedGroupByIndex = $derived(
-		Math.max(
-			0,
-			groupByOptions.findIndex((option: GroupBySelectOption) => option.value === props.groupBy)
-		)
-	);
 
 	function getGranularityDisabledReason(option: GroupBySelectOption): string | null {
 		if (isGranularityAllowedForDateRange(option.value, props.startDate, props.endDate)) {
@@ -73,32 +67,46 @@
 
 		return 'Date range too large for this granularity.';
 	}
+
+	const segmentedGroupByOptions = $derived(
+		groupByOptions.map((option: GroupBySelectOption) => {
+			const disabledReason = getGranularityDisabledReason(option);
+			return {
+				...option,
+				disabled: disabledReason !== null,
+				disabledReason: disabledReason ?? undefined
+			};
+		})
+	);
 </script>
 
-<div
-	class="dark:border-dark-border dark:bg-dark-surface space-y-3 rounded-lg border bg-white p-3 shadow-sm dark:shadow-none"
->
-	<div class="flex items-center gap-2">
-		<h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Controls</h2>
-		<div class="group relative">
-			<button
-				type="button"
-				class="dark:border-dark-border inline-flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 text-[11px] font-semibold text-gray-500 hover:border-blue-500 hover:text-blue-600 focus:ring-2 focus:ring-blue-500 focus:outline-none dark:text-gray-400"
-				aria-label="Show navigation tip"
-				title={navigationTip}
-			>
-				?
-			</button>
-			<div
-				class="dark:border-dark-border dark:bg-dark-subtle pointer-events-none absolute left-0 z-10 mt-2 hidden w-64 rounded-md border border-gray-200 bg-white p-2 text-xs leading-5 text-gray-600 shadow-lg group-focus-within:block group-hover:block dark:text-gray-400"
-				role="tooltip"
-			>
-				{navigationTip}
-			</div>
+<Card class="gap-3 rounded-lg border py-3 shadow-sm ring-0">
+	<CardHeader class="px-3">
+		<div class="flex items-center gap-2">
+			<CardTitle class="text-sm font-semibold">Controls</CardTitle>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					{#snippet child({ props: triggerProps })}
+						<Button
+							{...triggerProps}
+							variant="outline"
+							size="icon-xs"
+							class="text-muted-foreground hover:border-primary hover:text-primary size-5 rounded-full p-0 text-[11px] font-semibold"
+							aria-label="Show navigation tip"
+							title={navigationTip}
+						>
+							?
+						</Button>
+					{/snippet}
+				</Tooltip.Trigger>
+				<Tooltip.Content side="bottom" sideOffset={4} class="w-64 leading-5">
+					{navigationTip}
+				</Tooltip.Content>
+			</Tooltip.Root>
 		</div>
-	</div>
+	</CardHeader>
 
-	<div class="flex flex-wrap items-center gap-3">
+	<CardContent class="flex flex-wrap items-center gap-3 px-3">
 		<DateRangeFilter
 			startDate={props.startDate}
 			endDate={props.endDate}
@@ -106,59 +114,26 @@
 			onEndDateChange={handleEndDateChange}
 		/>
 
-		<div class="dark:bg-dark-border hidden h-6 w-px bg-gray-200 sm:block" aria-hidden="true"></div>
+		<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
 
-		<div
-			class="dark:border-dark-border dark:bg-dark-subtle relative inline-grid min-w-[17rem] grid-cols-4 rounded-md border border-gray-200 bg-gray-50 p-1"
-		>
-			<div
-				class="pointer-events-none absolute top-1 bottom-1 rounded bg-blue-600 shadow-sm transition-transform duration-200 ease-out will-change-transform motion-reduce:transition-none"
-				style={`left: 0.25rem; width: calc((100% - 0.5rem) / 4); transform: translateX(${selectedGroupByIndex * 100}%);`}
-				aria-hidden="true"
-			></div>
-			{#each groupByOptions as option (option.value)}
-				{@const disabledReason = getGranularityDisabledReason(option)}
-				<div class="group relative flex">
-					<button
-						type="button"
-						onclick={() =>
-							!disabledReason &&
-							props.groupBy !== option.value &&
-							dispatch('groupByChange', { groupBy: option.value })}
-						class={`relative z-10 flex w-full items-center justify-center rounded px-3 py-1 text-center text-sm transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none ${
-							props.groupBy === option.value
-								? 'text-white'
-								: disabledReason
-									? 'text-gray-400'
-									: 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
-						}`}
-						aria-pressed={props.groupBy === option.value}
-						aria-disabled={disabledReason ? 'true' : 'false'}
-					>
-						{option.label}
-					</button>
-					{#if disabledReason}
-						<div
-							class="dark:border-dark-border dark:bg-dark-subtle pointer-events-none absolute top-full left-1/2 z-20 mt-1 hidden w-44 -translate-x-1/2 rounded-md border border-gray-200 bg-white p-2 text-xs leading-4 text-gray-600 shadow-lg group-focus-within:block group-hover:block dark:text-gray-400"
-							role="tooltip"
-						>
-							{disabledReason}
-						</div>
-					{/if}
-				</div>
-			{/each}
-		</div>
+		<SegmentedControl
+			options={segmentedGroupByOptions}
+			value={props.groupBy}
+			onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
+			class="min-w-[17rem] grid-cols-4"
+			buttonClass="px-3 py-1 text-sm"
+		/>
 
-		<div class="dark:bg-dark-border hidden h-6 w-px bg-gray-200 sm:block" aria-hidden="true"></div>
+		<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
 
 		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
 
-		<label class="flex items-center gap-2 text-gray-700 dark:text-gray-200">
-			<span class="text-sm font-medium text-gray-700 dark:text-gray-300">Scope:</span>
+		<label class="text-foreground flex items-center gap-2">
+			<span class="text-sm font-medium">Scope:</span>
 			<select
 				value={props.flowScope}
 				onchange={handleScopeChange}
-				class="dark:border-dark-border dark:bg-dark-bg rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+				class="border-input bg-background text-foreground focus-visible:ring-ring rounded border px-2 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
 			>
 				{#each FLOW_SCOPE_OPTIONS as option (option.key)}
 					<option value={option.key}>{option.label}</option>
@@ -166,12 +141,6 @@
 			</select>
 		</label>
 
-		<button
-			type="button"
-			onclick={handleResetView}
-			class="rounded-md bg-blue-600 px-4 py-1 text-sm text-white hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:outline-none sm:ml-auto"
-		>
-			Reset View
-		</button>
-	</div>
-</div>
+		<Button onclick={handleResetView} size="sm" class="h-7 px-4 sm:ml-auto">Reset View</Button>
+	</CardContent>
+</Card>

@@ -1,26 +1,11 @@
 [
   {
-    "dataset_id": "uoregon",
-    "label": "UONet-in",
-    "root_path": "/path/to/netflow_datasets/uoregon",
-    "db_path": "./data/uoregon/netflow.sqlite",
-    "default_start_date": "2025-02-11",
-    "source_mode": "subdirs",
+    "dataset_id": "example",
+    "root_path": "/path/to/netflow/example",
     "sources": [
-      { "source_id": "cc_ir1_gw", "members": ["cc_ir1_gw"] },
-      { "source_id": "oh_ir1_gw", "members": ["oh_ir1_gw"] },
-      { "source_id": "uoregon_all", "members": ["cc_ir1_gw", "oh_ir1_gw"] }
-    ],
-    "discovery_mode": "live"
-  },
-  {
-    "dataset_id": "ugr16",
-    "label": "UGR16",
-    "root_path": "/path/to/raw_datasets/ugr_csv",
-    "db_path": "./data/ugr16/netflow.sqlite",
-    "default_start_date": "2016-04-04",
-    "source_mode": "static",
-    "source_ids": ["ugr16"],
-    "discovery_mode": "static"
+      { "source_id": "router-a", "members": ["router-a"] },
+      { "source_id": "router-b", "members": ["router-b"] },
+      { "source_id": "all-routers", "members": ["router-a", "router-b"] }
+    ]
   }
 ]

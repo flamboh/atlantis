@@ -1,4 +1,5 @@
 node_modules
+/target/
 
 # Output
 .output
@@ -37,9 +38,6 @@ exploration/
 datasets.json
 configs/
 scripts/local/ugr16-csv.pipeline-v2.json
-tools/netflow-db/maad_fast
-tools/netflow-db/nfdump_reducer
-tools/netflow-db/nfdump_reducer.build-id
 
 .claude/worktrees/
 .husky/_/

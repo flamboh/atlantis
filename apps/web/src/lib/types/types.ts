@@ -3,7 +3,6 @@ export interface DatasetSummary {
 	label: string;
 	defaultStartDate: string;
 	discoveryMode: string;
-	sourceCount: number;
 	isDefault: boolean;
 }
 
@@ -11,6 +10,74 @@ export interface DatasetSummariesResponse {
 	data: DatasetSummary[] | null;
 	error: string | null;
 }
+
+export type AlertTail = 'high' | 'low';
+
+export type AlertHorizon = '1h' | '6h' | '24h' | '7d';
+
+export type AlertSort = 'extreme' | 'recent';
+
+export interface AlertFeedAddress {
+	address: string;
+	tail: AlertTail;
+	peakAlpha: number;
+	peakWindowStart: number;
+	peakR2: number;
+	/** Alpha of the address's most recent crossing within the horizon. */
+	latestAlpha: number;
+	lastSeen: number;
+	firstSeen: number;
+	timesFlagged: number;
+}
+
+export type AlertFeedStatus =
+	| { present: false }
+	| {
+			present: true;
+			latestWindowStart: number | null;
+			latestWindowEnd: number | null;
+			latestAddressCount: number | null;
+			latestProcessedAt: number | null;
+			thresholds: { high: number; low: number };
+	  };
+
+export interface AlertsFeedResponse {
+	feed: AlertFeedStatus;
+	horizonSeconds: number;
+	totalAddresses: number;
+	addresses: AlertFeedAddress[];
+}
+
+export type CoverageState = 'complete' | 'partial' | 'unknown';
+
+export interface BucketCoverage {
+	state: CoverageState;
+	observedUnits: number;
+	expectedUnits: number;
+}
+
+export interface CoverageTimelineBucket {
+	bucketStart: number;
+	bucketEnd: number;
+	coverage: BucketCoverage;
+}
+
+export interface CoverageTimeline {
+	sourceId: string;
+	buckets: CoverageTimelineBucket[];
+}
+
+export interface NetflowCoverageResponse {
+	timelines: CoverageTimeline[];
+	requestedRouters: string[];
+}
+
+export type TimeBucket<T> = {
+	bucketStart: number;
+	bucketEnd: number;
+	coverage: BucketCoverage;
+	data: T | null;
+};
 
 export interface NetflowStatsRow {
 	date: string;
@@ -74,42 +141,41 @@ export type NetflowMetricTotalsByIpFamily = {
 };
 
 export interface NetflowStatsResult extends NetflowMetricTotals, NetflowMetricTotalsByIpFamily {
-	bucketStart: number;
 	averageDurationMs: number | null;
 	averageMinTtl: number | null;
 	averageMaxTtl: number | null;
 }
 
 export interface NetflowStatsResponse {
-	result: NetflowStatsResult[];
+	result: TimeBucket<NetflowStatsResult>[];
 	availableIpFamilies: NetflowIpFamily[];
 }
 
 export type PortSide = 'source' | 'destination';
 export type PortRange = 'low' | 'high';
 
-export interface ObservationStatsBucket {
-	bucketStart: number;
-	bucketEnd: number;
+export interface ObservationStats {
 	ipFamily: NetflowIpFamily;
 	averageDurationMs: number | null;
 	averageMinTtl: number | null;
 	averageMaxTtl: number | null;
 }
 
-export interface PortCardinalityBucket {
-	sourceId: string;
-	bucketStart: number;
-	bucketEnd: number;
+export interface PortCardinalityStats {
 	ipFamily: Exclude<NetflowIpFamily, 'all'>;
 	portSide: PortSide;
 	portRange: PortRange;
 	uniquePortCount: number;
 }
 
+export interface PortCardinalityTimeline {
+	sourceId: string;
+	buckets: TimeBucket<PortCardinalityStats[]>[];
+}
+
 export interface FlowCharacteristicsResponse {
-	observationBuckets: ObservationStatsBucket[];
-	portBuckets: PortCardinalityBucket[];
+	observationBuckets: TimeBucket<ObservationStats[]>[];
+	portTimelines: PortCardinalityTimeline[];
 	resolvedSources: string[];
 }
 
@@ -241,17 +307,19 @@ export const IP_METRIC_OPTIONS: IpMetricOption[] = [
 export type ProtocolMetricKey = 'uniqueProtocolsIpv4' | 'uniqueProtocolsIpv6';
 
 export interface ProtocolStatsBucket {
-	router: string;
 	granularity: IpGranularity;
-	bucketStart: number;
-	bucketEnd: number;
 	uniqueProtocolsIpv4: number;
 	uniqueProtocolsIpv6: number;
 	processedAt?: string;
 }
 
+export interface ProtocolStatsTimeline {
+	router: string;
+	buckets: TimeBucket<ProtocolStatsBucket>[];
+}
+
 export interface ProtocolStatsResponse {
-	buckets: ProtocolStatsBucket[];
+	timelines: ProtocolStatsTimeline[];
 	availableGranularities: IpGranularity[];
 	requestedRouters: string[];
 }
@@ -264,15 +332,17 @@ export interface IpStatsCounts {
 }
 
 export interface IpStatsBucket extends IpStatsCounts {
-	router: string;
 	granularity: IpGranularity;
-	bucketStart: number;
-	bucketEnd: number;
 	processedAt?: string;
 }
 
+export interface IpStatsTimeline {
+	router: string;
+	buckets: TimeBucket<IpStatsBucket>[];
+}
+
 export interface IpStatsResponse {
-	buckets: IpStatsBucket[];
+	timelines: IpStatsTimeline[];
 	availableGranularities: IpGranularity[];
 	requestedRouters: string[];
 }
@@ -322,28 +392,4 @@ export interface StructureFunctionData {
 		addressType: string;
 		qRange: { min: number; max: number };
 	};
-}
-
-export interface StructureStatsBucket {
-	bucketStart: number;
-	router: string;
-	structureSa: StructureFunctionPoint[];
-	structureDa: StructureFunctionPoint[];
-}
-
-export interface StructureStatsResponse {
-	buckets: StructureStatsBucket[];
-	requestedRouters: string[];
-}
-
-export interface SpectrumStatsBucket {
-	bucketStart: number;
-	router: string;
-	spectrumSa: SpectrumPoint[];
-	spectrumDa: SpectrumPoint[];
-}
-
-export interface SpectrumStatsResponse {
-	buckets: SpectrumStatsBucket[];
-	requestedRouters: string[];
 }

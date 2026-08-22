@@ -4,6 +4,20 @@ import fs from 'fs';
 import { spawnSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const coverageTableSql = `
+	CREATE TABLE bucket_coverage (
+		source_id TEXT NOT NULL,
+		granularity TEXT NOT NULL,
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL,
+		coverage_state TEXT NOT NULL,
+		observed_units INTEGER NOT NULL,
+		expected_units INTEGER NOT NULL,
+		rejected_units INTEGER NOT NULL,
+		PRIMARY KEY(source_id, granularity, bucket_start)
+	);
+`;
+
 async function loadDatasetsModule() {
 	vi.resetModules();
 	return import('../../../src/lib/server/datasets');
@@ -25,14 +39,15 @@ function createSqliteFixture(): string {
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
 					sort_order INTEGER DEFAULT 0 NOT NULL
 				);
-					CREATE TABLE traffic_stats (
-						source_id TEXT NOT NULL,
-						granularity TEXT NOT NULL,
-						bucket_start INTEGER NOT NULL,
-						ip_version INTEGER NOT NULL,
-						src_visibility TEXT NOT NULL,
-						dst_visibility TEXT NOT NULL
-					);
+				${coverageTableSql}
+				CREATE TABLE traffic_stats (
+					source_id TEXT NOT NULL,
+					granularity TEXT NOT NULL,
+					bucket_start INTEGER NOT NULL,
+					ip_version INTEGER NOT NULL,
+					src_visibility TEXT NOT NULL,
+					dst_visibility TEXT NOT NULL
+				);
 				CREATE TABLE source_members (
 					dataset_id TEXT NOT NULL,
 					source_id TEXT NOT NULL,
@@ -47,11 +62,11 @@ function createSqliteFixture(): string {
 					discovery_mode,
 					sort_order
 				) VALUES ('alpha', 'Alpha Label', '2025-03-01', 'static', 'static', 0);
-					INSERT INTO traffic_stats (
-						source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
-					) VALUES
-						('router-b', '5m', 1740823200, 4, 'all', 'all'),
-						('router-a', '5m', 1740823200, 4, 'all', 'all');
+				INSERT INTO traffic_stats (
+					source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
+				) VALUES
+					('router-b', '5m', 1740823200, 4, 'all', 'all'),
+					('router-a', '5m', 1740823200, 4, 'all', 'all');
 			`
 		],
 		{ encoding: 'utf-8' }
@@ -81,7 +96,6 @@ describe('dataset server helpers', () => {
 				label: 'Alpha Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 2,
 				isDefault: true
 			}
 		]);
@@ -89,6 +103,27 @@ describe('dataset server helpers', () => {
 		await expect(
 			datasets.getRequestedDataset(new URL('http://localhost/api?dataset=alpha'))
 		).resolves.toBe('alpha');
+	});
+
+	it('lists dataset summaries without reading traffic statistics', async () => {
+		const dbPath = createSqliteFixture();
+		const dropResult = spawnSync('sqlite3', [dbPath, 'DROP TABLE traffic_stats;'], {
+			encoding: 'utf-8'
+		});
+		expect(dropResult.status, dropResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
+			{
+				datasetId: 'alpha',
+				label: 'Alpha Label',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				isDefault: true
+			}
+		]);
 	});
 
 	it('opens local dataset databases as strictly readonly', async () => {
@@ -206,6 +241,16 @@ describe('dataset server helpers', () => {
 		await expect(datasets.getDatasetConfig('missing')).rejects.toThrow(/Unknown dataset 'missing'/);
 	});
 
+	it('returns an empty summary list when no local databases exist', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-none-'));
+		fs.mkdirSync(path.join(workspace, 'data'));
+		process.chdir(workspace);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([]);
+	});
+
 	it('discovers local sqlite datasets from data directories', async () => {
 		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-scan-'));
 		const alphaDir = path.join(workspace, 'data', 'alpha');
@@ -224,7 +269,6 @@ describe('dataset server helpers', () => {
 				label: 'Alpha',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 1,
 				isDefault: true
 			},
 			{
@@ -232,11 +276,45 @@ describe('dataset server helpers', () => {
 				label: 'Beta',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				sourceCount: 1,
 				isDefault: false
 			}
 		]);
 		await expect(datasets.listDatasetSources('beta')).resolves.toEqual(['router-b']);
+	});
+
+	it('ignores obsolete auto-discovered databases that reuse a current dataset id', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-schema-filter-'));
+		const oldDir = path.join(workspace, 'data', 'uoregon-v2');
+		const currentDir = path.join(workspace, 'data', 'uoregon-v4');
+		fs.mkdirSync(oldDir, { recursive: true });
+		fs.mkdirSync(currentDir, { recursive: true });
+		seedDatasetDb(
+			path.join(oldDir, 'netflow.sqlite'),
+			'uoregon',
+			'Obsolete UOregon',
+			'router-old',
+			false
+		);
+		seedDatasetDb(
+			path.join(currentDir, 'netflow.sqlite'),
+			'uoregon',
+			'Current UOregon',
+			'router-current'
+		);
+		process.chdir(workspace);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
+			{
+				datasetId: 'uoregon',
+				label: 'Current UOregon',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				isDefault: true
+			}
+		]);
+		await expect(datasets.getDatasetLabel('uoregon')).resolves.toBe('Current UOregon');
 	});
 
 	it('refreshes local dataset discovery after files move', async () => {
@@ -313,7 +391,13 @@ describe('dataset server helpers', () => {
 	});
 });
 
-function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceId: string): void {
+function seedDatasetDb(
+	dbPath: string,
+	datasetId: string,
+	label: string,
+	sourceId: string,
+	includeCoverage = true
+): void {
 	const seedResult = spawnSync(
 		'sqlite3',
 		[
@@ -327,14 +411,15 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
 					sort_order INTEGER DEFAULT 0 NOT NULL
 				);
-					CREATE TABLE traffic_stats (
-						source_id TEXT NOT NULL,
-						granularity TEXT NOT NULL,
-						bucket_start INTEGER NOT NULL,
-						ip_version INTEGER NOT NULL,
-						src_visibility TEXT NOT NULL,
-						dst_visibility TEXT NOT NULL
-					);
+				CREATE TABLE traffic_stats (
+					source_id TEXT NOT NULL,
+					granularity TEXT NOT NULL,
+					bucket_start INTEGER NOT NULL,
+					ip_version INTEGER NOT NULL,
+					src_visibility TEXT NOT NULL,
+					dst_visibility TEXT NOT NULL
+				);
+				${includeCoverage ? coverageTableSql : ''}
 				INSERT INTO datasets (
 					id,
 					label,
@@ -343,9 +428,9 @@ function seedDatasetDb(dbPath: string, datasetId: string, label: string, sourceI
 					discovery_mode,
 					sort_order
 				) VALUES ('${datasetId}', '${label}', '2025-03-01', 'static', 'static', 0);
-					INSERT INTO traffic_stats (
-						source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
-					) VALUES ('${sourceId}', '5m', 1740823200, 4, 'all', 'all');
+				INSERT INTO traffic_stats (
+					source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
+				) VALUES ('${sourceId}', '5m', 1740823200, 4, 'all', 'all');
 			`
 		],
 		{ encoding: 'utf-8' }

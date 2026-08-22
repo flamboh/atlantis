@@ -227,16 +227,14 @@
 </script>
 
 <div class="w-full">
-	<div class="mb-2 text-sm text-gray-600 dark:text-gray-400">
+	<div class="text-muted-foreground mb-2 text-sm">
 		{#if data.metadata.uniqueIPCount && data.metadata.uniqueIPCount > 0}
-			<p class="text-xs font-medium text-green-600 dark:text-green-400">
+			<p class="text-primary text-xs font-medium">
 				✓ Real NetFlow Data Analysis - {data.metadata.uniqueIPCount.toLocaleString()} unique IP addresses
 				analyzed
 			</p>
 		{:else if data.metadata.uniqueIPCount !== -1}
-			<p class="text-xs text-amber-600 dark:text-amber-400">
-				⚠ Using test data from MAAD sample set
-			</p>
+			<p class="text-muted-foreground text-xs">⚠ Using test data from MAAD sample set</p>
 		{/if}
 	</div>
 	<div class="relative h-72 w-full min-w-0 sm:h-96">

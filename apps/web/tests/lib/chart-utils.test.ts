@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
 	clampGroupByToDateRange,
+	buildTemporalChartPoints,
+	findTemporalDataBounds,
+	isCoverageSegmentDashed,
 	getMaxAllowedGranularityForDateRange,
 	isGranularityAllowedForDateRange
 } from '../../src/lib/components/charts/chart-utils';
@@ -45,5 +48,62 @@ describe('shared IP granularity chart labels', () => {
 		expect(formatIpGranularityTick(tuesdayStart, '1d', 1)).toBe('');
 		expect(shouldHighlightIpGranularityGrid(mondayStart, '1d', 0)).toBe(true);
 		expect(shouldHighlightIpGranularityGrid(tuesdayStart, '1d', 1)).toBe(false);
+	});
+});
+
+describe('coverage-aware chart data', () => {
+	const completeCoverage = { state: 'complete' as const, observedUnits: 12, expectedUnits: 12 };
+	const partialCoverage = { state: 'partial' as const, observedUnits: 8, expectedUnits: 12 };
+	const unknownCoverage = { state: 'unknown' as const, observedUnits: 0, expectedUnits: 12 };
+
+	it('keeps bucket timestamps and preserves zero, partial, and unknown values', () => {
+		const points = buildTemporalChartPoints(
+			[
+				{ bucketStart: 100, bucketEnd: 160, coverage: completeCoverage, data: { value: 0 } },
+				{ bucketStart: 160, bucketEnd: 220, coverage: partialCoverage, data: { value: 4 } },
+				{ bucketStart: 520, bucketEnd: 580, coverage: unknownCoverage, data: null }
+			],
+			(data) => data.value
+		);
+
+		expect(points.map(({ x, y }) => ({ x, y }))).toEqual([
+			{ x: 100, y: 0 },
+			{ x: 160, y: 4 },
+			{ x: 520, y: null }
+		]);
+		expect(points[1]?.coverage).toEqual(partialCoverage);
+	});
+
+	it('bounds charts to outer data while preserving zero and internal gaps', () => {
+		const buckets = [
+			{ bucketStart: 100, data: null },
+			{ bucketStart: 160, data: 0 },
+			{ bucketStart: 220, data: null },
+			{ bucketStart: 280, data: 4 },
+			{ bucketStart: 340, data: null }
+		];
+
+		expect(
+			findTemporalDataBounds(
+				buckets,
+				(bucket) => bucket.bucketStart,
+				(bucket) => bucket.data !== null
+			)
+		).toEqual({ min: 160, max: 280 });
+		expect(
+			findTemporalDataBounds(
+				buckets,
+				(bucket) => bucket.bucketStart,
+				() => false
+			)
+		).toBeNull();
+	});
+
+	it('dashes segments adjoining partial buckets', () => {
+		const partialPoint = { coverage: partialCoverage };
+		const completePoint = { coverage: completeCoverage };
+
+		expect(isCoverageSegmentDashed(partialPoint, completePoint)).toBe(true);
+		expect(isCoverageSegmentDashed(completePoint, completePoint)).toBe(false);
 	});
 });

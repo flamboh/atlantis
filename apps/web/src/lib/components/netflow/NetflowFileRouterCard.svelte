@@ -1,6 +1,7 @@
 <script lang="ts">
 	import NetflowFileRouterAnalysisSection from './NetflowFileRouterAnalysisSection.svelte';
 	import NetflowFileRouterSummary from './NetflowFileRouterSummary.svelte';
+	import * as Card from '$lib/components/ui/card';
 	import type { NetflowFileRouterRow } from './file-detail-loader.svelte';
 
 	let {
@@ -14,20 +15,16 @@
 	} = $props();
 </script>
 
-<div class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white shadow-sm">
+<Card.Root size="sm" class="gap-0 py-0">
 	<NetflowFileRouterSummary {row} {formatCount} {formatTimestampAsPST} />
 
-	<div class="rounded-b-lg p-4">
-		<h4 class="text-md mb-4 font-semibold text-gray-800 dark:text-gray-100">MAAD Analysis</h4>
+	<Card.Content class="py-4">
+		<h4 class="text-md text-foreground mb-4 font-semibold">MAAD Analysis</h4>
 		<div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-			<h5
-				class="dark:border-dark-border hidden border-b pb-2 text-base font-semibold text-blue-700 lg:block dark:text-blue-400"
-			>
+			<h5 class="border-border text-primary hidden border-b pb-2 text-base font-semibold lg:block">
 				Source
 			</h5>
-			<h5
-				class="dark:border-dark-border hidden border-b pb-2 text-base font-semibold text-blue-700 lg:block dark:text-blue-400"
-			>
+			<h5 class="border-border text-primary hidden border-b pb-2 text-base font-semibold lg:block">
 				Destination
 			</h5>
 		</div>
@@ -45,5 +42,5 @@
 				destination={row.destination.spectrum}
 			/>
 		</div>
-	</div>
-</div>
+	</Card.Content>
+</Card.Root>

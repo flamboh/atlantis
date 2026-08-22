@@ -1,4 +1,6 @@
 <script lang="ts">
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import type { ChartTypeOption, DataOption } from '$lib/components/netflow/types.ts';
 	import type { NetflowIpFamily } from '$lib/types/types';
 
@@ -48,14 +50,6 @@
 		{ value: 'stacked', label: 'Stacked Area' },
 		{ value: 'line', label: 'Line Chart' }
 	];
-	const CONTROL_GROUP_CLASS =
-		'dark:border-dark-border dark:bg-dark-subtle grid w-full gap-0.5 rounded-md border border-gray-200 bg-gray-50 p-1 sm:w-fit';
-	const CONTROL_BUTTON_CLASS =
-		'flex min-h-7 items-center justify-center rounded px-2.5 py-0.5 text-center text-xs font-medium transition-colors focus:ring-2 focus:ring-blue-500 focus:outline-none sm:min-w-20';
-	const CONTROL_BUTTON_INACTIVE_CLASS =
-		'text-gray-700 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100';
-	const CONTROL_BUTTON_ACTIVE_CLASS = 'bg-blue-600 text-white shadow-sm';
-
 	function getMetricFamily(label: string): MetricFamily | null {
 		const normalized = label.toLowerCase();
 		if (normalized.includes('flow')) return 'flows';
@@ -124,87 +118,51 @@
 <div class="metric-selector">
 	<div class="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 		<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-			<div class={`${CONTROL_GROUP_CLASS} grid-cols-3 sm:grid-cols-5`}>
-				{#each QUICK_SELECT_OPTIONS as option (option.value)}
-					<button
-						type="button"
-						onclick={() => handleQuickSelect(option.value)}
-						class={`${CONTROL_BUTTON_CLASS} ${
-							selectedQuickSelectIndex !== null &&
-							QUICK_SELECT_OPTIONS[selectedQuickSelectIndex]?.value === option.value
-								? CONTROL_BUTTON_ACTIVE_CLASS
-								: CONTROL_BUTTON_INACTIVE_CLASS
-						}`}
-						aria-pressed={selectedQuickSelectIndex !== null &&
-							QUICK_SELECT_OPTIONS[selectedQuickSelectIndex]?.value === option.value}
-					>
-						{option.label}
-					</button>
-				{/each}
-			</div>
+			<SegmentedControl
+				options={QUICK_SELECT_OPTIONS}
+				value={selectedQuickSelectIndex === null
+					? null
+					: (QUICK_SELECT_OPTIONS[selectedQuickSelectIndex]?.value ?? null)}
+				onValueChange={handleQuickSelect}
+				class="grid-cols-3 sm:grid-cols-5"
+				buttonClass="sm:min-w-20"
+			/>
 
 			{#if ipFamilyOptions.length > 0}
-				<div
-					class={CONTROL_GROUP_CLASS}
+				<SegmentedControl
+					options={ipFamilyOptions}
+					value={selectedIpFamily}
+					onValueChange={(value) => onIpFamilyChange?.(value)}
+					buttonClass="sm:min-w-20"
 					style={`grid-template-columns: repeat(${ipFamilyOptions.length}, minmax(0, 1fr));`}
-				>
-					{#each ipFamilyOptions as option (option.value)}
-						<button
-							type="button"
-							onclick={() => onIpFamilyChange?.(option.value)}
-							class={`${CONTROL_BUTTON_CLASS} ${
-								selectedIpFamily === option.value
-									? CONTROL_BUTTON_ACTIVE_CLASS
-									: CONTROL_BUTTON_INACTIVE_CLASS
-							} ${option.disabled ? 'pointer-events-none opacity-50' : ''}`}
-							aria-pressed={selectedIpFamily === option.value}
-							disabled={option.disabled}
-						>
-							{option.label}
-						</button>
-					{/each}
-				</div>
+				/>
 			{/if}
 		</div>
 
 		{#if chartType}
-			<div
-				class={`${CONTROL_GROUP_CLASS} grid-cols-2`}
-				role="group"
-				aria-label="Select NetFlow chart type"
-			>
-				{#each CHART_TYPE_OPTIONS as option (option.value)}
-					<button
-						type="button"
-						onclick={() => onChartTypeChange?.(option.value)}
-						class={`${CONTROL_BUTTON_CLASS} ${
-							chartType === option.value
-								? CONTROL_BUTTON_ACTIVE_CLASS
-								: CONTROL_BUTTON_INACTIVE_CLASS
-						}`}
-						aria-pressed={chartType === option.value}
-					>
-						{option.label}
-					</button>
-				{/each}
-			</div>
+			<SegmentedControl
+				options={CHART_TYPE_OPTIONS}
+				value={chartType}
+				onValueChange={(value) => onChartTypeChange?.(value)}
+				class="grid-cols-2"
+				buttonClass="sm:min-w-20"
+				ariaLabel="Select NetFlow chart type"
+			/>
 		{/if}
 	</div>
 
 	<div role="group" aria-label="NetFlow metric series">
 		<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(3rem,1fr))]">
-			<div class="px-2 py-2 text-xs font-medium text-gray-500 dark:text-gray-400">Metric</div>
+			<div class="text-muted-foreground px-2 py-2 text-xs font-medium">Metric</div>
 			{#each PROTOCOL_COLUMNS as protocol (protocol.value)}
-				<div class="px-1 py-2 text-center text-xs font-medium text-gray-500 dark:text-gray-400">
+				<div class="text-muted-foreground px-1 py-2 text-center text-xs font-medium">
 					{protocol.label}
 				</div>
 			{/each}
 		</div>
 		{#each metricMatrix as metric (metric.value)}
 			<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(3rem,1fr))]">
-				<div
-					class="flex items-center px-2 py-2 text-sm font-medium text-gray-700 dark:text-gray-300"
-				>
+				<div class="text-foreground flex items-center px-2 py-2 text-sm font-medium">
 					{metric.label}
 				</div>
 				{#each metric.options as cell (cell.value)}
@@ -214,11 +172,9 @@
 					>
 						{#if cell.option}
 							{@const option = cell.option}
-							<input
-								type="checkbox"
+							<Checkbox
 								checked={option.checked}
-								onchange={() => handleMetricToggle(option.index)}
-								class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+								onCheckedChange={() => handleMetricToggle(option.index)}
 							/>
 							<span class="sr-only">{option.label}</span>
 						{/if}

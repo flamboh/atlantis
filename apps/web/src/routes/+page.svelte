@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { Button } from '$lib/components/ui/button';
+	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -17,28 +19,42 @@
 
 <main class="mx-auto flex max-w-[95vw] flex-col gap-4 px-4 py-8 sm:px-2 lg:px-4">
 	{#if data.datasets.length === 0}
-		<section
-			class="dark:border-dark-border dark:bg-dark-surface rounded-lg border bg-white p-6 text-gray-500 shadow-sm dark:text-gray-400 dark:shadow-none"
-		>
-			No datasets are configured.
-		</section>
+		<Card class="gap-0 rounded-lg border py-6 shadow-sm ring-0">
+			<CardHeader class="px-6">
+				<CardTitle><h1 class="text-xl font-semibold">No datasets found</h1></CardTitle>
+			</CardHeader>
+			<CardContent class="px-6">
+				<p class="text-muted-foreground mt-3 text-sm">
+					The dashboard reads SQLite databases at
+					<code class="font-mono">data/&lt;dataset-id&gt;/netflow.sqlite</code>. Build one from your
+					NetFlow data with the pipeline, then reload this page.
+				</p>
+				<p class="text-muted-foreground mt-3 text-sm">
+					See <code class="font-mono">docs/user/README.md</code> in the repository for the setup procedure.
+				</p>
+			</CardContent>
+		</Card>
 	{:else}
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each data.datasets as dataset (dataset.datasetId)}
-				<button
-					type="button"
-					class="dark:border-dark-border dark:bg-dark-surface dark:hover:bg-dark-subtle cursor-pointer rounded-lg border bg-white p-5 text-left shadow-sm transition hover:border-blue-400 hover:shadow dark:shadow-none dark:hover:border-blue-500"
-					onclick={() => openDataset(dataset.datasetId)}
+				<Card
+					class="hover:border-primary gap-0 rounded-lg border py-0 shadow-sm ring-0 transition hover:shadow"
 				>
-					<h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">{dataset.label}</h1>
-					<p class="mt-3 text-sm text-gray-600 dark:text-gray-400">
-						<span class="font-mono text-gray-500 dark:text-gray-500">{dataset.datasetId}</span>
-						·
-						{dataset.sourceCount} source{dataset.sourceCount === 1 ? '' : 's'}
-						·
-						{dataset.discoveryMode}
-					</p>
-				</button>
+					<Button
+						variant="ghost"
+						class="h-auto w-full cursor-pointer justify-start rounded-lg p-5 text-left whitespace-normal"
+						onclick={() => openDataset(dataset.datasetId)}
+					>
+						<div>
+							<h1 class="text-foreground text-xl font-semibold">{dataset.label}</h1>
+							<p class="text-muted-foreground mt-3 text-sm">
+								<span class="font-mono">{dataset.datasetId}</span>
+								·
+								{dataset.discoveryMode}
+							</p>
+						</div>
+					</Button>
+				</Card>
 			{/each}
 		</div>
 	{/if}

@@ -1,6 +1,7 @@
 .venv
 vendor/burstify
 vendor/maad
+vendor/nfdump
 apps/landing/dist
 apps/landing/.astro
 apps/web/drizzle/*.sql

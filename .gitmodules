@@ -4,3 +4,6 @@
 [submodule "burstify"]
 	path = vendor/burstify
 	url = https://github.com/chris-misa/burstify.git
+[submodule "vendor/nfdump"]
+	path = vendor/nfdump
+	url = https://github.com/flamboh/nfdump.git

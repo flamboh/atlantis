@@ -44,6 +44,29 @@ describe('D1 migrations', () => {
 			expect(portColumns).toEqual(
 				expect.arrayContaining(['port_side', 'port_range', 'unique_port_count'])
 			);
+
+			const coverageColumns = database
+				.prepare('PRAGMA table_info(bucket_coverage)')
+				.all()
+				.map((column) => (column as { name: string }).name);
+			expect(coverageColumns).toEqual(
+				expect.arrayContaining([
+					'coverage_state',
+					'observed_units',
+					'expected_units',
+					'rejected_units'
+				])
+			);
+			expect(() =>
+				database
+					.prepare(
+						`INSERT INTO bucket_coverage (
+							source_id, granularity, bucket_start, bucket_end, coverage_state,
+							observed_units, expected_units, rejected_units
+						) VALUES ('r1', '5m', 0, 300, 'complete', 0, 1, 0)`
+					)
+					.run()
+			).toThrow();
 		} finally {
 			database.close();
 		}

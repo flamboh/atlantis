@@ -15,7 +15,6 @@ describe('/datasets/[dataset] load', () => {
 							label: 'UONet-in',
 							defaultStartDate: '2025-02-11',
 							discoveryMode: 'live',
-							sourceCount: 2,
 							isDefault: true
 						}
 					],

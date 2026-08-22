@@ -7,6 +7,7 @@ import type {
 	NetflowStatsResponse,
 	NetflowStatsResult
 } from '$lib/types/types';
+import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import {
 	getDatasetDb,
 	getRequestedDataset,
@@ -52,7 +53,6 @@ function getMetricValue(
 
 function normalizeRow(row: Record<string, number | null>): NetflowStatsResult {
 	return {
-		bucketStart: row.bucketStart ?? 0,
 		averageDurationMs: row.averageDurationMs ?? null,
 		averageMinTtl: row.averageMinTtl ?? null,
 		averageMaxTtl: row.averageMaxTtl ?? null,
@@ -172,8 +172,22 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			end
 		];
 
-		const rows = await db.all<Record<string, number | null>>(query, params);
-		const result = rows.map(normalizeRow);
+		const rows = await db.all<Record<string, number | null> & { bucketStart: number }>(
+			query,
+			params
+		);
+		const timelines = await buildCoverageTimelines({
+			db,
+			granularity,
+			start,
+			end,
+			partitions: [{ key: 'result', sourceIds: resolvedSources }],
+			rows,
+			getPartitionKey: () => 'result',
+			toData: normalizeRow,
+			emptyData: () => normalizeRow({})
+		});
+		const result = timelines.get('result') ?? [];
 		const availableIpFamilies: NetflowIpFamily[] = ['all', 'ipv4', 'ipv6'];
 		return json({ result, availableIpFamilies } satisfies NetflowStatsResponse);
 	} catch (error) {

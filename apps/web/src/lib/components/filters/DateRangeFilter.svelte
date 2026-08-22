@@ -27,11 +27,11 @@
 			type="date"
 			value={startDate}
 			onchange={handleStartDateChange}
-			class="dark:border-dark-border dark:bg-dark-subtle min-w-[9.5rem] rounded-md border border-gray-300 px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none dark:text-gray-100 dark:[color-scheme:dark]"
+			class="border-input bg-background text-foreground focus-visible:ring-ring min-w-[9.5rem] rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
 		/>
 	</div>
 
-	<span class="text-sm text-gray-500 dark:text-gray-400">to</span>
+	<span class="text-muted-foreground text-sm">to</span>
 
 	<div class="flex items-center gap-2">
 		<label for="endDate" class="sr-only">End Date</label>
@@ -40,7 +40,7 @@
 			type="date"
 			value={endDate}
 			onchange={handleEndDateChange}
-			class="dark:border-dark-border dark:bg-dark-subtle min-w-[9.5rem] rounded-md border border-gray-300 px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none dark:text-gray-100 dark:[color-scheme:dark]"
+			class="border-input bg-background text-foreground focus-visible:ring-ring min-w-[9.5rem] rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
 		/>
 	</div>
 </div>

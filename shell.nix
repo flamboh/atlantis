@@ -6,15 +6,21 @@ with (import (builtins.fetchTarball {
 }) {});
 mkShell {
   buildInputs = [
-    pkgs.uv
+    pkgs.autoconf
+    pkgs.automake
+    pkgs.bison
     pkgs.bun
+    pkgs.flex
+    pkgs.gnumake
+    pkgs.gnutar
+    pkgs.libtool
     pkgs.nodejs
-    pkgs.nfdump
+    pkgs.pkg-config
+    pkgs.python3
+    pkgs.rustup
     pkgs.playwright-driver.browsers
-    pkgs.stdenv.cc.cc.lib
   ];
-  
-  LD_LIBRARY_PATH = "${stdenv.cc.cc.lib}/lib";
+
   PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
   PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
   PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";

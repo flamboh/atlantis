@@ -14,7 +14,6 @@ describe('/api/datasets GET', () => {
 				label: 'UONet-in',
 				defaultStartDate: '2025-02-11',
 				discoveryMode: 'live',
-				sourceCount: 2,
 				isDefault: true
 			}
 		]);
@@ -29,7 +28,6 @@ describe('/api/datasets GET', () => {
 					label: 'UONet-in',
 					defaultStartDate: '2025-02-11',
 					discoveryMode: 'live',
-					sourceCount: 2,
 					isDefault: true
 				}
 			],

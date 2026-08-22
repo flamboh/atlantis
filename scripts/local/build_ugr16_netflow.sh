@@ -60,10 +60,7 @@ run_build() {
     echo "create scripts/local/ugr16-csv.pipeline.json or pass --config PATH" >&2
     exit 1
   fi
-  ./scripts/build_maad_fast.sh
-  ./scripts/build_nfdump_reducer.sh
-  exec ./scripts/run-with-nix-if-available.sh uv run python -u \
-    tools/netflow-db/pipeline.py \
+  exec ./scripts/netflow-db.sh pipeline \
     --config "$CONFIG_PATH" \
     --database-path "$DATABASE_PATH"
 }

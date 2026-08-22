@@ -1,15 +1,29 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { Chart } from './chart-registry';
+	import type { ChartConfiguration } from 'chart.js';
 	import type { IpGranularity } from '$lib/types/types';
 	import { formatIpGranularityTick, formatTemporalBucketLabel } from './ip-time-axis';
 	import { theme } from '$lib/stores/theme.svelte';
+	import {
+		findTemporalDataBounds,
+		isCoverageSegmentDashed,
+		type ChartCoverage
+	} from './chart-utils';
 
 	export type MetricLineSeries = {
 		label: string;
 		values: Array<number | null>;
 		color: string;
 		dash?: number[];
+		coverage: ChartCoverage[];
+	};
+
+	type MetricLinePoint = {
+		x: number;
+		y: number | null;
+		bucketStart: number;
+		coverage: ChartCoverage;
 	};
 
 	const props = $props<{
@@ -22,7 +36,7 @@
 	}>();
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
-	let chart: Chart<'line'> | null = null;
+	let chart: Chart<'line', MetricLinePoint[], string> | null = null;
 
 	function formatValue(value: number): string {
 		if (props.valueFormat === 'duration') {
@@ -51,23 +65,66 @@
 			chart = null;
 			return;
 		}
+		const indexedBuckets: Array<{ bucketStart: number; index: number }> = props.bucketStarts.map(
+			(bucketStart: number, index: number) => ({ bucketStart, index })
+		);
+		const dataBounds = findTemporalDataBounds(
+			indexedBuckets,
+			(item) => item.bucketStart,
+			(item) =>
+				props.series.some(
+					(series: MetricLineSeries) => typeof series.values[item.index] === 'number'
+				)
+		);
+		if (!dataBounds) {
+			chart?.destroy();
+			chart = null;
+			return;
+		}
 		const palette = colors();
-		const datasets = props.series.map((series: MetricLineSeries) => ({
-			label: series.label,
-			data: series.values,
-			borderColor: series.color,
-			backgroundColor: series.color,
-			borderDash: series.dash ?? [],
-			pointRadius: 0,
-			pointHoverRadius: 4,
-			spanGaps: true,
-			tension: 0.25
-		}));
+		const datasets = props.series.map((series: MetricLineSeries) => {
+			const data: MetricLinePoint[] = props.bucketStarts.map(
+				(bucketStart: number, index: number) => {
+					const coverage = series.coverage[index] ?? {
+						state: 'unknown' as const,
+						observedUnits: 0,
+						expectedUnits: 0
+					};
+					return {
+						x: bucketStart,
+						y: series.values[index] ?? null,
+						bucketStart,
+						coverage
+					};
+				}
+			);
+			return {
+				label: series.label,
+				data,
+				borderColor: series.color,
+				backgroundColor: series.color,
+				borderDash: series.dash ?? [],
+				pointRadius: 0,
+				pointHoverRadius: 4,
+				spanGaps: false,
+				segment: {
+					borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
+						isCoverageSegmentDashed(
+							context.p0.raw as { coverage?: ChartCoverage },
+							context.p1.raw as { coverage?: ChartCoverage }
+						)
+							? [6, 4]
+							: (series.dash ?? [])
+				},
+				parsing: false as const,
+				tension: 0.25
+			};
+		});
 		const labels = props.bucketStarts.map((bucketStart: number) =>
 			formatTemporalBucketLabel(bucketStart, props.granularity)
 		);
 		chart?.destroy();
-		chart = new Chart(canvas, {
+		const config: ChartConfiguration<'line', MetricLinePoint[], string> = {
 			type: 'line',
 			data: { labels, datasets },
 			options: {
@@ -84,23 +141,22 @@
 						borderColor: palette.tooltipBorder,
 						borderWidth: 1,
 						callbacks: {
-							label: (context) =>
-								`${context.dataset.label ?? ''}: ${formatValue(context.parsed.y ?? 0)}`
+							label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+								`${context.dataset.label ?? ''}: ${context.parsed.y === null ? 'No data' : formatValue(context.parsed.y)}`
 						}
 					}
 				},
 				scales: {
 					x: {
+						type: 'linear',
+						min: dataBounds.min,
+						max: dataBounds.max,
 						ticks: {
 							color: palette.text,
 							autoSkip: false,
 							maxRotation: 0,
-							callback: (_value, index) =>
-								formatIpGranularityTick(
-									props.bucketStarts[index as number] ?? 0,
-									props.granularity,
-									index as number
-								)
+							callback: (value: string | number) =>
+								formatIpGranularityTick(Number(value), props.granularity, 0)
 						},
 						grid: { color: palette.grid }
 					},
@@ -109,13 +165,14 @@
 						title: { display: true, text: props.yAxisTitle, color: palette.text },
 						ticks: {
 							color: palette.text,
-							callback: (value) => formatValue(Number(value))
+							callback: (value: string | number) => formatValue(Number(value))
 						},
 						grid: { color: palette.grid }
 					}
 				}
 			}
-		});
+		};
+		chart = new Chart(canvas, config);
 	}
 
 	$effect(() => {
@@ -127,9 +184,9 @@
 </script>
 
 <section class="flex min-h-72 flex-col" aria-label={props.title}>
-	<h4 class="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">{props.title}</h4>
+	<h4 class="text-foreground mb-2 text-sm font-semibold">{props.title}</h4>
 	{#if props.bucketStarts.length === 0 || props.series.length === 0}
-		<div class="flex flex-1 items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+		<div class="text-muted-foreground flex flex-1 items-center justify-center text-sm">
 			No data for this metric
 		</div>
 	{:else}
