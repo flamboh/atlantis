@@ -10,7 +10,6 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import type {
-		BucketCoverage,
 		FlowVisibility,
 		IpGranularity,
 		IpMetricKey,
@@ -44,8 +43,6 @@
 		buildMirroredSelectionStyle,
 		findTemporalDataBounds,
 		getChartBucketCoverage,
-		getCoveragePointStyle,
-		getCoverageTooltipLines,
 		isCoverageSegmentDashed,
 		type ChartCoverage
 	} from './chart-utils';
@@ -739,12 +736,17 @@
 		return { data, minF, maxF, minAlpha, maxAlpha };
 	}
 
-	function buildLineScales(textColor: string, gridColor: string, gridHighlightColor: string) {
+	function buildLineScales(
+		textColor: string,
+		gridColor: string,
+		gridHighlightColor: string,
+		dataBounds: { min: number; max: number }
+	) {
 		return {
 			x: {
 				type: 'linear' as const,
-				min: bucketStarts[0],
-				max: bucketStarts[bucketStarts.length - 1],
+				min: dataBounds.min,
+				max: dataBounds.max,
 				title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
 				ticks: {
 					color: textColor,
@@ -791,12 +793,6 @@
 	) {
 		return {
 			legend: { position: 'top', labels: { color: textColor } },
-			tooltip: {
-				callbacks: {
-					afterLabel: (context: { raw: unknown }) =>
-						getCoverageTooltipLines(getChartBucketCoverage(context.raw))
-				}
-			},
 			verticalCrosshair: {
 				enabled: true,
 				line: {
@@ -848,6 +844,15 @@
 			new Set(selectedBuckets.map((record) => record.bucket.bucketStart))
 		).sort((left, right) => left - right);
 		const routers = Array.from(new Set(selectedBuckets.map((record) => record.router))).sort();
+		const dataBounds = findTemporalDataBounds(
+			selectedBuckets,
+			(record) => record.bucket.bucketStart,
+			(record) => record.bucket.data !== null
+		);
+		if (!dataBounds) {
+			destroyChart();
+			return;
+		}
 		const labels = bucketStarts.map((bucketStart) =>
 			formatTemporalBucketLabel(bucketStart, currentGranularity)
 		);
@@ -877,7 +882,6 @@
 							coverage
 						};
 					});
-					const pointStyles = data.map((point) => getCoveragePointStyle(point.coverage, stroke));
 					return {
 						label: `${router} · ${metric.seriesLabel}`,
 						data,
@@ -885,12 +889,7 @@
 						backgroundColor: fill,
 						tension: 0.3,
 						fill: false,
-						pointRadius: data.map((point, index) =>
-							point.y === null ? 0 : (pointStyles[index]?.radius ?? 0)
-						),
-						pointBackgroundColor: pointStyles.map((style) => style.backgroundColor),
-						pointBorderColor: pointStyles.map((style) => style.borderColor),
-						pointBorderWidth: pointStyles.map((style) => style.borderWidth),
+						pointRadius: 0,
 						pointHoverRadius: 4,
 						spanGaps: false,
 						segment: {
@@ -916,7 +915,7 @@
 			return;
 		}
 
-		const scales = buildLineScales(textColor, gridColor, gridHighlightColor);
+		const scales = buildLineScales(textColor, gridColor, gridHighlightColor, dataBounds);
 		const plugins = buildLinePlugins(
 			textColor,
 			tooltipBackgroundColor,
@@ -1486,9 +1485,6 @@
 					style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
 				>
 					<div>{localHoverLabel}</div>
-					{#each getCoverageLinesForLabel(localHoverLabel) as line (line)}
-						<div>{line}</div>
-					{/each}
 				</div>
 			{/if}
 		{/if}
