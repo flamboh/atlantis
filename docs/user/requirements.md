@@ -2,7 +2,18 @@
 
 This document lists the required tools by concern. Install the tools for the parts that you use.
 
-The repository has a `shell.nix` file that supplies every tool below except Git. With Nix, run `nix-shell` and skip the manual installation.
+For native setup, the repository has a `shell.nix` file that supplies every development tool below, including Git and a C compiler. With Nix, run `nix-shell` and skip the manual installation. You still need Git on the host to clone the repository before the shell is available.
+
+## Docker pipeline
+
+The Docker pipeline path needs only these host tools:
+
+- Git
+- Docker Engine or Docker Desktop
+
+The first run builds the image and downloads Ubuntu packages, the pinned Rust toolchain, Rust crates, and the pinned nfdump fork. You do not need to initialize Git submodules or install a compiler on the host.
+
+Docker covers the pipeline only. Run the dashboard natively with the tools in the next section.
 
 ## Dashboard
 
@@ -16,7 +27,7 @@ The dashboard and all `bun run` commands need these tools:
 
 Node.js is necessary even though Bun installs the packages. The development server runs under Node.js, and `bun install` needs Node.js on `PATH` to download the prebuilt SQLite driver. Without it, the install prints a `better-sqlite3` warning and the dashboard cannot open a database (see [Troubleshooting](troubleshooting.md)).
 
-## Pipeline
+## Native pipeline
 
 Building a database with `scripts/netflow-db.sh` also needs the Rust toolchain:
 
@@ -28,7 +39,7 @@ Building a database with `scripts/netflow-db.sh` also needs the Rust toolchain:
 
 rustup reads `rust-toolchain.toml` and installs the pinned Rust version automatically on the first build.
 
-## nfdump fork
+## Native nfdump fork
 
 Processing nfcapd captures also needs the build tools for the pinned nfdump fork. CSV input does not.
 

@@ -1,16 +1,49 @@
 # Pipeline setup
 
-The pipeline is the Rust `atlantis-netflow-db` crate. It converts nfcapd or CSV input into a compatible SQLite database.
+The pipeline is the Rust `atlantis-netflow-db` crate. It converts nfcapd or CSV input into a compatible SQLite database. You can run it with Docker or build it natively.
 
-`scripts/netflow-db.sh` is the pipeline entry point. It runs the crate with `cargo run --locked --release`, which compiles it when necessary. The first run compiles the Rust dependencies and takes several minutes. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
+`scripts/netflow-db-docker.sh` runs the container path. `scripts/netflow-db.sh` runs the native path with `cargo run --locked --release`, which compiles it when necessary. Set `NETFLOW_DB_BIN` to make the native wrapper run a prebuilt binary instead.
 
 Use a new output database when you change selection rules or result semantics. The pipeline rejects incompatible reuse.
 
-## Build the nfdump fork
+## Run the pipeline with Docker
+
+Install the [Docker pipeline requirements](requirements.md#docker-pipeline), then configure `datasets.json` as described in [Dataset configuration](datasets.md). Keep `root_path` as the absolute host path to the capture tree.
+
+Pass that path to the wrapper before the pipeline arguments:
+
+```bash
+./scripts/netflow-db-docker.sh \
+  --capture-root /data/netflow/example \
+  pipeline \
+  --dataset example \
+  --start-date 2025-02-01 \
+  --end-date 2025-02-01
+```
+
+The wrapper builds `atlantis-netflow-db:local` if it is missing. Pass `--build` after a source update to rebuild it. The image build clones the nfdump fork at the commit pinned by the repository, so host submodules may remain uninitialized.
+
+The wrapper mounts:
+
+- `data/` at `/workspace/data` with write access. The container uses your user and group IDs, so generated databases remain owned by you.
+- `datasets.json` at `/workspace/datasets.json` with read-only access.
+- Each `--capture-root` path at the identical absolute path inside the container, with read-only access. Pass the option more than once if a command reads more than one capture root.
+
+The identical capture mount means `root_path` in `datasets.json` works without changes. The image installs the fork as `/usr/local/bin/nfdump`, which is the default `nfdump` found on `PATH`. Docker commands do not need `--nfdump`.
+
+Keep Docker output paths under the repository's `data/` directory and write them as relative paths such as `data/example/netflow.sqlite`. The wrapper does not mount other host output directories. It also uses the repository's `datasets.json`; pass `--datasets /workspace/datasets.json` if a command needs the path explicitly.
+
+Docker Desktop bind mounts can be slower than native filesystem access on macOS, especially for large capture trees.
+
+## Build the pipeline natively
+
+The native path uses `scripts/netflow-db.sh` and needs the [native pipeline requirements](requirements.md#native-pipeline).
+
+### Build the nfdump fork
 
 nfcapd input needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
 
-The build needs the [nfdump fork tools](requirements.md#nfdump-fork). The build script checks for them and names any tool that is missing.
+The build needs the [native nfdump fork tools](requirements.md#native-nfdump-fork). The build script checks for them and names any tool that is missing.
 
 1. Initialize the Git submodules.
 
@@ -26,7 +59,7 @@ The build needs the [nfdump fork tools](requirements.md#nfdump-fork). The build 
 
 The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored. Pass this path to each pipeline command with `--nfdump`; the pipeline does not find it automatically.
 
-## Process a dataset
+## Process a dataset natively
 
 First, complete the [dataset configuration](datasets.md).
 
@@ -92,7 +125,7 @@ Put flow selection in the top-level `selection` object:
 }
 ```
 
-For nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it.
+For native nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it. For Docker, omit the setting or use `"/usr/local/bin/nfdump"`.
 
 ## Common options
 
@@ -123,5 +156,7 @@ Run the compatibility check after the pipeline finishes:
 ```
 
 The command prints an `OK` line when the database is compatible. A failed requirement returns a nonzero exit status.
+
+Docker users can run the same check by replacing `./scripts/netflow-db.sh` with `./scripts/netflow-db-docker.sh`. Verification reads only `data/`, so it does not need `--capture-root`.
 
 For pipeline identity and export rules, read the [pipeline contract](../code/pipeline-contract.md).

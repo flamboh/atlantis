@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+data
+datasets.json
+node_modules
+**/node_modules
+target
+vendor/nfdump
