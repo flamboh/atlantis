@@ -1,6 +1,6 @@
 # ATLANTIS
 
-Network telemetry visualization platform for analyzing large-scale NetFlow data. SvelteKit frontend, SQLite backend, Rust ingestion pipeline.
+ATLANTIS is a Network telemetry visualization platform for analyzing large-scale NetFlow data. SvelteKit frontend, SQLite backend, Rust ingestion pipeline.
 
 ATLANTIS reads nfcapd captures from a NetFlow collector. The pipeline converts the captures into a SQLite database, and the dashboard visualizes that database.
 
@@ -20,7 +20,7 @@ First, install the [required tools](docs/user/requirements.md) — both Bun and 
    ./vendor/scripts/compile-nfdump.sh
    ```
 
-2. Describe your captures. Copy the templates, then edit them:
+2. Describe your capture dataset. Copy the templates, then edit them:
 
    ```bash
    cp .env.example .env
