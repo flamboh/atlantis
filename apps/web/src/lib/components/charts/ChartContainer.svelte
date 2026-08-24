@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Chart } from './chart-registry';
+	import { buildCoveragePointStyle } from './coverage-line-style';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
@@ -484,6 +485,7 @@
 		// Parse data from results - matches original parsing logic
 		const datasets: ChartDataset[] = [];
 		let colorIndex = 0;
+		const hasPartialCoverage = visibleResults.some((result) => result.coverage.state === 'partial');
 
 		for (const option of dataOptions) {
 			if (option.checked) {
@@ -493,6 +495,14 @@
 				}
 				const data = visibleResults.map((item) => item.data?.[field] ?? null);
 				const color = predefinedColors[colorIndex % predefinedColors.length];
+				const pointStyle = hasPartialCoverage
+					? buildCoveragePointStyle(
+							visibleResults,
+							(_result, index) => data[index] ?? null,
+							(result) => result.coverage,
+							color
+						)
+					: null;
 				colorIndex++;
 
 				datasets.push({
@@ -505,16 +515,21 @@
 					fill: isStackedChart ? 'origin' : false,
 					tension: 0.1,
 					pointRadius: 0,
+					...(pointStyle ?? {}),
 					spanGaps: false,
-					segment: {
-						borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
-							isCoverageSegmentDashed(
-								visibleResults[context.p0DataIndex],
-								visibleResults[context.p1DataIndex]
-							)
-								? [6, 4]
-								: []
-					},
+					...(hasPartialCoverage
+						? {
+								segment: {
+									borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
+										isCoverageSegmentDashed(
+											visibleResults[context.p0DataIndex],
+											visibleResults[context.p1DataIndex]
+										)
+											? [6, 4]
+											: []
+								}
+							}
+						: {}),
 					hitRadius: 2,
 					hoverRadius: 5
 				});
@@ -627,6 +642,7 @@
 				responsive: true,
 				maintainAspectRatio: false,
 				animation: false,
+				normalized: true,
 				interaction: {
 					mode: 'index',
 					intersect: false
@@ -689,130 +705,6 @@
 	}
 
 	onMount(() => {
-		const {
-			textColor,
-			gridColor,
-			gridHighlightColor,
-			tooltipBackgroundColor,
-			tooltipTextColor,
-			tooltipBorderColor
-		} = getChartColors();
-
-		// Initialize empty chart (matches original)
-		chart = new Chart(chartCanvas, {
-			type: 'line',
-			data: {
-				labels: [],
-				datasets: [] // Start with no datasets
-			},
-			options: {
-				onClick: handleChartClick,
-				responsive: true,
-				maintainAspectRatio: false,
-				interaction: {
-					mode: 'index',
-					intersect: false
-				},
-				scales: {
-					x: {
-						title: {
-							display: true,
-							text: 'Date',
-							color: textColor
-						},
-						ticks: {
-							color: textColor,
-							autoSkip: false,
-							maxRotation: 45,
-							minRotation: 45,
-							sampleSize: 12,
-							callback: (_val: string | number, idx: number) =>
-								formatTickLabel(
-									getLabelPSTFromLabels(
-										(chart?.data.labels as (string | number | null | undefined)[] | undefined) ??
-											[],
-										Number(idx)
-									),
-									groupBy,
-									Number(idx)
-								)
-						},
-						grid: {
-							color: (ctx: { index?: number; tick?: { index?: number } }) => {
-								const tickIndex = ctx.index ?? ctx.tick?.index ?? 0;
-								const safeIndex = Number.isFinite(Number(tickIndex)) ? Number(tickIndex) : 0;
-								return shouldHighlightTick(
-									getLabelPSTFromLabels(
-										(chart?.data.labels as (string | number | null | undefined)[] | undefined) ??
-											[],
-										safeIndex
-									),
-									groupBy,
-									safeIndex
-								)
-									? gridColor
-									: gridHighlightColor;
-							}
-						}
-					},
-					y: {
-						afterFit(axis: { width: number }) {
-							axis.width = Y_AXIS_WIDTH;
-						},
-						ticks: {
-							color: textColor
-						},
-						grid: {
-							color: gridColor
-						}
-					}
-				},
-				plugins: {
-					tooltip: {
-						mode: 'index',
-						intersect: false,
-						backgroundColor: tooltipBackgroundColor,
-						titleColor: tooltipTextColor,
-						bodyColor: tooltipTextColor,
-						footerColor: tooltipTextColor,
-						borderColor: tooltipBorderColor,
-						borderWidth: 1
-					},
-					legend: {
-						labels: { color: textColor }
-					},
-					verticalCrosshair: {
-						enabled: true,
-						line: {
-							color: 'rgba(100, 100, 100, 0.8)',
-							width: 1,
-							dash: [3, 3]
-						},
-						tooltip: {
-							enabled: true,
-							delay: 500,
-							backgroundColor: tooltipBackgroundColor,
-							textColor: tooltipTextColor,
-							borderColor: tooltipBorderColor,
-							borderWidth: 1,
-							borderRadius: 4,
-							padding: 8,
-							fontSize: 12,
-							fontFamily: 'system-ui, sans-serif'
-						},
-						sync: {
-							onHover: (label: string | null) => crosshairStore.setHover(label, CHART_ID),
-							getExternalLabel: () => crosshairStore.getExternalLabel(CHART_ID)
-						}
-					}
-				} as Record<string, object>
-			}
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		} as any);
-
-		// Register chart with crosshair store for synchronized crosshairs
-		crosshairStore.register(CHART_ID, chart);
-
 		const container = chartCanvas.parentElement;
 		if (container) {
 			resizeObserver = new ResizeObserver(() => {
@@ -831,14 +723,6 @@
 			});
 			resizeObserver.observe(container);
 		}
-
-		return () => {
-			crosshairStore.unregister(CHART_ID);
-			resizeObserver?.disconnect();
-			resizeObserver = null;
-			chart?.destroy();
-			chart = null;
-		};
 	});
 
 	onDestroy(() => {
@@ -853,27 +737,25 @@
 		resizeObserver = null;
 	});
 
-	// Update chart when props change (matches original loadData behavior)
-	$effect(() => {
-		if (chart && results.length > 0) {
-			const config = createChartConfig();
-			chart.data = config.data;
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chart.options = config.options as any;
-			compactChartMode = isCompactChart();
-			chart.update('none');
-		}
-	});
-
 	$effect(() => {
 		void theme.dark;
-		if (chart) {
-			const config = createChartConfig();
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chart.options = config.options as any;
-			compactChartMode = isCompactChart();
-			chart.update('none');
+		if (!chartCanvas || results.length === 0) {
+			return;
 		}
+
+		const config = createChartConfig();
+		compactChartMode = isCompactChart();
+		if (!chart) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			chart = new Chart(chartCanvas, config as any);
+			crosshairStore.register(CHART_ID, chart);
+			return;
+		}
+
+		chart.data = config.data;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		chart.options = config.options as any;
+		chart.update('none');
 	});
 </script>
 

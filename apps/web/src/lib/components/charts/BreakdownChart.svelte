@@ -2,6 +2,7 @@
 	import { onDestroy, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { Chart } from './chart-registry';
+	import { buildCoveragePointStyle } from './coverage-line-style';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
@@ -124,7 +125,7 @@
 	};
 
 	let currentRouter = $state(getInitialRouter());
-	let cachedBuckets = $state<CachedBreakdownBucket[]>([]);
+	let cachedBuckets = $state.raw<CachedBreakdownBucket[]>([]);
 	let buckets = $derived(
 		cachedBuckets
 			.filter((record) => props.kind !== 'spectrum' || record.router === currentRouter)
@@ -882,6 +883,15 @@
 							coverage
 						};
 					});
+					const hasPartialCoverage = data.some((point) => point.coverage.state === 'partial');
+					const pointStyle = hasPartialCoverage
+						? buildCoveragePointStyle(
+								data,
+								(point) => point.y,
+								(point) => point.coverage,
+								stroke
+							)
+						: null;
 					return {
 						label: `${router} · ${metric.seriesLabel}`,
 						data,
@@ -890,17 +900,22 @@
 						tension: 0.3,
 						fill: false,
 						pointRadius: 0,
+						...(pointStyle ?? {}),
 						pointHoverRadius: 4,
 						spanGaps: false,
-						segment: {
-							borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
-								isCoverageSegmentDashed(
-									context.p0.raw as { coverage?: ChartCoverage },
-									context.p1.raw as { coverage?: ChartCoverage }
-								)
-									? [6, 4]
-									: []
-						},
+						...(hasPartialCoverage
+							? {
+									segment: {
+										borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
+											isCoverageSegmentDashed(
+												context.p0.raw as { coverage?: ChartCoverage },
+												context.p1.raw as { coverage?: ChartCoverage }
+											)
+												? [6, 4]
+												: []
+									}
+								}
+							: {}),
 						parsing: false
 					};
 				})
@@ -931,6 +946,7 @@
 					responsive: true,
 					maintainAspectRatio: false,
 					animation: false,
+					normalized: true,
 					interaction: { mode: 'index', intersect: false },
 					plugins,
 					scales
@@ -1170,6 +1186,7 @@
 	let lastFiltersKey = '';
 	let lastIncomingMetricsKey = '';
 	let requestToken = 0;
+	let requestController: AbortController | null = null;
 
 	function getRequestedRange(filters: FilterInputs): TimeRange {
 		return {
@@ -1190,6 +1207,9 @@
 	}
 
 	async function loadData(filters: FilterInputs, token: number) {
+		requestController?.abort();
+		const controller = new AbortController();
+		requestController = controller;
 		const requestedRange = getRequestedRange(filters);
 		const cacheKey = getCacheKey(filters);
 		loading = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
@@ -1210,13 +1230,15 @@
 			await ensureCachedWindow<CachedBreakdownBucket>({
 				key: cacheKey,
 				requestedRange,
-				fetchRange: async (range) => {
+				signal: controller.signal,
+				fetchRange: async (range, signal) => {
 					const response = await fetch(
 						`${config.endpoint}?${new URLSearchParams({
 							...Object.fromEntries(params.entries()),
 							startDate: range.start.toString(),
 							endDate: range.end.toString()
-						}).toString()}`
+						}).toString()}`,
+						{ signal }
 					);
 					if (!response.ok) {
 						const message = await response.text();
@@ -1254,14 +1276,21 @@
 			if (token !== requestToken) {
 				return;
 			}
+			if (err instanceof DOMException && err.name === 'AbortError') return;
 			error = err instanceof Error ? err.message : config.unexpectedErrorCopy;
 			cachedBuckets = [];
 			loading = false;
 			destroyChart();
+		} finally {
+			if (token === requestToken && requestController === controller) {
+				requestController = null;
+			}
 		}
 	}
 
 	onDestroy(() => {
+		requestToken += 1;
+		requestController?.abort();
 		cancelPendingPointerMove();
 		if (mirroredRange?.sourceChartId === CHART_ID) {
 			rangeSelection.clear();
@@ -1313,6 +1342,9 @@
 
 			currentGranularity = filters.granularity;
 			if (selectedRouters.length === 0) {
+				requestToken += 1;
+				requestController?.abort();
+				requestController = null;
 				error = config.noSourceCopy;
 				cachedBuckets = [];
 				destroyChart();
@@ -1363,7 +1395,9 @@
 			startDate: startDateProp ?? '2025-01-01',
 			endDate: endDateProp ?? formatDate(today),
 			granularity: granularityProp ?? config.defaultGranularity,
-			routers: availableRouters,
+			// The spectrum card displays one source at a time. Fetching every available source
+			// multiplied its SQL work and response size while the client discarded all but this one.
+			routers: nextRouter ? [nextRouter] : [],
 			srcVisibility,
 			dstVisibility
 		};
@@ -1371,6 +1405,9 @@
 		currentGranularity = filters.granularity;
 
 		if (filters.routers.length === 0) {
+			requestToken += 1;
+			requestController?.abort();
+			requestController = null;
 			error = config.noSourceCopy;
 			cachedBuckets = [];
 			destroyChart();

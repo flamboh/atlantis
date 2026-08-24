@@ -188,6 +188,22 @@ pub fn connect_readonly(path: impl AsRef<Path>) -> Result<Connection, StorageErr
     Ok(connection)
 }
 
+/// Refresh planner statistics for tables used by this connection when SQLite decides they would
+/// benefit. This is the cheap form intended for periodic maintenance on a long-lived connection.
+pub fn optimize_query_planner_statistics(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch("PRAGMA optimize;")?;
+    Ok(())
+}
+
+/// Refresh planner statistics while considering every table in a newly opened database.
+///
+/// Bit `0x10000` makes SQLite consider every table, while bit `0x2` enables analysis. SQLite
+/// applies a temporary analysis limit, so this stays bounded even for large pipeline products.
+pub fn optimize_all_query_planner_statistics(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch("PRAGMA optimize=0x10002;")?;
+    Ok(())
+}
+
 /// Run an immediate transaction and commit only when the operation succeeds.
 pub fn in_transaction<T>(
     connection: &mut Connection,
@@ -1445,6 +1461,8 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
         ON traffic_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+        CREATE INDEX IF NOT EXISTS idx_traffic_stats_timeseries
+        ON traffic_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
 
         CREATE TABLE IF NOT EXISTS protocol_stats (
             source_id TEXT NOT NULL,
@@ -1459,8 +1477,8 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
         ) WITHOUT ROWID;
-        CREATE INDEX IF NOT EXISTS idx_protocol_stats_query
-        ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+        CREATE INDEX IF NOT EXISTS idx_protocol_stats_timeseries
+        ON protocol_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
 
         CREATE TABLE IF NOT EXISTS address_count_stats (
             source_id TEXT NOT NULL,
@@ -1477,6 +1495,8 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_count_stats_query
         ON address_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side);
+        CREATE INDEX IF NOT EXISTS idx_address_count_stats_timeseries
+        ON address_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
 
         CREATE TABLE IF NOT EXISTS port_count_stats (
             source_id TEXT NOT NULL,
@@ -1492,8 +1512,8 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, port_side, port_range)
         ) WITHOUT ROWID;
-        CREATE INDEX IF NOT EXISTS idx_port_count_stats_query
-        ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, port_side, port_range);
+        CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
+        ON port_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
 
         CREATE TABLE IF NOT EXISTS address_structure_stats (
             source_id TEXT NOT NULL,
@@ -1512,6 +1532,14 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
         ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side, structure_kind);
+        CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
+        ON address_structure_stats (
+            source_id, granularity, src_visibility, dst_visibility,
+            ip_version, structure_kind, bucket_start
+        );
+
+        DROP INDEX IF EXISTS idx_protocol_stats_query;
+        DROP INDEX IF EXISTS idx_port_count_stats_query;
         ",
     )?;
     Ok(())
@@ -2442,6 +2470,9 @@ fn publish_backup(source_path: &Path, target_path: &Path) -> Result<(), StorageE
             let backup = Backup::new(&source, &mut target)?;
             backup.run_to_completion(128, Duration::from_millis(10), None)?;
         }
+        // Running this on the isolated copy gives the published product planner statistics
+        // without delaying active writers.
+        optimize_all_query_planner_statistics(&target)?;
         let quick_check =
             target.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))?;
         if quick_check != "ok" {
@@ -2775,6 +2806,146 @@ mod tests {
     }
 
     #[test]
+    fn stats_timeseries_indexes_apply_equality_filters_before_bucket_range() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        connection
+			.execute_batch(
+				"
+				CREATE INDEX idx_protocol_stats_query
+				ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+				CREATE INDEX idx_port_count_stats_query
+				ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, port_side, port_range);
+				",
+			)
+			.unwrap();
+        init_stats_tables(&connection).unwrap();
+
+        let expected_indexes = [
+            (
+                "idx_traffic_stats_timeseries",
+                [
+                    "source_id",
+                    "granularity",
+                    "src_visibility",
+                    "dst_visibility",
+                    "bucket_start",
+                ]
+                .as_slice(),
+            ),
+            (
+                "idx_protocol_stats_timeseries",
+                [
+                    "source_id",
+                    "granularity",
+                    "src_visibility",
+                    "dst_visibility",
+                    "bucket_start",
+                ]
+                .as_slice(),
+            ),
+            (
+                "idx_address_count_stats_timeseries",
+                [
+                    "source_id",
+                    "granularity",
+                    "src_visibility",
+                    "dst_visibility",
+                    "bucket_start",
+                ]
+                .as_slice(),
+            ),
+            (
+                "idx_port_count_stats_timeseries",
+                [
+                    "source_id",
+                    "granularity",
+                    "src_visibility",
+                    "dst_visibility",
+                    "bucket_start",
+                ]
+                .as_slice(),
+            ),
+            (
+                "idx_address_structure_stats_timeseries",
+                [
+                    "source_id",
+                    "granularity",
+                    "src_visibility",
+                    "dst_visibility",
+                    "ip_version",
+                    "structure_kind",
+                    "bucket_start",
+                ]
+                .as_slice(),
+            ),
+        ];
+        for (index, expected_columns) in expected_indexes {
+            let columns = connection
+                .prepare(&format!("PRAGMA index_info('{index}')"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(2))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(columns, expected_columns, "{index}");
+        }
+
+        // The WITHOUT ROWID primary key is already the optimal coverage timeline index.
+        let coverage_primary_key = connection
+            .prepare("PRAGMA table_info('bucket_coverage')")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|(position, _)| *position > 0)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            coverage_primary_key,
+            [
+                (1, "source_id".into()),
+                (2, "granularity".into()),
+                (3, "bucket_start".into())
+            ]
+        );
+
+        for index in [
+            "idx_traffic_stats_query",
+            "idx_address_count_stats_query",
+            "idx_address_structure_stats_query",
+        ] {
+            assert!(
+                connection
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                        [index],
+                        |_| Ok(())
+                    )
+                    .optional()
+                    .unwrap()
+                    .is_some(),
+                "the file-detail index must remain available: {index}"
+            );
+        }
+        for index in ["idx_protocol_stats_query", "idx_port_count_stats_query"] {
+            assert!(
+                connection
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                        [index],
+                        |_| Ok(())
+                    )
+                    .optional()
+                    .unwrap()
+                    .is_none(),
+                "the unused bucket-first index must be removed from existing products: {index}"
+            );
+        }
+    }
+
+    #[test]
     fn bucket_coverage_round_trips_and_is_deleted_with_stats() {
         let connection = Connection::open_in_memory().unwrap();
         init_stats_tables(&connection).unwrap();
@@ -2970,6 +3141,44 @@ mod tests {
         fs::write(target.with_file_name("target.sqlite-wal"), b"stale").unwrap();
         backup_database(&candidate, &target).unwrap();
         assert!(!target.with_file_name("target.sqlite-wal").exists());
+    }
+
+    #[test]
+    fn backup_optimizes_query_planner_statistics_before_publication() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("source.sqlite");
+        let target = directory.path().join("target.sqlite");
+        let source_writer = connect_pipeline_writer(&source).unwrap();
+        source_writer
+            .execute_batch(
+                "
+                CREATE TABLE events (category TEXT NOT NULL, bucket_start INTEGER NOT NULL);
+                CREATE INDEX idx_events_query ON events(category, bucket_start);
+                WITH RECURSIVE buckets(value) AS (
+                    VALUES (0)
+                    UNION ALL SELECT value + 1 FROM buckets WHERE value < 999
+                )
+                INSERT INTO events
+                SELECT printf('category-%d', value % 4), value FROM buckets;
+                ",
+            )
+            .unwrap();
+        drop(source_writer);
+
+        backup_database(&source, &target).unwrap();
+
+        let published = connect_readonly(&target).unwrap();
+        let stat = published
+            .query_row(
+                "SELECT stat FROM sqlite_stat1 WHERE idx = 'idx_events_query'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert!(
+            stat.starts_with("1000 "),
+            "unexpected planner statistics: {stat}"
+        );
     }
 
     #[test]

@@ -3,6 +3,10 @@ import {
 	formatCoverageState,
 	formatCoverageStripLabel
 } from '../../src/lib/components/charts/coverage-strip';
+import {
+	flattenCoverageTimelines,
+	rebuildCoverageTimelines
+} from '../../src/lib/components/charts/CoverageStrip.svelte';
 import { dateStringToEpochPST } from '../../src/lib/utils/timezone';
 
 describe('coverage strip labels', () => {
@@ -24,5 +28,41 @@ describe('coverage strip labels', () => {
 		expect(formatCoverageState({ state: 'unknown', observedUnits: 0, expectedUnits: 12 })).toBe(
 			'Unknown coverage'
 		);
+	});
+});
+
+describe('coverage strip window records', () => {
+	it('round-trips source lanes and preserves unknown buckets when reading a cached window', () => {
+		const timelines = [
+			{
+				sourceId: 'router-b',
+				buckets: [
+					{
+						bucketStart: 200,
+						bucketEnd: 300,
+						coverage: { state: 'unknown' as const, observedUnits: 0, expectedUnits: 1 }
+					}
+				]
+			},
+			{
+				sourceId: 'router-a',
+				buckets: [
+					{
+						bucketStart: 100,
+						bucketEnd: 200,
+						coverage: { state: 'complete' as const, observedUnits: 1, expectedUnits: 1 }
+					}
+				]
+			}
+		];
+
+		const rebuilt = rebuildCoverageTimelines(flattenCoverageTimelines(timelines), [
+			'router-a',
+			'router-b'
+		]);
+
+		expect(rebuilt.map((timeline) => timeline.sourceId)).toEqual(['router-a', 'router-b']);
+		expect(rebuilt[0]?.buckets.map((bucket) => bucket.bucketStart)).toEqual([100]);
+		expect(rebuilt[1]?.buckets[0]?.coverage.state).toBe('unknown');
 	});
 });

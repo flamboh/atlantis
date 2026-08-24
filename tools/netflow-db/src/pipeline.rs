@@ -38,9 +38,9 @@ use crate::{
         cached_content_fingerprint, complete_input_scan, connect_pipeline_writer,
         delete_stats_bucket_keys, earliest_traffic_bucket_start, init_schema,
         input_scan_fully_processed, insert_bucket_coverage_rows, mark_input_bucket_status,
-        nfcapd_logical_bucket_processed, query_bucket_coverage, query_input_evidence,
-        replace_input_evidence, set_dataset_default_start_date, upsert_dataset_metadata,
-        upsert_input_bucket,
+        nfcapd_logical_bucket_processed, optimize_all_query_planner_statistics,
+        query_bucket_coverage, query_input_evidence, replace_input_evidence,
+        set_dataset_default_start_date, upsert_dataset_metadata, upsert_input_bucket,
     },
 };
 
@@ -377,6 +377,11 @@ fn execute(pipeline: ResolvedPipeline) -> Result<PipelineReport, PipelineError> 
     );
     infer_default_start_dates(&connection, &pipeline)?;
     populate_coverage_summary(&connection, &mut report)?;
+    // This is the publication seam for the in-place pipeline product. Keep it before the strict
+    // coverage error so an incomplete-but-inspectable database also gets useful planner stats.
+    if let Err(error) = optimize_all_query_planner_statistics(&connection) {
+        tracing::warn!(%error, "could not refresh SQLite planner statistics");
+    }
     if pipeline.require_complete {
         let incomplete = count_incomplete_requested_coverage(&connection, &pipeline)?;
         if incomplete != 0 {
@@ -3289,12 +3294,24 @@ mod tests {
             "partial"
         );
 
+        // Simulate a legacy/in-progress product without planner statistics. The strict run still
+        // returns its coverage error, but first leaves that inspectable product optimized.
+        connection.execute("DELETE FROM sqlite_stat1", []).unwrap();
+
         let mut strict = PipelineRequest::config(&config);
         strict.require_complete = true;
         assert!(matches!(
             run(strict),
             Err(PipelineError::IncompleteCoverage(4))
         ));
+        assert!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sqlite_stat1", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap()
+                > 0
+        );
         assert_eq!(
             connection
                 .query_row(

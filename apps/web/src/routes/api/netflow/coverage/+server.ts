@@ -6,7 +6,7 @@ import {
 	type NetflowCoverageResponse
 } from '$lib/types/types';
 import { buildCoverageOnlyTimelines } from '$lib/server/db/coverage';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import {
 	groupByToGranularity,
 	parseIpGranularity,
@@ -64,16 +64,17 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
-		const db = await getDatasetDb(dataset, platform);
-		const timelines = await buildCoverageOnlyTimelines({
-			db,
-			granularity,
-			start,
-			end,
-			sourceIds: routers
-		});
+		return await withDatasetDb(dataset, platform, async ({ db }) => {
+			const timelines = await buildCoverageOnlyTimelines({
+				db,
+				granularity,
+				start,
+				end,
+				sourceIds: routers
+			});
 
-		return json({ timelines, requestedRouters: routers } satisfies NetflowCoverageResponse);
+			return json({ timelines, requestedRouters: routers } satisfies NetflowCoverageResponse);
+		});
 	} catch (error) {
 		console.error('Failed to query bucket_coverage:', error);
 		const message = error instanceof Error ? error.message : 'Database query failed';

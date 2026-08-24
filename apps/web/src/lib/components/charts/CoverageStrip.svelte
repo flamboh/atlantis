@@ -1,3 +1,37 @@
+<script module lang="ts">
+	import type { CoverageTimeline, CoverageTimelineBucket } from '$lib/types/types';
+	import { SvelteMap } from 'svelte/reactivity';
+
+	export type CachedCoverageRecord = {
+		sourceId: string;
+		bucket: CoverageTimelineBucket;
+	};
+
+	export function flattenCoverageTimelines(timelines: CoverageTimeline[]): CachedCoverageRecord[] {
+		return timelines.flatMap((timeline) =>
+			timeline.buckets.map((bucket) => ({ sourceId: timeline.sourceId, bucket }))
+		);
+	}
+
+	export function rebuildCoverageTimelines(
+		records: CachedCoverageRecord[],
+		sourceIds: string[]
+	): CoverageTimeline[] {
+		const bucketsBySource = new SvelteMap(
+			sourceIds.map((sourceId) => [sourceId, [] as CoverageTimelineBucket[]])
+		);
+		for (const record of records) {
+			const buckets = bucketsBySource.get(record.sourceId) ?? [];
+			buckets.push(record.bucket);
+			bucketsBySource.set(record.sourceId, buckets);
+		}
+		return [...bucketsBySource].map(([sourceId, buckets]) => ({
+			sourceId,
+			buckets: buckets.sort((left, right) => left.bucketStart - right.bucketStart)
+		}));
+	}
+</script>
+
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { Plugin, TooltipItem } from 'chart.js';
@@ -5,6 +39,12 @@
 	import type { BucketCoverage, CoverageState } from '$lib/types/types';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
+	import {
+		ensureCachedWindow,
+		getMissingWindowRanges,
+		readCachedWindow,
+		type TimeRange
+	} from '$lib/utils/window-cache';
 	import { crosshairStore } from '$lib/stores/crosshair';
 	import { theme } from '$lib/stores/theme.svelte';
 	import { Chart } from './chart-registry';
@@ -37,13 +77,16 @@
 		partialColor: string;
 	};
 
-	let timelines = $state<CoverageStripTimeline[]>([]);
+	let timelines = $state.raw<CoverageStripTimeline[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let chart: Chart<'line', number[], string> | null = null;
 	let requestKey = '';
 	let requestToken = 0;
+	let requestController: AbortController | null = null;
+	let renderedPalette: ChartPalette | null = null;
+	let renderedTimelines: CoverageStripTimeline[] = [];
 
 	const startEpoch = $derived(dateStringToEpochPST(props.startDate));
 	const endEpoch = $derived(dateStringToEpochPST(props.endDate, true));
@@ -128,32 +171,81 @@
 		}));
 	}
 
-	async function loadCoverage(routers: string[], token: number) {
-		loading = true;
-		error = null;
-		const params = new URLSearchParams({
+	function getCacheKey(routers: string[]): string {
+		return JSON.stringify({
+			chart: CHART_ID,
 			dataset: props.dataset,
-			startDate: startEpoch.toString(),
-			endDate: endEpoch.toString(),
+			groupBy: props.groupBy,
+			routers
+		});
+	}
+
+	function readCachedCoverage(
+		cacheKey: string,
+		requestedRange: TimeRange,
+		routers: string[]
+	): CoverageStripTimeline[] {
+		const records = readCachedWindow<CachedCoverageRecord>(
+			cacheKey,
+			requestedRange,
+			(record, range) =>
+				record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end
+		);
+		return rebuildCoverageTimelines(records, routers);
+	}
+
+	async function loadCoverage(routers: string[], token: number) {
+		requestController?.abort();
+		const controller = new AbortController();
+		requestController = controller;
+		const requestedRange = { start: startEpoch, end: endEpoch };
+		const cacheKey = getCacheKey(routers);
+		loading = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
+		error = null;
+		const baseParams = new URLSearchParams({
+			dataset: props.dataset,
 			groupBy: props.groupBy,
 			routers: routers.join(',')
 		});
 
 		try {
-			const response = await fetch(`/api/netflow/coverage?${params.toString()}`);
-			if (!response.ok) {
-				const message = await response.text();
-				throw new Error(message || `Failed to load coverage: ${response.statusText}`);
-			}
-			const payload: unknown = await response.json();
+			await ensureCachedWindow<CachedCoverageRecord>({
+				key: cacheKey,
+				requestedRange,
+				signal: controller.signal,
+				fetchRange: async (range, signal) => {
+					const response = await fetch(
+						`/api/netflow/coverage?${new URLSearchParams({
+							...Object.fromEntries(baseParams.entries()),
+							startDate: range.start.toString(),
+							endDate: range.end.toString()
+						}).toString()}`,
+						{ signal }
+					);
+					if (!response.ok) {
+						const message = await response.text();
+						throw new Error(message || `Failed to load coverage: ${response.statusText}`);
+					}
+					const payload: unknown = await response.json();
+					return flattenCoverageTimelines(parseCoverageTimelines(payload));
+				},
+				getRecordKey: (record) => `${record.sourceId}:${record.bucket.bucketStart}`,
+				compareRecords: (left, right) =>
+					left.bucket.bucketStart - right.bucket.bucketStart ||
+					left.sourceId.localeCompare(right.sourceId)
+			});
 			if (token !== requestToken) return;
-			timelines = parseCoverageTimelines(payload);
+			timelines = readCachedCoverage(cacheKey, requestedRange, routers);
 		} catch (err) {
 			if (token !== requestToken) return;
+			if (err instanceof DOMException && err.name === 'AbortError') return;
 			timelines = [];
 			error = err instanceof Error ? err.message : 'Failed to load coverage';
 		} finally {
-			if (token === requestToken) loading = false;
+			if (token === requestToken) {
+				loading = false;
+				if (requestController === controller) requestController = null;
+			}
 		}
 	}
 
@@ -170,59 +262,56 @@
 		};
 	}
 
-	function createCoverageLanesPlugin(
-		palette: ChartPalette,
-		renderedTimelines: CoverageStripTimeline[]
-	): Plugin<'line'> {
-		return {
-			id: 'coverageLanes',
-			beforeDatasetsDraw(chartInstance) {
-				const xScale = chartInstance.scales.x;
-				const yScale = chartInstance.scales.y;
-				const { ctx, chartArea } = chartInstance;
-				const bucketCount = renderedTimelines[0]?.buckets.length ?? 0;
-				if (!xScale || !yScale || bucketCount === 0) return;
+	const coverageLanesPlugin: Plugin<'line'> = {
+		id: 'coverageLanes',
+		beforeDatasetsDraw(chartInstance) {
+			const palette = renderedPalette;
+			if (!palette) return;
+			const xScale = chartInstance.scales.x;
+			const yScale = chartInstance.scales.y;
+			const { ctx, chartArea } = chartInstance;
+			const bucketCount = renderedTimelines[0]?.buckets.length ?? 0;
+			if (!xScale || !yScale || bucketCount === 0) return;
 
-				const centers = Array.from({ length: bucketCount }, (_, index) =>
-					xScale.getPixelForValue(index)
-				);
+			const centers = Array.from({ length: bucketCount }, (_, index) =>
+				xScale.getPixelForValue(index)
+			);
 
-				ctx.save();
-				ctx.lineCap = 'butt';
-				for (const [sourceIndex, timeline] of renderedTimelines.entries()) {
-					const y = Math.round(yScale.getPixelForValue(sourceIndex)) + 0.5;
-					ctx.strokeStyle = palette.trackColor;
-					ctx.lineWidth = 1;
-					ctx.setLineDash([]);
+			ctx.save();
+			ctx.lineCap = 'butt';
+			for (const [sourceIndex, timeline] of renderedTimelines.entries()) {
+				const y = Math.round(yScale.getPixelForValue(sourceIndex)) + 0.5;
+				ctx.strokeStyle = palette.trackColor;
+				ctx.lineWidth = 1;
+				ctx.setLineDash([]);
+				ctx.beginPath();
+				ctx.moveTo(chartArea.left, y);
+				ctx.lineTo(chartArea.right, y);
+				ctx.stroke();
+
+				for (const [bucketIndex, bucket] of timeline.buckets.entries()) {
+					if (bucket.coverage.state === 'unknown') continue;
+					const center = centers[bucketIndex];
+					if (center === undefined) continue;
+					const previousCenter = centers[bucketIndex - 1];
+					const nextCenter = centers[bucketIndex + 1];
+					const left =
+						previousCenter === undefined ? chartArea.left : (previousCenter + center) / 2;
+					const right = nextCenter === undefined ? chartArea.right : (center + nextCenter) / 2;
+
+					ctx.strokeStyle =
+						bucket.coverage.state === 'complete' ? palette.completeColor : palette.partialColor;
+					ctx.lineWidth = 2;
+					ctx.setLineDash(bucket.coverage.state === 'partial' ? [5, 4] : []);
 					ctx.beginPath();
-					ctx.moveTo(chartArea.left, y);
-					ctx.lineTo(chartArea.right, y);
+					ctx.moveTo(left, y);
+					ctx.lineTo(right, y);
 					ctx.stroke();
-
-					for (const [bucketIndex, bucket] of timeline.buckets.entries()) {
-						if (bucket.coverage.state === 'unknown') continue;
-						const center = centers[bucketIndex];
-						if (center === undefined) continue;
-						const previousCenter = centers[bucketIndex - 1];
-						const nextCenter = centers[bucketIndex + 1];
-						const left =
-							previousCenter === undefined ? chartArea.left : (previousCenter + center) / 2;
-						const right = nextCenter === undefined ? chartArea.right : (center + nextCenter) / 2;
-
-						ctx.strokeStyle =
-							bucket.coverage.state === 'complete' ? palette.completeColor : palette.partialColor;
-						ctx.lineWidth = 2;
-						ctx.setLineDash(bucket.coverage.state === 'partial' ? [5, 4] : []);
-						ctx.beginPath();
-						ctx.moveTo(left, y);
-						ctx.lineTo(right, y);
-						ctx.stroke();
-					}
 				}
-				ctx.restore();
 			}
-		};
-	}
+			ctx.restore();
+		}
+	};
 
 	function destroyChart() {
 		if (!chart) return;
@@ -253,15 +342,17 @@
 			showLine: false
 		}));
 
-		destroyChart();
-		chart = new Chart(canvas, {
+		renderedPalette = palette;
+		renderedTimelines = visibleTimelines;
+		const config = {
 			type: 'line',
 			data: { labels, datasets },
-			plugins: [createCoverageLanesPlugin(palette, visibleTimelines)],
+			plugins: [coverageLanesPlugin],
 			options: {
 				responsive: true,
 				maintainAspectRatio: false,
 				animation: false,
+				normalized: true,
 				interaction: { mode: 'index', axis: 'x', intersect: false },
 				layout: { padding: { top: 4, right: 4, bottom: 4 } },
 				plugins: {
@@ -337,12 +428,25 @@
 					}
 				}
 			}
-		} as never);
+		};
+		if (chart && chart.canvas === canvas) {
+			chart.data = config.data;
+			chart.options = config.options as never;
+			chart.update('none');
+			return;
+		}
+
+		destroyChart();
+		chart = new Chart(canvas, config as never);
 		crosshairStore.register(CHART_ID, chart);
 	}
 
 	$effect(() => {
 		if (!props.routersLoaded) {
+			requestToken += 1;
+			requestController?.abort();
+			requestController = null;
+			requestKey = '';
 			loading = true;
 			error = null;
 			timelines = [];
@@ -350,6 +454,10 @@
 		}
 
 		if (selectedRouters.length === 0) {
+			requestToken += 1;
+			requestController?.abort();
+			requestController = null;
+			requestKey = '';
 			loading = false;
 			error = 'Select at least one source to view coverage';
 			timelines = [];
@@ -376,6 +484,8 @@
 	});
 
 	onDestroy(() => {
+		requestToken += 1;
+		requestController?.abort();
 		if (crosshairStore.sourceChartId === CHART_ID) {
 			crosshairStore.clearHover();
 		}

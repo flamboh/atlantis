@@ -29,14 +29,31 @@ type SqliteClient = {
 	};
 };
 
-type LocalDbIdentity = {
+type LocalFileRevision = {
 	device: number;
 	inode: number;
+	size: number;
+	modifiedMs: number;
+};
+
+type LocalDbIdentity = Pick<LocalFileRevision, 'device' | 'inode'>;
+
+type LocalDbRevision = LocalFileRevision & {
+	wal: LocalFileRevision | null;
+};
+
+type LocalSourceMetadata = {
+	sourceIds?: string[];
+	definitions?: SourceDefinition[];
 };
 
 type LocalDbCacheEntry = {
 	db: ReadonlyDatasetDb;
-	identity: LocalDbIdentity;
+	revision: LocalDbRevision;
+	datasetRows?: LocalDatasetRow[];
+	sourceMetadata: Map<string, LocalSourceMetadata>;
+	activeLeases: number;
+	retired: boolean;
 	close(): void;
 };
 
@@ -52,6 +69,11 @@ export interface ReadonlyDatasetDb {
 }
 
 const localDbCache = new Map<string, LocalDbCacheEntry>();
+const localDbRefreshes = new Map<string, Promise<LocalDbCacheEntry>>();
+const d1DbCache = new WeakMap<D1Database, ReadonlyDatasetDb>();
+// Local products are normally published with an atomic rename. The path cache is always validated
+// against the file revision before reuse, so replacement or an in-place metadata write clears it.
+const localDatasetPaths = new Map<string, string>();
 
 function getEnv(name: string): string | undefined {
 	return globalThis.process?.env?.[name]?.trim() || privateEnv[name]?.trim() || undefined;
@@ -81,6 +103,11 @@ function createReadonlyDb(client: SqliteClient): ReadonlyDatasetDb {
 }
 
 function createD1Db(d1: D1Database): ReadonlyDatasetDb {
+	const cached = d1DbCache.get(d1);
+	if (cached) {
+		return cached;
+	}
+
 	const db: ReadonlyDatasetDb = {
 		async get<T = unknown>(query: string, params: QueryParam[] = []) {
 			const result = await d1
@@ -101,6 +128,7 @@ function createD1Db(d1: D1Database): ReadonlyDatasetDb {
 		}
 	};
 
+	d1DbCache.set(d1, db);
 	return db;
 }
 
@@ -168,26 +196,83 @@ async function openLocalClient(dbPath: string): Promise<SqliteClient> {
 	return drizzleDb.$client as SqliteClient;
 }
 
-async function localDbIdentity(dbPath: string): Promise<LocalDbIdentity> {
+async function localDbRevision(dbPath: string): Promise<LocalDbRevision> {
 	const fs = await import('node:fs/promises');
-	const stat = await fs.stat(dbPath);
-	return { device: stat.dev, inode: stat.ino };
+	const [stat, wal] = await Promise.all([
+		fs.stat(dbPath),
+		fs.stat(`${dbPath}-wal`).catch((error: unknown) => {
+			if (
+				typeof error === 'object' &&
+				error !== null &&
+				'code' in error &&
+				error.code === 'ENOENT'
+			) {
+				return null;
+			}
+			throw error;
+		})
+	]);
+	const revision = (file: typeof stat): LocalFileRevision => ({
+		device: file.dev,
+		inode: file.ino,
+		size: file.size,
+		modifiedMs: file.mtimeMs
+	});
+	return {
+		...revision(stat),
+		wal: wal ? revision(wal) : null
+	};
 }
 
 function sameLocalDbIdentity(left: LocalDbIdentity, right: LocalDbIdentity): boolean {
 	return left.device === right.device && left.inode === right.inode;
 }
 
+function sameLocalFileRevision(left: LocalFileRevision, right: LocalFileRevision): boolean {
+	return (
+		left.device === right.device &&
+		left.inode === right.inode &&
+		left.size === right.size &&
+		left.modifiedMs === right.modifiedMs
+	);
+}
+
+function sameLocalDbRevision(left: LocalDbRevision, right: LocalDbRevision): boolean {
+	return (
+		sameLocalFileRevision(left, right) &&
+		(left.wal === null
+			? right.wal === null
+			: right.wal !== null && sameLocalFileRevision(left.wal, right.wal))
+	);
+}
+
+function evictLocalDatasetPaths(dbPath: string): void {
+	for (const [datasetId, cachedPath] of localDatasetPaths) {
+		if (cachedPath === dbPath) {
+			localDatasetPaths.delete(datasetId);
+		}
+	}
+}
+
 async function createLocalDb(dbPath: string): Promise<LocalDbCacheEntry> {
 	for (let attempt = 0; attempt < 3; attempt += 1) {
-		const identityBeforeOpen = await localDbIdentity(dbPath);
+		const revisionBeforeOpen = await localDbRevision(dbPath);
 		const client = await openLocalClient(dbPath);
-		const identityAfterOpen = await localDbIdentity(dbPath);
-		if (sameLocalDbIdentity(identityBeforeOpen, identityAfterOpen)) {
+		const revisionAfterOpen = await localDbRevision(dbPath);
+		if (sameLocalDbIdentity(revisionBeforeOpen, revisionAfterOpen)) {
+			let closed = false;
 			return {
 				db: createReadonlyDb(client),
-				identity: identityAfterOpen,
-				close: () => client.close()
+				revision: revisionAfterOpen,
+				sourceMetadata: new Map(),
+				activeLeases: 0,
+				retired: false,
+				close: () => {
+					if (!closed) {
+						closed = true;
+						client.close();
+					}
+				}
 			};
 		}
 		client.close();
@@ -196,22 +281,88 @@ async function createLocalDb(dbPath: string): Promise<LocalDbCacheEntry> {
 	throw new Error(`Local SQLite database kept changing while opening: ${dbPath}`);
 }
 
-async function getLocalDb(dbPath: string): Promise<ReadonlyDatasetDb> {
-	const identity = await localDbIdentity(dbPath);
-	const existing = localDbCache.get(dbPath);
-	if (existing && sameLocalDbIdentity(existing.identity, identity)) {
-		return existing.db;
+function retireLocalDbEntry(entry: LocalDbCacheEntry): void {
+	entry.retired = true;
+	if (entry.activeLeases === 0) {
+		entry.close();
 	}
-	existing?.close();
-
-	const entry = await createLocalDb(dbPath);
-	localDbCache.set(dbPath, entry);
-	return entry.db;
 }
 
-async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]> {
-	const db = await getLocalDb(dbPath);
-	const rows = await db.all<DatasetRow>(
+function releaseLocalDbEntry(entry: LocalDbCacheEntry): void {
+	if (entry.activeLeases === 0) {
+		throw new Error('Local SQLite database lease released more than once');
+	}
+	entry.activeLeases -= 1;
+	if (entry.retired && entry.activeLeases === 0) {
+		entry.close();
+	}
+}
+
+async function getLocalDbEntry(dbPath: string): Promise<LocalDbCacheEntry> {
+	const pendingRefresh = localDbRefreshes.get(dbPath);
+	if (pendingRefresh) {
+		await pendingRefresh;
+	}
+
+	const revision = await localDbRevision(dbPath);
+	const existing = localDbCache.get(dbPath);
+	if (existing && !existing.retired && sameLocalDbIdentity(existing.revision, revision)) {
+		if (!sameLocalDbRevision(existing.revision, revision)) {
+			existing.revision = revision;
+			existing.datasetRows = undefined;
+			existing.sourceMetadata.clear();
+			evictLocalDatasetPaths(dbPath);
+		}
+		return existing;
+	}
+
+	const concurrentRefresh = localDbRefreshes.get(dbPath);
+	if (concurrentRefresh) {
+		await concurrentRefresh;
+		return getLocalDbEntry(dbPath);
+	}
+
+	const refresh = (async () => {
+		const stale = localDbCache.get(dbPath);
+		if (stale) {
+			localDbCache.delete(dbPath);
+			retireLocalDbEntry(stale);
+		}
+		evictLocalDatasetPaths(dbPath);
+
+		const entry = await createLocalDb(dbPath);
+		localDbCache.set(dbPath, entry);
+		return entry;
+	})();
+	localDbRefreshes.set(dbPath, refresh);
+	try {
+		return await refresh;
+	} finally {
+		if (localDbRefreshes.get(dbPath) === refresh) {
+			localDbRefreshes.delete(dbPath);
+		}
+	}
+}
+
+async function acquireLocalDbEntry(dbPath: string): Promise<LocalDbCacheEntry> {
+	for (;;) {
+		const entry = await getLocalDbEntry(dbPath);
+		if (!entry.retired) {
+			entry.activeLeases += 1;
+			return entry;
+		}
+	}
+}
+
+async function readDatasetRowsFromEntry(
+	dbPath: string,
+	entry: LocalDbCacheEntry
+): Promise<LocalDatasetRow[]> {
+	if (entry.datasetRows) {
+		return entry.datasetRows.map((row) => ({ ...row }));
+	}
+
+	const rows = await entry.db.all<DatasetRow>(
 		`
 			SELECT
 				id,
@@ -225,7 +376,7 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 	);
 	// Backups and obsolete products can remain under data/, but the current dashboard requires
 	// explicit coverage and must not let an older database shadow a current product with the same ID.
-	const schema = await db.get<{ hasCoverage: number }>(
+	const schema = await entry.db.get<{ hasCoverage: number }>(
 		`SELECT EXISTS(
 			SELECT 1
 			FROM sqlite_master
@@ -233,20 +384,55 @@ async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]>
 		) AS hasCoverage`
 	);
 	if (schema?.hasCoverage !== 1) {
+		entry.datasetRows = [];
 		return [];
 	}
 
-	return rows.map((row) => ({ ...row, dbPath }));
+	entry.datasetRows = rows.map((row) => ({ ...row, dbPath }));
+	return entry.datasetRows.map((row) => ({ ...row }));
+}
+
+async function readDatasetRowsFromDb(dbPath: string): Promise<LocalDatasetRow[]> {
+	const entry = await acquireLocalDbEntry(dbPath);
+	try {
+		return await readDatasetRowsFromEntry(dbPath, entry);
+	} finally {
+		releaseLocalDbEntry(entry);
+	}
 }
 
 async function listLocalDatasetRows(): Promise<LocalDatasetRow[]> {
 	const dbPaths = await discoverLocalSqlitePaths();
-	return (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
+	const rows = (await Promise.all(dbPaths.map(readDatasetRowsFromDb)))
 		.flat()
 		.sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
+
+	localDatasetPaths.clear();
+	for (const row of rows) {
+		if (!localDatasetPaths.has(row.id)) {
+			localDatasetPaths.set(row.id, row.dbPath);
+		}
+	}
+	return rows;
 }
 
 async function getLocalDatasetRow(datasetId: string): Promise<LocalDatasetRow> {
+	const cachedPath = localDatasetPaths.get(datasetId);
+	if (cachedPath) {
+		try {
+			const cached = (await readDatasetRowsFromDb(cachedPath)).find(
+				(dataset) => dataset.id === datasetId
+			);
+			if (cached) {
+				localDatasetPaths.set(datasetId, cachedPath);
+				return cached;
+			}
+		} catch {
+			// A moved or replaced product is resolved through fresh discovery below.
+		}
+		localDatasetPaths.delete(datasetId);
+	}
+
 	const datasets = await listLocalDatasetRows();
 	const dataset = datasets.find((item) => item.id === datasetId);
 	if (!dataset) {
@@ -272,6 +458,30 @@ async function listD1DatasetRows(platform: App.Platform): Promise<DatasetRow[]> 
 	);
 }
 
+async function getD1DatasetRow(datasetId: string, platform: App.Platform): Promise<DatasetRow> {
+	const db = createD1Db(platform.env.DB);
+	const dataset = await db.get<DatasetRow>(
+		`
+			SELECT
+				id,
+				label,
+				default_start_date AS defaultStartDate,
+				discovery_mode AS discoveryMode,
+				sort_order AS sortOrder
+			FROM datasets
+			WHERE id = ?
+			LIMIT 1
+		`,
+		[datasetId]
+	);
+	if (dataset) {
+		return dataset;
+	}
+
+	const available = (await listD1DatasetRows(platform)).map((item) => item.id).join(', ');
+	throw new Error(`Unknown dataset '${datasetId}'. Available datasets: ${available}`);
+}
+
 async function listDatasetRows(platform?: App.Platform): Promise<DatasetRow[]> {
 	if (shouldUseD1(platform)) {
 		return listD1DatasetRows(platform as App.Platform);
@@ -285,8 +495,12 @@ export async function listDatasets(platform?: App.Platform): Promise<DatasetRow[
 }
 
 export async function getDefaultDatasetId(platform?: App.Platform): Promise<string> {
-	const configured = getEnv('DEFAULT_DATASET');
 	const datasets = await listDatasetRows(platform);
+	return getDefaultDatasetIdFromRows(datasets);
+}
+
+function getDefaultDatasetIdFromRows(datasets: DatasetRow[]): string {
+	const configured = getEnv('DEFAULT_DATASET');
 	if (configured && datasets.some((dataset) => dataset.id === configured)) {
 		return configured;
 	}
@@ -307,14 +521,7 @@ export async function getDatasetConfig(
 		return getLocalDatasetRow(datasetId);
 	}
 
-	const datasets = await listD1DatasetRows(platform as App.Platform);
-	const dataset = datasets.find((item) => item.id === datasetId);
-	if (!dataset) {
-		const available = datasets.map((item) => item.id).join(', ');
-		throw new Error(`Unknown dataset '${datasetId}'. Available datasets: ${available}`);
-	}
-
-	return dataset;
+	return getD1DatasetRow(datasetId, platform as App.Platform);
 }
 
 export async function getDatasetLabel(datasetId: string, platform?: App.Platform): Promise<string> {
@@ -322,27 +529,69 @@ export async function getDatasetLabel(datasetId: string, platform?: App.Platform
 	return dataset.label.trim() || dataset.id;
 }
 
-export async function getDatasetDb(
-	datasetOrPlatform?: string | App.Platform,
-	platform?: App.Platform
-): Promise<ReadonlyDatasetDb> {
-	const datasetId = typeof datasetOrPlatform === 'string' ? datasetOrPlatform : undefined;
-	const requestPlatform = typeof datasetOrPlatform === 'string' ? platform : datasetOrPlatform;
+type DatasetDbContext = {
+	db: ReadonlyDatasetDb;
+	localEntry?: LocalDbCacheEntry;
+	release(): void;
+};
 
-	if (shouldUseD1(requestPlatform)) {
-		return createD1Db((requestPlatform as App.Platform).env.DB);
-	}
-
-	const resolvedDatasetId = datasetId ?? (await getDefaultDatasetId(requestPlatform));
-	const dataset = await getLocalDatasetRow(resolvedDatasetId);
-	return getLocalDb(dataset.dbPath);
-}
-
-export async function listDatasetSources(
+async function acquireDatasetDbContext(
 	datasetId: string,
 	platform?: App.Platform
-): Promise<string[]> {
-	const db = await getDatasetDb(datasetId, platform);
+): Promise<DatasetDbContext> {
+	if (shouldUseD1(platform)) {
+		return { db: createD1Db((platform as App.Platform).env.DB), release: () => undefined };
+	}
+
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const dataset = await getLocalDatasetRow(datasetId);
+		const localEntry = await acquireLocalDbEntry(dataset.dbPath);
+		try {
+			const currentDataset = (await readDatasetRowsFromEntry(dataset.dbPath, localEntry)).some(
+				(row) => row.id === datasetId
+			);
+			if (currentDataset) {
+				return {
+					db: localEntry.db,
+					localEntry,
+					release: () => releaseLocalDbEntry(localEntry)
+				};
+			}
+		} catch (error) {
+			releaseLocalDbEntry(localEntry);
+			throw error;
+		}
+		releaseLocalDbEntry(localEntry);
+		localDatasetPaths.delete(datasetId);
+	}
+
+	throw new Error(`Dataset '${datasetId}' kept changing while opening its database`);
+}
+
+export type DatasetDbSession = {
+	db: ReadonlyDatasetDb;
+	listSources(): Promise<string[]>;
+	listSourceDefinitions(): Promise<SourceDefinition[]>;
+};
+
+export async function withDatasetDb<T>(
+	datasetId: string,
+	platform: App.Platform | undefined,
+	run: (session: DatasetDbSession) => Promise<T> | T
+): Promise<T> {
+	const context = await acquireDatasetDbContext(datasetId, platform);
+	try {
+		return await run({
+			db: context.db,
+			listSources: () => listDatasetSourcesFromContext(datasetId, context),
+			listSourceDefinitions: () => listDatasetSourceDefinitionsFromContext(datasetId, context)
+		});
+	} finally {
+		context.release();
+	}
+}
+
+async function listDatasetSourcesFromDb(db: ReadonlyDatasetDb): Promise<string[]> {
 	const rows = await db.all<{ sourceId: string }>(
 		`
 			SELECT DISTINCT source_id AS sourceId
@@ -351,22 +600,79 @@ export async function listDatasetSources(
 			ORDER BY source_id
 		`
 	);
-
 	return rows.map((row) => row.sourceId);
+}
+
+function copySourceDefinitions(definitions: SourceDefinition[]): SourceDefinition[] {
+	return definitions.map((definition) => ({
+		sourceId: definition.sourceId,
+		members: [...definition.members]
+	}));
+}
+
+export async function listDatasetSources(
+	datasetId: string,
+	platform?: App.Platform
+): Promise<string[]> {
+	return withDatasetDb(datasetId, platform, ({ listSources }) => listSources());
+}
+
+async function listDatasetSourcesFromContext(
+	datasetId: string,
+	{ db, localEntry }: DatasetDbContext
+): Promise<string[]> {
+	const cached = localEntry?.sourceMetadata.get(datasetId);
+	if (cached?.sourceIds) {
+		return [...cached.sourceIds];
+	}
+
+	const configured = await listConfiguredSourceDefinitions(db, datasetId);
+	const sourceIds =
+		configured.length > 0
+			? configured.map((definition) => definition.sourceId)
+			: await listDatasetSourcesFromDb(db);
+	if (localEntry) {
+		localEntry.sourceMetadata.set(datasetId, {
+			sourceIds,
+			definitions: configured.length > 0 ? configured : undefined
+		});
+	}
+	return [...sourceIds];
 }
 
 export async function listDatasetSourceDefinitions(
 	datasetId: string,
 	platform?: App.Platform
 ): Promise<SourceDefinition[]> {
-	const db = await getDatasetDb(datasetId, platform);
-	const sourceIds = await listDatasetSources(datasetId, platform);
-	const configured = await listConfiguredSourceDefinitions(db, datasetId);
-	if (configured.length > 0) {
-		return mergeSourceDefinitions(sourceIds, configured);
+	return withDatasetDb(datasetId, platform, ({ listSourceDefinitions }) => listSourceDefinitions());
+}
+
+async function listDatasetSourceDefinitionsFromContext(
+	datasetId: string,
+	{ db, localEntry }: DatasetDbContext
+): Promise<SourceDefinition[]> {
+	const cached = localEntry?.sourceMetadata.get(datasetId);
+	if (cached?.definitions) {
+		return copySourceDefinitions(cached.definitions);
 	}
 
-	return inferSourceDefinitions(db, sourceIds);
+	const configured = await listConfiguredSourceDefinitions(db, datasetId);
+	if (configured.length > 0) {
+		if (localEntry) {
+			localEntry.sourceMetadata.set(datasetId, {
+				sourceIds: configured.map((definition) => definition.sourceId),
+				definitions: configured
+			});
+		}
+		return copySourceDefinitions(configured);
+	}
+
+	const sourceIds = cached?.sourceIds ?? (await listDatasetSourcesFromDb(db));
+	const definitions = await inferSourceDefinitions(db, sourceIds);
+	if (localEntry) {
+		localEntry.sourceMetadata.set(datasetId, { sourceIds, definitions });
+	}
+	return copySourceDefinitions(definitions);
 }
 
 async function listConfiguredSourceDefinitions(
@@ -439,23 +745,6 @@ function groupSourceMemberRows(rows: { sourceId: string; memberId: string }[]): 
 		.sort((left, right) => left.sourceId.localeCompare(right.sourceId));
 }
 
-function mergeSourceDefinitions(
-	sourceIds: string[],
-	definitions: SourceDefinition[]
-): SourceDefinition[] {
-	const definitionsBySource = new Map(
-		definitions.map((definition) => [definition.sourceId, definition])
-	);
-	for (const sourceId of sourceIds) {
-		if (!definitionsBySource.has(sourceId)) {
-			definitionsBySource.set(sourceId, { sourceId, members: [sourceId] });
-		}
-	}
-	return [...definitionsBySource.values()].sort((left, right) =>
-		left.sourceId.localeCompare(right.sourceId)
-	);
-}
-
 function inferMemberIdFromInputLocator(inputLocator: string): string | null {
 	if (inputLocator.startsWith('gap://')) {
 		return null;
@@ -478,7 +767,7 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 		return [];
 	}
 
-	const defaultDatasetId = await getDefaultDatasetId(platform);
+	const defaultDatasetId = getDefaultDatasetIdFromRows(datasets);
 
 	return datasets.map((dataset) => ({
 		datasetId: dataset.id,
@@ -490,7 +779,11 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 }
 
 export async function getRequestedDataset(url: URL, platform?: App.Platform): Promise<string> {
-	const dataset = url.searchParams.get('dataset')?.trim() || (await getDefaultDatasetId(platform));
-	await getDatasetConfig(dataset, platform);
-	return dataset;
+	const requested = url.searchParams.get('dataset')?.trim();
+	if (!requested) {
+		return getDefaultDatasetId(platform);
+	}
+
+	await getDatasetConfig(requested, platform);
+	return requested;
 }

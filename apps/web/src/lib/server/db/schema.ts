@@ -155,6 +155,13 @@ export const trafficStats = sqliteTable(
 			table.srcVisibility,
 			table.dstVisibility
 		),
+		index('idx_traffic_stats_timeseries').on(
+			table.sourceId,
+			table.granularity,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.bucketStart
+		),
 		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
@@ -184,13 +191,12 @@ export const protocolStats = sqliteTable(
 				table.dstVisibility
 			]
 		}),
-		index('idx_protocol_stats_query').on(
-			table.granularity,
-			table.bucketStart,
+		index('idx_protocol_stats_timeseries').on(
 			table.sourceId,
-			table.ipVersion,
+			table.granularity,
 			table.srcVisibility,
-			table.dstVisibility
+			table.dstVisibility,
+			table.bucketStart
 		),
 		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
@@ -231,6 +237,13 @@ export const addressCountStats = sqliteTable(
 			table.dstVisibility,
 			table.addressSide
 		),
+		index('idx_address_count_stats_timeseries').on(
+			table.sourceId,
+			table.granularity,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.bucketStart
+		),
 		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
 );
@@ -263,15 +276,12 @@ export const portCountStats = sqliteTable(
 				table.portRange
 			]
 		}),
-		index('idx_port_count_stats_query').on(
-			table.granularity,
-			table.bucketStart,
+		index('idx_port_count_stats_timeseries').on(
 			table.sourceId,
-			table.ipVersion,
+			table.granularity,
 			table.srcVisibility,
 			table.dstVisibility,
-			table.portSide,
-			table.portRange
+			table.bucketStart
 		),
 		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]
@@ -317,6 +327,15 @@ export const addressStructureStats = sqliteTable(
 			table.dstVisibility,
 			table.addressSide,
 			table.structureKind
+		),
+		index('idx_address_structure_stats_timeseries').on(
+			table.sourceId,
+			table.granularity,
+			table.srcVisibility,
+			table.dstVisibility,
+			table.ipVersion,
+			table.structureKind,
+			table.bucketStart
 		),
 		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
 	]

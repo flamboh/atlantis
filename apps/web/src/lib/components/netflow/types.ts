@@ -71,6 +71,7 @@ export interface ChartConfig {
 		) => void;
 		responsive: boolean;
 		animation?: boolean;
+		normalized?: boolean;
 		maintainAspectRatio?: boolean;
 		scales?: Record<string, object>;
 		plugins?: Record<string, object>;

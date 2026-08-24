@@ -161,16 +161,14 @@ export interface ObservationStats {
 	averageMaxTtl: number | null;
 }
 
-export interface PortCardinalityStats {
-	ipFamily: Exclude<NetflowIpFamily, 'all'>;
-	portSide: PortSide;
-	portRange: PortRange;
-	uniquePortCount: number;
-}
+export type PortCardinalityCounts = Record<
+	Exclude<NetflowIpFamily, 'all'>,
+	Record<PortSide, Record<PortRange, number>>
+>;
 
 export interface PortCardinalityTimeline {
 	sourceId: string;
-	buckets: TimeBucket<PortCardinalityStats[]>[];
+	buckets: TimeBucket<PortCardinalityCounts>[];
 }
 
 export interface FlowCharacteristicsResponse {
@@ -307,10 +305,8 @@ export const IP_METRIC_OPTIONS: IpMetricOption[] = [
 export type ProtocolMetricKey = 'uniqueProtocolsIpv4' | 'uniqueProtocolsIpv6';
 
 export interface ProtocolStatsBucket {
-	granularity: IpGranularity;
 	uniqueProtocolsIpv4: number;
 	uniqueProtocolsIpv6: number;
-	processedAt?: string;
 }
 
 export interface ProtocolStatsTimeline {
@@ -320,8 +316,6 @@ export interface ProtocolStatsTimeline {
 
 export interface ProtocolStatsResponse {
 	timelines: ProtocolStatsTimeline[];
-	availableGranularities: IpGranularity[];
-	requestedRouters: string[];
 }
 
 export interface IpStatsCounts {
@@ -331,10 +325,7 @@ export interface IpStatsCounts {
 	daIpv6Count: number;
 }
 
-export interface IpStatsBucket extends IpStatsCounts {
-	granularity: IpGranularity;
-	processedAt?: string;
-}
+export type IpStatsBucket = IpStatsCounts;
 
 export interface IpStatsTimeline {
 	router: string;
@@ -343,8 +334,6 @@ export interface IpStatsTimeline {
 
 export interface IpStatsResponse {
 	timelines: IpStatsTimeline[];
-	availableGranularities: IpGranularity[];
-	requestedRouters: string[];
 }
 
 export interface IpChartState {

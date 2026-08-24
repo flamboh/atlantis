@@ -27,6 +27,7 @@ use crate::{
     ingest,
     registry::{self, DatasetRegistry},
     singularity,
+    storage::{self, optimize_all_query_planner_statistics, optimize_query_planner_statistics},
 };
 
 const WINDOW_SECONDS: i64 = 300;
@@ -108,6 +109,8 @@ pub enum FeedError {
     Registry(#[from] registry::RegistryError),
     #[error("alert database error: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Storage(#[from] storage::StorageError),
     #[error("feed I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid feed configuration: {0}")]
@@ -247,10 +250,16 @@ pub fn run(options: FeedOptions) -> Result<(), FeedError> {
         retention_days: options.retention_days,
     };
 
+    let mut first_maintenance = true;
     loop {
         let now = Timestamp::now().as_second();
         process_pass(&mut connection, &context, initial_scan_start, now)?;
-        prune_windows(&connection, retention_cutoff(now, options.retention_days))?;
+        maintain_alert_database(
+            &connection,
+            retention_cutoff(now, options.retention_days),
+            first_maintenance,
+        )?;
+        first_maintenance = false;
 
         if options.once {
             return Ok(());
@@ -470,6 +479,24 @@ fn prune_windows(connection: &Connection, cutoff: i64) -> Result<(), FeedError> 
         "DELETE FROM windows WHERE window_start < ?1",
         params![cutoff],
     )?;
+    Ok(())
+}
+
+/// Finish one poll/backfill pass with retention and one bounded planner-statistics refresh.
+fn maintain_alert_database(
+    connection: &Connection,
+    cutoff: i64,
+    first_maintenance: bool,
+) -> Result<(), FeedError> {
+    prune_windows(connection, cutoff)?;
+    let result = if first_maintenance {
+        optimize_all_query_planner_statistics(connection)
+    } else {
+        optimize_query_planner_statistics(connection)
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, "could not refresh SQLite planner statistics");
+    }
     Ok(())
 }
 
@@ -721,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn pruning_removes_old_windows_and_their_alerts() {
+    fn pass_maintenance_prunes_old_windows_and_refreshes_planner_statistics() {
         let temporary = tempdir().unwrap();
         let connection = open_alert_database(&temporary.path().join("alerts.sqlite")).unwrap();
         insert_window(&connection, 100);
@@ -737,12 +764,22 @@ mod tests {
                 .unwrap();
         }
 
-        prune_windows(&connection, 1_000).unwrap();
+        maintain_alert_database(&connection, 1_000, true).unwrap();
 
         let windows = query_i64_column(&connection, "SELECT window_start FROM windows");
         let alerts = query_i64_column(&connection, "SELECT window_start FROM alerts");
         assert_eq!(windows, vec![1_000]);
         assert_eq!(alerts, vec![1_000]);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT stat FROM sqlite_stat1 WHERE tbl = 'windows' AND idx IS NULL",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "1"
+        );
     }
 
     #[test]

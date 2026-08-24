@@ -1,16 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/netflow/stats/+server';
 import {
-	getDatasetDb,
 	getRequestedDataset,
-	listDatasetSourceDefinitions
+	listDatasetSourceDefinitions,
+	withDatasetDb
 } from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
-	getDatasetDb: vi.fn(),
 	getRequestedDataset: vi.fn(),
-	listDatasetSourceDefinitions: vi.fn()
+	listDatasetSourceDefinitions: vi.fn(),
+	withDatasetDb: vi.fn()
 }));
+
+function mockDatasetSession(db: object): void {
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+		run({
+			db: db as never,
+			listSources: async () => [],
+			listSourceDefinitions: () => listDatasetSourceDefinitions('alpha')
+		})
+	);
+}
 
 describe('/api/netflow/stats GET', () => {
 	it('returns 400 when no routers are selected', async () => {
@@ -96,9 +106,9 @@ describe('/api/netflow/stats GET', () => {
 			{ sourceId: 'r1', members: ['r1'] },
 			{ sourceId: 'r2', members: ['r2'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await GET({
 			url: new URL(
@@ -206,9 +216,9 @@ describe('/api/netflow/stats GET', () => {
 		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
 			{ sourceId: 'r1', members: ['r1'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await GET({
 			url: new URL(
@@ -238,9 +248,9 @@ describe('/api/netflow/stats GET', () => {
 			{ sourceId: 'oh_ir1_gw', members: ['oh_ir1_gw'] },
 			{ sourceId: 'uoregon_all', members: ['cc_ir1_gw', 'oh_ir1_gw'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await GET({
 			url: new URL(
@@ -264,11 +274,11 @@ describe('/api/netflow/stats GET', () => {
 		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
 			{ sourceId: 'r1', members: ['r1'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all: vi.fn(() => {
 				throw new Error('boom');
 			})
-		} as never);
+		});
 
 		const response = await GET({
 			url: new URL('http://localhost/api/netflow/stats?routers=r1&startDate=1&endDate=2')

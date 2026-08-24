@@ -4,13 +4,19 @@ import { GET as getIpStats } from '../../src/routes/api/ip/stats/+server';
 import { GET as getProtocolStats } from '../../src/routes/api/protocol/stats/+server';
 import { GET as getSpectrumStats } from '../../src/routes/api/netflow/spectrum-stats/+server';
 import { GET as getStructureStats } from '../../src/routes/api/netflow/structure-stats/+server';
-import { getDatasetDb, getRequestedDataset, listDatasetSources } from '$lib/server/datasets';
+import { getRequestedDataset, listDatasetSources, withDatasetDb } from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
-	getDatasetDb: vi.fn(),
 	getRequestedDataset: vi.fn(),
-	listDatasetSources: vi.fn()
+	listDatasetSources: vi.fn(),
+	withDatasetDb: vi.fn()
 }));
+
+function mockDatasetSession(db: object): void {
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+		run({ db: db as never, listSources: async () => [], listSourceDefinitions: async () => [] })
+	);
+}
 
 describe('aggregate API routes', () => {
 	it('lists routers for a dataset and returns 404 when none exist', async () => {
@@ -42,8 +48,7 @@ describe('aggregate API routes', () => {
 					saIpv4Count: 3,
 					daIpv4Count: 4,
 					saIpv6Count: 5,
-					daIpv6Count: 6,
-					processedAt: 'now'
+					daIpv6Count: 6
 				}
 			])
 			.mockResolvedValueOnce([
@@ -58,9 +63,9 @@ describe('aggregate API routes', () => {
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const badResponse = await getIpStats({
 			url: new URL('http://localhost/api/ip/stats?routers=&startDate=1&endDate=2')
@@ -82,28 +87,24 @@ describe('aggregate API routes', () => {
 							bucketEnd: 200,
 							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
 							data: {
-								granularity: '5m',
 								saIpv4Count: 3,
 								daIpv4Count: 4,
 								saIpv6Count: 5,
-								daIpv6Count: 6,
-								processedAt: 'now'
+								daIpv6Count: 6
 							}
 						}
 					]
 				}
-			],
-			availableGranularities: ['5m', '30m', '1h', '1d'],
-			requestedRouters: ['r1']
+			]
 		});
 	});
 
 	it('keeps selected unique-count sources separate', async () => {
 		const all = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await getIpStats({
 			url: new URL(
@@ -157,9 +158,7 @@ describe('aggregate API routes', () => {
 						}
 					]
 				}
-			],
-			availableGranularities: ['5m', '30m', '1h', '1d'],
-			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
+			]
 		});
 	});
 
@@ -185,8 +184,7 @@ describe('aggregate API routes', () => {
 					bucketStart: 100,
 					bucketEnd: 200,
 					uniqueProtocolsIpv4: 3,
-					uniqueProtocolsIpv6: 4,
-					processedAt: 'now'
+					uniqueProtocolsIpv6: 4
 				}
 			])
 			.mockResolvedValueOnce([
@@ -201,7 +199,7 @@ describe('aggregate API routes', () => {
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+		mockDatasetSession({ all });
 
 		const response = await getProtocolStats({
 			url: new URL(
@@ -219,26 +217,22 @@ describe('aggregate API routes', () => {
 							bucketEnd: 200,
 							coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
 							data: {
-								granularity: '1h',
 								uniqueProtocolsIpv4: 3,
-								uniqueProtocolsIpv6: 4,
-								processedAt: 'now'
+								uniqueProtocolsIpv6: 4
 							}
 						}
 					]
 				}
-			],
-			availableGranularities: ['5m', '30m', '1h', '1d'],
-			requestedRouters: ['r1']
+			]
 		});
 	});
 
 	it('keeps selected protocol sources separate', async () => {
 		const all = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await getProtocolStats({
 			url: new URL(
@@ -292,9 +286,7 @@ describe('aggregate API routes', () => {
 						}
 					]
 				}
-			],
-			availableGranularities: ['5m', '30m', '1h', '1d'],
-			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
+			]
 		});
 	});
 
@@ -374,9 +366,9 @@ describe('aggregate API routes', () => {
 				}
 			]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const spectrumResponse = await getSpectrumStats({
 			url: new URL(
@@ -444,9 +436,9 @@ describe('aggregate API routes', () => {
 	it('keeps selected spectrum sources separate', async () => {
 		const all = vi.fn().mockResolvedValue([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await getSpectrumStats({
 			url: new URL(

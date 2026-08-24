@@ -6,8 +6,11 @@
 	import BreakdownChart from '$lib/components/charts/BreakdownChart.svelte';
 	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
 	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
+	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
+	import { createNearViewportAttachment } from '$lib/components/netflow/near-viewport';
 	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import type { Attachment } from 'svelte/attachments';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
 		FLOW_SCOPE_OPTIONS,
@@ -59,11 +62,62 @@
 		'spectrum',
 		'coverage'
 	];
+	const CHART_CARD_DETAILS: Record<ChartCardId, { title: string; minimumHeight: number }> = {
+		dashboard: { title: 'Traffic Overview', minimumHeight: 640 },
+		characteristics: {
+			title: 'Flow Characteristics',
+			minimumHeight: 780
+		},
+		ip: { title: 'IP Address Breakdown', minimumHeight: 440 },
+		protocol: { title: 'Protocol Breakdown', minimumHeight: 440 },
+		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
+		coverage: { title: 'Coverage', minimumHeight: 113 }
+	};
 	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v4';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
+	let activatedCharts = $state<Record<ChartCardId, boolean>>({
+		dashboard: false,
+		characteristics: false,
+		ip: false,
+		protocol: false,
+		spectrum: false,
+		coverage: false
+	});
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
 	let dragPreviewElement: HTMLElement | null = null;
+	const chartVisibilityAttachments: Record<ChartCardId, Attachment<HTMLElement>> = {
+		dashboard: createNearViewportAttachment(() => {
+			activatedCharts.dashboard = true;
+		}),
+		characteristics: createNearViewportAttachment(() => {
+			activatedCharts.characteristics = true;
+		}),
+		ip: createNearViewportAttachment(() => {
+			activatedCharts.ip = true;
+		}),
+		protocol: createNearViewportAttachment(() => {
+			activatedCharts.protocol = true;
+		}),
+		spectrum: createNearViewportAttachment(() => {
+			activatedCharts.spectrum = true;
+		}),
+		coverage: createNearViewportAttachment(() => {
+			activatedCharts.coverage = true;
+		})
+	};
+
+	function activateChart(chartId: ChartCardId) {
+		activatedCharts[chartId] = true;
+	}
+
+	function getCardMinimumHeight(chartId: ChartCardId): number {
+		if (chartId !== 'coverage') {
+			return CHART_CARD_DETAILS[chartId].minimumHeight;
+		}
+		const coverageCanvasHeight = Math.max(48, availableSpectrumRouters.length * 18 + 30);
+		return coverageCanvasHeight + 65;
+	}
 
 	const GROUP_BY_TO_IP: Record<GroupByOption, IpGranularity> = {
 		date: '1d',
@@ -272,6 +326,7 @@
 
 	onMount(() => {
 		loadChartOrder();
+		activateChart(chartOrder[0] ?? 'dashboard');
 	});
 
 	let lastRouterStateKey = $state('');
@@ -393,7 +448,10 @@
 			<section
 				role="listitem"
 				data-chart-card
+				data-chart-id={chartId}
+				data-chart-activated={activatedCharts[chartId]}
 				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
+				style={`min-height:${getCardMinimumHeight(chartId)}px`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}
@@ -408,7 +466,40 @@
 					handleChartDrop(event, chartId);
 				}}
 			>
-				{#if chartId === 'dashboard'}
+				{#if !activatedCharts[chartId]}
+					<div
+						class="border-border bg-card text-card-foreground relative flex h-full flex-col rounded-lg border shadow-sm"
+						style={`min-height:${getCardMinimumHeight(chartId)}px`}
+						data-testid={`deferred-chart-${chartId}`}
+					>
+						<div
+							class="border-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
+							draggable="true"
+							data-drag-handle
+						>
+							<h2 class="text-lg font-semibold">{CHART_CARD_DETAILS[chartId].title}</h2>
+							<DragGrip />
+						</div>
+						<div
+							{@attach chartVisibilityAttachments[chartId]}
+							class="pointer-events-none h-px w-full"
+							data-chart-sentinel={chartId}
+							aria-hidden="true"
+						></div>
+						<div
+							class="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-4 text-sm"
+						>
+							<p>This chart will load as it approaches the viewport.</p>
+							<button
+								type="button"
+								class="border-input bg-background hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring rounded-md border px-3 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+								onclick={() => activateChart(chartId)}
+							>
+								Load {CHART_CARD_DETAILS[chartId].title} chart
+							</button>
+						</div>
+					</div>
+				{:else if chartId === 'dashboard'}
 					<NetflowDashboard
 						dataset={props.dataset}
 						{startDate}
