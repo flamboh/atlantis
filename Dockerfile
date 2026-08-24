@@ -57,7 +57,7 @@ FROM ubuntu:24.04 AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates libbz2-1.0 \
+    && apt-get install --yes --no-install-recommends ca-certificates libbz2-1.0 tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust-builder /build/target/release/netflow-db /usr/local/bin/netflow-db
@@ -65,6 +65,7 @@ COPY --from=nfdump-builder /build/target/nfdump/libexec/nfdump /usr/local/bin/nf
 
 RUN --mount=type=bind,from=nfdump-builder,source=/build/target/nfdump/build/smoke/dummy_flows.nf,target=/tmp/dummy_flows.nf \
     netflow-db contract-version >/dev/null \
+    && test -f /usr/share/zoneinfo/America/Los_Angeles \
     && nfdump -V >/dev/null 2>&1 \
     && nfdump -G none -r /tmp/dummy_flows.nf -q -o atlantis 'host 203.0.113.255' >/tmp/atlantis.bin \
     && test "$(wc -c </tmp/atlantis.bin)" -eq 16 \
