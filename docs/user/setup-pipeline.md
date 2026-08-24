@@ -21,7 +21,7 @@ Container options come before the pipeline command:
 ./scripts/netflow-db-docker.sh --capture-root /absolute/path/to/captures pipeline ...
 ```
 
-The wrapper builds the image when it is missing; pass `--build` to rebuild it after a source update. Each `--capture-root` mounts read-only at the same absolute path inside the container, so `root_path` in `datasets.json` needs no change. Output stays under the repository's `data/` directory, owned by you.
+The wrapper builds the image when it is missing or when its build inputs change, so pulling an update rebuilds automatically. Pass `--build` to force a rebuild. Each `--capture-root` mounts read-only at the same absolute path inside the container, so `root_path` in `datasets.json` needs no change. Output stays under the repository's `data/` directory, owned by you.
 
 On macOS, bind mounts over large capture trees are slower than native filesystem access.
 
