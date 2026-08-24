@@ -6,18 +6,14 @@ This is done by reading nfcapd captures from a NetFlow collector. The pipeline c
 
 ## Quick start
 
-First, install the [required tools](docs/user/requirements.md) — both Bun and Node.js are necessary, and nfcapd processing needs the nfdump build tools. You also need nfcapd capture files on disk.
+First, install the [required tools](docs/user/requirements.md) — Bun and Node.js run the dashboard, and Docker runs the pipeline. You also need nfcapd capture files on disk.
 
-1. Clone the project and build the tools.
+1. Clone the project and install the dashboard dependencies.
 
    ```bash
    git clone https://github.com/flamboh/atlantis.git
    cd atlantis
    bun install
-
-   # A system nfdump installation does not work.
-   git submodule update --init --recursive
-   ./vendor/scripts/compile-nfdump.sh
    ```
 
 2. Describe your capture dataset. Copy the templates, then edit them:
@@ -29,15 +25,18 @@ First, install the [required tools](docs/user/requirements.md) — both Bun and 
 
    In `datasets.json`, set `root_path` to your capture directory and name one source for each collector directory under it ([dataset configuration](docs/user/datasets.md) explains the fields and the expected layout). In `.env`, set `DEFAULT_DATASET` to your `dataset_id`.
 
-3. Build a database from one day of captures. Use your `dataset_id` and a date that has captures. The first run compiles the Rust pipeline and takes several minutes; run it in a persistent shell like tmux.
+3. Build a database from one day of captures. Use your `dataset_id`, the same absolute path you set as `root_path`, and a date that has captures. The first run builds the pipeline image and takes several minutes; run it in a persistent shell like tmux.
 
    ```bash
-   ./scripts/netflow-db.sh pipeline \
+   ./scripts/netflow-db-docker.sh \
+     --capture-root /absolute/path/to/captures \
+     pipeline \
      --dataset example \
      --start-date <YYYY-MM-DD> \
-     --end-date <YYYY-MM-DD> \
-     --nfdump target/nfdump/libexec/nfdump
+     --end-date <YYYY-MM-DD>
    ```
+
+   To build the pipeline toolchain yourself instead of using Docker, follow the [native setup](docs/user/setup-pipeline.md#native-setup).
 
 4. Start the dashboard, then open `http://localhost:5173`.
 
