@@ -9,13 +9,14 @@ export const load: PageLoad = async ({ params, fetch }) => {
 		throw error(400, 'Dataset parameter is required');
 	}
 
-	const datasets = await loadDatasetSummariesFromFetch(fetch);
+	const datasetsPromise = loadDatasetSummariesFromFetch(fetch);
+	const routersResponsePromise = fetch(`/api/routers?dataset=${encodeURIComponent(dataset)}`);
+	const [datasets, routersResponse] = await Promise.all([datasetsPromise, routersResponsePromise]);
 	const selectedDataset = datasets.find((entry) => entry.datasetId === dataset);
 	if (!selectedDataset) {
 		throw error(404, `Unknown dataset '${dataset}'`);
 	}
 
-	const routersResponse = await fetch(`/api/routers?dataset=${encodeURIComponent(dataset)}`);
 	const routersPayload = await routersResponse.json();
 	if (!routersResponse.ok) {
 		throw error(

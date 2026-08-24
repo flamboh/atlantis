@@ -1,12 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import {
-	IP_GRANULARITIES,
-	type ProtocolStatsBucket,
-	type ProtocolStatsResponse
-} from '$lib/types/types';
+import type { ProtocolStatsBucket, ProtocolStatsResponse } from '$lib/types/types';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
@@ -18,20 +14,17 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
-		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'protocol_stats';
-		const sourceColumn = 'source_id';
-		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
+		return await withDatasetDb(dataset, platform, async ({ db }) => {
+			const tableName = 'protocol_stats';
+			const sourceColumn = 'source_id';
+			const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 
-		const query = `
+			const query = `
 			SELECT
 				${sourceColumn} AS router,
 				bucket_start AS bucketStart,
-				bucket_end   AS bucketEnd,
-				granularity,
 				SUM(CASE WHEN ip_version = 4 THEN unique_protocols_count ELSE 0 END) AS uniqueProtocolsIpv4,
-				SUM(CASE WHEN ip_version = 6 THEN unique_protocols_count ELSE 0 END) AS uniqueProtocolsIpv6,
-				MAX(processed_at) AS processedAt
+				SUM(CASE WHEN ip_version = 6 THEN unique_protocols_count ELSE 0 END) AS uniqueProtocolsIpv6
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
@@ -39,41 +32,40 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND dst_visibility = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
-			GROUP BY ${sourceColumn}, bucket_start, bucket_end, granularity
+			GROUP BY ${sourceColumn}, bucket_start
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
-		const rows = await db.all<
-			ProtocolStatsBucket & { router: string; bucketStart: number; bucketEnd: number }
-		>(query, queryParams);
-		const timelines = await buildCoverageTimelines({
-			db,
-			granularity,
-			start,
-			end,
-			partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
-			rows,
-			getPartitionKey: (row) => row.router,
-			toData: ({ bucketStart: _bucketStart, bucketEnd: _bucketEnd, router: _router, ...data }) => ({
-				...data,
-				granularity
-			}),
-			emptyData: () => ({
+			const rows = await db.all<ProtocolStatsBucket & { router: string; bucketStart: number }>(
+				query,
+				queryParams
+			);
+			const timelines = await buildCoverageTimelines({
+				db,
 				granularity,
-				uniqueProtocolsIpv4: 0,
-				uniqueProtocolsIpv6: 0
-			})
-		});
-		const response: ProtocolStatsResponse = {
-			timelines: routers.map((router) => ({
-				router,
-				buckets: timelines.get(router) ?? []
-			})),
-			availableGranularities: [...IP_GRANULARITIES],
-			requestedRouters: routers
-		};
+				start,
+				end,
+				partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
+				rows,
+				getPartitionKey: (row) => row.router,
+				toData: ({ uniqueProtocolsIpv4, uniqueProtocolsIpv6 }) => ({
+					uniqueProtocolsIpv4,
+					uniqueProtocolsIpv6
+				}),
+				emptyData: () => ({
+					uniqueProtocolsIpv4: 0,
+					uniqueProtocolsIpv6: 0
+				})
+			});
+			const response: ProtocolStatsResponse = {
+				timelines: routers.map((router) => ({
+					router,
+					buckets: timelines.get(router) ?? []
+				}))
+			};
 
-		return json(response);
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to query protocol_stats:', error);
 		const message = error instanceof Error ? error.message : 'Database query failed';

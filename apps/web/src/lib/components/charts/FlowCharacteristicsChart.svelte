@@ -1,23 +1,74 @@
+<script module lang="ts">
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import type {
+		BucketCoverage,
+		NetflowIpFamily,
+		ObservationStats,
+		PortCardinalityCounts,
+		PortCardinalityTimeline,
+		TimeBucket
+	} from '$lib/types/types';
+
+	export type IndexedObservationBucket = {
+		coverage: BucketCoverage;
+		byFamily: Map<NetflowIpFamily, ObservationStats>;
+	};
+
+	export type IndexedPortBucket = {
+		coverage: BucketCoverage;
+		values: PortCardinalityCounts | null;
+	};
+
+	export function indexObservationBuckets(buckets: TimeBucket<ObservationStats[]>[]) {
+		const byStart = new SvelteMap<number, IndexedObservationBucket>();
+		for (const bucket of buckets) {
+			byStart.set(bucket.bucketStart, {
+				coverage: bucket.coverage,
+				byFamily: new SvelteMap((bucket.data ?? []).map((row) => [row.ipFamily, row]))
+			});
+		}
+		return { starts: [...byStart.keys()].sort((left, right) => left - right), byStart };
+	}
+
+	export function indexPortTimelines(timelines: PortCardinalityTimeline[]) {
+		const starts = new SvelteSet<number>();
+		const bySource = new SvelteMap<string, Map<number, IndexedPortBucket>>();
+		for (const timeline of timelines) {
+			const bucketsByStart = bySource.get(timeline.sourceId) ?? new SvelteMap();
+			bySource.set(timeline.sourceId, bucketsByStart);
+			for (const bucket of timeline.buckets) {
+				starts.add(bucket.bucketStart);
+				bucketsByStart.set(bucket.bucketStart, {
+					coverage: bucket.coverage,
+					values: bucket.data
+				});
+			}
+		}
+		return { starts: [...starts].sort((left, right) => left - right), bySource };
+	}
+</script>
+
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { dateStringToEpochPST } from '$lib/utils/timezone';
-	import { SvelteSet } from 'svelte/reactivity';
+	import {
+		ensureCachedWindow,
+		getMissingWindowRanges,
+		readCachedWindow,
+		type TimeRange
+	} from '$lib/utils/window-cache';
 	import { watch } from 'runed';
 	import { createRequestGate, getSourceLineDash } from './flow-characteristics';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 	import type {
-		BucketCoverage,
 		FlowCharacteristicsResponse,
 		FlowVisibility,
 		IpGranularity,
-		NetflowIpFamily,
-		ObservationStats,
-		PortCardinalityStats,
 		PortRange,
-		PortSide,
-		TimeBucket
+		PortSide
 	} from '$lib/types/types';
 
 	const props = $props<{
@@ -53,21 +104,45 @@
 	let observationFamily = $state<NetflowIpFamily>('all');
 	let portFamily = $state<Exclude<NetflowIpFamily, 'all'>>('ipv4');
 	const activePortSeries = new SvelteSet(PORT_OPTIONS.map(({ side, range }) => `${side}-${range}`));
-	let data = $state<FlowCharacteristicsResponse | null>(null);
+	let data = $state.raw<FlowCharacteristicsResponse | null>(null);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	const requestGate = createRequestGate();
+	let requestController: AbortController | null = null;
+
+	type CachedCharacteristicsRecord =
+		| { kind: 'source'; sourceId: string; sourceIndex: number }
+		| { kind: 'observation'; bucket: TimeBucket<ObservationStats[]> }
+		| {
+				kind: 'port';
+				sourceId: string;
+				bucket: TimeBucket<PortCardinalityCounts>;
+		  };
 
 	const granularity: IpGranularity = $derived(
 		GROUP_BY_TO_GRANULARITY[props.groupBy as GroupByOption]
 	);
-	const observationBuckets = $derived(data?.observationBuckets ?? []);
-	const observationStarts = $derived(uniqueStarts(observationBuckets));
-	const observationCoverage = $derived(coverageByStart(observationBuckets, observationStarts));
+	const observationIndex = $derived(indexObservationBuckets(data?.observationBuckets ?? []));
+	const observationStarts = $derived(observationIndex.starts);
+	const observationCoverage = $derived<BucketCoverage[]>(
+		observationStarts.map(
+			(start) =>
+				observationIndex.byStart.get(start)?.coverage ?? {
+					state: 'unknown',
+					observedUnits: 0,
+					expectedUnits: 0
+				}
+		)
+	);
 	const durationSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average duration',
-			values: observationValuesByStart(observationBuckets, observationFamily, 'averageDurationMs'),
+			values: observationValuesByStart(
+				observationIndex.byStart,
+				observationStarts,
+				observationFamily,
+				'averageDurationMs'
+			),
 			color: '#2563eb',
 			coverage: observationCoverage
 		}
@@ -75,33 +150,48 @@
 	const ttlSeries = $derived<MetricLineSeries[]>([
 		{
 			label: 'Average minimum TTL',
-			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMinTtl'),
+			values: observationValuesByStart(
+				observationIndex.byStart,
+				observationStarts,
+				observationFamily,
+				'averageMinTtl'
+			),
 			color: '#7c3aed',
 			coverage: observationCoverage
 		},
 		{
 			label: 'Average maximum TTL',
-			values: observationValuesByStart(observationBuckets, observationFamily, 'averageMaxTtl'),
+			values: observationValuesByStart(
+				observationIndex.byStart,
+				observationStarts,
+				observationFamily,
+				'averageMaxTtl'
+			),
 			color: '#db2777',
 			coverage: observationCoverage
 		}
 	]);
-	const portStarts = $derived(
-		uniqueStarts((data?.portTimelines ?? []).flatMap((timeline) => timeline.buckets))
-	);
+	const portIndex = $derived(indexPortTimelines(data?.portTimelines ?? []));
+	const portStarts = $derived(portIndex.starts);
 	const portSeries = $derived.by<MetricLineSeries[]>(() => {
 		const multipleSources = (data?.resolvedSources.length ?? 0) > 1;
 		return (data?.resolvedSources ?? []).flatMap((sourceId, sourceIndex) =>
 			PORT_OPTIONS.filter(({ side, range }) => activePortSeries.has(`${side}-${range}`)).map(
 				({ side, range, label }) => {
-					const timeline =
-						data?.portTimelines.find((candidate) => candidate.sourceId === sourceId)?.buckets ?? [];
+					const timeline = portIndex.bySource.get(sourceId);
 					return {
 						label: multipleSources ? `${sourceId} · ${label}` : label,
 						values: portValuesByStart(timeline, portStarts, portFamily, side, range),
 						color: PORT_COLORS[`${side}-${range}`],
 						dash: getSourceLineDash(sourceIndex, multipleSources),
-						coverage: coverageByStart(timeline, portStarts)
+						coverage: portStarts.map(
+							(start) =>
+								timeline?.get(start)?.coverage ?? {
+									state: 'unknown',
+									observedUnits: 0,
+									expectedUnits: 0
+								}
+						)
 					};
 				}
 			)
@@ -116,44 +206,27 @@
 			.sort();
 	}
 
-	function uniqueStarts(rows: Array<{ bucketStart: number }>): number[] {
-		return [...new Set(rows.map((row) => row.bucketStart))].sort((left, right) => left - right);
-	}
-
 	function observationValuesByStart(
-		buckets: TimeBucket<ObservationStats[]>[],
+		bucketsByStart: Map<number, IndexedObservationBucket>,
+		starts: number[],
 		family: NetflowIpFamily,
 		key: 'averageDurationMs' | 'averageMinTtl' | 'averageMaxTtl'
 	): Array<number | null> {
-		return buckets.map(
-			(bucket) => bucket.data?.find((row) => row.ipFamily === family)?.[key] ?? null
-		);
+		return starts.map((start) => bucketsByStart.get(start)?.byFamily.get(family)?.[key] ?? null);
 	}
 
 	function portValuesByStart(
-		buckets: TimeBucket<PortCardinalityStats[]>[],
+		bucketsByStart: Map<number, IndexedPortBucket> | undefined,
 		starts: number[],
 		family: Exclude<NetflowIpFamily, 'all'>,
 		side: PortSide,
 		range: PortRange
 	): Array<number | null> {
-		const bucketsByStart = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket]));
 		return starts.map((start) => {
-			const data = bucketsByStart.get(start)?.data;
-			if (data === null || data === undefined) return null;
-			return (
-				data.find(
-					(row) => row.ipFamily === family && row.portSide === side && row.portRange === range
-				)?.uniquePortCount ?? 0
-			);
+			const bucket = bucketsByStart?.get(start);
+			if (!bucket?.values) return null;
+			return bucket.values[family][side][range];
 		});
-	}
-
-	function coverageByStart<T>(buckets: TimeBucket<T>[], starts: number[]): BucketCoverage[] {
-		const coverage = new Map(buckets.map((bucket) => [bucket.bucketStart, bucket.coverage]));
-		return starts.map(
-			(start) => coverage.get(start) ?? { state: 'unknown', observedUnits: 0, expectedUnits: 0 }
-		);
 	}
 
 	function togglePortSeries(side: PortSide, range: PortRange) {
@@ -165,8 +238,72 @@
 		}
 	}
 
+	function getCacheKey(routers: string[]): string {
+		return JSON.stringify({
+			chart: 'flow-characteristics',
+			dataset: props.dataset,
+			granularity,
+			routers,
+			srcVisibility: props.srcVisibility,
+			dstVisibility: props.dstVisibility
+		});
+	}
+
+	function recordStart(record: CachedCharacteristicsRecord): number {
+		return record.kind === 'source' ? Number.NEGATIVE_INFINITY : record.bucket.bucketStart;
+	}
+
+	function readCachedData(
+		cacheKey: string,
+		requestedRange: TimeRange
+	): FlowCharacteristicsResponse {
+		const records = readCachedWindow<CachedCharacteristicsRecord>(
+			cacheKey,
+			requestedRange,
+			(record, range) =>
+				record.kind === 'source' ||
+				(record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end)
+		);
+		const sources = records
+			.filter(
+				(record): record is Extract<CachedCharacteristicsRecord, { kind: 'source' }> =>
+					record.kind === 'source'
+			)
+			.sort(
+				(left, right) =>
+					left.sourceIndex - right.sourceIndex || left.sourceId.localeCompare(right.sourceId)
+			);
+		const portBuckets = new SvelteMap<string, TimeBucket<PortCardinalityCounts>[]>();
+		for (const source of sources) {
+			portBuckets.set(source.sourceId, []);
+		}
+		for (const record of records) {
+			if (record.kind !== 'port') continue;
+			const buckets = portBuckets.get(record.sourceId) ?? [];
+			buckets.push(record.bucket);
+			portBuckets.set(record.sourceId, buckets);
+		}
+
+		return {
+			observationBuckets: records
+				.filter(
+					(record): record is Extract<CachedCharacteristicsRecord, { kind: 'observation' }> =>
+						record.kind === 'observation'
+				)
+				.map((record) => record.bucket)
+				.sort((left, right) => left.bucketStart - right.bucketStart),
+			portTimelines: [...portBuckets].map(([sourceId, buckets]) => ({
+				sourceId,
+				buckets: buckets.sort((left, right) => left.bucketStart - right.bucketStart)
+			})),
+			resolvedSources: sources.map((source) => source.sourceId)
+		};
+	}
+
 	async function loadData() {
 		const token = requestGate.begin();
+		requestController?.abort();
+		requestController = null;
 		if (!props.routersLoaded) {
 			loading = true;
 			return;
@@ -178,29 +315,83 @@
 			loading = false;
 			return;
 		}
-		loading = true;
+		const requestedRange = {
+			start: dateStringToEpochPST(props.startDate),
+			end: dateStringToEpochPST(props.endDate, true)
+		};
+		const cacheKey = getCacheKey(routers);
+		loading = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
 		error = null;
-		const params = new URLSearchParams({
+		const baseParams = new URLSearchParams({
 			dataset: props.dataset,
 			routers: routers.join(','),
 			granularity,
-			startDate: dateStringToEpochPST(props.startDate).toString(),
-			endDate: dateStringToEpochPST(props.endDate, true).toString(),
 			srcVisibility: props.srcVisibility,
 			dstVisibility: props.dstVisibility
 		});
+		const controller = new AbortController();
+		requestController = controller;
 		try {
-			const response = await fetch(`/api/netflow/characteristics?${params}`);
-			if (!response.ok) throw new Error((await response.text()) || 'Request failed');
-			const next = (await response.json()) as FlowCharacteristicsResponse;
-			if (requestGate.isCurrent(token)) data = next;
+			await ensureCachedWindow<CachedCharacteristicsRecord>({
+				key: cacheKey,
+				requestedRange,
+				signal: controller.signal,
+				fetchRange: async (range, signal) => {
+					const response = await fetch(
+						`/api/netflow/characteristics?${new URLSearchParams({
+							...Object.fromEntries(baseParams.entries()),
+							startDate: range.start.toString(),
+							endDate: range.end.toString()
+						}).toString()}`,
+						{ signal }
+					);
+					if (!response.ok) throw new Error((await response.text()) || 'Request failed');
+					const next = (await response.json()) as FlowCharacteristicsResponse;
+					return [
+						...next.resolvedSources.map(
+							(sourceId, sourceIndex): CachedCharacteristicsRecord => ({
+								kind: 'source',
+								sourceId,
+								sourceIndex
+							})
+						),
+						...next.observationBuckets.map(
+							(bucket): CachedCharacteristicsRecord => ({ kind: 'observation', bucket })
+						),
+						...next.portTimelines.flatMap((timeline) =>
+							timeline.buckets.map(
+								(bucket): CachedCharacteristicsRecord => ({
+									kind: 'port',
+									sourceId: timeline.sourceId,
+									bucket
+								})
+							)
+						)
+					];
+				},
+				getRecordKey: (record) => {
+					if (record.kind === 'source') return `source:${record.sourceId}`;
+					if (record.kind === 'observation') return `observation:${record.bucket.bucketStart}`;
+					return `port:${record.sourceId}:${record.bucket.bucketStart}`;
+				},
+				compareRecords: (left, right) =>
+					recordStart(left) - recordStart(right) ||
+					(left.kind === 'port' ? left.sourceId : '').localeCompare(
+						right.kind === 'port' ? right.sourceId : ''
+					)
+			});
+			if (requestGate.isCurrent(token)) data = readCachedData(cacheKey, requestedRange);
 		} catch (reason) {
 			if (requestGate.isCurrent(token)) {
+				if (reason instanceof DOMException && reason.name === 'AbortError') return;
 				data = null;
 				error = reason instanceof Error ? reason.message : 'Failed to load flow characteristics';
 			}
 		} finally {
-			if (requestGate.isCurrent(token)) loading = false;
+			if (requestGate.isCurrent(token)) {
+				loading = false;
+				if (requestController === controller) requestController = null;
+			}
 		}
 	}
 
@@ -218,6 +409,11 @@
 			}),
 		() => void loadData()
 	);
+
+	onDestroy(() => {
+		requestGate.begin();
+		requestController?.abort();
+	});
 </script>
 
 <div class="border-border bg-card text-card-foreground rounded-lg border shadow-sm">

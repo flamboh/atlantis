@@ -1,12 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/netflow/coverage/+server';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import { dateStringToEpochPST } from '$lib/utils/timezone';
 
 vi.mock('$lib/server/datasets', () => ({
-	getDatasetDb: vi.fn(),
-	getRequestedDataset: vi.fn()
+	getRequestedDataset: vi.fn(),
+	withDatasetDb: vi.fn()
 }));
+
+function mockDatasetSession(db: object): void {
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+		run({ db: db as never, listSources: async () => [], listSourceDefinitions: async () => [] })
+	);
+}
 
 describe('/api/netflow/coverage GET', () => {
 	it('requires at least one selected source', async () => {
@@ -49,7 +55,7 @@ describe('/api/netflow/coverage GET', () => {
 			}
 		]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+		mockDatasetSession({ all });
 
 		const response = await GET({
 			url: new URL(
@@ -139,7 +145,7 @@ describe('/api/netflow/coverage GET', () => {
 	it('deduplicates selected sources before querying coverage', async () => {
 		const all = vi.fn().mockResolvedValue([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+		mockDatasetSession({ all });
 
 		const response = await GET({
 			url: new URL(
@@ -154,8 +160,8 @@ describe('/api/netflow/coverage GET', () => {
 		});
 		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM bucket_coverage'), [
 			'5m',
-			'r2',
 			'r1',
+			'r2',
 			0,
 			600
 		]);

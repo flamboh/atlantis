@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import type { StructureFunctionPoint } from '$lib/types/types';
 import type { StructureStatsPayload, StructureStatsResponse } from '$lib/types/structure-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import {
 	normalizeStructurePoints,
 	parseAggregateStatsParams,
@@ -71,16 +71,16 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
-		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'address_structure_stats';
-		const sourceColumn = 'source_id';
-		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
+		return await withDatasetDb(dataset, platform, async ({ db }) => {
+			const tableName = 'address_structure_stats';
+			const sourceColumn = 'source_id';
+			const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 
-		const query = `
+			const query = `
 			SELECT
 				${sourceColumn} AS router,
 				bucket_start AS bucketStart,
-				bucket_end AS bucketEnd,
+				MAX(bucket_end) AS bucketEnd,
 				MAX(CASE WHEN address_side = 'source' THEN values_json END) AS structureSaJson,
 				MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS structureDaJson
 			FROM ${tableName}
@@ -92,48 +92,48 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND bucket_start < ?
 				AND ip_version = 4
 				AND structure_kind = 'structure'
-			GROUP BY ${sourceColumn}, bucket_start, bucket_end
-			ORDER BY ${sourceColumn} ASC, bucket_start ASC
+			GROUP BY ${sourceColumn}, bucket_start
 		`;
 
-		const rawRows = await db.all<RawStructureStatsRow>(query, queryParams);
-		const rows: StructureStatsRow[] = rawRows.flatMap((row) => {
-			const structureSa = parseStructurePoints(row.structureSaJson, row.router, row.bucketStart);
-			const structureDa = parseStructurePoints(row.structureDaJson, row.router, row.bucketStart);
-			return structureSa === null && structureDa === null
-				? []
-				: [
-						{
-							router: row.router,
-							bucketStart: row.bucketStart,
-							bucketEnd: row.bucketEnd,
-							structureSa: structureSa ?? [],
-							structureDa: structureDa ?? []
-						}
-					];
-		});
-		const timelines = await buildCoverageTimelines({
-			db,
-			granularity,
-			start,
-			end,
-			partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
-			rows,
-			getPartitionKey: (row) => row.router,
-			toData: ({ router: _router, bucketStart: _bucketStart, bucketEnd: _bucketEnd, ...data }) =>
-				data,
-			emptyData: () => null
-		});
+			const rawRows = await db.all<RawStructureStatsRow>(query, queryParams);
+			const rows: StructureStatsRow[] = rawRows.flatMap((row) => {
+				const structureSa = parseStructurePoints(row.structureSaJson, row.router, row.bucketStart);
+				const structureDa = parseStructurePoints(row.structureDaJson, row.router, row.bucketStart);
+				return structureSa === null && structureDa === null
+					? []
+					: [
+							{
+								router: row.router,
+								bucketStart: row.bucketStart,
+								bucketEnd: row.bucketEnd,
+								structureSa: structureSa ?? [],
+								structureDa: structureDa ?? []
+							}
+						];
+			});
+			const timelines = await buildCoverageTimelines({
+				db,
+				granularity,
+				start,
+				end,
+				partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
+				rows,
+				getPartitionKey: (row) => row.router,
+				toData: ({ router: _router, bucketStart: _bucketStart, bucketEnd: _bucketEnd, ...data }) =>
+					data,
+				emptyData: () => null
+			});
 
-		const response: StructureStatsResponse = {
-			timelines: routers.map((router) => ({
-				router,
-				buckets: timelines.get(router) ?? []
-			})),
-			requestedRouters: routers
-		};
+			const response: StructureStatsResponse = {
+				timelines: routers.map((router) => ({
+					router,
+					buckets: timelines.get(router) ?? []
+				})),
+				requestedRouters: routers
+			};
 
-		return json(response);
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to query structure_stats:', error);
 		return json({ error: 'Database query failed' }, { status: 500 });

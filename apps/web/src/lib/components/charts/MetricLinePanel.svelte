@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { Chart } from './chart-registry';
+	import { buildCoveragePointStyle } from './coverage-line-style';
 	import type { ChartConfiguration } from 'chart.js';
 	import type { IpGranularity } from '$lib/types/types';
 	import { formatIpGranularityTick, formatTemporalBucketLabel } from './ip-time-axis';
@@ -98,6 +99,15 @@
 					};
 				}
 			);
+			const hasPartialCoverage = data.some((point) => point.coverage.state === 'partial');
+			const pointStyle = hasPartialCoverage
+				? buildCoveragePointStyle(
+						data,
+						(point) => point.y,
+						(point) => point.coverage,
+						series.color
+					)
+				: null;
 			return {
 				label: series.label,
 				data,
@@ -105,17 +115,22 @@
 				backgroundColor: series.color,
 				borderDash: series.dash ?? [],
 				pointRadius: 0,
+				...(pointStyle ?? {}),
 				pointHoverRadius: 4,
 				spanGaps: false,
-				segment: {
-					borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
-						isCoverageSegmentDashed(
-							context.p0.raw as { coverage?: ChartCoverage },
-							context.p1.raw as { coverage?: ChartCoverage }
-						)
-							? [6, 4]
-							: (series.dash ?? [])
-				},
+				...(hasPartialCoverage
+					? {
+							segment: {
+								borderDash: (context: { p0: { raw: unknown }; p1: { raw: unknown } }) =>
+									isCoverageSegmentDashed(
+										context.p0.raw as { coverage?: ChartCoverage },
+										context.p1.raw as { coverage?: ChartCoverage }
+									)
+										? [6, 4]
+										: (series.dash ?? [])
+							}
+						}
+					: {}),
 				parsing: false as const,
 				tension: 0.25
 			};
@@ -123,7 +138,6 @@
 		const labels = props.bucketStarts.map((bucketStart: number) =>
 			formatTemporalBucketLabel(bucketStart, props.granularity)
 		);
-		chart?.destroy();
 		const config: ChartConfiguration<'line', MetricLinePoint[], string> = {
 			type: 'line',
 			data: { labels, datasets },
@@ -131,6 +145,7 @@
 				responsive: true,
 				maintainAspectRatio: false,
 				animation: false,
+				normalized: true,
 				interaction: { mode: 'index', intersect: false },
 				plugins: {
 					legend: { position: 'top', labels: { color: palette.text } },
@@ -172,6 +187,14 @@
 				}
 			}
 		};
+		if (chart && chart.canvas === canvas) {
+			chart.data = config.data;
+			chart.options = config.options as never;
+			chart.update('none');
+			return;
+		}
+
+		chart?.destroy();
 		chart = new Chart(canvas, config);
 	}
 

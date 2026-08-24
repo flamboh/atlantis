@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { StructureFunctionData, StructureFunctionPoint } from '$lib/types/types';
-import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
+import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
@@ -44,9 +44,9 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		const db = await getDb(dataset, platform);
-		const row = await db.get<StructureRow>(
-			`SELECT
+		return await withDb(dataset, platform, async (db) => {
+			const row = await db.get<StructureRow>(
+				`SELECT
 				values_json AS valuesJson
 			FROM address_structure_stats
 			WHERE source_id = ?
@@ -58,69 +58,70 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND address_side = ?
 				AND structure_kind = 'structure'
 			LIMIT 1`,
-			[
-				router,
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				isSource ? 'source' : 'destination'
-			]
-		);
-
-		if (!row) {
-			return json(
-				{ error: `Structure statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
+				[
+					router,
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					isSource ? 'source' : 'destination'
+				]
 			);
-		}
 
-		const rawStructure = row.valuesJson;
-		if (!rawStructure) {
-			return json(
-				{ error: `Structure statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
-			);
-		}
-
-		let data: StructureFunctionPoint[] = [];
-
-		try {
-			data = normalizeStructurePoints(JSON.parse(rawStructure) as StructureFunctionPoint[]);
-		} catch (error) {
-			console.error('Failed to parse structure JSON from database:', error);
-			return json({ error: 'Failed to parse structure statistics' }, { status: 500 });
-		}
-
-		if (data.length === 0) {
-			return json(
-				{ error: `Structure statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
-			);
-		}
-
-		const addressType = isSource ? 'Source' : 'Destination';
-		const qValues = data.map((point) => point.q);
-		const qRange =
-			qValues.length > 0
-				? { min: Math.min(...qValues), max: Math.max(...qValues) }
-				: { min: 0, max: 0 };
-
-		const response: StructureFunctionData = {
-			slug,
-			router,
-			filename: `nfcapd.${slug}`,
-			structureFunction: data,
-			metadata: {
-				dataSource: `Database: structure_stats 5m bucket (${addressType} Addresses)`,
-				uniqueIPCount: -1,
-				pointCount: data.length,
-				addressType: addressType,
-				qRange
+			if (!row) {
+				return json(
+					{ error: `Structure statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
 			}
-		};
 
-		return json(response);
+			const rawStructure = row.valuesJson;
+			if (!rawStructure) {
+				return json(
+					{ error: `Structure statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
+			}
+
+			let data: StructureFunctionPoint[] = [];
+
+			try {
+				data = normalizeStructurePoints(JSON.parse(rawStructure) as StructureFunctionPoint[]);
+			} catch (error) {
+				console.error('Failed to parse structure JSON from database:', error);
+				return json({ error: 'Failed to parse structure statistics' }, { status: 500 });
+			}
+
+			if (data.length === 0) {
+				return json(
+					{ error: `Structure statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
+			}
+
+			const addressType = isSource ? 'Source' : 'Destination';
+			const qValues = data.map((point) => point.q);
+			const qRange =
+				qValues.length > 0
+					? { min: Math.min(...qValues), max: Math.max(...qValues) }
+					: { min: 0, max: 0 };
+
+			const response: StructureFunctionData = {
+				slug,
+				router,
+				filename: `nfcapd.${slug}`,
+				structureFunction: data,
+				metadata: {
+					dataSource: `Database: structure_stats 5m bucket (${addressType} Addresses)`,
+					uniqueIPCount: -1,
+					pointCount: data.length,
+					addressType: addressType,
+					qRange
+				}
+			};
+
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to fetch structure statistics from database:', error);
 		return json({ error: 'Failed to get structure statistics' }, { status: 500 });

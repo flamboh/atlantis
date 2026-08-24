@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { parseFlowScopeParams } from '$lib/server/netflow-v3';
-import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
+import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 
 const FIVE_MINUTES = '5m';
 
@@ -46,9 +46,9 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		const db = await getDb(dataset, platform);
-		const row = await db.get<IpCountRow>(
-			`SELECT
+		return await withDb(dataset, platform, async (db) => {
+			const row = await db.get<IpCountRow>(
+				`SELECT
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
@@ -60,21 +60,22 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND src_visibility = ?
 				AND dst_visibility = ?
 			GROUP BY source_id, bucket_start`,
-			[router, FIVE_MINUTES, bucketStart, flowScope.srcVisibility, flowScope.dstVisibility]
-		);
-
-		if (!row) {
-			return json(
-				{ error: `IP statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
+				[router, FIVE_MINUTES, bucketStart, flowScope.srcVisibility, flowScope.dstVisibility]
 			);
-		}
 
-		const response = isSource
-			? { ipv4Count: row.saIpv4Count, ipv6Count: row.saIpv6Count }
-			: { ipv4Count: row.daIpv4Count, ipv6Count: row.daIpv6Count };
+			if (!row) {
+				return json(
+					{ error: `IP statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
+			}
 
-		return json(response);
+			const response = isSource
+				? { ipv4Count: row.saIpv4Count, ipv6Count: row.saIpv6Count }
+				: { ipv4Count: row.daIpv4Count, ipv6Count: row.daIpv6Count };
+
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to fetch IP counts from database:', error);
 		return json({ error: 'Failed to get IP counts' }, { status: 500 });

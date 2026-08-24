@@ -9,12 +9,19 @@ import { GET as getIpCounts } from '../../src/routes/api/netflow/files/[slug]/ip
 import { GET as getSpectrum } from '../../src/routes/api/netflow/files/[slug]/spectrum/+server';
 import { GET as getStructure } from '../../src/routes/api/netflow/files/[slug]/structure/+server';
 import { GET as getDetails } from '../../src/routes/api/netflow/files/[slug]/details/+server';
-import { getRequestedDataset, getDatasetDb } from '$lib/server/datasets';
+import { getDefaultDatasetId, getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
+	getDefaultDatasetId: vi.fn(),
 	getRequestedDataset: vi.fn(),
-	getDatasetDb: vi.fn()
+	withDatasetDb: vi.fn()
 }));
+
+function mockDatasetSession(db: object): void {
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+		run({ db: db as never, listSources: async () => [], listSourceDefinitions: async () => [] })
+	);
+}
 
 describe('netflow file helpers and routes', () => {
 	it('parses slugs and resolves dataset from requests', async () => {
@@ -30,9 +37,10 @@ describe('netflow file helpers and routes', () => {
 	});
 
 	it('looks up netflow file paths by slug + router', async () => {
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		vi.mocked(getDefaultDatasetId).mockResolvedValue('alpha');
+		mockDatasetSession({
 			get: vi.fn().mockResolvedValue({ input_locator: '/captures/r1/nfcapd.202503010005' })
-		} as never);
+		});
 
 		await expect(getNetflowFilePath(undefined, '202503010005', 'r1')).resolves.toBe(
 			'/captures/r1/nfcapd.202503010005'
@@ -55,9 +63,9 @@ describe('netflow file helpers and routes', () => {
 				valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]'
 			});
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			get
-		} as never);
+		});
 
 		const badIpResponse = await getIpCounts({
 			params: { slug: 'bad' },
@@ -178,9 +186,9 @@ describe('netflow file helpers and routes', () => {
 			}
 		]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockResolvedValue({
+		mockDatasetSession({
 			all
-		} as never);
+		});
 
 		const response = await getDetails({
 			params: { slug: '202503010005' },
@@ -281,7 +289,7 @@ describe('netflow file helpers and routes', () => {
 
 	it('rejects invalid file detail visibility params', async () => {
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		vi.mocked(getDatasetDb).mockClear();
+		vi.mocked(withDatasetDb).mockClear();
 
 		const response = await getDetails({
 			params: { slug: '202503010005' },
@@ -292,6 +300,6 @@ describe('netflow file helpers and routes', () => {
 		await expect(response.json()).resolves.toEqual({
 			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized'
 		});
-		expect(getDatasetDb).not.toHaveBeenCalledWith('alpha', undefined);
+		expect(withDatasetDb).not.toHaveBeenCalledWith('alpha', undefined, expect.any(Function));
 	});
 });

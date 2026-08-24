@@ -27,6 +27,9 @@
     "test:db:rust": "cargo test --workspace --all-features --locked",
     "test:e2e": "./scripts/run-with-nix-if-available.sh env PLAYWRIGHT_WEB_SERVER=1 bun run --cwd apps/web test:e2e",
     "test:e2e:headed": "./scripts/run-with-nix-if-available.sh env PLAYWRIGHT_WEB_SERVER=1 bun run --cwd apps/web test:e2e:headed",
+    "perf:web:seed": "node --experimental-strip-types apps/web/tests/performance/seed-large-db.ts",
+    "perf:web:profile": "./scripts/run-with-nix-if-available.sh node apps/web/tests/performance/profile-dashboard.mjs",
+    "perf:web:interactions": "./scripts/run-with-nix-if-available.sh node apps/web/tests/performance/profile-window-cache.mjs",
     "check:db": "cargo check --workspace --all-targets --locked"
   },
   "workspaces": [

@@ -3,15 +3,11 @@ import type { RequestHandler } from './$types';
 import type {
 	FlowCharacteristicsResponse,
 	ObservationStats,
-	PortCardinalityStats
+	PortCardinalityCounts
 } from '$lib/types/types';
-import {
-	getDatasetDb,
-	getRequestedDataset,
-	listDatasetSourceDefinitions
-} from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import { parseAggregateStatsParams, placeholders, resolveSourceIds } from '$lib/server/netflow-v3';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
+import { buildCoverageTimelines, loadCoverageRows } from '$lib/server/db/coverage';
 
 type ObservationTotalsRow = {
 	bucketStart: number;
@@ -30,11 +26,14 @@ type TimedObservationStats = ObservationStats & { bucketStart: number };
 type PortCardinalityRow = {
 	sourceId: string;
 	bucketStart: number;
-	bucketEnd: number;
-	ipVersion: 4 | 6;
-	portSide: PortCardinalityStats['portSide'];
-	portRange: PortCardinalityStats['portRange'];
-	uniquePortCount: number;
+	ipv4SourceLow: number;
+	ipv4SourceHigh: number;
+	ipv4DestinationLow: number;
+	ipv4DestinationHigh: number;
+	ipv6SourceLow: number;
+	ipv6SourceHigh: number;
+	ipv6DestinationLow: number;
+	ipv6DestinationHigh: number;
 };
 
 type GroupedObservationRow = {
@@ -45,8 +44,21 @@ type GroupedObservationRow = {
 type GroupedPortRow = {
 	sourceId: string;
 	bucketStart: number;
-	values: PortCardinalityStats[];
+	values: PortCardinalityCounts;
 };
+
+function emptyPortCounts(): PortCardinalityCounts {
+	return {
+		ipv4: {
+			source: { low: 0, high: 0 },
+			destination: { low: 0, high: 0 }
+		},
+		ipv6: {
+			source: { low: 0, high: 0 },
+			destination: { low: 0, high: 0 }
+		}
+	};
+}
 
 function average(sum: number, count: number): number | null {
 	return count === 0 ? null : sum / count;
@@ -96,17 +108,20 @@ function groupObservations(rows: TimedObservationStats[]): GroupedObservationRow
 }
 
 function groupPorts(rows: PortCardinalityRow[]): GroupedPortRow[] {
-	const valuesBySourceBucket = new Map<string, GroupedPortRow>();
-	for (const { sourceId, bucketStart, ipVersion, bucketEnd: _bucketEnd, ...row } of rows) {
-		const key = `${sourceId}\0${bucketStart}`;
-		const grouped = valuesBySourceBucket.get(key) ?? { sourceId, bucketStart, values: [] };
-		grouped.values.push({
-			...row,
-			ipFamily: ipVersion === 4 ? 'ipv4' : 'ipv6'
-		});
-		valuesBySourceBucket.set(key, grouped);
-	}
-	return [...valuesBySourceBucket.values()];
+	return rows.map((row) => ({
+		sourceId: row.sourceId,
+		bucketStart: row.bucketStart,
+		values: {
+			ipv4: {
+				source: { low: row.ipv4SourceLow, high: row.ipv4SourceHigh },
+				destination: { low: row.ipv4DestinationLow, high: row.ipv4DestinationHigh }
+			},
+			ipv6: {
+				source: { low: row.ipv6SourceLow, high: row.ipv6SourceHigh },
+				destination: { low: row.ipv6DestinationLow, high: row.ipv6DestinationHigh }
+			}
+		}
+	}));
 }
 
 export const GET: RequestHandler = async ({ url, platform }) => {
@@ -117,22 +132,19 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
-		const db = await getDatasetDb(dataset, platform);
-		const resolvedSources = resolveSourceIds(
-			await listDatasetSourceDefinitions(dataset, platform),
-			params.routers
-		);
-		const commonParams = [
-			...resolvedSources,
-			params.granularity,
-			params.srcVisibility,
-			params.dstVisibility,
-			params.start,
-			params.end
-		];
-		const sourcePlaceholders = placeholders(resolvedSources);
-		const observationRows = await db.all<ObservationTotalsRow>(
-			`
+		return await withDatasetDb(dataset, platform, async ({ db, listSourceDefinitions }) => {
+			const resolvedSources = resolveSourceIds(await listSourceDefinitions(), params.routers);
+			const commonParams = [
+				...resolvedSources,
+				params.granularity,
+				params.srcVisibility,
+				params.dstVisibility,
+				params.start,
+				params.end
+			];
+			const sourcePlaceholders = placeholders(resolvedSources);
+			const observationRowsPromise = db.all<ObservationTotalsRow>(
+				`
 				SELECT
 					bucket_start AS bucketStart,
 					MAX(bucket_end) AS bucketEnd,
@@ -150,21 +162,24 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 					AND dst_visibility = ?
 					AND bucket_start >= ?
 					AND bucket_start < ?
-				GROUP BY bucket_start, ip_version
-				ORDER BY bucket_start, ip_version
+				GROUP BY +bucket_start, +ip_version
+				ORDER BY +bucket_start, +ip_version
 			`,
-			commonParams
-		);
-		const portRows = await db.all<PortCardinalityRow>(
-			`
+				commonParams
+			);
+			const portRowsPromise = db.all<PortCardinalityRow>(
+				`
 				SELECT
 					source_id AS sourceId,
 					bucket_start AS bucketStart,
-					bucket_end AS bucketEnd,
-					ip_version AS ipVersion,
-					port_side AS portSide,
-					port_range AS portRange,
-					unique_port_count AS uniquePortCount
+					SUM(CASE WHEN ip_version = 4 AND port_side = 'source' AND port_range = 'low' THEN unique_port_count ELSE 0 END) AS ipv4SourceLow,
+					SUM(CASE WHEN ip_version = 4 AND port_side = 'source' AND port_range = 'high' THEN unique_port_count ELSE 0 END) AS ipv4SourceHigh,
+					SUM(CASE WHEN ip_version = 4 AND port_side = 'destination' AND port_range = 'low' THEN unique_port_count ELSE 0 END) AS ipv4DestinationLow,
+					SUM(CASE WHEN ip_version = 4 AND port_side = 'destination' AND port_range = 'high' THEN unique_port_count ELSE 0 END) AS ipv4DestinationHigh,
+					SUM(CASE WHEN ip_version = 6 AND port_side = 'source' AND port_range = 'low' THEN unique_port_count ELSE 0 END) AS ipv6SourceLow,
+					SUM(CASE WHEN ip_version = 6 AND port_side = 'source' AND port_range = 'high' THEN unique_port_count ELSE 0 END) AS ipv6SourceHigh,
+					SUM(CASE WHEN ip_version = 6 AND port_side = 'destination' AND port_range = 'low' THEN unique_port_count ELSE 0 END) AS ipv6DestinationLow,
+					SUM(CASE WHEN ip_version = 6 AND port_side = 'destination' AND port_range = 'high' THEN unique_port_count ELSE 0 END) AS ipv6DestinationHigh
 				FROM port_count_stats
 				WHERE source_id IN (${sourcePlaceholders})
 					AND granularity = ?
@@ -172,46 +187,61 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 					AND dst_visibility = ?
 					AND bucket_start >= ?
 					AND bucket_start < ?
-				ORDER BY source_id, bucket_start, ip_version, port_side, port_range
+				GROUP BY source_id, bucket_start
 			`,
-			commonParams
-		);
+				commonParams
+			);
+			const coverageRowsPromise = loadCoverageRows({
+				db,
+				granularity: params.granularity,
+				start: params.start,
+				end: params.end,
+				sourceIds: resolvedSources
+			});
+			const [observationRows, portRows, coverageRows] = await Promise.all([
+				observationRowsPromise,
+				portRowsPromise,
+				coverageRowsPromise
+			]);
 
-		const observationTimelines = await buildCoverageTimelines({
-			db,
-			granularity: params.granularity,
-			start: params.start,
-			end: params.end,
-			partitions: [{ key: 'observations', sourceIds: resolvedSources }],
-			rows: groupObservations([
-				...observationRows.map(toObservationStats),
-				...mergeIpFamilies(observationRows)
-			]),
-			getPartitionKey: () => 'observations',
-			toData: (row) => row.values,
-			emptyData: () => []
-		});
-		const portTimelines = await buildCoverageTimelines({
-			db,
-			granularity: params.granularity,
-			start: params.start,
-			end: params.end,
-			partitions: resolvedSources.map((sourceId) => ({ key: sourceId, sourceIds: [sourceId] })),
-			rows: groupPorts(portRows),
-			getPartitionKey: (row) => row.sourceId,
-			toData: (row) => row.values,
-			emptyData: () => []
-		});
+			const observationTimelines = await buildCoverageTimelines({
+				db,
+				granularity: params.granularity,
+				start: params.start,
+				end: params.end,
+				partitions: [{ key: 'observations', sourceIds: resolvedSources }],
+				rows: groupObservations([
+					...observationRows.map(toObservationStats),
+					...mergeIpFamilies(observationRows)
+				]),
+				getPartitionKey: () => 'observations',
+				toData: (row) => row.values,
+				emptyData: () => [],
+				coverageRows
+			});
+			const portTimelines = await buildCoverageTimelines({
+				db,
+				granularity: params.granularity,
+				start: params.start,
+				end: params.end,
+				partitions: resolvedSources.map((sourceId) => ({ key: sourceId, sourceIds: [sourceId] })),
+				rows: groupPorts(portRows),
+				getPartitionKey: (row) => row.sourceId,
+				toData: (row) => row.values,
+				emptyData: emptyPortCounts,
+				coverageRows
+			});
 
-		const response: FlowCharacteristicsResponse = {
-			observationBuckets: observationTimelines.get('observations') ?? [],
-			portTimelines: resolvedSources.map((sourceId) => ({
-				sourceId,
-				buckets: portTimelines.get(sourceId) ?? []
-			})),
-			resolvedSources
-		};
-		return json(response);
+			const response: FlowCharacteristicsResponse = {
+				observationBuckets: observationTimelines.get('observations') ?? [],
+				portTimelines: resolvedSources.map((sourceId) => ({
+					sourceId,
+					buckets: portTimelines.get(sourceId) ?? []
+				})),
+				resolvedSources
+			};
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to query flow characteristics:', error);
 		return json({ error: 'Database query failed' }, { status: 500 });

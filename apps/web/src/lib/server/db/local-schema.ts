@@ -157,24 +157,42 @@ export const localSchemaSql = `
 			granularity, bucket_start, source_id, ip_version,
 			src_visibility, dst_visibility
 		);
-	CREATE INDEX IF NOT EXISTS idx_protocol_stats_query
+	CREATE INDEX IF NOT EXISTS idx_traffic_stats_timeseries
+		ON traffic_stats (
+			source_id, granularity, src_visibility, dst_visibility,
+			bucket_start
+		);
+	CREATE INDEX IF NOT EXISTS idx_protocol_stats_timeseries
 		ON protocol_stats (
-			granularity, bucket_start, source_id, ip_version,
-			src_visibility, dst_visibility
+			source_id, granularity, src_visibility, dst_visibility,
+			bucket_start
 		);
 	CREATE INDEX IF NOT EXISTS idx_address_count_stats_query
 		ON address_count_stats (
 			granularity, bucket_start, source_id, ip_version,
 			src_visibility, dst_visibility, address_side
 		);
+	CREATE INDEX IF NOT EXISTS idx_address_count_stats_timeseries
+		ON address_count_stats (
+			source_id, granularity, src_visibility, dst_visibility,
+			bucket_start
+		);
 	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
 		ON address_structure_stats (
 			granularity, bucket_start, source_id, ip_version,
 			src_visibility, dst_visibility, address_side, structure_kind
 		);
-	CREATE INDEX IF NOT EXISTS idx_port_count_stats_query
-		ON port_count_stats (
-			granularity, bucket_start, source_id, ip_version,
-			src_visibility, dst_visibility, port_side, port_range
+	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
+		ON address_structure_stats (
+			source_id, granularity, src_visibility, dst_visibility,
+			ip_version, structure_kind, bucket_start
 		);
+	CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
+		ON port_count_stats (
+			source_id, granularity, src_visibility, dst_visibility,
+			bucket_start
+		);
+
+	DROP INDEX IF EXISTS idx_protocol_stats_query;
+	DROP INDEX IF EXISTS idx_port_count_stats_query;
 `;

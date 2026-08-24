@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumData, SpectrumPoint } from '$lib/types/types';
 import { parseFlowScopeParams } from '$lib/server/netflow-v3';
-import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
+import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 
 const FIVE_MINUTES = '5m';
 
@@ -44,9 +44,9 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		const db = await getDb(dataset, platform);
-		const row = await db.get<SpectrumRow>(
-			`SELECT
+		return await withDb(dataset, platform, async (db) => {
+			const row = await db.get<SpectrumRow>(
+				`SELECT
 				values_json AS valuesJson
 			FROM address_structure_stats
 			WHERE source_id = ?
@@ -58,69 +58,70 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND address_side = ?
 				AND structure_kind = 'spectrum'
 			LIMIT 1`,
-			[
-				router,
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				isSource ? 'source' : 'destination'
-			]
-		);
-
-		if (!row) {
-			return json(
-				{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
+				[
+					router,
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					isSource ? 'source' : 'destination'
+				]
 			);
-		}
 
-		const rawSpectrum = row.valuesJson;
-		if (!rawSpectrum) {
-			return json(
-				{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
-			);
-		}
-
-		let data: SpectrumPoint[] = [];
-
-		try {
-			data = JSON.parse(rawSpectrum) as SpectrumPoint[];
-		} catch (error) {
-			console.error('Failed to parse spectrum JSON from database:', error);
-			return json({ error: 'Failed to parse spectrum statistics' }, { status: 500 });
-		}
-
-		if (data.length === 0) {
-			return json(
-				{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
-				{ status: 404 }
-			);
-		}
-
-		const addressType = isSource ? 'Source' : 'Destination';
-		const alphaValues = data.map((point) => point.alpha);
-		const alphaRange =
-			alphaValues.length > 0
-				? { min: Math.min(...alphaValues), max: Math.max(...alphaValues) }
-				: { min: 0, max: 0 };
-
-		const response: SpectrumData = {
-			slug,
-			router,
-			filename: `nfcapd.${slug}`,
-			spectrum: data,
-			metadata: {
-				dataSource: `Database: spectrum_stats 5m bucket (${addressType} Addresses)`,
-				uniqueIPCount: -1,
-				pointCount: data.length,
-				addressType: addressType,
-				alphaRange
+			if (!row) {
+				return json(
+					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
 			}
-		};
 
-		return json(response);
+			const rawSpectrum = row.valuesJson;
+			if (!rawSpectrum) {
+				return json(
+					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
+			}
+
+			let data: SpectrumPoint[] = [];
+
+			try {
+				data = JSON.parse(rawSpectrum) as SpectrumPoint[];
+			} catch (error) {
+				console.error('Failed to parse spectrum JSON from database:', error);
+				return json({ error: 'Failed to parse spectrum statistics' }, { status: 500 });
+			}
+
+			if (data.length === 0) {
+				return json(
+					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
+					{ status: 404 }
+				);
+			}
+
+			const addressType = isSource ? 'Source' : 'Destination';
+			const alphaValues = data.map((point) => point.alpha);
+			const alphaRange =
+				alphaValues.length > 0
+					? { min: Math.min(...alphaValues), max: Math.max(...alphaValues) }
+					: { min: 0, max: 0 };
+
+			const response: SpectrumData = {
+				slug,
+				router,
+				filename: `nfcapd.${slug}`,
+				spectrum: data,
+				metadata: {
+					dataSource: `Database: spectrum_stats 5m bucket (${addressType} Addresses)`,
+					uniqueIPCount: -1,
+					pointCount: data.length,
+					addressType: addressType,
+					alphaRange
+				}
+			};
+
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to fetch spectrum statistics from database:', error);
 		return json({ error: 'Failed to get spectrum statistics' }, { status: 500 });

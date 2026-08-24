@@ -1,8 +1,67 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
+import { buildCoverageTimelines, loadCoverageRows } from '$lib/server/db/coverage';
 import { dateStringToEpochPST } from '$lib/utils/timezone';
 
 describe('buildCoverageTimelines', () => {
+	it('coalesces repeated coverage reads in one dashboard request burst', async () => {
+		const rows = [
+			{
+				sourceId: 'r1',
+				bucketStart: 0,
+				bucketEnd: 300,
+				coverageState: 'complete',
+				observedUnits: 1,
+				expectedUnits: 1,
+				rejectedUnits: 0
+			}
+		];
+		const all = vi.fn().mockResolvedValue(rows);
+		const db = { all } as never;
+		const options = { db, granularity: '5m' as const, start: 0, end: 300, sourceIds: ['r1'] };
+
+		const [first, second] = await Promise.all([
+			loadCoverageRows(options),
+			loadCoverageRows({ ...options, sourceIds: ['r1', 'r1'] })
+		]);
+
+		expect(first).toBe(second);
+		expect(all).toHaveBeenCalledTimes(1);
+	});
+
+	it('reuses coverage rows supplied by a route that builds several timelines', async () => {
+		const all = vi.fn();
+		const coverageRows = [
+			{
+				sourceId: 'r1',
+				bucketStart: 0,
+				bucketEnd: 300,
+				coverageState: 'complete',
+				observedUnits: 1,
+				expectedUnits: 1,
+				rejectedUnits: 0
+			}
+		];
+
+		const timelines = await buildCoverageTimelines({
+			db: { all } as never,
+			granularity: '5m',
+			start: 0,
+			end: 300,
+			partitions: [{ key: 'r1', sourceIds: ['r1'] }],
+			rows: [{ bucketStart: 0, value: 4 }],
+			getPartitionKey: () => 'r1',
+			toData: (row) => ({ value: row.value }),
+			emptyData: () => ({ value: 0 }),
+			coverageRows
+		});
+
+		expect(timelines.get('r1')?.[0]).toMatchObject({
+			coverage: { state: 'complete', observedUnits: 1, expectedUnits: 1 },
+			data: { value: 4 }
+		});
+		expect(all).not.toHaveBeenCalled();
+	});
+
 	it('fills a bounded timeline from explicit coverage without treating metric rows as evidence', async () => {
 		const all = vi.fn().mockResolvedValue([
 			{

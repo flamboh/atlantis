@@ -2,7 +2,9 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { spawnSync } from 'child_process';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ReadonlyDatasetDb } from '../../../src/lib/server/datasets';
 
 const coverageTableSql = `
 	CREATE TABLE bucket_coverage (
@@ -22,6 +24,70 @@ async function loadDatasetsModule() {
 	vi.resetModules();
 	return import('../../../src/lib/server/datasets');
 }
+
+type FakeD1DatasetRow = {
+	id: string;
+	label: string;
+	defaultStartDate: string;
+	discoveryMode: string;
+	sortOrder: number;
+};
+
+function createD1Platform(initialRows: FakeD1DatasetRow[]) {
+	let datasetRows = initialRows;
+	const queries: Array<{ sql: string; params: unknown[] }> = [];
+	const sourceMemberRows = [
+		{ datasetId: 'alpha', sourceId: 'router-a', memberId: 'router-a' },
+		{ datasetId: 'alpha', sourceId: 'router-b', memberId: 'router-b' }
+	];
+	const database = {
+		prepare(sql: string) {
+			return {
+				bind(...params: unknown[]) {
+					return {
+						async all() {
+							queries.push({ sql, params });
+							if (sql.includes('FROM datasets')) {
+								const requestedId = sql.includes('WHERE id = ?') ? params[0] : undefined;
+								const results = datasetRows
+									.filter((row) => requestedId === undefined || row.id === requestedId)
+									.sort(
+										(left, right) =>
+											left.sortOrder - right.sortOrder || left.id.localeCompare(right.id)
+									);
+								return { results };
+							}
+							if (sql.includes('FROM source_members')) {
+								return {
+									results: sourceMemberRows
+										.filter((row) => row.datasetId === params[0])
+										.map(({ sourceId, memberId }) => ({ sourceId, memberId }))
+								};
+							}
+							throw new Error(`Unexpected D1 query: ${sql}`);
+						}
+					};
+				}
+			};
+		}
+	};
+
+	return {
+		platform: { env: { DB: database } } as unknown as App.Platform,
+		queries,
+		setDatasetRows(rows: FakeD1DatasetRow[]) {
+			datasetRows = rows;
+		}
+	};
+}
+
+const alphaD1Row: FakeD1DatasetRow = {
+	id: 'alpha',
+	label: 'Alpha Label',
+	defaultStartDate: '2025-03-01',
+	discoveryMode: 'static',
+	sortOrder: 0
+};
 
 function createSqliteFixture(): string {
 	const tempDir = os.tmpdir();
@@ -126,14 +192,81 @@ describe('dataset server helpers', () => {
 		]);
 	});
 
+	it('loads the D1 catalog once when building summaries', async () => {
+		const fake = createD1Platform([
+			alphaD1Row,
+			{ ...alphaD1Row, id: 'beta', label: 'Beta Label', sortOrder: 1 }
+		]);
+		vi.stubEnv('DEFAULT_DATASET', 'beta');
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries(fake.platform)).resolves.toEqual([
+			{
+				datasetId: 'alpha',
+				label: 'Alpha Label',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				isDefault: false
+			},
+			{
+				datasetId: 'beta',
+				label: 'Beta Label',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				isDefault: true
+			}
+		]);
+		expect(fake.queries).toHaveLength(1);
+		expect(fake.queries[0]?.sql).toContain('FROM datasets');
+		expect(fake.queries[0]?.sql).not.toContain('WHERE id = ?');
+	});
+
+	it('resolves an explicit D1 dataset with one targeted query', async () => {
+		const fake = createD1Platform([alphaD1Row]);
+		const datasets = await loadDatasetsModule();
+
+		await expect(
+			datasets.getRequestedDataset(
+				new URL('http://localhost/api/netflow/stats?dataset=alpha'),
+				fake.platform
+			)
+		).resolves.toBe('alpha');
+		expect(fake.queries).toHaveLength(1);
+		expect(fake.queries[0]?.sql).toContain('WHERE id = ?');
+		expect(fake.queries[0]?.params).toEqual(['alpha']);
+	});
+
+	it('does not cache D1 dataset metadata across calls', async () => {
+		const fake = createD1Platform([alphaD1Row]);
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.getDatasetLabel('alpha', fake.platform)).resolves.toBe('Alpha Label');
+		fake.setDatasetRows([{ ...alphaD1Row, label: 'Updated Alpha' }]);
+		await expect(datasets.getDatasetLabel('alpha', fake.platform)).resolves.toBe('Updated Alpha');
+		expect(fake.queries).toHaveLength(2);
+		expect(fake.queries.every((query) => query.sql.includes('WHERE id = ?'))).toBe(true);
+	});
+
+	it('preserves available dataset details for an unknown D1 dataset', async () => {
+		const fake = createD1Platform([alphaD1Row]);
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.getDatasetConfig('missing', fake.platform)).rejects.toThrow(
+			"Unknown dataset 'missing'. Available datasets: alpha"
+		);
+		expect(fake.queries).toHaveLength(2);
+		expect(fake.queries[0]?.sql).toContain('WHERE id = ?');
+		expect(fake.queries[1]?.sql).not.toContain('WHERE id = ?');
+	});
+
 	it('opens local dataset databases as strictly readonly', async () => {
 		const dbPath = createSqliteFixture();
 		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
 
 		const datasets = await loadDatasetsModule();
-		const db = await datasets.getDatasetDb('alpha');
-
-		await expect(db.get('DELETE FROM datasets RETURNING id')).rejects.toThrow(/readonly/i);
+		await datasets.withDatasetDb('alpha', undefined, async ({ db }) => {
+			await expect(db.get('DELETE FROM datasets RETURNING id')).rejects.toThrow(/readonly/i);
+		});
 		await expect(datasets.getDatasetConfig('alpha')).resolves.toMatchObject({ id: 'alpha' });
 	});
 
@@ -187,6 +320,46 @@ describe('dataset server helpers', () => {
 			{ sourceId: 'router-b', members: ['router-b'] },
 			{ sourceId: 'uoregon_all', members: ['router-a', 'router-b'] }
 		]);
+	});
+
+	it('uses configured source members without scanning traffic statistics', async () => {
+		const dbPath = createSqliteFixture();
+		const seedResult = spawnSync(
+			'sqlite3',
+			[
+				dbPath,
+				`
+					INSERT INTO source_members (dataset_id, source_id, member_id)
+					VALUES
+						('alpha', 'router-a', 'router-a'),
+						('alpha', 'router-b', 'router-b');
+					DROP TABLE traffic_stats;
+				`
+			],
+			{ encoding: 'utf-8' }
+		);
+		expect(seedResult.status, seedResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-a', 'router-b']);
+		await expect(datasets.listDatasetSourceDefinitions('alpha')).resolves.toEqual([
+			{ sourceId: 'router-a', members: ['router-a'] },
+			{ sourceId: 'router-b', members: ['router-b'] }
+		]);
+	});
+
+	it('uses one D1 source-members query for configured definitions', async () => {
+		const fake = createD1Platform([alphaD1Row]);
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSourceDefinitions('alpha', fake.platform)).resolves.toEqual([
+			{ sourceId: 'router-a', members: ['router-a'] },
+			{ sourceId: 'router-b', members: ['router-b'] }
+		]);
+		expect(fake.queries).toHaveLength(1);
+		expect(fake.queries[0]?.sql).toContain('FROM source_members');
+		expect(fake.queries.some((query) => query.sql.includes('FROM traffic_stats'))).toBe(false);
 	});
 
 	it('infers source member definitions from processed nfcapd locators', async () => {
@@ -353,6 +526,103 @@ describe('dataset server helpers', () => {
 		fs.renameSync(replacementPath, dbPath);
 
 		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('After replacement');
+	});
+
+	it('refreshes cached source metadata after atomic file replacement', async () => {
+		const dbPath = createSqliteFixture();
+		const replacementPath = createSqliteFixture();
+		for (const [target, sourceId] of [
+			[dbPath, 'router-a'],
+			[replacementPath, 'router-c']
+		] as const) {
+			const seedResult = spawnSync(
+				'sqlite3',
+				[
+					target,
+					`INSERT INTO source_members (dataset_id, source_id, member_id)
+					 VALUES ('alpha', '${sourceId}', '${sourceId}');`
+				],
+				{ encoding: 'utf-8' }
+			);
+			expect(seedResult.status, seedResult.stderr).toBe(0);
+		}
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-a']);
+		fs.renameSync(replacementPath, dbPath);
+		await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-c']);
+	});
+
+	it('refreshes cached dataset and source metadata after a WAL commit', async () => {
+		const dbPath = createSqliteFixture();
+		const writer = new Database(dbPath);
+		writer.pragma('journal_mode = WAL');
+		writer.pragma('wal_autocheckpoint = 0');
+		try {
+			writer
+				.prepare(
+					`INSERT INTO source_members (dataset_id, source_id, member_id)
+					 VALUES ('alpha', 'router-a', 'router-a'), ('alpha', 'router-b', 'router-b')`
+				)
+				.run();
+			const mainBeforeRead = fs.statSync(dbPath);
+			const walBeforeRead = fs.statSync(`${dbPath}-wal`);
+			vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+			const datasets = await loadDatasetsModule();
+
+			await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Alpha Label');
+			await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-a', 'router-b']);
+
+			writer.transaction(() => {
+				writer.prepare(`UPDATE datasets SET label = 'WAL Label' WHERE id = 'alpha'`).run();
+				writer.prepare(`DELETE FROM source_members WHERE dataset_id = 'alpha'`).run();
+				writer
+					.prepare(
+						`INSERT INTO source_members (dataset_id, source_id, member_id)
+						 VALUES ('alpha', 'router-wal', 'router-wal')`
+					)
+					.run();
+			})();
+
+			const mainAfterCommit = fs.statSync(dbPath);
+			const walAfterCommit = fs.statSync(`${dbPath}-wal`);
+			expect(mainAfterCommit.dev).toBe(mainBeforeRead.dev);
+			expect(mainAfterCommit.ino).toBe(mainBeforeRead.ino);
+			expect(mainAfterCommit.size).toBe(mainBeforeRead.size);
+			expect(mainAfterCommit.mtimeMs).toBe(mainBeforeRead.mtimeMs);
+			expect(
+				walAfterCommit.size !== walBeforeRead.size ||
+					walAfterCommit.mtimeMs !== walBeforeRead.mtimeMs
+			).toBe(true);
+
+			await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('WAL Label');
+			await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-wal']);
+		} finally {
+			writer.close();
+		}
+	});
+
+	it('keeps a request database open when another request detects an atomic replacement', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-request-replace-'));
+		const dbPath = path.join(workspace, 'netflow.sqlite');
+		const replacementPath = path.join(workspace, 'replacement.sqlite');
+		seedDatasetDb(dbPath, 'alpha', 'Before replacement', 'router-a');
+		seedDatasetDb(replacementPath, 'alpha', 'After replacement', 'router-b');
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		const datasets = await loadDatasetsModule();
+		let retiredDb: ReadonlyDatasetDb | undefined;
+
+		await datasets.withDatasetDb('alpha', undefined, async ({ db: requestDb, listSources }) => {
+			retiredDb = requestDb;
+			fs.renameSync(replacementPath, dbPath);
+			await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-b']);
+			await expect(listSources()).resolves.toEqual(['router-a']);
+			await expect(
+				requestDb.get<{ label: string }>('SELECT label FROM datasets WHERE id = ?', ['alpha'])
+			).resolves.toEqual({ label: 'Before replacement' });
+		});
+		await expect(retiredDb?.get('SELECT 1')).rejects.toThrow(/connection is not open/i);
 	});
 
 	it('retries when the database is atomically replaced while opening it', async () => {

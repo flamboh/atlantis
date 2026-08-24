@@ -1,13 +1,22 @@
 import { createDateFromPSTComponents } from '$lib/utils/timezone';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import {
+	getDefaultDatasetId,
+	getRequestedDataset,
+	type ReadonlyDatasetDb,
+	withDatasetDb
+} from '$lib/server/datasets';
 
 export interface NetflowRecord {
 	router: string;
 	input_locator: string;
 }
 
-export function getDb(datasetOrPlatform?: string | App.Platform, platform?: App.Platform) {
-	return getDatasetDb(datasetOrPlatform, platform);
+export function withDb<T>(
+	datasetId: string,
+	platform: App.Platform | undefined,
+	run: (db: ReadonlyDatasetDb) => Promise<T> | T
+) {
+	return withDatasetDb(datasetId, platform, ({ db }) => run(db));
 }
 
 export function slugToBucketStart(slug: string): number | null {
@@ -51,10 +60,11 @@ export async function getNetflowFilePath(
 		LIMIT 1
 	`;
 
-	const database = await getDb(platform);
-	const result = await database.get<NetflowRecord>(query, [router, bucketStart]);
-
-	return result?.input_locator || null;
+	const datasetId = await getDefaultDatasetId(platform);
+	return withDb(datasetId, platform, async (database) => {
+		const result = await database.get<NetflowRecord>(query, [router, bucketStart]);
+		return result?.input_locator || null;
+	});
 }
 
 export function getDatasetFromRequest(url: URL, platform?: App.Platform): Promise<string> {

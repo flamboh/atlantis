@@ -10,7 +10,7 @@ import type {
 	StructureFunctionData,
 	StructureFunctionPoint
 } from '$lib/types/types';
-import { getDatasetFromRequest, getDb, slugToBucketStart } from '../utils';
+import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
@@ -139,9 +139,9 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		const db = await getDb(dataset, platform);
-		const rows = await db.all<FileDetailsRow>(
-			`WITH ns AS (
+		return await withDb(dataset, platform, async (db) => {
+			const rows = await db.all<FileDetailsRow>(
+				`WITH ns AS (
 				SELECT
 					source_id AS router,
 					bucket_start,
@@ -261,93 +261,94 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					ON sp.source_id = ns.router
 					AND sp.bucket_start = ns.bucket_start
 				ORDER BY ns.router`,
-			[
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				FIVE_MINUTES,
-				bucketStart,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
-				bucketStart
-			]
-		);
+				[
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					FIVE_MINUTES,
+					bucketStart,
+					flowScope.srcVisibility,
+					flowScope.dstVisibility,
+					bucketStart
+				]
+			);
 
-		if (rows.length === 0) {
-			return json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
-		}
+			if (rows.length === 0) {
+				return json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
+			}
 
-		const routers: NetflowFileDetailsRouter[] = rows.map((row) => {
-			const structureSourcePoints = parseStructure(row.structureJsonSa);
-			const structureDestinationPoints = parseStructure(row.structureJsonDa);
-			const spectrumSourcePoints = parseSpectrum(row.spectrumJsonSa);
-			const spectrumDestinationPoints = parseSpectrum(row.spectrumJsonDa);
+			const routers: NetflowFileDetailsRouter[] = rows.map((row) => {
+				const structureSourcePoints = parseStructure(row.structureJsonSa);
+				const structureDestinationPoints = parseStructure(row.structureJsonDa);
+				const spectrumSourcePoints = parseSpectrum(row.spectrumJsonSa);
+				const spectrumDestinationPoints = parseSpectrum(row.spectrumJsonDa);
 
-			return {
-				summary: {
-					router: row.router,
-					file_path: row.file_path,
-					file_exists_on_disk: false,
-					input_kind: row.input_kind,
-					input_status: row.input_status,
-					input_error_message: row.input_error_message,
-					bucket_start: row.bucket_start,
-					bucket_end: row.bucket_end,
-					flows: row.flows,
-					flows_tcp: row.flows_tcp,
-					flows_udp: row.flows_udp,
-					flows_icmp: row.flows_icmp,
-					flows_other: row.flows_other,
-					packets: row.packets,
-					packets_tcp: row.packets_tcp,
-					packets_udp: row.packets_udp,
-					packets_icmp: row.packets_icmp,
-					packets_other: row.packets_other,
-					bytes: row.bytes,
-					bytes_tcp: row.bytes_tcp,
-					bytes_udp: row.bytes_udp,
-					bytes_icmp: row.bytes_icmp,
-					bytes_other: row.bytes_other,
-					first_timestamp: row.first_timestamp,
-					last_timestamp: row.last_timestamp,
-					msec_first: row.msec_first,
-					msec_last: row.msec_last,
-					sequence_failures: row.sequence_failures,
-					processed_at: row.processed_at
-				},
-				ipCountsSource: buildIpCounts(row.saIpv4Count, row.saIpv6Count),
-				ipCountsDestination: buildIpCounts(row.daIpv4Count, row.daIpv6Count),
-				structureSource: buildStructureData(slug, row.router, 'Source', structureSourcePoints),
-				structureDestination: buildStructureData(
-					slug,
-					row.router,
-					'Destination',
-					structureDestinationPoints
-				),
-				spectrumSource: buildSpectrumData(slug, row.router, 'Source', spectrumSourcePoints),
-				spectrumDestination: buildSpectrumData(
-					slug,
-					row.router,
-					'Destination',
-					spectrumDestinationPoints
-				)
+				return {
+					summary: {
+						router: row.router,
+						file_path: row.file_path,
+						file_exists_on_disk: false,
+						input_kind: row.input_kind,
+						input_status: row.input_status,
+						input_error_message: row.input_error_message,
+						bucket_start: row.bucket_start,
+						bucket_end: row.bucket_end,
+						flows: row.flows,
+						flows_tcp: row.flows_tcp,
+						flows_udp: row.flows_udp,
+						flows_icmp: row.flows_icmp,
+						flows_other: row.flows_other,
+						packets: row.packets,
+						packets_tcp: row.packets_tcp,
+						packets_udp: row.packets_udp,
+						packets_icmp: row.packets_icmp,
+						packets_other: row.packets_other,
+						bytes: row.bytes,
+						bytes_tcp: row.bytes_tcp,
+						bytes_udp: row.bytes_udp,
+						bytes_icmp: row.bytes_icmp,
+						bytes_other: row.bytes_other,
+						first_timestamp: row.first_timestamp,
+						last_timestamp: row.last_timestamp,
+						msec_first: row.msec_first,
+						msec_last: row.msec_last,
+						sequence_failures: row.sequence_failures,
+						processed_at: row.processed_at
+					},
+					ipCountsSource: buildIpCounts(row.saIpv4Count, row.saIpv6Count),
+					ipCountsDestination: buildIpCounts(row.daIpv4Count, row.daIpv6Count),
+					structureSource: buildStructureData(slug, row.router, 'Source', structureSourcePoints),
+					structureDestination: buildStructureData(
+						slug,
+						row.router,
+						'Destination',
+						structureDestinationPoints
+					),
+					spectrumSource: buildSpectrumData(slug, row.router, 'Source', spectrumSourcePoints),
+					spectrumDestination: buildSpectrumData(
+						slug,
+						row.router,
+						'Destination',
+						spectrumDestinationPoints
+					)
+				};
+			});
+
+			const response: NetflowFileDetailsResponse = {
+				routers
 			};
+
+			return json(response);
 		});
-
-		const response: NetflowFileDetailsResponse = {
-			routers
-		};
-
-		return json(response);
 	} catch (error) {
 		console.error('Failed to fetch file details from database:', error);
 		return json({ error: 'Failed to fetch file details' }, { status: 500 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import * as Card from '$lib/components/ui/card';
 	import { goto } from '$app/navigation';
@@ -107,6 +108,7 @@
 
 	let lastFiltersKey = '';
 	let requestToken = 0;
+	let requestController: AbortController | null = null;
 	const ipFamilyCache: Record<string, NetflowIpFamily[] | undefined> = {};
 
 	function setAvailableIpFamilies(ipFamilies: NetflowIpFamily[]) {
@@ -163,6 +165,9 @@
 		selectedRouters: string[],
 		requestedRange: TimeRange
 	) {
+		requestController?.abort();
+		const controller = new AbortController();
+		requestController = controller;
 		const cacheKey = getCacheKey(filters, selectedRouters);
 		const needsFetch = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
 		loading = needsFetch;
@@ -180,7 +185,8 @@
 			await ensureCachedWindow<TimeBucket<NetflowStatsResult>>({
 				key: cacheKey,
 				requestedRange,
-				fetchRange: async (range) => {
+				signal: controller.signal,
+				fetchRange: async (range, signal) => {
 					const response = await fetch(
 						`/api/netflow/stats?${new URLSearchParams({
 							...Object.fromEntries(params.entries()),
@@ -188,6 +194,7 @@
 							endDate: range.end.toString()
 						}).toString()}`,
 						{
+							signal,
 							method: 'GET',
 							headers: {
 								'Content-Type': 'application/json'
@@ -217,11 +224,13 @@
 			if (token !== requestToken) {
 				return;
 			}
+			if (err instanceof DOMException && err.name === 'AbortError') return;
 			error = `Failed to load data: ${err instanceof Error ? err.message : 'Unknown error'}`;
 			rawResults = [];
 		} finally {
 			if (token === requestToken) {
 				loading = false;
+				if (requestController === controller) requestController = null;
 			}
 		}
 	}
@@ -259,6 +268,9 @@
 		const selectedRouters = deriveSelectedRouters(filters.routers);
 
 		if (!props.routersLoaded) {
+			requestToken += 1;
+			requestController?.abort();
+			requestController = null;
 			error = null;
 			rawResults = [];
 			loading = true;
@@ -266,6 +278,9 @@
 		}
 
 		if (selectedRouters.length === 0) {
+			requestToken += 1;
+			requestController?.abort();
+			requestController = null;
 			error = 'Select at least one source to view NetFlow statistics';
 			rawResults = [];
 			loading = false;
@@ -290,6 +305,11 @@
 		const requestedRange = getRequestedRange(filters);
 		const token = ++requestToken;
 		loadData(filters, token, selectedRouters, requestedRange);
+	});
+
+	onDestroy(() => {
+		requestToken += 1;
+		requestController?.abort();
 	});
 </script>
 

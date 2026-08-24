@@ -20,7 +20,7 @@ export type CoverageTimelinePartition = {
 	sourceIds: readonly string[];
 };
 
-type CoverageRow = {
+export type CoverageRow = {
 	sourceId: string;
 	bucketStart: number;
 	bucketEnd: number;
@@ -55,6 +55,7 @@ export type BuildCoverageTimelinesOptions<TData, TRow extends TimelineRow> = {
 	getPartitionKey: (row: TRow) => string;
 	toData: (row: TRow) => TData;
 	emptyData: (partitionKey: string) => TData | null;
+	coverageRows?: readonly CoverageRow[];
 };
 
 export type BuildCoverageOnlyTimelinesOptions = {
@@ -64,6 +65,80 @@ export type BuildCoverageOnlyTimelinesOptions = {
 	end: number;
 	sourceIds: readonly string[];
 };
+
+export type LoadCoverageRowsOptions = {
+	db: ReadonlyDatasetDb;
+	granularity: IpGranularity;
+	start: number;
+	end: number;
+	sourceIds: readonly string[];
+};
+
+type CachedCoverageRows = {
+	expiresAt: number;
+	rows: Promise<CoverageRow[]>;
+};
+
+const COVERAGE_CACHE_TTL_MS = 1_000;
+const COVERAGE_CACHE_MAX_ENTRIES = 32;
+const coverageRowsCache = new WeakMap<ReadonlyDatasetDb, Map<string, CachedCoverageRows>>();
+
+function coverageCacheKey(options: LoadCoverageRowsOptions, sourceIds: string[]): string {
+	return `${options.granularity}:${options.start}:${options.end}:${sourceIds.join('\0')}`;
+}
+
+/**
+ * Share identical coverage reads across the parallel dashboard requests. The short TTL only
+ * coalesces a burst; live products can expose new coverage on the next refresh.
+ */
+export async function loadCoverageRows(options: LoadCoverageRowsOptions): Promise<CoverageRow[]> {
+	const { db, granularity, start, end } = options;
+	const sourceIds = [...new Set(options.sourceIds)].sort();
+	if (end <= start || sourceIds.length === 0) {
+		return [];
+	}
+
+	const now = Date.now();
+	const cache = coverageRowsCache.get(db) ?? new Map<string, CachedCoverageRows>();
+	coverageRowsCache.set(db, cache);
+	const key = coverageCacheKey(options, sourceIds);
+	const cached = cache.get(key);
+	if (cached && cached.expiresAt > now) {
+		return cached.rows;
+	}
+	cache.delete(key);
+
+	const rows = db
+		.all<CoverageRow>(
+			`
+				SELECT
+					source_id AS sourceId,
+					bucket_start AS bucketStart,
+					bucket_end AS bucketEnd,
+					coverage_state AS coverageState,
+					observed_units AS observedUnits,
+					expected_units AS expectedUnits,
+					rejected_units AS rejectedUnits
+				FROM bucket_coverage
+				WHERE granularity = ?
+					AND source_id IN (${sourceIds.map(() => '?').join(',')})
+					AND bucket_start >= ?
+					AND bucket_start < ?
+				ORDER BY source_id ASC, bucket_start ASC
+			`,
+			[granularity, ...sourceIds, start, end]
+		)
+		.catch((error: unknown) => {
+			cache.delete(key);
+			throw error;
+		});
+	cache.set(key, { expiresAt: now + COVERAGE_CACHE_TTL_MS, rows });
+	if (cache.size > COVERAGE_CACHE_MAX_ENTRIES) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey !== undefined) cache.delete(oldestKey);
+	}
+	return rows;
+}
 
 /**
  * Query explicit capture coverage and fill every requested bucket exactly once.
@@ -109,25 +184,9 @@ export async function buildCoverageTimelines<TData, TRow extends TimelineRow>(
 
 	if (sourceIds.size > 0) {
 		const sourceIdList = [...sourceIds];
-		const coverageRows = await db.all<CoverageRow>(
-			`
-				SELECT
-					source_id AS sourceId,
-					bucket_start AS bucketStart,
-					bucket_end AS bucketEnd,
-					coverage_state AS coverageState,
-					observed_units AS observedUnits,
-					expected_units AS expectedUnits,
-					rejected_units AS rejectedUnits
-				FROM bucket_coverage
-				WHERE granularity = ?
-					AND source_id IN (${sourceIdList.map(() => '?').join(',')})
-					AND bucket_start >= ?
-					AND bucket_start < ?
-				ORDER BY source_id ASC, bucket_start ASC
-			`,
-			[granularity, ...sourceIdList, start, end]
-		);
+		const coverageRows =
+			options.coverageRows ??
+			(await loadCoverageRows({ db, granularity, start, end, sourceIds: sourceIdList }));
 
 		for (const row of coverageRows) {
 			const partitionKeys = sourceToPartitions.get(row.sourceId) ?? [];

@@ -15,6 +15,13 @@
 			"when": 1787132631741,
 			"tag": "0001_capture_coverage",
 			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "6",
+			"when": 1787518254723,
+			"tag": "0002_keen_moira_mactaggert",
+			"breakpoints": true
 		}
 	]
 }

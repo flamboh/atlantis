@@ -1,16 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/netflow/characteristics/+server';
 import {
-	getDatasetDb,
 	getRequestedDataset,
-	listDatasetSourceDefinitions
+	listDatasetSourceDefinitions,
+	withDatasetDb
 } from '$lib/server/datasets';
 
 vi.mock('$lib/server/datasets', () => ({
-	getDatasetDb: vi.fn(),
 	getRequestedDataset: vi.fn(),
-	listDatasetSourceDefinitions: vi.fn()
+	listDatasetSourceDefinitions: vi.fn(),
+	withDatasetDb: vi.fn()
 }));
+
+function mockDatasetSession(db: object): void {
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+		run({
+			db: db as never,
+			listSources: async () => [],
+			listSourceDefinitions: () => listDatasetSourceDefinitions('alpha')
+		})
+	);
+}
 
 describe('/api/netflow/characteristics GET', () => {
 	it('returns weighted observation averages and exact logical-source port cardinalities', async () => {
@@ -44,22 +54,14 @@ describe('/api/netflow/characteristics GET', () => {
 				{
 					sourceId: 'uoregon_all',
 					bucketStart: 100,
-					bucketEnd: 200,
-					ipVersion: 4,
-					portSide: 'source',
-					portRange: 'low',
-					uniquePortCount: 7
-				}
-			])
-			.mockResolvedValueOnce([
-				{
-					sourceId: 'uoregon_all',
-					bucketStart: 100,
-					bucketEnd: 200,
-					coverageState: 'partial',
-					observedUnits: 1,
-					expectedUnits: 2,
-					rejectedUnits: 0
+					ipv4SourceLow: 7,
+					ipv4SourceHigh: 0,
+					ipv4DestinationLow: 0,
+					ipv4DestinationHigh: 0,
+					ipv6SourceLow: 0,
+					ipv6SourceHigh: 0,
+					ipv6DestinationLow: 0,
+					ipv6DestinationHigh: 0
 				}
 			])
 			.mockResolvedValueOnce([
@@ -79,7 +81,7 @@ describe('/api/netflow/characteristics GET', () => {
 			{ sourceId: 'oh', members: ['oh'] },
 			{ sourceId: 'uoregon_all', members: ['cc', 'oh'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+		mockDatasetSession({ all });
 
 		const response = await GET({
 			url: new URL(
@@ -124,14 +126,16 @@ describe('/api/netflow/characteristics GET', () => {
 							bucketStart: 100,
 							bucketEnd: 200,
 							coverage: { state: 'partial', observedUnits: 1, expectedUnits: 2 },
-							data: [
-								{
-									ipFamily: 'ipv4',
-									portSide: 'source',
-									portRange: 'low',
-									uniquePortCount: 7
+							data: {
+								ipv4: {
+									source: { low: 7, high: 0 },
+									destination: { low: 0, high: 0 }
+								},
+								ipv6: {
+									source: { low: 0, high: 0 },
+									destination: { low: 0, high: 0 }
 								}
-							]
+							}
 						}
 					]
 				}
@@ -146,11 +150,18 @@ describe('/api/netflow/characteristics GET', () => {
 			100,
 			200
 		]);
-		expect(all).toHaveBeenNthCalledWith(2, expect.not.stringContaining('SUM(unique_port_count)'), [
+		expect(all).toHaveBeenNthCalledWith(2, expect.stringContaining('GROUP BY source_id'), [
 			'uoregon_all',
 			'1h',
 			'all',
 			'all',
+			100,
+			200
+		]);
+		expect(all).toHaveBeenCalledTimes(3);
+		expect(all).toHaveBeenNthCalledWith(3, expect.stringContaining('FROM bucket_coverage'), [
+			'1h',
+			'uoregon_all',
 			100,
 			200
 		]);
@@ -163,7 +174,7 @@ describe('/api/netflow/characteristics GET', () => {
 			{ sourceId: 'r1', members: ['r1'] },
 			{ sourceId: 'r2', members: ['r2'] }
 		]);
-		vi.mocked(getDatasetDb).mockResolvedValue({ all } as never);
+		mockDatasetSession({ all });
 
 		const response = await GET({
 			url: new URL(

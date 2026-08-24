@@ -1,9 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { IP_GRANULARITIES } from '$lib/types/types';
 import type { IpStatsBucket, IpStatsResponse } from '$lib/types/types';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getDatasetDb, getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
 
 export const GET: RequestHandler = async ({ url, platform }) => {
@@ -15,22 +14,19 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
-		const db = await getDatasetDb(dataset, platform);
-		const tableName = 'address_count_stats';
-		const sourceColumn = 'source_id';
-		const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
+		return await withDatasetDb(dataset, platform, async ({ db }) => {
+			const tableName = 'address_count_stats';
+			const sourceColumn = 'source_id';
+			const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
 
-		const query = `
+			const query = `
 			SELECT
 				${sourceColumn} AS router,
 				bucket_start AS bucketStart,
-				bucket_end   AS bucketEnd,
-				granularity,
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
 				SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
-				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count,
-				MAX(processed_at) AS processedAt
+				SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
@@ -38,43 +34,44 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND dst_visibility = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
-			GROUP BY ${sourceColumn}, bucket_start, bucket_end, granularity
+			GROUP BY ${sourceColumn}, bucket_start
 			ORDER BY ${sourceColumn} ASC, bucket_start ASC
 		`;
 
-		const rows = await db.all<
-			IpStatsBucket & { router: string; bucketStart: number; bucketEnd: number }
-		>(query, queryParams);
-		const timelines = await buildCoverageTimelines({
-			db,
-			granularity,
-			start,
-			end,
-			partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
-			rows,
-			getPartitionKey: (row) => row.router,
-			toData: ({ bucketStart: _bucketStart, bucketEnd: _bucketEnd, router: _router, ...data }) => ({
-				...data,
-				granularity
-			}),
-			emptyData: () => ({
+			const rows = await db.all<IpStatsBucket & { router: string; bucketStart: number }>(
+				query,
+				queryParams
+			);
+			const timelines = await buildCoverageTimelines({
+				db,
 				granularity,
-				saIpv4Count: 0,
-				daIpv4Count: 0,
-				saIpv6Count: 0,
-				daIpv6Count: 0
-			})
-		});
-		const response: IpStatsResponse = {
-			timelines: routers.map((router) => ({
-				router,
-				buckets: timelines.get(router) ?? []
-			})),
-			availableGranularities: [...IP_GRANULARITIES],
-			requestedRouters: routers
-		};
+				start,
+				end,
+				partitions: routers.map((router) => ({ key: router, sourceIds: [router] })),
+				rows,
+				getPartitionKey: (row) => row.router,
+				toData: ({ saIpv4Count, daIpv4Count, saIpv6Count, daIpv6Count }) => ({
+					saIpv4Count,
+					daIpv4Count,
+					saIpv6Count,
+					daIpv6Count
+				}),
+				emptyData: () => ({
+					saIpv4Count: 0,
+					daIpv4Count: 0,
+					saIpv6Count: 0,
+					daIpv6Count: 0
+				})
+			});
+			const response: IpStatsResponse = {
+				timelines: routers.map((router) => ({
+					router,
+					buckets: timelines.get(router) ?? []
+				}))
+			};
 
-		return json(response);
+			return json(response);
+		});
 	} catch (error) {
 		console.error('Failed to query ip_stats:', error);
 		return json({ error: 'Database query failed' }, { status: 500 });

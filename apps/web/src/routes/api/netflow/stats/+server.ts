@@ -8,11 +8,7 @@ import type {
 	NetflowStatsResult
 } from '$lib/types/types';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import {
-	getDatasetDb,
-	getRequestedDataset,
-	listDatasetSourceDefinitions
-} from '$lib/server/datasets';
+import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
 import {
 	groupByToGranularity,
@@ -131,24 +127,21 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	}
 
 	try {
-		const db = await getDatasetDb(dataset, platform);
-		const resolvedSources = resolveSourceIds(
-			await listDatasetSourceDefinitions(dataset, platform),
-			routers
-		);
-		const granularity = groupByToGranularity(groupBy);
-		const timeColumn = 'bucket_start';
-		const sourceColumn = 'source_id';
-		const tableName = 'traffic_stats';
-		const metricSelects = getBaseMetricSelects();
-		metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
-		metricSelects.push(
-			'CASE WHEN SUM(duration_count) = 0 THEN NULL ELSE CAST(SUM(duration_sum_ms) AS REAL) / SUM(duration_count) END AS averageDurationMs',
-			'CASE WHEN SUM(min_ttl_count) = 0 THEN NULL ELSE CAST(SUM(min_ttl_sum) AS REAL) / SUM(min_ttl_count) END AS averageMinTtl',
-			'CASE WHEN SUM(max_ttl_count) = 0 THEN NULL ELSE CAST(SUM(max_ttl_sum) AS REAL) / SUM(max_ttl_count) END AS averageMaxTtl'
-		);
+		return await withDatasetDb(dataset, platform, async ({ db, listSourceDefinitions }) => {
+			const resolvedSources = resolveSourceIds(await listSourceDefinitions(), routers);
+			const granularity = groupByToGranularity(groupBy);
+			const timeColumn = 'bucket_start';
+			const sourceColumn = 'source_id';
+			const tableName = 'traffic_stats';
+			const metricSelects = getBaseMetricSelects();
+			metricSelects.push(...getFamilyMetricSelects('ipv4'), ...getFamilyMetricSelects('ipv6'));
+			metricSelects.push(
+				'CASE WHEN SUM(duration_count) = 0 THEN NULL ELSE CAST(SUM(duration_sum_ms) AS REAL) / SUM(duration_count) END AS averageDurationMs',
+				'CASE WHEN SUM(min_ttl_count) = 0 THEN NULL ELSE CAST(SUM(min_ttl_sum) AS REAL) / SUM(min_ttl_count) END AS averageMinTtl',
+				'CASE WHEN SUM(max_ttl_count) = 0 THEN NULL ELSE CAST(SUM(max_ttl_sum) AS REAL) / SUM(max_ttl_count) END AS averageMaxTtl'
+			);
 
-		const query = `
+			const query = `
 			SELECT 
 				${timeColumn} as bucketStart,
 				${metricSelects.join(',\n\t\t\t\t')}
@@ -159,37 +152,38 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			AND dst_visibility = ?
 			AND ${timeColumn} >= ? 
 			AND ${timeColumn} < ?
-			GROUP BY bucketStart
-			ORDER BY bucketStart
+			GROUP BY +${timeColumn}
+			ORDER BY +${timeColumn}
 		`;
 
-		const params = [
-			...resolvedSources,
-			granularity,
-			flowScope.srcVisibility,
-			flowScope.dstVisibility,
-			start,
-			end
-		];
+			const params = [
+				...resolvedSources,
+				granularity,
+				flowScope.srcVisibility,
+				flowScope.dstVisibility,
+				start,
+				end
+			];
 
-		const rows = await db.all<Record<string, number | null> & { bucketStart: number }>(
-			query,
-			params
-		);
-		const timelines = await buildCoverageTimelines({
-			db,
-			granularity,
-			start,
-			end,
-			partitions: [{ key: 'result', sourceIds: resolvedSources }],
-			rows,
-			getPartitionKey: () => 'result',
-			toData: normalizeRow,
-			emptyData: () => normalizeRow({})
+			const rows = await db.all<Record<string, number | null> & { bucketStart: number }>(
+				query,
+				params
+			);
+			const timelines = await buildCoverageTimelines({
+				db,
+				granularity,
+				start,
+				end,
+				partitions: [{ key: 'result', sourceIds: resolvedSources }],
+				rows,
+				getPartitionKey: () => 'result',
+				toData: normalizeRow,
+				emptyData: () => normalizeRow({})
+			});
+			const result = timelines.get('result') ?? [];
+			const availableIpFamilies: NetflowIpFamily[] = ['all', 'ipv4', 'ipv6'];
+			return json({ result, availableIpFamilies } satisfies NetflowStatsResponse);
 		});
-		const result = timelines.get('result') ?? [];
-		const availableIpFamilies: NetflowIpFamily[] = ['all', 'ipv4', 'ipv6'];
-		return json({ result, availableIpFamilies } satisfies NetflowStatsResponse);
 	} catch (error) {
 		console.error('Database error:', error);
 		return json({ error: 'Database query failed' }, { status: 500 });
