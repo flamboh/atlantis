@@ -74,9 +74,43 @@ if [[ "$submodule_mode" != "160000" || "$submodule_type" != "commit" || "$submod
 	exit 1
 fi
 
-if ((force_build)) || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+# Fingerprint every input that changes the image, so pulling a fix rebuilds
+# instead of silently reusing a stale image. Hashing uses git, which this
+# wrapper already requires, rather than a coreutils-only checksum tool.
+fingerprint="$(
+	cd "$ROOT_DIR"
+	{
+		printf '%s\n' "$nfdump_commit"
+		git hash-object \
+			Dockerfile \
+			.dockerignore \
+			rust-toolchain.toml \
+			Cargo.toml \
+			Cargo.lock \
+			tools/netflow-db/Cargo.toml \
+			vendor/scripts/compile-nfdump.sh
+		find tools/netflow-db/src -type f | LC_ALL=C sort | xargs git hash-object
+	} | git hash-object --stdin
+)"
+
+image_fingerprint="$(docker image inspect "$IMAGE" \
+	--format '{{ index .Config.Labels "atlantis.build-fingerprint" }}' 2>/dev/null || true)"
+
+if ((force_build)); then
+	build_reason="requested"
+elif [[ -z "$image_fingerprint" ]]; then
+	build_reason="missing"
+elif [[ "$image_fingerprint" != "$fingerprint" ]]; then
+	build_reason="out of date"
+else
+	build_reason=""
+fi
+
+if [[ -n "$build_reason" ]]; then
+	echo "building $IMAGE ($build_reason)" >&2
 	docker build \
 		--build-arg "NFDUMP_COMMIT=$nfdump_commit" \
+		--label "atlantis.build-fingerprint=$fingerprint" \
 		--tag "$IMAGE" \
 		"$ROOT_DIR"
 fi
