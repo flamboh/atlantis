@@ -45,7 +45,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY rust-toolchain.toml rust-toolchain.toml
 RUN curl --proto '=https' --tlsv1.2 --silent --show-error --fail \
         https://sh.rustup.rs \
-        | sh -s -- --yes --profile minimal --default-toolchain none \
+        | sh -s -- -y --profile minimal --default-toolchain none \
     && cargo --version
 
 COPY Cargo.toml Cargo.lock ./
