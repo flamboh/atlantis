@@ -52,8 +52,8 @@ FROM traffic_stats
 WHERE granularity = '1d'
   AND src_visibility = 'all'
   AND dst_visibility = 'all'
-  AND bucket_start >= strftime('%s', '2025-01-01')
-  AND bucket_start < strftime('%s', '2025-01-08')
+  AND bucket_start >= strftime('%s', '<YYYY-MM-DD>')
+  AND bucket_start < strftime('%s', '<YYYY-MM-DD>')
 GROUP BY bucket_start, source_id
 ORDER BY bucket_start, source_id;
 ```

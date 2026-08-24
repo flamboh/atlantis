@@ -11,7 +11,7 @@ Have this available:
 - nfcapd capture files on disk, in the layout that [dataset configuration](datasets.md#input-directory-layout) shows.
 - Approximately 30 minutes. The one-time tool builds take most of this time.
 
-The pipeline can run in Docker, so it does not require a host Rust or C toolchain. The dashboard still runs natively.
+The pipeline can run in Docker instead of a host Rust and C toolchain. The dashboard always runs natively.
 
 ## First use
 

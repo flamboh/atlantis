@@ -90,9 +90,9 @@ The `extract-window` command creates bounded SQLite or Parquet analysis artifact
 ```bash
 ./scripts/netflow-db.sh extract-window \
   --source-db data/uoregon/netflow.sqlite \
-  --output-dir data/uoregon/extracts/2025-06 \
-  --start 2025-06-01 \
-  --end 2025-07-01 \
+  --output-dir data/uoregon/extracts/<YYYY-MM> \
+  --start <YYYY-MM-DD> \
+  --end <YYYY-MM-DD> \
   --output sqlite \
   --output parquet
 ```

@@ -30,8 +30,8 @@ Compare a rebuilt candidate with a trusted historical database before you publis
 ./scripts/netflow-db.sh compare \
   data/candidate/netflow.sqlite \
   data/example/historical.sqlite \
-  --start 2025-11-01 \
-  --end 2025-12-01
+  --start <YYYY-MM-DD> \
+  --end <YYYY-MM-DD>
 ```
 
 `--start` and `--end` are half-open local date or time boundaries. The default timezone is `America/Los_Angeles`.

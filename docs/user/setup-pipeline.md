@@ -8,32 +8,20 @@ Use a new output database when you change selection rules or result semantics. T
 
 ## Run the pipeline with Docker
 
-Install the [Docker pipeline requirements](requirements.md#docker-pipeline), then configure `datasets.json` as described in [Dataset configuration](datasets.md). Keep `root_path` as the absolute host path to the capture tree.
-
-Pass that path to the wrapper before the pipeline arguments:
+Install the [Docker pipeline requirements](requirements.md#docker-pipeline), then complete the [dataset configuration](datasets.md). Pass each capture root before the pipeline arguments:
 
 ```bash
 ./scripts/netflow-db-docker.sh \
-  --capture-root /data/netflow/example \
+  --capture-root /absolute/path/to/captures \
   pipeline \
   --dataset example \
-  --start-date 2025-02-01 \
-  --end-date 2025-02-01
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD>
 ```
 
-The wrapper builds `atlantis-netflow-db:local` if it is missing. Pass `--build` after a source update to rebuild it. The image build clones the nfdump fork at the commit pinned by the repository, so host submodules may remain uninitialized.
+The wrapper builds the image when it is missing; pass `--build` to rebuild it after a source update. Each `--capture-root` mounts read-only at the same absolute path inside the container, so `root_path` in `datasets.json` needs no change. Output stays under the repository's `data/` directory, owned by you. The image carries the nfdump fork on `PATH`, so Docker commands do not need `--nfdump`.
 
-The wrapper mounts:
-
-- `data/` at `/workspace/data` with write access. The container uses your user and group IDs, so generated databases remain owned by you.
-- `datasets.json` at `/workspace/datasets.json` with read-only access.
-- Each `--capture-root` path at the identical absolute path inside the container, with read-only access. Pass the option more than once if a command reads more than one capture root.
-
-The identical capture mount means `root_path` in `datasets.json` works without changes. The image installs the fork as `/usr/local/bin/nfdump`, which is the default `nfdump` found on `PATH`. Docker commands do not need `--nfdump`.
-
-Keep Docker output paths under the repository's `data/` directory and write them as relative paths such as `data/example/netflow.sqlite`. The wrapper does not mount other host output directories. It also uses the repository's `datasets.json`; pass `--datasets /workspace/datasets.json` if a command needs the path explicitly.
-
-Docker Desktop bind mounts can be slower than native filesystem access on macOS, especially for large capture trees.
+On macOS, bind mounts over large capture trees are slower than native filesystem access.
 
 ## Build the pipeline natively
 
@@ -68,12 +56,12 @@ Run a bounded import while you test the configuration:
 ```bash
 ./scripts/netflow-db.sh pipeline \
   --dataset example \
-  --start-date 2025-02-01 \
-  --end-date 2025-02-01 \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
   --nfdump target/nfdump/libexec/nfdump
 ```
 
-The start date and end date are inclusive, so this command processes one day. If you omit the end date, the pipeline processes each day through the latest available day.
+The start date and end date are inclusive; use the same date for both to process a single day. If you omit the end date, the pipeline processes each day through the latest available day.
 
 Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 address sets, and they power the address-structure charts. Use `--no-maad` to skip them.
 
@@ -86,8 +74,8 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
 ```bash
 ./scripts/netflow-db.sh pipeline \
   --dataset example \
-  --start-date 2025-02-01 \
-  --end-date 2025-02-01 \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
   --database-path data/example-public/netflow.sqlite \
   --ip-prefix 192.0.2.0/24 \
   --src-visibility literal \
@@ -125,7 +113,7 @@ Put flow selection in the top-level `selection` object:
 }
 ```
 
-For native nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it. For Docker, omit the setting or use `"/usr/local/bin/nfdump"`.
+For native nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it.
 
 ## Common options
 
@@ -157,6 +145,6 @@ Run the compatibility check after the pipeline finishes:
 
 The command prints an `OK` line when the database is compatible. A failed requirement returns a nonzero exit status.
 
-Docker users can run the same check by replacing `./scripts/netflow-db.sh` with `./scripts/netflow-db-docker.sh`. Verification reads only `data/`, so it does not need `--capture-root`.
+Docker users run the same check with `./scripts/netflow-db-docker.sh`; verification reads only `data/`.
 
 For pipeline identity and export rules, read the [pipeline contract](../code/pipeline-contract.md).

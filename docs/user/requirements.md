@@ -2,18 +2,15 @@
 
 This document lists the required tools by concern. Install the tools for the parts that you use.
 
-For native setup, the repository has a `shell.nix` file that supplies every development tool below, including Git and a C compiler. With Nix, run `nix-shell` and skip the manual installation. You still need Git on the host to clone the repository before the shell is available.
+For native setup, the repository has a `shell.nix` file that supplies every development tool below.
+
+On NixOS, run `nix-shell` and skip the manual installation.
 
 ## Docker pipeline
 
-The Docker pipeline path needs only these host tools:
+Running the pipeline with Docker needs only Git and Docker on the host. The image build supplies the Rust toolchain, the nfdump build tools, and the pinned fork, and it does not need initialized Git submodules.
 
-- Git
-- Docker Engine or Docker Desktop
-
-The first run builds the image and downloads Ubuntu packages, the pinned Rust toolchain, Rust crates, and the pinned nfdump fork. You do not need to initialize Git submodules or install a compiler on the host.
-
-Docker covers the pipeline only. Run the dashboard natively with the tools in the next section.
+Docker covers the pipeline only; the dashboard runs natively.
 
 ## Dashboard
 
