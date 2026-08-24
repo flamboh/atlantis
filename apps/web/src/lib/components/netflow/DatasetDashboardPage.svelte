@@ -1,11 +1,14 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
 	import PrimaryFilters from '$lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
 	import BreakdownChart from '$lib/components/charts/BreakdownChart.svelte';
 	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
+	import PortCardinalityChart from '$lib/components/charts/PortCardinalityChart.svelte';
 	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
+	import { createFlowCharacteristicsData } from '$lib/components/charts/flow-characteristics-data.svelte';
 	import DragGrip from '$lib/components/common/DragGrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
 	import { createNearViewportAttachment } from '$lib/components/netflow/near-viewport';
@@ -24,6 +27,7 @@
 	import { watch } from 'runed';
 	import { useSearchParams } from 'runed/kit';
 	import { createDateRangeSearchSchema } from '$lib/schemas';
+	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 
 	const props = $props<{
 		dataset: string;
@@ -53,10 +57,18 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
-	type ChartCardId = 'dashboard' | 'characteristics' | 'ip' | 'protocol' | 'spectrum' | 'coverage';
+	type ChartCardId =
+		| 'dashboard'
+		| 'characteristics'
+		| 'ports'
+		| 'ip'
+		| 'protocol'
+		| 'spectrum'
+		| 'coverage';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = [
 		'dashboard',
 		'characteristics',
+		'ports',
 		'ip',
 		'protocol',
 		'spectrum',
@@ -64,20 +76,19 @@
 	];
 	const CHART_CARD_DETAILS: Record<ChartCardId, { title: string; minimumHeight: number }> = {
 		dashboard: { title: 'Traffic Overview', minimumHeight: 640 },
-		characteristics: {
-			title: 'Flow Characteristics',
-			minimumHeight: 780
-		},
+		characteristics: { title: 'Flow Characteristics', minimumHeight: 440 },
+		ports: { title: 'Unique Ports', minimumHeight: 440 },
 		ip: { title: 'IP Address Breakdown', minimumHeight: 440 },
 		protocol: { title: 'Protocol Breakdown', minimumHeight: 440 },
 		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
 		coverage: { title: 'Coverage', minimumHeight: 113 }
 	};
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v4';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v5';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let activatedCharts = $state<Record<ChartCardId, boolean>>({
 		dashboard: false,
 		characteristics: false,
+		ports: false,
 		ip: false,
 		protocol: false,
 		spectrum: false,
@@ -92,6 +103,9 @@
 		}),
 		characteristics: createNearViewportAttachment(() => {
 			activatedCharts.characteristics = true;
+		}),
+		ports: createNearViewportAttachment(() => {
+			activatedCharts.ports = true;
 		}),
 		ip: createNearViewportAttachment(() => {
 			activatedCharts.ip = true;
@@ -147,6 +161,17 @@
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
 	const routersLoaded = $derived(Array.isArray(props.routers));
+	const flowCharacteristics = createFlowCharacteristicsData(() => ({
+		enabled: activatedCharts.characteristics || activatedCharts.ports,
+		dataset: props.dataset,
+		startDate,
+		endDate,
+		groupBy: selectedGroupBy,
+		routers: selectedRouters,
+		routersLoaded,
+		srcVisibility,
+		dstVisibility
+	}));
 
 	function isValidChartOrder(value: unknown): value is ChartCardId[] {
 		if (!Array.isArray(value)) {
@@ -376,6 +401,19 @@
 		params.groupBy = selectedGroupBy;
 	}
 
+	function handleMetricDrillDown(
+		groupBy: GroupByOption,
+		nextStartDate: string,
+		nextEndDate: string
+	) {
+		handleGroupByChange({ groupBy });
+		handleDateChange({ startDate: nextStartDate, endDate: nextEndDate });
+	}
+
+	function handleMetricNavigateToFile(slug: string) {
+		void navigateToNetflowFile(goto, slug, props.dataset, { srcVisibility, dstVisibility });
+	}
+
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
 		const nextRouters = payload.routers;
 		selectedRouters = nextRouters;
@@ -516,14 +554,21 @@
 					/>
 				{:else if chartId === 'characteristics'}
 					<FlowCharacteristicsChart
-						dataset={props.dataset}
-						{startDate}
-						{endDate}
+						data={flowCharacteristics.data}
+						loading={flowCharacteristics.loading}
+						error={flowCharacteristics.error}
 						groupBy={selectedGroupBy}
-						routers={selectedRouters}
-						{routersLoaded}
-						{srcVisibility}
-						{dstVisibility}
+						onDrillDown={handleMetricDrillDown}
+						onNavigateToFile={handleMetricNavigateToFile}
+					/>
+				{:else if chartId === 'ports'}
+					<PortCardinalityChart
+						data={flowCharacteristics.data}
+						loading={flowCharacteristics.loading}
+						error={flowCharacteristics.error}
+						groupBy={selectedGroupBy}
+						onDrillDown={handleMetricDrillDown}
+						onNavigateToFile={handleMetricNavigateToFile}
 					/>
 				{:else if chartId === 'ip'}
 					<BreakdownChart

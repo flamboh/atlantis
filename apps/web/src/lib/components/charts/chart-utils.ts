@@ -13,6 +13,26 @@ import {
 export const Y_AXIS_WIDTH = 80;
 export const MIN_DRAG_PIXELS = 6;
 
+/** Return the index of the finite value nearest to a target. */
+export function findNearestValueIndex(
+	values: readonly (number | null)[],
+	target: number
+): number | null {
+	if (!Number.isFinite(target)) return null;
+
+	let nearestIndex: number | null = null;
+	let nearestDistance = Infinity;
+	for (const [index, value] of values.entries()) {
+		if (value === null || !Number.isFinite(value)) continue;
+		const distance = Math.abs(value - target);
+		if (distance < nearestDistance) {
+			nearestIndex = index;
+			nearestDistance = distance;
+		}
+	}
+	return nearestIndex;
+}
+
 export interface RangeDragState {
 	isDraggingRange: boolean;
 	dragStartX: number;

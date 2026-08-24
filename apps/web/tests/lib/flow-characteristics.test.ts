@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createRequestGate,
-	getSourceLineDash
-} from '../../src/lib/components/charts/flow-characteristics';
-import {
+	getSourceLineDash,
 	indexObservationBuckets,
 	indexPortTimelines
-} from '../../src/lib/components/charts/FlowCharacteristicsChart.svelte';
+} from '../../src/lib/components/charts/flow-characteristics';
 import type {
 	ObservationStats,
 	PortCardinalityCounts,

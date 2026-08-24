@@ -3,6 +3,7 @@ import {
 	clampGroupByToDateRange,
 	buildTemporalChartPoints,
 	findTemporalDataBounds,
+	findNearestValueIndex,
 	isCoverageSegmentDashed,
 	getMaxAllowedGranularityForDateRange,
 	isGranularityAllowedForDateRange
@@ -33,6 +34,12 @@ describe('chart granularity policy', () => {
 });
 
 describe('shared IP granularity chart labels', () => {
+	it('snaps linear time-scale hover to the nearest bucket', () => {
+		expect(findNearestValueIndex([100, 200, null, 400], 260)).toBe(1);
+		expect(findNearestValueIndex([100, 200, null, 400], 360)).toBe(3);
+		expect(findNearestValueIndex([null], 100)).toBeNull();
+	});
+
 	it('formats bucket labels using Pacific time', () => {
 		const bucketStart = dateStringToEpochPST('2026-03-02');
 
