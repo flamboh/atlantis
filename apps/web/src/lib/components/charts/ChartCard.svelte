@@ -13,13 +13,13 @@
 		loadingCopy,
 		noMetricsCopy,
 		emptyCopy,
-		isDraggingRange,
-		selectionLeft,
-		selectionWidth,
-		selectionTop,
-		selectionHeight,
-		mirroredSelectionStyle,
-		minDragPixels,
+		isDraggingRange = false,
+		selectionLeft = 0,
+		selectionWidth = 0,
+		selectionTop = 0,
+		selectionHeight = 0,
+		mirroredSelectionStyle = null,
+		minDragPixels = 0,
 		controls,
 		children,
 		overlay,
@@ -29,7 +29,7 @@
 		onmouseleave
 	}: {
 		title: string;
-		size?: 'default' | 'spectrum';
+		size?: 'default' | 'spectrum' | 'split';
 		loading: boolean;
 		error: string | null;
 		noMetrics: boolean;
@@ -37,20 +37,20 @@
 		loadingCopy: string;
 		noMetricsCopy: string;
 		emptyCopy: string;
-		isDraggingRange: boolean;
-		selectionLeft: number;
-		selectionWidth: number;
-		selectionTop: number;
-		selectionHeight: number;
-		mirroredSelectionStyle: string | null;
-		minDragPixels: number;
+		isDraggingRange?: boolean;
+		selectionLeft?: number;
+		selectionWidth?: number;
+		selectionTop?: number;
+		selectionHeight?: number;
+		mirroredSelectionStyle?: string | null;
+		minDragPixels?: number;
 		controls?: Snippet;
 		children: Snippet;
 		overlay?: Snippet;
-		onmousedown: (event: MouseEvent) => void;
-		onmousemove: (event: MouseEvent) => void;
-		onmouseup: () => void;
-		onmouseleave: () => void;
+		onmousedown?: (event: MouseEvent) => void;
+		onmousemove?: (event: MouseEvent) => void;
+		onmouseup?: () => void;
+		onmouseleave?: () => void;
 	} = $props();
 </script>
 
@@ -70,7 +70,9 @@
 		<div
 			class={size === 'spectrum'
 				? 'border-border bg-background/60 relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border'
-				: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
+				: size === 'split'
+					? 'border-border bg-background/60 relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border xl:h-[320px] xl:min-h-[240px]'
+					: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
 			role="presentation"
 			{onmousedown}
 			{onmousemove}

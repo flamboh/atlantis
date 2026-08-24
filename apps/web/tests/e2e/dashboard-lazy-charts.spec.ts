@@ -20,8 +20,8 @@ test('mounts chart cards near the viewport and keeps them mounted', async ({ pag
 test('mounts only the persisted first card on initial load', async ({ page }) => {
 	await page.addInitScript(() => {
 		localStorage.setItem(
-			'netflow-main-chart-order-v4',
-			'["protocol","dashboard","characteristics","ip","spectrum","coverage"]'
+			'netflow-main-chart-order-v5',
+			'["protocol","dashboard","characteristics","ports","ip","spectrum","coverage"]'
 		);
 	});
 	const requestedPaths: string[] = [];
@@ -87,8 +87,8 @@ test('placeholder drag handles preserve custom chart ordering', async ({ page })
 				.locator('[data-chart-id]')
 				.evaluateAll((cards) => cards.map((card) => card.getAttribute('data-chart-id')))
 		)
-		.toEqual(['dashboard', 'protocol', 'characteristics', 'ip', 'spectrum', 'coverage']);
+		.toEqual(['dashboard', 'protocol', 'characteristics', 'ports', 'ip', 'spectrum', 'coverage']);
 	await expect
-		.poll(() => page.evaluate(() => localStorage.getItem('netflow-main-chart-order-v4')))
-		.toBe('["dashboard","protocol","characteristics","ip","spectrum","coverage"]');
+		.poll(() => page.evaluate(() => localStorage.getItem('netflow-main-chart-order-v5')))
+		.toBe('["dashboard","protocol","characteristics","ports","ip","spectrum","coverage"]');
 });

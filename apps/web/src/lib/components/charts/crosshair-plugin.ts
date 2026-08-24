@@ -1,5 +1,6 @@
 import type { Chart, ChartArea, Plugin, ChartEvent } from 'chart.js';
 import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+import { findNearestValueIndex } from './chart-utils';
 
 interface CrosshairState {
 	mouseX: number | null;
@@ -40,6 +41,39 @@ interface CrosshairOptions {
 
 // Store mouse state for each chart instance
 const chartStates = new WeakMap<Chart, CrosshairState>();
+
+function getPointX(point: unknown): number | null {
+	if (
+		typeof point === 'object' &&
+		point !== null &&
+		!Array.isArray(point) &&
+		'x' in point &&
+		typeof point.x === 'number' &&
+		Number.isFinite(point.x)
+	) {
+		return point.x;
+	}
+	return null;
+}
+
+function findNearestLinearPointIndex(chart: Chart, value: number): number | null {
+	const points = chart.data.datasets.find((dataset) =>
+		dataset.data.some((point) => getPointX(point) !== null)
+	)?.data;
+	if (!points) return null;
+	return findNearestValueIndex(points.map(getPointX), value);
+}
+
+function getPixelForLabel(chart: Chart, labelIndex: number): number {
+	if (chart.scales.x.type === 'linear') {
+		for (const dataset of chart.data.datasets) {
+			const x = getPointX(dataset.data[labelIndex]);
+			if (x !== null) return chart.scales.x.getPixelForValue(x);
+		}
+	}
+	return chart.scales.x.getPixelForValue(labelIndex);
+}
+
 // Helper function to calculate the hovered date from mouse position
 function calculateHoveredDate(chart: Chart, mouseX: number): string | null {
 	try {
@@ -48,12 +82,14 @@ function calculateHoveredDate(chart: Chart, mouseX: number): string | null {
 		const labels = chart.data.labels;
 
 		if (typeof dataX === 'number' && labels && labels.length > 0) {
-			// Round to nearest label index
-			const labelIndex = Math.round(dataX);
+			const labelIndex =
+				chart.scales.x.type === 'linear'
+					? findNearestLinearPointIndex(chart, dataX)
+					: Math.round(dataX);
 
-			if (labelIndex >= 0 && labelIndex < labels.length) {
+			if (labelIndex !== null && labelIndex >= 0 && labelIndex < labels.length) {
 				return labels[labelIndex] as string;
-			} else {
+			} else if (labelIndex !== null) {
 				// Handle clicks outside data range
 				if (labelIndex < 0) {
 					return labels[0] as string;
@@ -296,7 +332,7 @@ export const verticalCrosshairPlugin: Plugin<'line' | 'bar' | 'scatter'> = {
 				if (labels && labels.length > 0) {
 					const labelIndex = labels.indexOf(externalLabel);
 					if (labelIndex >= 0) {
-						crosshairX = chart.scales.x.getPixelForValue(labelIndex);
+						crosshairX = getPixelForLabel(chart, labelIndex);
 						crosshairLabel = externalLabel;
 					}
 				}
