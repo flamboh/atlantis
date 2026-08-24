@@ -2,15 +2,34 @@
 
 The pipeline is the Rust `atlantis-netflow-db` crate. It converts nfcapd or CSV input into a compatible SQLite database.
 
-`scripts/netflow-db.sh` is the pipeline entry point. It runs the crate with `cargo run --locked --release`, which compiles it when necessary. The first run compiles the Rust dependencies and takes several minutes. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
-
 Use a new output database when you change selection rules or result semantics. The pipeline rejects incompatible reuse.
 
-## Build the nfdump fork
+## Choose a path
 
-nfcapd input needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
+| Path   | Entry point                    | Host requirements                                                                                                  |
+| ------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Docker | `scripts/netflow-db-docker.sh` | [Git and Docker](requirements.md#docker-pipeline)                                                                  |
+| Native | `scripts/netflow-db.sh`        | [Rust toolchain](requirements.md#native-pipeline) and the [nfdump build tools](requirements.md#native-nfdump-fork) |
 
-The build needs the [nfdump fork tools](requirements.md#nfdump-fork). The build script checks for them and names any tool that is missing.
+Complete the one-time setup for your path, then follow the rest of this document. The examples below use `./scripts/netflow-db.sh`, and the native path adds `--nfdump` to every command that reads nfcapd input. To run an example with Docker, substitute `./scripts/netflow-db-docker.sh` and add `--capture-root <path>` for commands that read captures.
+
+### Docker setup
+
+Container options come before the pipeline command:
+
+```bash
+./scripts/netflow-db-docker.sh --capture-root /absolute/path/to/captures pipeline ...
+```
+
+The wrapper builds the image when it is missing; pass `--build` to rebuild it after a source update. Each `--capture-root` mounts read-only at the same absolute path inside the container, so `root_path` in `datasets.json` needs no change. Output stays under the repository's `data/` directory, owned by you.
+
+On macOS, bind mounts over large capture trees are slower than native filesystem access.
+
+### Native setup
+
+`scripts/netflow-db.sh` runs the crate with `cargo run --locked --release`, which compiles it when necessary. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
+
+nfcapd input also needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
 
 1. Initialize the Git submodules.
 
@@ -18,13 +37,13 @@ The build needs the [nfdump fork tools](requirements.md#nfdump-fork). The build 
    git submodule update --init --recursive
    ```
 
-2. Build the fork.
+2. Build the fork. The script checks for the [build tools](requirements.md#native-nfdump-fork) and names any tool that is missing.
 
    ```bash
    ./vendor/scripts/compile-nfdump.sh
    ```
 
-The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored. Pass this path to each pipeline command with `--nfdump`; the pipeline does not find it automatically.
+The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored. Pass this path with `--nfdump` to every command that reads nfcapd input; the pipeline does not find it automatically.
 
 ## Process a dataset
 
@@ -35,12 +54,11 @@ Run a bounded import while you test the configuration:
 ```bash
 ./scripts/netflow-db.sh pipeline \
   --dataset example \
-  --start-date 2025-02-01 \
-  --end-date 2025-02-01 \
-  --nfdump target/nfdump/libexec/nfdump
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD>
 ```
 
-The start date and end date are inclusive, so this command processes one day. If you omit the end date, the pipeline processes each day through the latest available day.
+The start date and end date are inclusive; use the same date for both to process a single day. If you omit the end date, the pipeline processes each day through the latest available day.
 
 Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 address sets, and they power the address-structure charts. Use `--no-maad` to skip them.
 
@@ -53,12 +71,11 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
 ```bash
 ./scripts/netflow-db.sh pipeline \
   --dataset example \
-  --start-date 2025-02-01 \
-  --end-date 2025-02-01 \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
   --database-path data/example-public/netflow.sqlite \
   --ip-prefix 192.0.2.0/24 \
-  --src-visibility literal \
-  --nfdump target/nfdump/libexec/nfdump
+  --src-visibility literal
 ```
 
 A selected population is a different database product. Thus, selection options require an explicit `--database-path`.
@@ -92,7 +109,7 @@ Put flow selection in the top-level `selection` object:
 }
 ```
 
-For nfcapd input, set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`. You can also pass the same path with `--nfdump` when the configuration does not set it.
+On the native path, nfcapd input needs the fork path: set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`, or pass `--nfdump` when the configuration does not set it.
 
 ## Common options
 

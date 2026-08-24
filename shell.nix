@@ -11,6 +11,8 @@ mkShell {
     pkgs.bison
     pkgs.bun
     pkgs.flex
+    pkgs.gcc
+    pkgs.git
     pkgs.gnumake
     pkgs.gnutar
     pkgs.libtool

@@ -34,8 +34,8 @@ First, install the [required tools](docs/user/requirements.md) — both Bun and 
    ```bash
    ./scripts/netflow-db.sh pipeline \
      --dataset example \
-     --start-date 2025-02-01 \
-     --end-date 2025-02-01 \
+     --start-date <YYYY-MM-DD> \
+     --end-date <YYYY-MM-DD> \
      --nfdump target/nfdump/libexec/nfdump
    ```
 
