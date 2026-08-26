@@ -355,6 +355,48 @@ pub fn nfcapd_decoder_fingerprint() -> Result<String, ProvenanceError> {
     }))
 }
 
+/// The executable identity is part of the native decoder identity.  The contract fingerprint
+/// describes the stream decoder in this crate; the executable fingerprint binds that contract to
+/// the exact nfdump implementation that produced the stream.
+pub fn nfcapd_decoder_fingerprint_for_executable(
+    executable_locator: &str,
+    executable_content_fingerprint: &str,
+) -> Result<String, ProvenanceError> {
+    fingerprint(&json!({
+        "version": 1,
+        "contract_id": nfcapd_decoder_fingerprint()?,
+        "executable": {
+            "locator": executable_locator,
+            "content_fingerprint": executable_content_fingerprint,
+        },
+    }))
+}
+
+/// One read-only snapshot of the executable used by native decoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutableRevision {
+    pub locator: String,
+    pub content_fingerprint: String,
+    pub snapshot: FileSnapshot,
+    pub decoder_fingerprint: String,
+}
+
+impl ExecutableRevision {
+    pub fn capture(path: impl AsRef<Path>) -> Result<Self, ProvenanceError> {
+        let path = path.as_ref();
+        let locator = path.to_string_lossy().into_owned();
+        let (content_fingerprint, snapshot) = capture_file_revision(path)?;
+        let decoder_fingerprint =
+            nfcapd_decoder_fingerprint_for_executable(&locator, &content_fingerprint)?;
+        Ok(Self {
+            locator,
+            content_fingerprint,
+            snapshot,
+            decoder_fingerprint,
+        })
+    }
+}
+
 pub fn capture_csv_input_revision(
     path: impl AsRef<Path>,
     config: &CsvSourceConfig,

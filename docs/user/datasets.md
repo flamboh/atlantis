@@ -61,6 +61,41 @@ A logical source combines the captures from more than one collector directory. E
 }
 ```
 
+## Define coordinated subsets
+
+Give each subset its own registry entry. Repeat those dataset IDs in one pipeline command. Each entry
+defines its own logical sources and `daily_active_sources` selection.
+
+```json
+[
+  {
+    "dataset_id": "campus-a",
+    "root_path": "/data/netflow/campus",
+    "source_ids": ["router-a"],
+    "selection": {
+      "kind": "daily_active_sources",
+      "ip_prefix": "0.220.0.0/16"
+    },
+    "db_path": "data/campus-a/netflow.sqlite"
+  },
+  {
+    "dataset_id": "campus-b",
+    "root_path": "/data/netflow/campus",
+    "source_ids": ["router-a"],
+    "selection": {
+      "kind": "daily_active_sources",
+      "ip_prefix": "0.221.0.0/16"
+    },
+    "db_path": "data/campus-b/netflow.sqlite"
+  }
+]
+```
+
+The entries share a capture root and the same logical source layout. Their active sets remain independent,
+so one flow may publish to both products when the selections overlap. Do not add a parent or
+`source_dataset` relation. The multi-dataset command infers each subset from the selected entry and
+uses each entry's `db_path`.
+
 ## Required fields
 
 | Field        | Purpose                                         |
@@ -80,8 +115,11 @@ A logical source combines the captures from more than one collector directory. E
 | `source_ids`         | None                               | Simple source names for datasets without member directories.                                         |
 | `discovery_mode`     | `static`                           | `live` marks a dataset that continues to receive new captures. `static` marks a complete dataset.    |
 | `sort_order`         | `0`                                | The dataset order in the dashboard. Lower values sort first.                                         |
+| `selection`          | All flows                          | A normalized flow-selection object applied automatically by dataset-mode pipeline runs.              |
 
 Set `db_path` only for a database that must stay separate, such as a [flow selection](setup-pipeline.md#select-flows) product.
+Persist `selection` with a dedicated `db_path` when the dataset is itself a selected product. Command-line
+selection flags may only override it when `--database-path` names a different output product.
 
 Each pipeline run calculates `default_start_date` again. A run that adds earlier days moves the date back. Set the field to hold the dashboard at one date.
 

@@ -1,13 +1,14 @@
 //! Streaming adapters that turn external CSV inputs into canonical five-minute buckets.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     fs,
     io::{BufReader, Read, Seek, SeekFrom},
+    net::IpAddr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -24,8 +25,8 @@ use crate::{
     config::{CsvSourceConfig, InputOrder},
     coverage::BucketCoverage,
     domain::{
-        BucketKey, CanonicalBucket, DomainError, FlowObservation, FlowSelection, Granularity,
-        StatisticalBucket,
+        AddressSet, BucketKey, CanonicalBucket, DomainError, FlowObservation, FlowSelection,
+        Granularity, StatisticalBucket,
     },
     nfdump,
     normalize::{NormalizeError, field_indexes, normalize_csv_values},
@@ -33,6 +34,8 @@ use crate::{
 
 const BUCKET_SECONDS: i64 = 300;
 const NFDUMP_TIMEOUT: Duration = Duration::from_secs(300);
+const NFDUMP_DAY_TIMEOUT: Duration = Duration::from_secs(3_600);
+const NFDUMP_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 const TIMESTAMP_KEYS: [&str; 3] = ["time_received", "time_end", "time_start"];
 
@@ -112,6 +115,9 @@ pub struct NfcapdInputSpec {
     pub source_id: String,
     pub bucket_start: i64,
 }
+
+/// One coordinated daily selection and its resolved source set.
+pub type NfcapdSelectionAndActiveSources = (FlowSelection, Arc<AddressSet>);
 
 /// Discover configured CSV inputs under one flat directory.
 pub fn discover_csv_inputs(
@@ -388,7 +394,7 @@ fn scan_csv_reader<E, S: CsvScanAccumulator>(
         match normalize_csv_values(&values, config, &indexes) {
             Ok(row) => {
                 state.mark_valid(&row.source_id, row.bucket_start)?;
-                if selection.matches(&row.observation) {
+                if selection.matches_qualifying_flow(&row.observation) {
                     state.accept(row)?;
                 }
             }
@@ -1131,10 +1137,241 @@ pub fn build_nfdump_command(
         "-o".into(),
         nfdump::OUTPUT_MODE.into(),
     ];
-    if let Some(filter) = selection.nfdump_prefix_filter() {
+    if let Some(filter) = selection.nfdump_filter() {
         command.push(filter.into());
     }
     command
+}
+
+/// Build one nfcapd command for several daily active-source selections.
+pub fn build_nfdump_command_for_selections(
+    path: impl AsRef<Path>,
+    selections: &[FlowSelection],
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<Vec<OsString>, IngestError> {
+    let mut command = vec![
+        executable.as_ref().to_owned(),
+        "-r".into(),
+        path.as_ref().as_os_str().to_owned(),
+        "-q".into(),
+        "-o".into(),
+        nfdump::OUTPUT_MODE.into(),
+    ];
+    command.push(daily_active_union_filter(selections)?.into());
+    Ok(command)
+}
+
+/// Build one range command for a complete physical member day.
+pub fn build_nfdump_range_command(
+    paths: &[PathBuf],
+    selection: &FlowSelection,
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<Vec<OsString>, IngestError> {
+    build_nfdump_range_command_for_selections(paths, std::slice::from_ref(selection), executable)
+}
+
+/// Build one range command for a complete physical member day and several selections.
+pub fn build_nfdump_range_command_for_selections(
+    paths: &[PathBuf],
+    selections: &[FlowSelection],
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<Vec<OsString>, IngestError> {
+    let first = paths
+        .first()
+        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
+    let last = paths.last().expect("nonempty range has a last path");
+    if paths.iter().any(|path| path.parent() != first.parent()) {
+        return Err(IngestError::InvalidInput(format!(
+            "nfcapd day range spans directories, including {} and {}",
+            first.display(),
+            last.display()
+        )));
+    }
+    if paths.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(IngestError::InvalidInput(
+            "nfcapd day range paths must be strictly chronological".into(),
+        ));
+    }
+    first.file_name().ok_or_else(|| {
+        IngestError::InvalidInput(format!("invalid nfcapd path: {}", first.display()))
+    })?;
+    let last_name = last.file_name().ok_or_else(|| {
+        IngestError::InvalidInput(format!("invalid nfcapd path: {}", last.display()))
+    })?;
+    let mut range = first.to_path_buf().into_os_string();
+    range.push(":");
+    range.push(last_name);
+    let mut command = vec![
+        executable.as_ref().to_owned(),
+        "-R".into(),
+        range,
+        "-q".into(),
+        "-o".into(),
+        nfdump::OUTPUT_MODE.into(),
+    ];
+    command.push(daily_active_union_filter(selections)?.into());
+    Ok(command)
+}
+
+fn daily_active_union_filter(selections: &[FlowSelection]) -> Result<String, IngestError> {
+    if selections.is_empty() {
+        return Err(IngestError::InvalidInput(
+            "daily active-source selections are empty".into(),
+        ));
+    }
+    let mut prefixes = selections
+        .iter()
+        .map(|selection| {
+            if !selection.selects_daily_active_sources() {
+                return Err(IngestError::InvalidInput(
+                    "nfdump subset decoding requires daily_active_sources selections".into(),
+                ));
+            }
+            selection
+                .ip_prefix()
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    IngestError::InvalidInput(
+                        "daily_active_sources selection is missing an ip_prefix".into(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    prefixes.sort_unstable();
+    prefixes.dedup();
+    let source_filter = |qualifier: &str| {
+        if prefixes.len() == 1 {
+            format!("{qualifier} net {}", prefixes[0])
+        } else {
+            format!(
+                "({})",
+                prefixes
+                    .iter()
+                    .map(|prefix| format!("{qualifier} net {prefix}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )
+        }
+    };
+    let outer_source_filter = source_filter("src");
+    let tunnel_source_filter = source_filter("src tun");
+    Ok(format!(
+        "({outer_source_filter} and ipv4 and (proto tcp or proto udp) and src port > 1023) or ({tunnel_source_filter} and (tun proto tcp or tun proto udp) and src port > 1023)"
+    ))
+}
+
+/// Create a private nfdump input directory containing exactly the requested captures.
+///
+/// `nfdump -R first:last` selects every alphabetically intervening file. A manifest
+/// directory keeps the pinned nfdump range reader while making the input membership
+/// explicit and bounded to the paths discovered by the pipeline.
+fn prepare_nfcapd_manifest(paths: &[PathBuf]) -> Result<(tempfile::TempDir, PathBuf), IngestError> {
+    let context = paths
+        .first()
+        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
+    if paths.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(IngestError::InvalidInput(
+            "nfcapd day range paths must be strictly chronological".into(),
+        ));
+    }
+    let manifest = tempfile::Builder::new()
+        .prefix("atlantis-nfcapd-")
+        .tempdir()
+        .map_err(|source| IngestError::Io {
+            path: context.clone(),
+            source,
+        })?;
+    for (index, path) in paths.iter().enumerate() {
+        let target = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .map_err(|source| IngestError::Io {
+                    path: path.clone(),
+                    source,
+                })?
+                .join(path)
+        };
+        let link = manifest.path().join(format!("nfcapd.{index:020}"));
+        link_nfcapd_manifest_entry(&target, &link).map_err(|source| IngestError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    }
+    let manifest_path = manifest.path().to_owned();
+    Ok((manifest, manifest_path))
+}
+
+#[cfg(unix)]
+fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
+    fs::hard_link(target, link)
+}
+
+fn build_nfdump_manifest_command_for_selections(
+    manifest: &Path,
+    selections: &[FlowSelection],
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<Vec<OsString>, IngestError> {
+    let mut command = vec![
+        executable.as_ref().to_owned(),
+        "-R".into(),
+        manifest.as_os_str().to_owned(),
+        "-q".into(),
+        "-o".into(),
+        nfdump::OUTPUT_MODE.into(),
+    ];
+    command.push(daily_active_union_filter(selections)?.into());
+    Ok(command)
+}
+
+/// Prove that an executable implements the private Atlantis output contract before any pipeline
+/// output is created.  An empty `-R` directory makes the probe independent of capture contents,
+/// while the normal streaming decoder still enforces the header, terminator, and EOF contract.
+pub(crate) fn probe_nfdump_compatibility(
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<(), IngestError> {
+    let manifest = tempfile::tempdir().map_err(|source| IngestError::Io {
+        path: PathBuf::from("<nfdump compatibility probe>"),
+        source,
+    })?;
+    let command = vec![
+        executable.as_ref().to_owned(),
+        "-R".into(),
+        manifest.path().as_os_str().to_owned(),
+        "-q".into(),
+        "-o".into(),
+        nfdump::OUTPUT_MODE.into(),
+    ];
+    let key = BucketKey::new("<probe>", Granularity::FiveMinutes, 0, BUCKET_SECONDS);
+    let bucket = run_nfdump(
+        command,
+        manifest.path(),
+        NFDUMP_PROBE_TIMEOUT,
+        move |stdout| nfdump::reduce_to_bucket(stdout, key, &FlowSelection::default()),
+    )
+    .map_err(|error| {
+        IngestError::InvalidInput(format!(
+            "nfdump compatibility probe for {:?} failed: {error}",
+            executable.as_ref()
+        ))
+    })?;
+    if bucket.traffic.iter().any(|scope| scope.metrics.flows != 0) {
+        return Err(IngestError::InvalidInput(format!(
+            "nfdump compatibility probe for {:?} emitted a non-empty Atlantis stream",
+            executable.as_ref()
+        )));
+    }
+    Ok(())
 }
 
 /// Decode one canonical nfcapd file into its dense five-minute bucket.
@@ -1172,6 +1409,123 @@ fn read_nfcapd_bucket_with_timeout(
         bucket_start + BUCKET_SECONDS,
     );
     let command = build_nfdump_command(path, selection, executable.as_ref());
+    let selection = selection.clone();
+    run_nfdump(command, path, timeout, move |stdout| {
+        nfdump::reduce_to_bucket(stdout, key, &selection)
+    })
+}
+
+pub fn read_nfcapd_bucket_with_active_sources(
+    path: impl AsRef<Path>,
+    source_id: &str,
+    selection: &FlowSelection,
+    active_sources: Arc<AddressSet>,
+    executable: impl AsRef<std::ffi::OsStr>,
+    timezone: &str,
+) -> Result<CanonicalBucket, IngestError> {
+    let path = path.as_ref();
+    let bucket_start = parse_nfcapd_bucket_start(path, timezone)?;
+    let key = BucketKey::new(
+        source_id,
+        Granularity::FiveMinutes,
+        bucket_start,
+        bucket_start + BUCKET_SECONDS,
+    );
+    let command = build_nfdump_command(path, selection, executable.as_ref());
+    let selection = selection.clone();
+    run_nfdump(command, path, NFDUMP_TIMEOUT, move |stdout| {
+        nfdump::reduce_to_bucket_with_active_sources(
+            stdout,
+            key,
+            &selection,
+            active_sources.as_ref(),
+        )
+    })
+}
+
+pub fn read_nfcapd_buckets_with_active_sources(
+    path: impl AsRef<Path>,
+    source_id: &str,
+    selections_and_active_sources: &[NfcapdSelectionAndActiveSources],
+    executable: impl AsRef<std::ffi::OsStr>,
+    timezone: &str,
+) -> Result<Vec<CanonicalBucket>, IngestError> {
+    if selections_and_active_sources.is_empty() {
+        return Err(IngestError::InvalidInput(
+            "daily active-source selection pairs are empty".into(),
+        ));
+    }
+    let path = path.as_ref();
+    let bucket_start = parse_nfcapd_bucket_start(path, timezone)?;
+    let key = BucketKey::new(
+        source_id,
+        Granularity::FiveMinutes,
+        bucket_start,
+        bucket_start + BUCKET_SECONDS,
+    );
+    let command = build_nfdump_command_for_selections(
+        path,
+        &selections_and_active_sources
+            .iter()
+            .map(|(selection, _)| selection.clone())
+            .collect::<Vec<_>>(),
+        executable.as_ref(),
+    )?;
+    let selections_and_active_sources = selections_and_active_sources.to_vec();
+    run_nfdump(command, path, NFDUMP_TIMEOUT, move |stdout| {
+        nfdump::reduce_to_buckets_with_active_sources(stdout, key, &selections_and_active_sources)
+    })
+}
+
+pub(crate) fn read_nfcapd_daily_source_activities(
+    paths: &[PathBuf],
+    selections: &[FlowSelection],
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<Vec<HashMap<IpAddr, nfdump::SourceActivity>>, IngestError> {
+    let context = paths
+        .first()
+        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
+    let (_manifest, manifest_path) = prepare_nfcapd_manifest(paths)?;
+    let command =
+        build_nfdump_manifest_command_for_selections(&manifest_path, selections, executable)?;
+    let selections = selections.to_vec();
+    run_nfdump(command, context, NFDUMP_DAY_TIMEOUT, move |stdout| {
+        nfdump::reduce_to_daily_source_activities(stdout, &selections)
+    })
+}
+
+pub(crate) fn read_nfcapd_daily_source_activity(
+    paths: &[PathBuf],
+    selection: &FlowSelection,
+    executable: impl AsRef<std::ffi::OsStr>,
+) -> Result<HashMap<IpAddr, nfdump::SourceActivity>, IngestError> {
+    let context = paths
+        .first()
+        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
+    let (_manifest, manifest_path) = prepare_nfcapd_manifest(paths)?;
+    let command = build_nfdump_manifest_command_for_selections(
+        &manifest_path,
+        std::slice::from_ref(selection),
+        executable,
+    )?;
+    let selection = selection.clone();
+    run_nfdump(command, context, NFDUMP_DAY_TIMEOUT, move |stdout| {
+        nfdump::reduce_to_daily_source_activity(stdout, &selection)
+    })
+}
+
+fn run_nfdump<T, F>(
+    command: Vec<OsString>,
+    path: &Path,
+    timeout: Duration,
+    decode: F,
+) -> Result<T, IngestError>
+where
+    T: Send + 'static,
+    F: FnOnce(BufReader<std::process::ChildStdout>) -> Result<T, nfdump::NfdumpError>
+        + Send
+        + 'static,
+{
     let executable_name = command[0].clone();
     let stderr_file = tempfile::tempfile().map_err(|source| IngestError::Io {
         path: path.to_owned(),
@@ -1195,10 +1549,9 @@ fn read_nfcapd_bucket_with_timeout(
         .stdout
         .take()
         .ok_or_else(|| IngestError::InvalidInput("nfdump stdout was not captured".into()))?;
-    let selection = selection.clone();
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || {
-        let result = nfdump::reduce_to_bucket(BufReader::new(stdout), key, &selection);
+        let result = decode(BufReader::new(stdout));
         let _ = sender.send(result);
     });
     let deadline = Instant::now() + timeout;
@@ -1283,7 +1636,7 @@ fn read_tail(mut file: fs::File, limit: usize) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, io::Write};
+    use std::{collections::BTreeMap, fs, io::Write, sync::Arc};
 
     use flate2::{Compression, write::GzEncoder};
     use serde_json::json;
@@ -1611,6 +1964,457 @@ mod tests {
             ]
             .map(OsString::from)
         );
+    }
+
+    #[test]
+    fn daily_activity_command_uses_one_source_only_member_range() {
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "0.220.0.0/16"
+        })))
+        .unwrap();
+        let paths = [
+            PathBuf::from("/captures/edge/nfcapd.202506010000"),
+            PathBuf::from("/captures/edge/nfcapd.202506012355"),
+        ];
+
+        let command = build_nfdump_range_command(&paths, &selection, "nfdump").unwrap();
+
+        assert_eq!(
+            command,
+            [
+                "nfdump",
+                "-R",
+                "/captures/edge/nfcapd.202506010000:nfcapd.202506012355",
+                "-q",
+                "-o",
+                "atlantis",
+                "(src net 0.220.0.0/16 and ipv4 and (proto tcp or proto udp) and src port > 1023) or (src tun net 0.220.0.0/16 and (tun proto tcp or tun proto udp) and src port > 1023)",
+            ]
+            .map(OsString::from)
+        );
+        let filter = command.last().unwrap().to_string_lossy();
+        assert!(!filter.contains("dst port"));
+        assert!(!filter.contains("flags"));
+    }
+
+    #[test]
+    fn multi_daily_activity_command_unions_prefixes_and_keeps_fixed_filter() {
+        let selections = [
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "198.51.0.0/16",
+            })))
+            .unwrap(),
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "192.0.0.0/16",
+            })))
+            .unwrap(),
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "192.0.0.0/16",
+            })))
+            .unwrap(),
+        ];
+        let paths = [
+            PathBuf::from("/captures/edge/nfcapd.202506010000"),
+            PathBuf::from("/captures/edge/nfcapd.202506012355"),
+        ];
+
+        let command =
+            build_nfdump_range_command_for_selections(&paths, &selections, "nfdump").unwrap();
+
+        assert_eq!(
+            command.last().unwrap().to_string_lossy(),
+            "((src net 192.0.0.0/16 or src net 198.51.0.0/16) and ipv4 and (proto tcp or proto udp) and src port > 1023) or ((src tun net 192.0.0.0/16 or src tun net 198.51.0.0/16) and (tun proto tcp or tun proto udp) and src port > 1023)"
+        );
+    }
+
+    #[test]
+    fn multi_nfdump_commands_reject_empty_and_non_daily_selection_sets() {
+        let paths = [PathBuf::from("/captures/edge/nfcapd.202506010000")];
+        assert!(matches!(
+            build_nfdump_range_command_for_selections(&paths, &[], "nfdump"),
+            Err(IngestError::InvalidInput(message)) if message.contains("empty")
+        ));
+        assert!(matches!(
+            build_nfdump_command_for_selections("capture", &[FlowSelection::default()], "nfdump"),
+            Err(IngestError::InvalidInput(message)) if message.contains("daily_active_sources")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_bucket_reader_decodes_one_process_into_one_bucket_per_pair() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        let invocation_log = directory.path().join("invocations.log");
+        let mut binary = ONE_V4_BINARY_STREAM.to_vec();
+        binary[16 + 32..16 + 40].copy_from_slice(&20_u64.to_le_bytes());
+        binary[16 + 40..16 + 48].copy_from_slice(&2_000_u64.to_le_bytes());
+        binary[16 + 48..16 + 56].copy_from_slice(&3_u64.to_le_bytes());
+        binary[16 + 64..16 + 66].copy_from_slice(&55_000_u16.to_le_bytes());
+        binary[16 + 69] = 0b010;
+        fs::write(&stream, binary).unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf 'x\\n' >> '{}'\ncat '{}'\n",
+                invocation_log.display(),
+                stream.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "192.0.0.0/16",
+        })))
+        .unwrap();
+        let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+        let pairs = [
+            (
+                selection.clone(),
+                Arc::new([source].into_iter().collect::<AddressSet>()),
+            ),
+            (
+                selection,
+                Arc::new([source].into_iter().collect::<AddressSet>()),
+            ),
+        ];
+
+        let buckets = read_nfcapd_buckets_with_active_sources(
+            &capture,
+            "edge-a",
+            &pairs,
+            &executable,
+            "America/Los_Angeles",
+        )
+        .unwrap();
+
+        assert_eq!(buckets.len(), 2);
+        for bucket in buckets {
+            assert_eq!(
+                bucket
+                    .traffic
+                    .iter()
+                    .find(|entry| {
+                        entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                    })
+                    .unwrap()
+                    .metrics
+                    .flows,
+                3
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(invocation_log).unwrap().lines().count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_bucket_reader_accepts_shared_active_source_set() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        let mut binary = ONE_V4_BINARY_STREAM.to_vec();
+        binary[16 + 64..16 + 66].copy_from_slice(&55_000_u16.to_le_bytes());
+        binary[16 + 69] = 0b010;
+        fs::write(&stream, binary).unwrap();
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\ncat '{}'\n", stream.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "192.0.0.0/16",
+        })))
+        .unwrap();
+        let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+        let active_sources = Arc::new([source].into_iter().collect::<AddressSet>());
+
+        let bucket = read_nfcapd_bucket_with_active_sources(
+            &capture,
+            "edge-a",
+            &selection,
+            active_sources,
+            &executable,
+            "America/Los_Angeles",
+        )
+        .unwrap();
+
+        assert_eq!(
+            bucket
+                .traffic
+                .iter()
+                .find(|entry| {
+                    entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                })
+                .unwrap()
+                .metrics
+                .flows,
+            3
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_daily_activity_reader_decodes_one_range_into_distinct_maps() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        let invocation_log = directory.path().join("invocations.log");
+        let mut binary = ONE_V4_BINARY_STREAM.to_vec();
+        binary[16 + 32..16 + 40].copy_from_slice(&20_u64.to_le_bytes());
+        binary[16 + 40..16 + 48].copy_from_slice(&2_000_u64.to_le_bytes());
+        binary[16 + 48..16 + 56].copy_from_slice(&3_u64.to_le_bytes());
+        binary[16 + 64..16 + 66].copy_from_slice(&55_000_u16.to_le_bytes());
+        binary[16 + 69] = 0b010;
+        fs::write(&stream, binary).unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf 'x\\n' >> '{}'\ncat '{}'\n",
+                invocation_log.display(),
+                stream.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        let selections = [
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "192.0.0.0/16",
+            })))
+            .unwrap(),
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "198.51.0.0/16",
+            })))
+            .unwrap(),
+        ];
+
+        let activities = read_nfcapd_daily_source_activities(
+            std::slice::from_ref(&capture),
+            &selections,
+            &executable,
+        )
+        .unwrap();
+
+        assert_eq!(activities.len(), 2);
+        assert_eq!(activities[0].len(), 1);
+        assert!(activities[1].is_empty());
+        assert_eq!(
+            fs::read_to_string(invocation_log).unwrap().lines().count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daily_activity_reader_uses_only_the_discovered_capture_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        let manifest_members = directory.path().join("manifest-members.log");
+        let manifest_path = directory.path().join("manifest-path.log");
+        let mut binary = ONE_V4_BINARY_STREAM.to_vec();
+        binary[16 + 64..16 + 66].copy_from_slice(&55_000_u16.to_le_bytes());
+        binary[16 + 69] = 0b010;
+        fs::write(&stream, binary).unwrap();
+        let first = directory.path().join("nfcapd.202506010000");
+        let second = directory.path().join("nfcapd.202506010010");
+        fs::write(&first, "selected first").unwrap();
+        fs::write(&second, "selected second").unwrap();
+        // These files are alphabetically between the selected captures. A physical
+        // -R first:last range would read them even though they were not snapshotted.
+        fs::write(
+            directory.path().join("nfcapd.202506010005"),
+            "untracked valid capture",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("nfcapd.202506010007.backup"),
+            "untracked backup",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("nfcapd.202506010008.aria2"),
+            "untracked sidecar",
+        )
+        .unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\n\
+                 set -eu\n\
+                 manifest=\"\"\n\
+                 while [ \"$#\" -gt 0 ]; do\n\
+                   if [ \"$1\" = \"-R\" ]; then manifest=\"$2\"; shift 2; else shift; fi\n\
+                 done\n\
+                 test -n \"$manifest\"\n\
+                 test -d \"$manifest\"\n\
+                 printf '%s\\n' \"$manifest\" > '{}'\n\
+                 for member in \"$manifest\"/*; do\n\
+                   test -L \"$member\"\n\
+                   readlink \"$member\" >> '{}'\n\
+                 done\n\
+                 cat '{}'\n",
+                manifest_path.display(),
+                manifest_members.display(),
+                stream.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "192.0.0.0/16",
+        })))
+        .unwrap();
+        let activity = read_nfcapd_daily_source_activity(
+            &[first.clone(), second.clone()],
+            &selection,
+            &executable,
+        )
+        .unwrap();
+
+        let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+        assert_eq!(activity[&source].flows, 3);
+        assert_eq!(
+            fs::read_to_string(manifest_members).unwrap(),
+            format!("{}\n{}\n", first.display(), second.display())
+        );
+        let manifest_directory = fs::read_to_string(manifest_path).unwrap();
+        assert!(!Path::new(manifest_directory.trim()).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daily_activity_reader_keeps_a_qualifying_synthetic_tunnel_flow_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("fake-nfdump");
+        let stream = directory.path().join("stream.bin");
+        let invocation_log = directory.path().join("invocation.log");
+
+        let mut synthetic: [u8; 72] = ONE_V4_BINARY_STREAM[16..88].try_into().unwrap();
+        synthetic[..16].fill(0);
+        synthetic[..4].copy_from_slice(&[10, 0, 0, 1]);
+        synthetic[16..32].fill(0);
+        synthetic[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        synthetic[32..40].copy_from_slice(&210_u64.to_le_bytes());
+        synthetic[40..48].copy_from_slice(&4_467_904_u64.to_le_bytes());
+        synthetic[48..56].copy_from_slice(&1_u64.to_le_bytes());
+        synthetic[64..66].copy_from_slice(&22_222_u16.to_le_bytes());
+        synthetic[66..68].copy_from_slice(&80_u16.to_le_bytes());
+        synthetic[68] = 6;
+        synthetic[69] = 0b010;
+        synthetic[70..72].fill(0);
+
+        let mut outer = synthetic;
+        outer[..16].fill(0);
+        outer[..4].copy_from_slice(&[72, 138, 170, 101]);
+        outer[16..32].fill(0);
+        outer[16..20].copy_from_slice(&[42, 16, 32, 6]);
+        outer[48..56].copy_from_slice(&7_u64.to_le_bytes());
+        outer[70..72].copy_from_slice(&[40, 255]);
+
+        let mut binary = Vec::new();
+        binary.extend_from_slice(&ONE_V4_BINARY_STREAM[..12]);
+        binary.extend_from_slice(&2_u32.to_le_bytes());
+        binary.extend_from_slice(&synthetic);
+        binary.extend_from_slice(&outer);
+        binary.extend_from_slice(&[0, 0, 0, 0]);
+        fs::write(&stream, binary).unwrap();
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" > '{}'\ncat '{}'\n",
+                invocation_log.display(),
+                stream.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let capture = directory.path().join("nfcapd.202504151200");
+        fs::write(&capture, "fixture").unwrap();
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "10.0.0.0/16",
+        })))
+        .unwrap();
+
+        let activity = read_nfcapd_daily_source_activity(
+            std::slice::from_ref(&capture),
+            &selection,
+            &executable,
+        )
+        .unwrap();
+
+        let source = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(activity.len(), 1);
+        assert_eq!(
+            activity[&source],
+            nfdump::SourceActivity {
+                flows: 1,
+                packets: 20,
+                bytes: 2_000,
+            }
+        );
+
+        let active_sources = Arc::new([source].into_iter().collect::<AddressSet>());
+        let bucket = read_nfcapd_bucket_with_active_sources(
+            &capture,
+            "edge-a",
+            &selection,
+            active_sources,
+            &executable,
+            "America/Los_Angeles",
+        )
+        .unwrap();
+        let metrics = &bucket
+            .traffic
+            .iter()
+            .find(|entry| {
+                entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+            })
+            .unwrap()
+            .metrics;
+        assert_eq!(metrics.flows, 1);
+        assert_eq!(metrics.packets, 210);
+        assert_eq!(metrics.bytes, 4_467_904);
+
+        let invocation = fs::read_to_string(invocation_log).unwrap();
+        assert!(invocation.contains("src net 10.0.0.0/16"));
+        assert!(invocation.contains("src tun net 10.0.0.0/16"));
+        assert!(invocation.contains("tun proto tcp or tun proto udp"));
     }
 
     #[cfg(unix)]

@@ -15,11 +15,13 @@ mkShell {
     pkgs.git
     pkgs.gnumake
     pkgs.gnutar
+    pkgs.jq
     pkgs.libtool
     pkgs.nodejs
     pkgs.pkg-config
     pkgs.python3
     pkgs.rustup
+    pkgs.time
     pkgs.playwright-driver.browsers
   ];
 

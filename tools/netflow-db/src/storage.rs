@@ -11,7 +11,7 @@ use std::{
 use fs2::FileExt;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, backup::Backup,
-    params,
+    params, params_from_iter, types::ToSql,
 };
 use serde::Serialize;
 #[cfg(unix)]
@@ -34,6 +34,18 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
     "address_structure_stats",
     "bucket_coverage",
 ];
+const STATS_GRANULARITIES: [&str; 4] = ["5m", "30m", "1h", "1d"];
+const DAILY_PRODUCT_COMPLETION_BUCKET_SECONDS: i64 = 300;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DailyProductCompletionState {
+    /// The day has no completion marker or mutation tombstone and may use legacy recovery.
+    Missing,
+    /// The day has a matching completion marker with no post-certification mutation.
+    Clean,
+    /// A canonical row changed after the completion marker was written.
+    Dirty,
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -157,6 +169,14 @@ pub fn database_operation_lock_path(path: impl AsRef<Path>) -> Result<PathBuf, S
     Ok(database.with_file_name(format!(".{}.operation.lock", name.to_string_lossy())))
 }
 
+/// Resolve a path using the same absolute and existing-prefix rules used by database operations.
+///
+/// This is crate-visible so pipeline orchestration can compare source roots through symlink and
+/// relative-path aliases without maintaining a second path-resolution implementation.
+pub(crate) fn canonical_path(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+    absolute_path(path.as_ref())
+}
+
 pub fn connect_pipeline_writer(path: impl AsRef<Path>) -> Result<Connection, StorageError> {
     connect_pipeline_writer_with_timeout(path, BUSY_TIMEOUT_MS)
 }
@@ -239,32 +259,109 @@ fn absolute_path(path: &Path) -> Result<PathBuf, StorageError> {
     } else {
         std::env::current_dir()?.join(path)
     };
-    let mut normalized = PathBuf::new();
-    for component in expanded.components() {
+
+    // Resolve components in operating-system order. In particular, `link/..` must apply `..`
+    // to the link target, rather than to the directory containing the link. Resolving the longest
+    // existing prefix and normalizing the rest lexically gets that case wrong. This resolver also
+    // expands dangling symlinks, which is needed before output alias checks can safely derive
+    // SQLite sidecar and operation-lock paths.
+    let mut pending = expanded
+        .components()
+        .map(|component| match component {
+            Component::Prefix(prefix) => OwnedPathComponent::Prefix(prefix.as_os_str().to_owned()),
+            Component::RootDir => OwnedPathComponent::Root,
+            Component::CurDir => OwnedPathComponent::CurDir,
+            Component::ParentDir => OwnedPathComponent::ParentDir,
+            Component::Normal(name) => OwnedPathComponent::Normal(name.to_owned()),
+        })
+        .collect::<std::collections::VecDeque<_>>();
+    let mut resolved = PathBuf::new();
+    let mut symlink_count = 0_u8;
+
+    while let Some(component) = pending.pop_front() {
         match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
+            OwnedPathComponent::Prefix(prefix) => resolved.push(prefix),
+            OwnedPathComponent::Root => resolved.push(Path::new(std::path::MAIN_SEPARATOR_STR)),
+            OwnedPathComponent::CurDir => {}
+            OwnedPathComponent::ParentDir => {
+                // `PathBuf::pop` already keeps an absolute path at its root.
+                resolved.pop();
             }
-            other => normalized.push(other.as_os_str()),
+            OwnedPathComponent::Normal(name) => {
+                let candidate = resolved.join(&name);
+                match fs::symlink_metadata(&candidate) {
+                    Ok(metadata) if metadata.file_type().is_symlink() => {
+                        symlink_count = symlink_count.checked_add(1).ok_or_else(|| {
+                            StorageError::InvalidInput(format!(
+                                "too many symlink components while resolving {}",
+                                path.display()
+                            ))
+                        })?;
+                        let target = fs::read_link(&candidate)?;
+                        let parent = candidate.parent().ok_or_else(|| {
+                            StorageError::InvalidInput(format!(
+                                "cannot resolve symlink component in {}",
+                                path.display()
+                            ))
+                        })?;
+                        if target.is_absolute() {
+                            resolved.clear();
+                            let target_components = target
+                                .components()
+                                .map(OwnedPathComponent::from)
+                                .collect::<Vec<_>>();
+                            for component in target_components.into_iter().rev() {
+                                pending.push_front(component);
+                            }
+                        } else {
+                            resolved = parent.to_path_buf();
+                            let target_components = target
+                                .components()
+                                .map(OwnedPathComponent::from)
+                                .collect::<Vec<_>>();
+                            for component in target_components.into_iter().rev() {
+                                pending.push_front(component);
+                            }
+                        }
+                    }
+                    Ok(_) => resolved.push(name),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                        ) =>
+                    {
+                        // A missing suffix is allowed for output databases. Preserve it as an
+                        // absolute path while still resolving any symlink components before it.
+                        resolved.push(name);
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
     }
-    let mut existing = normalized.as_path();
-    let mut suffix = Vec::new();
-    while !existing.exists() {
-        let name = existing.file_name().ok_or_else(|| {
-            StorageError::InvalidInput(format!("cannot resolve path {}", path.display()))
-        })?;
-        suffix.push(name.to_owned());
-        existing = existing.parent().ok_or_else(|| {
-            StorageError::InvalidInput(format!("cannot resolve path {}", path.display()))
-        })?;
-    }
-    let mut resolved = existing.canonicalize()?;
-    for component in suffix.into_iter().rev() {
-        resolved.push(component);
-    }
     Ok(resolved)
+}
+
+#[derive(Debug)]
+enum OwnedPathComponent {
+    Prefix(std::ffi::OsString),
+    Root,
+    CurDir,
+    ParentDir,
+    Normal(std::ffi::OsString),
+}
+
+impl From<Component<'_>> for OwnedPathComponent {
+    fn from(component: Component<'_>) -> Self {
+        match component {
+            Component::Prefix(prefix) => Self::Prefix(prefix.as_os_str().to_owned()),
+            Component::RootDir => Self::Root,
+            Component::CurDir => Self::CurDir,
+            Component::ParentDir => Self::ParentDir,
+            Component::Normal(name) => Self::Normal(name.to_owned()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +441,59 @@ pub struct InputEvidenceRow {
     pub input_locator: String,
     pub evidence_state: InputEvidenceState,
     pub revision_fingerprint: Option<String>,
+}
+
+/// A processed native capture row used to rebuild bounded resume caches.
+///
+/// The row carries both logical-bucket provenance and the file identity used by the content
+/// digest cache. Callers should keep these rows scoped to one local day.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessedNfcapdInput {
+    pub source_id: String,
+    pub bucket_start: i64,
+    pub input_locator: String,
+    pub content_fingerprint: String,
+    pub revision_fingerprint: String,
+    pub file_snapshot: Option<FileSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResumeQueryCounters {
+    pub input_evidence: usize,
+    pub processed_nfcapd: usize,
+    pub content_fingerprint: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RESUME_QUERY_COUNTERS: std::cell::Cell<ResumeQueryCounters> =
+        const { std::cell::Cell::new(ResumeQueryCounters {
+            input_evidence: 0,
+            processed_nfcapd: 0,
+            content_fingerprint: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn count_resume_query(field: impl FnOnce(&mut ResumeQueryCounters)) {
+    RESUME_QUERY_COUNTERS.with(|counters| {
+        let mut value = counters.get();
+        field(&mut value);
+        counters.set(value);
+    });
+}
+
+#[cfg(not(test))]
+fn count_resume_query(_field: impl FnOnce(&mut ResumeQueryCounters)) {}
+
+#[cfg(test)]
+pub(crate) fn reset_resume_query_counters() {
+    RESUME_QUERY_COUNTERS.with(|counters| counters.set(ResumeQueryCounters::default()));
+}
+
+#[cfg(test)]
+pub(crate) fn resume_query_counters() -> ResumeQueryCounters {
+    RESUME_QUERY_COUNTERS.with(std::cell::Cell::get)
 }
 
 impl InputEvidenceRow {
@@ -479,6 +629,7 @@ pub fn query_input_evidence(
     source_id: &str,
     bucket_start: i64,
 ) -> Result<Vec<InputEvidenceRow>, StorageError> {
+    count_resume_query(|counters| counters.input_evidence += 1);
     let mut statement = connection.prepare(
         "
         SELECT source_id, unit_id, bucket_start, bucket_end, input_locator,
@@ -524,6 +675,162 @@ pub fn query_input_evidence(
             },
         )
         .collect()
+}
+
+fn source_range_query(
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> (String, Vec<Box<dyn ToSql>>) {
+    let placeholders = (1..=source_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let start_parameter = source_ids.len() + 1;
+    let end_parameter = source_ids.len() + 2;
+    let values = source_ids
+        .iter()
+        .map(|source_id| Box::new(source_id.clone()) as Box<dyn ToSql>)
+        .chain([
+            Box::new(start) as Box<dyn ToSql>,
+            Box::new(end) as Box<dyn ToSql>,
+        ])
+        .collect();
+    (
+        format!(
+            "source_id IN ({placeholders}) AND bucket_start >= ?{start_parameter} AND bucket_start < ?{end_parameter}"
+        ),
+        values,
+    )
+}
+
+/// Load all native input evidence for one output's local day in one indexed range query.
+pub(crate) fn query_input_evidence_range(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<Vec<InputEvidenceRow>, StorageError> {
+    if source_ids.is_empty() || start >= end {
+        return Ok(Vec::new());
+    }
+    count_resume_query(|counters| counters.input_evidence += 1);
+    let (predicate, values) = source_range_query(source_ids, start, end);
+    let mut statement = connection.prepare(&format!(
+        "SELECT source_id, unit_id, bucket_start, bucket_end, input_locator,
+                evidence_state, revision_fingerprint
+         FROM input_evidence
+         WHERE {predicate}
+         ORDER BY source_id, bucket_start, unit_id"
+    ))?;
+    let rows = statement
+        .query_map(
+            params_from_iter(values.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(
+            |(
+                source_id,
+                unit_id,
+                bucket_start,
+                bucket_end,
+                input_locator,
+                evidence_state,
+                revision_fingerprint,
+            )| {
+                Ok(InputEvidenceRow {
+                    source_id,
+                    unit_id,
+                    bucket_start,
+                    bucket_end,
+                    input_locator,
+                    evidence_state: input_evidence_state(&evidence_state)?,
+                    revision_fingerprint,
+                })
+            },
+        )
+        .collect()
+}
+
+fn file_snapshot_from_columns(
+    device: Option<i64>,
+    inode: Option<i64>,
+    size: Option<i64>,
+    mtime_ns: Option<i64>,
+    ctime_ns: Option<i64>,
+) -> Option<FileSnapshot> {
+    let (Some(device), Some(inode), Some(size), Some(mtime_ns), Some(ctime_ns)) =
+        (device, inode, size, mtime_ns, ctime_ns)
+    else {
+        return None;
+    };
+    (size >= 0).then_some(FileSnapshot {
+        device: u64::from_ne_bytes(device.to_ne_bytes()),
+        inode: u64::from_ne_bytes(inode.to_ne_bytes()),
+        size: u64::try_from(size).ok()?,
+        mtime_ns,
+        ctime_ns,
+    })
+}
+
+/// Load processed nfcapd provenance and reusable file identities for one output's local day.
+///
+/// The query keeps the existing `(source_id, bucket_start)` and source/bucket indexes in use.
+/// Callers can derive both logical-bucket revision sets and locator/snapshot digest lookups from
+/// the returned rows without issuing one query per bucket or capture.
+pub(crate) fn query_processed_nfcapd_range(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<Vec<ProcessedNfcapdInput>, StorageError> {
+    if source_ids.is_empty() || start >= end {
+        return Ok(Vec::new());
+    }
+    count_resume_query(|counters| counters.processed_nfcapd += 1);
+    let (predicate, values) = source_range_query(source_ids, start, end);
+    let mut statement = connection.prepare(&format!(
+        "SELECT source_id, bucket_start, input_locator,
+                content_fingerprint, revision_fingerprint,
+                file_device, file_inode, file_size, file_mtime_ns, file_ctime_ns
+         FROM processed_inputs
+         WHERE input_kind = 'nfcapd' AND status = 'processed' AND {predicate}
+         ORDER BY source_id, bucket_start, input_locator"
+    ))?;
+    statement
+        .query_map(
+            params_from_iter(values.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok(ProcessedNfcapdInput {
+                    source_id: row.get(0)?,
+                    bucket_start: row.get(1)?,
+                    input_locator: row.get(2)?,
+                    content_fingerprint: row.get(3)?,
+                    revision_fingerprint: row.get(4)?,
+                    file_snapshot: file_snapshot_from_columns(
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                    ),
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(StorageError::from)
 }
 
 pub fn init_processed_inputs_table(connection: &Connection) -> Result<(), StorageError> {
@@ -895,6 +1202,7 @@ pub fn cached_content_fingerprint(
     input_locator: &str,
     file_snapshot: &FileSnapshot,
 ) -> Result<Option<String>, StorageError> {
+    count_resume_query(|counters| counters.content_fingerprint += 1);
     let table = if input_kind == InputKind::Csv {
         "processed_input_scans"
     } else {
@@ -984,6 +1292,7 @@ pub fn nfcapd_logical_bucket_processed(
     bucket_start: i64,
     revisions: &[InputRevision],
 ) -> Result<bool, StorageError> {
+    count_resume_query(|counters| counters.processed_nfcapd += 1);
     if revisions.is_empty() {
         return Ok(false);
     }
@@ -1542,6 +1851,481 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         DROP INDEX IF EXISTS idx_port_count_stats_query;
         ",
     )?;
+    init_daily_product_completion_table(connection)?;
+    Ok(())
+}
+
+/// Initialize the transactionally maintained completion marker for native daily-active products.
+///
+/// The marker is deliberately separate from the canonical product tables. Every canonical table
+/// has row-level invalidation triggers so direct SQL edits, as well as normal pipeline writes,
+/// cannot leave a stale marker looking complete.
+pub fn init_daily_product_completion_table(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS daily_product_completion (
+            source_id TEXT NOT NULL,
+            day_start INTEGER NOT NULL,
+            day_end INTEGER NOT NULL CHECK (day_end > day_start),
+            product_fingerprint TEXT NOT NULL,
+            run_maad INTEGER NOT NULL CHECK (run_maad IN (0, 1)),
+            completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, day_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_daily_product_completion_source_range
+        ON daily_product_completion(source_id, day_start, day_end);
+        CREATE TABLE IF NOT EXISTS daily_product_completion_dirty (
+            source_id TEXT NOT NULL,
+            day_start INTEGER NOT NULL,
+            day_end INTEGER NOT NULL CHECK (day_end > day_start),
+            dirtied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, day_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_daily_product_completion_dirty_source_range
+        ON daily_product_completion_dirty(source_id, day_start, day_end);
+        CREATE TABLE IF NOT EXISTS daily_product_completion_bucket_guard (
+            source_id TEXT NOT NULL,
+            bucket_start INTEGER NOT NULL,
+            day_start INTEGER NOT NULL,
+            day_end INTEGER NOT NULL CHECK (day_end > day_start),
+            PRIMARY KEY (source_id, bucket_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_daily_product_completion_bucket_guard_day
+        ON daily_product_completion_bucket_guard(source_id, day_start, day_end);
+        ",
+    )?;
+
+    // Databases created before the exact-bucket guard existed may already have completion
+    // markers. Only expand days whose indexed guard count is incomplete. A complete legacy day
+    // is therefore absent from the recursive CTE entirely, while a partially migrated day still
+    // gets every missing ownership row. The recursive depth is bounded by one local day.
+    seed_daily_product_completion_bucket_guards(connection)?;
+
+    for table in STATS_TABLE_NAMES {
+        connection.execute_batch(&format!(
+            "
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_insert;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_insert_fallback;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_update;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_update_old_fallback;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_update_new_fallback;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_delete;
+            DROP TRIGGER IF EXISTS daily_product_completion_{table}_delete_fallback;
+
+            CREATE TRIGGER daily_product_completion_{table}_insert
+            AFTER INSERT ON {table}
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT guard.source_id, guard.day_start, guard.day_end
+                FROM daily_product_completion_bucket_guard AS guard
+                JOIN daily_product_completion AS completion
+                  ON completion.source_id = guard.source_id
+                 AND completion.day_start = guard.day_start
+                 AND completion.day_end = guard.day_end
+                WHERE guard.source_id = NEW.source_id
+                  AND guard.bucket_start = NEW.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_insert_fallback
+            AFTER INSERT ON {table}
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM daily_product_completion_bucket_guard
+                WHERE source_id = NEW.source_id
+                  AND bucket_start = NEW.bucket_start
+            )
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT source_id, day_start, day_end
+                FROM daily_product_completion
+                WHERE source_id = NEW.source_id
+                  AND day_start <= NEW.bucket_start
+                  AND day_end > NEW.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_update
+            AFTER UPDATE ON {table}
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT guard.source_id, guard.day_start, guard.day_end
+                FROM daily_product_completion_bucket_guard AS guard
+                JOIN daily_product_completion AS completion
+                  ON completion.source_id = guard.source_id
+                 AND completion.day_start = guard.day_start
+                 AND completion.day_end = guard.day_end
+                WHERE guard.source_id = OLD.source_id
+                  AND guard.bucket_start = OLD.bucket_start;
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT guard.source_id, guard.day_start, guard.day_end
+                FROM daily_product_completion_bucket_guard AS guard
+                JOIN daily_product_completion AS completion
+                  ON completion.source_id = guard.source_id
+                 AND completion.day_start = guard.day_start
+                 AND completion.day_end = guard.day_end
+                WHERE guard.source_id = NEW.source_id
+                  AND guard.bucket_start = NEW.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_update_old_fallback
+            AFTER UPDATE ON {table}
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM daily_product_completion_bucket_guard
+                WHERE source_id = OLD.source_id
+                  AND bucket_start = OLD.bucket_start
+            )
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT source_id, day_start, day_end
+                FROM daily_product_completion
+                WHERE source_id = OLD.source_id
+                  AND day_start <= OLD.bucket_start
+                  AND day_end > OLD.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_update_new_fallback
+            AFTER UPDATE ON {table}
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM daily_product_completion_bucket_guard
+                WHERE source_id = NEW.source_id
+                  AND bucket_start = NEW.bucket_start
+            )
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT source_id, day_start, day_end
+                FROM daily_product_completion
+                WHERE source_id = NEW.source_id
+                  AND day_start <= NEW.bucket_start
+                  AND day_end > NEW.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_delete
+            AFTER DELETE ON {table}
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT guard.source_id, guard.day_start, guard.day_end
+                FROM daily_product_completion_bucket_guard AS guard
+                JOIN daily_product_completion AS completion
+                  ON completion.source_id = guard.source_id
+                 AND completion.day_start = guard.day_start
+                 AND completion.day_end = guard.day_end
+                WHERE guard.source_id = OLD.source_id
+                  AND guard.bucket_start = OLD.bucket_start;
+            END;
+
+            CREATE TRIGGER daily_product_completion_{table}_delete_fallback
+            AFTER DELETE ON {table}
+            WHEN NOT EXISTS (
+                SELECT 1
+                FROM daily_product_completion_bucket_guard
+                WHERE source_id = OLD.source_id
+                  AND bucket_start = OLD.bucket_start
+            )
+            BEGIN
+                INSERT OR IGNORE INTO daily_product_completion_dirty (source_id, day_start, day_end)
+                SELECT source_id, day_start, day_end
+                FROM daily_product_completion
+                WHERE source_id = OLD.source_id
+                  AND day_start <= OLD.bucket_start
+                  AND day_end > OLD.bucket_start;
+            END;
+            "
+        ))?;
+    }
+    Ok(())
+}
+
+/// Backfill exact five-minute guard ownership for legacy completion markers.
+///
+/// The returned count is useful to callers that need to profile initialization. In particular,
+/// a repeat initializer should return zero after all completion days have their expected guards.
+fn seed_daily_product_completion_bucket_guards(
+    connection: &Connection,
+) -> Result<usize, StorageError> {
+    connection.execute(
+        "WITH RECURSIVE completion_days(source_id, day_start, day_end) AS (
+             SELECT completion.source_id, completion.day_start, completion.day_end
+             FROM daily_product_completion AS completion
+             WHERE (
+                 SELECT COUNT(*)
+                 FROM daily_product_completion_bucket_guard AS guard
+                 WHERE guard.source_id = completion.source_id
+                   AND guard.day_start = completion.day_start
+                   AND guard.day_end = completion.day_end
+             ) < (completion.day_end - completion.day_start) / ?1
+         ),
+         completion_buckets(source_id, day_start, day_end, bucket_start) AS (
+             SELECT source_id, day_start, day_end, day_start
+             FROM completion_days
+             UNION ALL
+             SELECT source_id, day_start, day_end,
+                    bucket_start + ?1
+             FROM completion_buckets
+             WHERE bucket_start + ?1 < day_end
+         )
+         INSERT OR IGNORE INTO daily_product_completion_bucket_guard (
+             source_id, bucket_start, day_start, day_end
+         )
+         SELECT source_id, bucket_start, day_start, day_end
+         FROM completion_buckets",
+        [DAILY_PRODUCT_COMPLETION_BUCKET_SECONDS],
+    )?;
+    Ok(usize::try_from(connection.changes()).unwrap_or(usize::MAX))
+}
+
+/// Provision exact five-minute bucket ownership before publishing canonical rows for one day.
+///
+/// Rollups begin on the same five-minute grid, so the ownership rows cover every expected
+/// canonical bucket start in the day while keeping trigger invalidation point-lookups bounded.
+pub fn provision_daily_product_completion_bucket_guards(
+    connection: &Connection,
+    source_ids: &[String],
+    day_start: i64,
+    day_end: i64,
+) -> Result<(), StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion guard requires a non-empty day range".into(),
+        ));
+    }
+    let mut statement = connection.prepare_cached(
+        "INSERT INTO daily_product_completion_bucket_guard (
+             source_id, bucket_start, day_start, day_end
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_id, bucket_start) DO UPDATE SET
+             day_start = excluded.day_start,
+             day_end = excluded.day_end",
+    )?;
+    let mut bucket_start = day_start;
+    while bucket_start < day_end {
+        let next_bucket_start = bucket_start
+            .checked_add(DAILY_PRODUCT_COMPLETION_BUCKET_SECONDS)
+            .ok_or_else(|| {
+                StorageError::InvalidInput(
+                    "daily product completion guard exceeds SQLite INTEGER range".into(),
+                )
+            })?;
+        for source_id in source_ids {
+            statement.execute(params![source_id, bucket_start, day_start, day_end])?;
+        }
+        bucket_start = next_bucket_start;
+    }
+    Ok(())
+}
+
+/// Add one exact ownership row for a canonical bucket that is being published outside a full-day
+/// nfcapd transaction, such as a staged CSV bucket.
+pub fn ensure_daily_product_completion_bucket_guard(
+    connection: &Connection,
+    source_id: &str,
+    bucket_start: i64,
+    day_start: i64,
+    day_end: i64,
+) -> Result<(), StorageError> {
+    if day_start >= day_end || bucket_start < day_start || bucket_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion guard bucket must be inside a non-empty day range".into(),
+        ));
+    }
+    connection.execute(
+        "INSERT INTO daily_product_completion_bucket_guard (
+             source_id, bucket_start, day_start, day_end
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source_id, bucket_start) DO UPDATE SET
+             day_start = excluded.day_start,
+             day_end = excluded.day_end",
+        params![source_id, bucket_start, day_start, day_end],
+    )?;
+    Ok(())
+}
+
+/// Return the product identity currently bound to this database, if one exists.
+pub fn current_product_fingerprint(
+    connection: &Connection,
+) -> Result<Option<String>, StorageError> {
+    Ok(connection
+        .query_row(
+            "SELECT product_fingerprint FROM pipeline_product WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Test whether one source/day has a marker for the current product identity and MAAD setting.
+pub fn daily_product_completion_matches(
+    connection: &Connection,
+    source_id: &str,
+    day_start: i64,
+    day_end: i64,
+    product_fingerprint: &str,
+    run_maad: bool,
+) -> Result<bool, StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion requires a non-empty day range".into(),
+        ));
+    }
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM daily_product_completion
+             WHERE source_id = ?1 AND day_start = ?2 AND day_end = ?3
+               AND product_fingerprint = ?4 AND run_maad = ?5
+               AND NOT EXISTS(
+                   SELECT 1 FROM daily_product_completion_dirty
+                   WHERE source_id = ?1 AND day_start = ?2
+               )
+         )",
+        params![
+            source_id,
+            day_start,
+            day_end,
+            product_fingerprint,
+            i64::from(run_maad)
+        ],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+/// Return whether a source/day is clean, dirty, or missing a completion marker.
+///
+/// A dirty tombstone is checked independently of the marker so an interrupted or manually
+/// altered cleanup cannot turn a previously certified day into a legacy-looking day.
+pub fn daily_product_completion_state(
+    connection: &Connection,
+    source_id: &str,
+    day_start: i64,
+    day_end: i64,
+    product_fingerprint: &str,
+    run_maad: bool,
+) -> Result<DailyProductCompletionState, StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion requires a non-empty day range".into(),
+        ));
+    }
+    let state = connection.query_row(
+        "SELECT CASE
+             WHEN EXISTS(
+                 SELECT 1 FROM daily_product_completion_dirty
+                 WHERE source_id = ?1 AND day_start = ?2
+             ) THEN 'dirty'
+             WHEN EXISTS(
+                 SELECT 1 FROM daily_product_completion
+                 WHERE source_id = ?1 AND day_start = ?2 AND day_end = ?3
+                   AND product_fingerprint = ?4 AND run_maad = ?5
+             ) THEN 'clean'
+             ELSE 'missing'
+         END",
+        params![
+            source_id,
+            day_start,
+            day_end,
+            product_fingerprint,
+            i64::from(run_maad)
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    match state.as_str() {
+        "clean" => Ok(DailyProductCompletionState::Clean),
+        "dirty" => Ok(DailyProductCompletionState::Dirty),
+        "missing" => Ok(DailyProductCompletionState::Missing),
+        _ => Err(StorageError::InvalidInput(format!(
+            "invalid daily product completion state: {state:?}"
+        ))),
+    }
+}
+
+/// Publish or refresh one source/day marker. Callers must invoke this inside the same transaction
+/// that publishes the day's canonical rows, rollups, and evidence/provenance.
+pub fn upsert_daily_product_completion(
+    connection: &Connection,
+    source_id: &str,
+    day_start: i64,
+    day_end: i64,
+    product_fingerprint: &str,
+    run_maad: bool,
+) -> Result<(), StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion requires a non-empty day range".into(),
+        ));
+    }
+    // Legacy marker backfills may not pass through the day publisher. Keep their exact ownership
+    // map coherent before the marker becomes visible to trigger invalidation, while avoiding a
+    // second full-day write when the publisher already provisioned the map in this transaction.
+    let guard_exists = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM daily_product_completion_bucket_guard
+             WHERE source_id = ?1 AND bucket_start = ?2
+               AND day_start = ?2 AND day_end = ?3
+         )",
+        params![source_id, day_start, day_end],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !guard_exists {
+        provision_daily_product_completion_bucket_guards(
+            connection,
+            &[source_id.to_owned()],
+            day_start,
+            day_end,
+        )?;
+    }
+    connection.execute(
+        "INSERT INTO daily_product_completion (
+             source_id, day_start, day_end, product_fingerprint, run_maad
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(source_id, day_start) DO UPDATE SET
+             day_end = excluded.day_end,
+             product_fingerprint = excluded.product_fingerprint,
+             run_maad = excluded.run_maad,
+             completed_at = CURRENT_TIMESTAMP",
+        params![
+            source_id,
+            day_start,
+            day_end,
+            product_fingerprint,
+            i64::from(run_maad),
+        ],
+    )?;
+    connection.execute(
+        "DELETE FROM daily_product_completion_dirty
+         WHERE source_id = ?1 AND day_start = ?2",
+        params![source_id, day_start],
+    )?;
+    Ok(())
+}
+
+/// Remove completion markers overlapping a deleted source/time range.
+pub fn delete_daily_product_completion(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<(), StorageError> {
+    if start >= end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion deletion requires a non-empty range".into(),
+        ));
+    }
+    for source_id in source_ids {
+        connection.execute(
+            "DELETE FROM daily_product_completion
+             WHERE source_id = ?1 AND day_start < ?3 AND day_end > ?2",
+            params![source_id, start, end],
+        )?;
+        connection.execute(
+            "DELETE FROM daily_product_completion_dirty
+             WHERE source_id = ?1 AND day_start < ?3 AND day_end > ?2",
+            params![source_id, start, end],
+        )?;
+        connection.execute(
+            "DELETE FROM daily_product_completion_bucket_guard
+             WHERE source_id = ?1 AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, start, end],
+        )?;
+    }
     Ok(())
 }
 
@@ -2101,6 +2885,51 @@ pub fn delete_stats_bucket_keys(
     Ok(())
 }
 
+/// Remove every persisted product row and input-evidence row for a local time range.
+///
+/// Callers use this inside their day transaction when a previously complete capture day must be
+/// invalidated. Keeping input state with the stats deletion prevents a later resume from treating
+/// stale revisions as proof that the deleted day is still published.
+pub(crate) fn delete_stats_time_range(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<(), StorageError> {
+    if start >= end {
+        return Err(StorageError::InvalidInput(
+            "time-range deletion requires a non-empty range".into(),
+        ));
+    }
+    delete_daily_product_completion(connection, source_ids, start, end)?;
+    for table in STATS_TABLE_NAMES {
+        let mut statement = connection.prepare_cached(&format!(
+            "DELETE FROM {table}
+             WHERE source_id = ?1 AND granularity = ?2
+               AND bucket_start >= ?3 AND bucket_start < ?4"
+        ))?;
+        for source_id in source_ids {
+            for granularity in STATS_GRANULARITIES {
+                statement.execute(params![source_id, granularity, start, end])?;
+            }
+        }
+    }
+    for source_id in source_ids {
+        connection.execute(
+            "DELETE FROM input_evidence
+             WHERE source_id = ?1 AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, start, end],
+        )?;
+        connection.execute(
+            "DELETE FROM processed_inputs
+             WHERE input_kind = 'nfcapd' AND source_id = ?1
+               AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, start, end],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 impl StatsDimensions {
     fn example() -> Self {
@@ -2404,16 +3233,40 @@ fn resolved_backup_paths(
     Ok((source_path, target_path))
 }
 
-fn validate_database_path_separation(paths: &[&Path]) -> Result<(), StorageError> {
-    let mut claimed = BTreeMap::new();
+/// Reject database paths whose files, SQLite sidecars, or operation locks alias one another.
+///
+/// Callers that are about to create directories, locks, or SQLite databases should invoke this
+/// before their first mutation. Existing path aliases are compared by both resolved path and,
+/// on Unix, device/inode identity so hard links cannot bypass the lexical checks.
+pub(crate) fn validate_database_path_separation(paths: &[&Path]) -> Result<(), StorageError> {
+    let mut claimed = Vec::<(PathBuf, PathBuf)>::new();
+    #[cfg(unix)]
+    let mut claimed_identities = BTreeMap::new();
     for path in paths {
         for related in database_related_paths(path)? {
-            if let Some(owner) = claimed.insert(related.clone(), (*path).to_owned()) {
+            if let Some((owner_related, owner)) = claimed.iter().find(|(owner_related, _)| {
+                owner_related == &related
+                    || owner_related.starts_with(&related)
+                    || related.starts_with(owner_related)
+            }) {
                 return Err(StorageError::InvalidInput(format!(
-                    "database paths and their SQLite sidecar/operation-lock paths must be distinct: {} aliases {} through {}",
+                    "database paths and their SQLite sidecar/operation-lock paths must be distinct: {} and {} overlap through {} and {}",
                     owner.display(),
                     path.display(),
+                    owner_related.display(),
                     related.display()
+                )));
+            }
+            claimed.push((related.clone(), (*path).to_owned()));
+            #[cfg(unix)]
+            if let Some(identity) = existing_path_identity(&related)?
+                && let Some(owner) = claimed_identities.insert(identity, (*path).to_owned())
+            {
+                return Err(StorageError::InvalidInput(format!(
+                    "database paths and their SQLite sidecar/operation-lock paths must be distinct: {} aliases {} through device/inode {:?}",
+                    owner.display(),
+                    path.display(),
+                    identity
                 )));
             }
         }
@@ -2421,13 +3274,24 @@ fn validate_database_path_separation(paths: &[&Path]) -> Result<(), StorageError
     Ok(())
 }
 
+#[cfg(unix)]
+fn existing_path_identity(path: &Path) -> Result<Option<(u64, u64)>, StorageError> {
+    use std::os::unix::fs::MetadataExt;
+
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some((metadata.dev(), metadata.ino()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn database_related_paths(path: &Path) -> Result<Vec<PathBuf>, StorageError> {
-    let mut paths = vec![path.to_owned(), database_operation_lock_path(path)?];
-    paths.extend(["-journal", "-wal", "-shm"].map(|suffix| sidecar_path(path, suffix)));
-    paths
-        .into_iter()
-        .map(|related| absolute_path(&related))
-        .collect()
+    // Resolve the database itself before deriving related names. For a dangling `alias.sqlite`
+    // symlink, deriving `alias.sqlite-wal` would miss the real database's sidecar path.
+    let database = absolute_path(path)?;
+    let mut paths = vec![database.clone(), database_operation_lock_path(&database)?];
+    paths.extend(["-journal", "-wal", "-shm"].map(|suffix| sidecar_path(&database, suffix)));
+    paths.into_iter().map(|path| absolute_path(&path)).collect()
 }
 
 fn acquire_database_operation_locks<'a>(
@@ -2803,6 +3667,780 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn daily_product_completion_markers_are_invalidated_by_every_canonical_family() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let identity = ProductIdentity::create(
+            &json!({"version": 1}),
+            &json!({"kind": "daily_active_sources"}),
+            &json!({"run_maad": false}),
+        )
+        .unwrap();
+        bind_product_identity(&connection, &identity, &STATS_TABLE_NAMES).unwrap();
+
+        let marker = || {
+            upsert_daily_product_completion(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap();
+            assert!(
+                daily_product_completion_matches(
+                    &connection,
+                    "r1",
+                    0,
+                    86_400,
+                    &identity.fingerprint,
+                    false,
+                )
+                .unwrap()
+            );
+        };
+
+        let mut traffic = TrafficStatsRow::example();
+        traffic.dimensions.source_id = "r1".into();
+        insert_traffic_stats_rows(&connection, &[traffic.clone()]).unwrap();
+        marker();
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        connection
+            .execute(
+                "UPDATE traffic_stats SET flows = flows + 1
+                 WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 0",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+        connection.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Clean,
+            "rolling back a canonical mutation must roll back its dirty tombstone"
+        );
+        connection
+            .execute(
+                "UPDATE traffic_stats SET flows = flows + 1
+                 WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 0",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+
+        marker();
+        connection
+            .execute(
+                "DELETE FROM traffic_stats
+                 WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 0",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+
+        let mut protocol = ProtocolStatsRow::example();
+        protocol.dimensions.source_id = "r1".into();
+        insert_protocol_stats_rows(&connection, &[protocol]).unwrap();
+        marker();
+        let mut address_count = AddressCountStatsRow::example();
+        address_count.dimensions.source_id = "r1".into();
+        insert_address_count_stats_rows(&connection, &[address_count]).unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+
+        marker();
+        let mut port_count = PortCountStatsRow::example();
+        port_count.dimensions.source_id = "r1".into();
+        insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+
+        marker();
+        let mut address_structure = AddressStructureStatsRow::example();
+        address_structure.dimensions.source_id = "r1".into();
+        insert_address_structure_stats_rows(&connection, &[address_structure]).unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+
+        marker();
+        insert_bucket_coverage_rows(
+            &connection,
+            &[BucketCoverageRow::new(
+                "r1",
+                "5m",
+                300,
+                600,
+                BucketCoverage::complete_unit(),
+            )],
+        )
+        .unwrap();
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, &identity.fingerprint, false)
+            .unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Clean
+        );
+
+        let mut extra = TrafficStatsRow::example();
+        extra.dimensions.source_id = "r1".into();
+        extra.dimensions.bucket_start = 300;
+        extra.dimensions.bucket_end = 600;
+        insert_traffic_stats_rows(&connection, &[extra]).unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, &identity.fingerprint, false)
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM traffic_stats
+                 WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 300",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, &identity.fingerprint, false)
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM daily_product_completion
+                 WHERE source_id = 'r1' AND day_start = 0",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Missing,
+            "a deliberately removed marker without a dirty tombstone is legacy evidence"
+        );
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, &identity.fingerprint, false)
+            .unwrap();
+        delete_daily_product_completion(&connection, &["r1".into()], 0, 86_400).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion_dirty
+                     WHERE source_id = 'r1' AND day_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "day deletion must clear dirty evidence with the completion marker"
+        );
+    }
+
+    #[test]
+    fn canonical_mutation_preserves_completion_marker_as_dirty_evidence() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let identity = ProductIdentity::create(
+            &json!({"version": 1}),
+            &json!({"kind": "daily_active_sources"}),
+            &json!({"run_maad": false}),
+        )
+        .unwrap();
+        bind_product_identity(&connection, &identity, &STATS_TABLE_NAMES).unwrap();
+
+        let mut traffic = TrafficStatsRow::example();
+        traffic.dimensions.source_id = "r1".into();
+        insert_traffic_stats_rows(&connection, &[traffic]).unwrap();
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, &identity.fingerprint, false)
+            .unwrap();
+
+        connection
+            .execute(
+                "UPDATE traffic_stats SET flows = flows + 1
+                 WHERE source_id = 'r1' AND granularity = '5m' AND bucket_start = 0",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion
+                     WHERE source_id = 'r1' AND day_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "a mutation must retain the completion marker as evidence of prior certification"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion_dirty
+                     WHERE source_id = 'r1' AND day_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "a mutation must leave a dirty tombstone"
+        );
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn daily_product_completion_guards_keep_normal_writes_point_lookups_and_fallback_off_grid() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let identity = ProductIdentity::create(
+            &json!({"version": 1}),
+            &json!({"kind": "daily_active_sources"}),
+            &json!({"run_maad": false}),
+        )
+        .unwrap();
+        bind_product_identity(&connection, &identity, &STATS_TABLE_NAMES).unwrap();
+
+        // Seed a cold-build-shaped history without calling the marker helper for every day. The
+        // idempotent schema initializer must backfill its exact ownership rows in one pass.
+        for source_id in ["r1", "r2"] {
+            for day in 0..394_i64 {
+                let day_start = day * 86_400;
+                connection
+                    .execute(
+                        "INSERT INTO daily_product_completion (
+                             source_id, day_start, day_end, product_fingerprint, run_maad
+                         ) VALUES (?1, ?2, ?3, ?4, 0)",
+                        params![
+                            source_id,
+                            day_start,
+                            day_start + 86_400,
+                            identity.fingerprint
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        init_daily_product_completion_table(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion_bucket_guard",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2 * 394 * 288
+        );
+
+        // A repeat initializer must not replay the legacy INSERT for any completed day. The
+        // SQLite total-change counter is sampled around the actual initializer, so trigger DDL
+        // and planner work cannot hide a second guard write.
+        let existing_guard = connection
+            .query_row(
+                "SELECT day_end FROM daily_product_completion_bucket_guard
+                 WHERE source_id = 'r1' AND bucket_start = 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let changes_before = connection.total_changes();
+        init_daily_product_completion_table(&connection).unwrap();
+        let changes_after = connection.total_changes();
+        assert_eq!(changes_after, changes_before);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion_bucket_guard",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2 * 394 * 288
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT day_end FROM daily_product_completion_bucket_guard
+                     WHERE source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            existing_guard
+        );
+
+        // A partially migrated legacy day remains eligible for the bounded recursive backfill.
+        connection
+            .execute(
+                "INSERT INTO daily_product_completion (
+                     source_id, day_start, day_end, product_fingerprint, run_maad
+                 ) VALUES ('legacy-partial', ?1, ?2, ?3, 0)",
+                params![394 * 86_400, 395 * 86_400, identity.fingerprint],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO daily_product_completion_bucket_guard (
+                     source_id, bucket_start, day_start, day_end
+                 ) VALUES ('legacy-partial', ?1, ?2, ?3)",
+                params![394 * 86_400, 394 * 86_400, 395 * 86_400],
+            )
+            .unwrap();
+        init_daily_product_completion_table(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion_bucket_guard
+                     WHERE source_id = 'legacy-partial'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            288
+        );
+
+        let exact_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT guard.source_id, guard.day_start, guard.day_end
+                 FROM daily_product_completion_bucket_guard AS guard
+                 JOIN daily_product_completion AS completion
+                   ON completion.source_id = guard.source_id
+                  AND completion.day_start = guard.day_start
+                  AND completion.day_end = guard.day_end
+                 WHERE guard.source_id = ?1 AND guard.bucket_start = ?2",
+            )
+            .unwrap()
+            .query_map(params!["r1", 393 * 86_400 + 300], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(exact_plan.contains("SEARCH guard USING PRIMARY KEY"));
+        assert!(exact_plan.contains("SEARCH completion USING COVERING INDEX"));
+        assert!(!exact_plan.contains("SCAN daily_product_completion"));
+
+        let mut normal = TrafficStatsRow::example();
+        normal.dimensions.source_id = "r1".into();
+        normal.dimensions.bucket_start = 393 * 86_400 + 300;
+        normal.dimensions.bucket_end = normal.dimensions.bucket_start + 300;
+        insert_traffic_stats_rows(&connection, &[normal]).unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                393 * 86_400,
+                394 * 86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+
+        upsert_daily_product_completion(
+            &connection,
+            "r1",
+            393 * 86_400,
+            394 * 86_400,
+            &identity.fingerprint,
+            false,
+        )
+        .unwrap();
+        let mut off_grid = TrafficStatsRow::example();
+        off_grid.dimensions.source_id = "r1".into();
+        off_grid.dimensions.bucket_start = 393 * 86_400 + 301;
+        off_grid.dimensions.bucket_end = off_grid.dimensions.bucket_start + 300;
+        insert_traffic_stats_rows(&connection, &[off_grid]).unwrap();
+        assert_eq!(
+            daily_product_completion_state(
+                &connection,
+                "r1",
+                393 * 86_400,
+                394 * 86_400,
+                &identity.fingerprint,
+                false,
+            )
+            .unwrap(),
+            DailyProductCompletionState::Dirty
+        );
+    }
+
+    #[test]
+    fn time_range_deletion_is_granularity_bounded_and_preserves_other_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        init_input_evidence_table(&connection).unwrap();
+        init_processed_inputs_table(&connection).unwrap();
+
+        for table in STATS_TABLE_NAMES {
+            let mut statement = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN DELETE FROM {table}
+                     WHERE source_id = ?1 AND granularity = ?2
+                       AND bucket_start >= ?3 AND bucket_start < ?4"
+                ))
+                .unwrap();
+            let plan = statement
+                .query_map(params!["r1", "5m", 0_i64, 86_400_i64], |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("\n");
+            for clause in [
+                "USING PRIMARY KEY",
+                "source_id=?",
+                "granularity=?",
+                "bucket_start>?",
+                "bucket_start<?",
+            ] {
+                assert!(
+                    plan.contains(clause),
+                    "{table} delete plan should use the bounded primary-key range: {plan}"
+                );
+            }
+        }
+
+        for &(source_id, bucket_start) in
+            &[("r1", 0_i64), ("r1", 86_400), ("r2", 0), ("r2", 86_400)]
+        {
+            for granularity in STATS_GRANULARITIES {
+                let dimensions = StatsDimensions {
+                    source_id: source_id.into(),
+                    granularity: granularity.into(),
+                    bucket_start,
+                    bucket_end: bucket_start + 300,
+                    ip_version: 4,
+                    src_visibility: "all".into(),
+                    dst_visibility: "all".into(),
+                };
+                let mut traffic = TrafficStatsRow::example();
+                traffic.dimensions = dimensions.clone();
+                insert_traffic_stats_rows(&connection, &[traffic]).unwrap();
+                let mut protocol = ProtocolStatsRow::example();
+                protocol.dimensions = dimensions.clone();
+                insert_protocol_stats_rows(&connection, &[protocol]).unwrap();
+                let mut address_count = AddressCountStatsRow::example();
+                address_count.dimensions = dimensions.clone();
+                insert_address_count_stats_rows(&connection, &[address_count]).unwrap();
+                let mut port_count = PortCountStatsRow::example();
+                port_count.dimensions = dimensions.clone();
+                insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
+                let mut address_structure = AddressStructureStatsRow::example();
+                address_structure.dimensions = dimensions;
+                insert_address_structure_stats_rows(&connection, &[address_structure]).unwrap();
+
+                let coverage = BucketCoverageRow::new(
+                    source_id,
+                    granularity,
+                    bucket_start,
+                    bucket_start + 300,
+                    BucketCoverage::complete_unit(),
+                );
+                insert_bucket_coverage_rows(&connection, &[coverage]).unwrap();
+            }
+
+            insert_input_evidence_rows(
+                &connection,
+                &[InputEvidenceRow::new(
+                    source_id,
+                    format!("unit-{source_id}-{bucket_start}"),
+                    bucket_start,
+                    bucket_start + 300,
+                    format!("/captures/{source_id}-{bucket_start}"),
+                    InputEvidenceState::Observed,
+                    Some(format!("revision-{source_id}-{bucket_start}")),
+                )],
+            )
+            .unwrap();
+        }
+
+        let insert_processed = |source_id: &str,
+                                bucket_start: i64,
+                                input_kind: InputKind|
+         -> Result<(), StorageError> {
+            let locator = format!(
+                "/captures/{}-{source_id}-{bucket_start}",
+                input_kind.as_str()
+            );
+            let revision =
+                InputRevision::create(input_kind.as_str(), &locator, "content", "decoder")?;
+            upsert_input_bucket(
+                &connection,
+                &InputBucket {
+                    input_kind,
+                    input_locator: locator.clone(),
+                    scan_locator: locator.clone(),
+                    source_id: source_id.into(),
+                    bucket_start,
+                    bucket_end: bucket_start + 300,
+                    revision: revision.clone(),
+                    file_snapshot: None,
+                },
+                false,
+            )?;
+            mark_input_bucket_status(
+                &connection,
+                input_kind,
+                &locator,
+                source_id,
+                bucket_start,
+                InputStatus::Processed,
+                &revision,
+                None,
+            )
+        };
+
+        for &(source_id, bucket_start) in
+            &[("r1", 0_i64), ("r1", 86_400), ("r2", 0), ("r2", 86_400)]
+        {
+            insert_processed(source_id, bucket_start, InputKind::Nfcapd).unwrap();
+        }
+        insert_processed("r1", 0, InputKind::Csv).unwrap();
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, "product", false).unwrap();
+        upsert_daily_product_completion(&connection, "r2", 0, 86_400, "product", false).unwrap();
+
+        delete_stats_time_range(&connection, &["r1".into()], 0, 86_400).unwrap();
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion
+                     WHERE source_id = 'r1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "deleting a day must remove its completion marker"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion
+                     WHERE source_id = 'r2'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "deleting one source/day must preserve another source marker"
+        );
+
+        for table in STATS_TABLE_NAMES {
+            let count = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 12, "{table}");
+            assert_eq!(
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {table}
+                             WHERE source_id = 'r1' AND bucket_start = 0"
+                        ),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "the requested source and range should be deleted from {table}"
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM input_evidence", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM input_evidence
+                     WHERE source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM processed_inputs", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM processed_inputs
+                     WHERE input_kind = 'nfcapd' AND source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM processed_inputs
+                     WHERE input_kind = 'csv' AND source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -3252,6 +4890,95 @@ mod tests {
 
         assert!(error.to_string().contains("must be distinct"));
         assert_eq!(fs::read(source).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_path_applies_parent_components_after_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let real = directory.path().join("real");
+        fs::create_dir_all(real.join("child")).unwrap();
+        let alias = directory.path().join("alias");
+        symlink(real.join("child"), &alias).unwrap();
+
+        assert_eq!(canonical_path(alias.join("..").as_path()).unwrap(), real);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn separation_resolves_dangling_database_sidecar_and_lock_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("target.sqlite");
+        let database_alias = directory.path().join("database-alias.sqlite");
+        symlink(&database, &database_alias).unwrap();
+        assert!(
+            validate_database_path_separation(&[database.as_path(), database_alias.as_path()])
+                .is_err()
+        );
+
+        let sidecar = sidecar_path(&database, "-wal");
+        let sidecar_alias = directory.path().join("sidecar-alias.sqlite");
+        symlink(&sidecar, &sidecar_alias).unwrap();
+        assert!(
+            validate_database_path_separation(&[database.as_path(), sidecar_alias.as_path()])
+                .is_err()
+        );
+
+        let lock = database_operation_lock_path(&database).unwrap();
+        let lock_alias = directory.path().join("lock-alias.sqlite");
+        symlink(&lock, &lock_alias).unwrap();
+        assert!(
+            validate_database_path_separation(&[database.as_path(), lock_alias.as_path()]).is_err()
+        );
+    }
+
+    #[test]
+    fn separation_rejects_database_ancestor_and_descendant_paths() {
+        let directory = tempdir().unwrap();
+        let database = directory.path().join("first.sqlite");
+        let nested_database = database.join("second.sqlite");
+        assert!(
+            validate_database_path_separation(&[database.as_path(), nested_database.as_path()])
+                .unwrap_err()
+                .to_string()
+                .contains("must be distinct")
+        );
+
+        let sidecar = sidecar_path(&database, "-wal");
+        let nested_lock = sidecar.join("operation.lock");
+        assert!(
+            validate_database_path_separation(&[database.as_path(), nested_lock.as_path()])
+                .unwrap_err()
+                .to_string()
+                .contains("must be distinct")
+        );
+        assert!(!database.exists());
+        assert!(!nested_database.exists());
+        assert!(!nested_lock.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn separation_rejects_ancestor_paths_through_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let real_database = directory.path().join("real.sqlite");
+        let alias = directory.path().join("alias.sqlite");
+        symlink(&real_database, &alias).unwrap();
+        let nested = real_database.join("second.sqlite");
+
+        let error =
+            validate_database_path_separation(&[alias.as_path(), nested.as_path()]).unwrap_err();
+
+        assert!(error.to_string().contains("must be distinct"));
+        assert!(alias.is_symlink());
+        assert!(!real_database.exists());
+        assert!(!nested.exists());
     }
 
     #[test]

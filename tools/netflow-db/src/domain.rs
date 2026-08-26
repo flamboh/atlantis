@@ -36,10 +36,18 @@ pub enum DomainError {
     UnknownSelectionKeys(String),
     #[error("selection version must be 1")]
     InvalidSelectionVersion,
-    #[error("selection kind must be 'all' or 'flows'")]
+    #[error("selection kind must be 'all', 'flows', or 'daily_active_sources'")]
     InvalidSelectionKind,
     #[error("selection kind 'all' cannot define flow criteria")]
     AllSelectionHasCriteria,
+    #[error("daily_active_sources selection requires one IPv4 /16 ip_prefix")]
+    DailyActiveSourcesRequireIpv4Prefix,
+    #[error(
+        "daily_active_sources selection fixes src_visibility to 'anonymized' and leaves dst_visibility unrestricted"
+    )]
+    InvalidDailyActiveSourceVisibility,
+    #[error("daily_active_sources criteria do not match the finalized active-source definition")]
+    InvalidDailyActiveSourceCriteria,
     #[error("Invalid selection ip_prefix: {0}")]
     InvalidIpPrefix(String),
     #[error("selection {0} must be 'literal' or 'anonymized'")]
@@ -265,9 +273,21 @@ impl FlowObservation {
     }
 }
 
-/// A validated predicate shared by all input adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FlowSelectionKind {
+    #[default]
+    Flows,
+    DailyActiveSources,
+}
+
+pub(crate) const DAILY_ACTIVE_MIN_FLOWS: i64 = 3;
+pub(crate) const DAILY_ACTIVE_MIN_PACKETS: i64 = 20;
+pub(crate) const DAILY_ACTIVE_MIN_BYTES: i64 = 2_000;
+
+/// A validated selection shared by input adapters and pipeline product identity.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FlowSelection {
+    kind: FlowSelectionKind,
     ip_prefix: Option<IpNet>,
     src_visibility: Option<ExactVisibility>,
     dst_visibility: Option<ExactVisibility>,
@@ -286,7 +306,12 @@ impl FlowSelection {
             .filter(|key| {
                 !matches!(
                     key.as_str(),
-                    "version" | "kind" | "ip_prefix" | "src_visibility" | "dst_visibility"
+                    "version"
+                        | "kind"
+                        | "ip_prefix"
+                        | "src_visibility"
+                        | "dst_visibility"
+                        | "criteria"
                 )
             })
             .cloned()
@@ -302,11 +327,13 @@ impl FlowSelection {
             Some(Value::String(kind)) => Some(kind.as_str()),
             Some(_) => return Err(DomainError::InvalidSelectionKind),
         };
-        if !matches!(kind, None | Some("all" | "flows")) {
-            return Err(DomainError::InvalidSelectionKind);
-        }
+        let selection_kind = match kind {
+            None | Some("all" | "flows") => FlowSelectionKind::Flows,
+            Some("daily_active_sources") => FlowSelectionKind::DailyActiveSources,
+            Some(_) => return Err(DomainError::InvalidSelectionKind),
+        };
         if kind == Some("all")
-            && ["ip_prefix", "src_visibility", "dst_visibility"]
+            && ["ip_prefix", "src_visibility", "dst_visibility", "criteria"]
                 .iter()
                 .any(|key| !is_empty_value(object.get(*key)))
         {
@@ -322,16 +349,47 @@ impl FlowSelection {
                     .map(|network| network.trunc())
             })
             .transpose()?;
-        Ok(Self {
+        let mut selection = Self {
+            kind: selection_kind,
             ip_prefix,
             src_visibility: parse_visibility(object, "src_visibility")?,
             dst_visibility: parse_visibility(object, "dst_visibility")?,
-        })
+        };
+        if selection.kind == FlowSelectionKind::DailyActiveSources {
+            if !matches!(selection.ip_prefix, Some(IpNet::V4(prefix)) if prefix.prefix_len() == 16)
+            {
+                return Err(DomainError::DailyActiveSourcesRequireIpv4Prefix);
+            }
+            if !matches!(
+                selection.src_visibility,
+                None | Some(ExactVisibility::Anonymized)
+            ) || selection.dst_visibility.is_some()
+            {
+                return Err(DomainError::InvalidDailyActiveSourceVisibility);
+            }
+            if object.get("criteria").is_some_and(|criteria| {
+                !criteria.is_null() && criteria != &daily_active_source_criteria()
+            }) {
+                return Err(DomainError::InvalidDailyActiveSourceCriteria);
+            }
+            selection.src_visibility = Some(ExactVisibility::Anonymized);
+        } else if !is_empty_value(object.get("criteria")) {
+            return Err(DomainError::InvalidDailyActiveSourceCriteria);
+        }
+        Ok(selection)
     }
 
     #[must_use]
     pub const fn is_unrestricted(&self) -> bool {
-        self.ip_prefix.is_none() && self.src_visibility.is_none() && self.dst_visibility.is_none()
+        matches!(self.kind, FlowSelectionKind::Flows)
+            && self.ip_prefix.is_none()
+            && self.src_visibility.is_none()
+            && self.dst_visibility.is_none()
+    }
+
+    #[must_use]
+    pub const fn selects_daily_active_sources(&self) -> bool {
+        matches!(self.kind, FlowSelectionKind::DailyActiveSources)
     }
 
     #[must_use]
@@ -350,11 +408,16 @@ impl FlowSelection {
     }
 
     #[must_use]
-    pub fn matches(&self, observation: &FlowObservation) -> bool {
-        let prefix_matches = self.ip_prefix.as_ref().is_none_or(|prefix| {
-            prefix.contains(&observation.src_ip) || prefix.contains(&observation.dst_ip)
-        });
-        prefix_matches && self.allows_src_tos(observation.src_tos)
+    pub fn matches_qualifying_flow(&self, observation: &FlowObservation) -> bool {
+        let (source, destination) = exact_visibility_pair_from_tos(observation.src_tos);
+        self.matches_flow_fields(
+            observation.src_ip,
+            observation.dst_ip,
+            observation.protocol,
+            observation.src_port,
+            source,
+            destination,
+        )
     }
 
     #[must_use]
@@ -368,16 +431,72 @@ impl FlowSelection {
     }
 
     #[must_use]
-    pub fn nfdump_prefix_filter(&self) -> Option<String> {
-        self.ip_prefix
-            .as_ref()
-            .map(|prefix| format!("net {prefix}"))
+    pub fn nfdump_filter(&self) -> Option<String> {
+        self.ip_prefix.as_ref().map(|prefix| {
+            if self.selects_daily_active_sources() {
+                // nfdump filters the original record before -o atlantis expands its
+                // tunnel extension into a synthetic row; retain both branches and
+                // let the Rust decoder authoritatively match emitted rows.
+                format!(
+                    "(src net {prefix} and ipv4 and (proto tcp or proto udp) and src port > 1023) or (src tun net {prefix} and (tun proto tcp or tun proto udp) and src port > 1023)"
+                )
+            } else {
+                format!("net {prefix}")
+            }
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn matches_flow_fields(
+        &self,
+        src_ip: IpAddr,
+        dst_ip: IpAddr,
+        protocol: u8,
+        src_port: Option<u16>,
+        source_visibility: ExactVisibility,
+        destination_visibility: ExactVisibility,
+    ) -> bool {
+        let prefix_matches = self.ip_prefix.as_ref().is_none_or(|prefix| {
+            if self.selects_daily_active_sources() {
+                prefix.contains(&src_ip)
+            } else {
+                prefix.contains(&src_ip) || prefix.contains(&dst_ip)
+            }
+        });
+        let visibility_matches = self
+            .src_visibility
+            .is_none_or(|required| required == source_visibility)
+            && self
+                .dst_visibility
+                .is_none_or(|required| required == destination_visibility);
+        let activity_candidate_matches = !self.selects_daily_active_sources()
+            || (matches!(src_ip, IpAddr::V4(_))
+                && matches!(protocol, 6 | 17)
+                && src_port.is_some_and(|port| port >= 1_024));
+        prefix_matches && visibility_matches && activity_candidate_matches
+    }
+
+    #[must_use]
+    pub const fn daily_activity_threshold_met(flows: i64, packets: i64, bytes: i64) -> bool {
+        flows >= DAILY_ACTIVE_MIN_FLOWS
+            && packets >= DAILY_ACTIVE_MIN_PACKETS
+            && bytes >= DAILY_ACTIVE_MIN_BYTES
     }
 
     #[must_use]
     pub fn normalized_payload(&self) -> Value {
         if self.is_unrestricted() {
             return json!({"version": 1, "kind": "all"});
+        }
+        if self.selects_daily_active_sources() {
+            return json!({
+                "version": 1,
+                "kind": "daily_active_sources",
+                "ip_prefix": self.ip_prefix.map(|prefix| prefix.to_string()),
+                "src_visibility": self.src_visibility.map(ExactVisibility::as_str),
+                "dst_visibility": self.dst_visibility.map(ExactVisibility::as_str),
+                "criteria": daily_active_source_criteria(),
+            });
         }
         json!({
             "version": 1,
@@ -387,6 +506,23 @@ impl FlowSelection {
             "dst_visibility": self.dst_visibility.map(ExactVisibility::as_str),
         })
     }
+}
+
+fn daily_active_source_criteria() -> Value {
+    json!({
+        "address_side": "source",
+        "ip_version": 4,
+        "protocols": [6, 17],
+        "minimum_source_port": 1024,
+        "destination_ports": "all",
+        "tcp_flags": "all",
+        "activity_window": "local_day",
+        "minimum_flows": DAILY_ACTIVE_MIN_FLOWS,
+        "minimum_packets": DAILY_ACTIVE_MIN_PACKETS,
+        "minimum_bytes": DAILY_ACTIVE_MIN_BYTES,
+        "union_across_physical_sources": true,
+        "requires_complete_physical_day": true,
+    })
 }
 
 fn optional_non_empty_string<'a>(
@@ -514,6 +650,11 @@ impl AddressSet {
 
     pub fn iter(&self) -> impl Iterator<Item = &IpAddr> {
         self.0.iter()
+    }
+
+    #[must_use]
+    pub fn contains(&self, address: &IpAddr) -> bool {
+        self.0.contains(address)
     }
 
     #[must_use]
@@ -1165,6 +1306,54 @@ impl StatisticalBucket {
         }
     }
 
+    /// Consume this builder into its canonical representation without cloning
+    /// the large aggregate collections.
+    #[must_use]
+    pub fn finish_owned(self) -> CanonicalBucket {
+        let Self {
+            key,
+            coverage,
+            traffic,
+            protocols,
+            addresses,
+            ports,
+            five_minute_starts,
+        } = self;
+
+        CanonicalBucket {
+            key,
+            coverage,
+            traffic: traffic
+                .into_iter()
+                .map(|(scope, metrics)| ScopedTraffic { scope, metrics })
+                .collect(),
+            protocols: protocols
+                .into_iter()
+                .map(|(scope, protocols)| ScopedProtocols {
+                    scope,
+                    protocols: protocols.into_iter().collect(),
+                })
+                .collect(),
+            addresses: addresses
+                .into_iter()
+                .map(|((scope, address_side), addresses)| ScopedAddresses {
+                    scope,
+                    address_side,
+                    addresses,
+                })
+                .collect(),
+            ports: ports
+                .into_iter()
+                .map(|((scope, port_side), ports)| ScopedPorts {
+                    scope,
+                    port_side,
+                    ports,
+                })
+                .collect(),
+            five_minute_starts,
+        }
+    }
+
     fn add_observation(&mut self, observation: FlowObservation) -> Result<(), DomainError> {
         if IpVersion::of(observation.src_ip) != IpVersion::of(observation.dst_ip) {
             return Err(DomainError::MixedIpVersions);
@@ -1341,11 +1530,11 @@ mod tests {
         let wrong_visibility =
             FlowObservation::new(matching.src_ip, matching.dst_ip, 6, 1, 100, 0).unwrap();
 
-        assert!(selection.matches(&matching));
-        assert!(!selection.matches(&wrong_visibility));
+        assert!(selection.matches_qualifying_flow(&matching));
+        assert!(!selection.matches_qualifying_flow(&wrong_visibility));
         assert_eq!(selection.src_visibility(), Some(ExactVisibility::Literal));
         assert_eq!(
-            selection.nfdump_prefix_filter().as_deref(),
+            selection.nfdump_filter().as_deref(),
             Some("net 192.0.2.0/24")
         );
         assert_eq!(
@@ -1357,6 +1546,140 @@ mod tests {
                 "src_visibility": "literal",
                 "dst_visibility": "anonymized"
             })
+        );
+    }
+
+    #[test]
+    fn daily_active_source_selection_preserves_the_finalized_definition() {
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "0.220.99.1/16"
+        })))
+        .unwrap();
+        let matching = FlowObservation::new(
+            address([0, 220, 1, 2]),
+            address([198, 51, 100, 2]),
+            6,
+            20,
+            2_000,
+            2,
+        )
+        .unwrap()
+        .with_ports(Some(55_000), Some(443));
+        let low_source_port = matching.clone().with_ports(Some(443), Some(55_000));
+        let boundary_source_port = matching.clone().with_ports(Some(1_024), Some(65_535));
+        let icmp = FlowObservation::new(
+            address([0, 220, 1, 2]),
+            address([198, 51, 100, 2]),
+            1,
+            20,
+            2_000,
+            2,
+        )
+        .unwrap()
+        .with_ports(None, None);
+        let literal_source = FlowObservation::new(
+            address([0, 220, 1, 2]),
+            address([198, 51, 100, 2]),
+            17,
+            20,
+            2_000,
+            0,
+        )
+        .unwrap()
+        .with_ports(Some(55_000), Some(53));
+        let destination_only = FlowObservation::new(
+            address([198, 51, 100, 2]),
+            address([0, 220, 1, 2]),
+            6,
+            20,
+            2_000,
+            1,
+        )
+        .unwrap()
+        .with_ports(Some(55_000), Some(443));
+
+        assert!(selection.matches_qualifying_flow(&matching));
+        assert!(selection.matches_qualifying_flow(&boundary_source_port));
+        assert!(!selection.matches_qualifying_flow(&low_source_port));
+        assert!(!selection.matches_qualifying_flow(&icmp));
+        assert!(!selection.matches_qualifying_flow(&literal_source));
+        assert!(!selection.matches_qualifying_flow(&destination_only));
+        assert!(selection.selects_daily_active_sources());
+        assert_eq!(
+            selection.src_visibility(),
+            Some(ExactVisibility::Anonymized)
+        );
+        assert_eq!(
+            selection.nfdump_filter().as_deref(),
+            Some(
+                "(src net 0.220.0.0/16 and ipv4 and (proto tcp or proto udp) and src port > 1023) or (src tun net 0.220.0.0/16 and (tun proto tcp or tun proto udp) and src port > 1023)"
+            )
+        );
+        assert!(FlowSelection::daily_activity_threshold_met(3, 20, 2_000));
+        assert!(!FlowSelection::daily_activity_threshold_met(2, 20, 2_000));
+        assert!(!FlowSelection::daily_activity_threshold_met(3, 19, 2_000));
+        assert!(!FlowSelection::daily_activity_threshold_met(3, 20, 1_999));
+
+        let normalized = json!({
+            "version": 1,
+            "kind": "daily_active_sources",
+            "ip_prefix": "0.220.0.0/16",
+            "src_visibility": "anonymized",
+            "dst_visibility": null,
+            "criteria": {
+                "address_side": "source",
+                "ip_version": 4,
+                "protocols": [6, 17],
+                "minimum_source_port": 1024,
+                "destination_ports": "all",
+                "tcp_flags": "all",
+                "activity_window": "local_day",
+                "minimum_flows": 3,
+                "minimum_packets": 20,
+                "minimum_bytes": 2000,
+                "union_across_physical_sources": true,
+                "requires_complete_physical_day": true
+            }
+        });
+        assert_eq!(selection.normalized_payload(), normalized);
+        assert_eq!(
+            FlowSelection::from_payload(Some(&normalized)).unwrap(),
+            selection
+        );
+    }
+
+    #[test]
+    fn daily_active_source_selection_rejects_semantic_drift() {
+        assert_eq!(
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "2001:db8::/32"
+            }))),
+            Err(DomainError::DailyActiveSourcesRequireIpv4Prefix)
+        );
+        assert_eq!(
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "0.220.0.0/24"
+            }))),
+            Err(DomainError::DailyActiveSourcesRequireIpv4Prefix)
+        );
+        assert_eq!(
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "0.220.0.0/16",
+                "dst_visibility": "literal"
+            }))),
+            Err(DomainError::InvalidDailyActiveSourceVisibility)
+        );
+        assert_eq!(
+            FlowSelection::from_payload(Some(&json!({
+                "kind": "daily_active_sources",
+                "ip_prefix": "0.220.0.0/16",
+                "criteria": {"minimum_flows": 4}
+            }))),
+            Err(DomainError::InvalidDailyActiveSourceCriteria)
         );
     }
 
@@ -1420,6 +1743,40 @@ mod tests {
                 (6, "literal", "literal"),
             ]
         );
+    }
+
+    #[test]
+    fn consuming_finalizer_matches_borrowing_finalizer_for_dense_and_sparse_buckets() {
+        let dense = StatisticalBucket::dense(key(Granularity::FiveMinutes, 0, 300));
+        let dense_expected = dense.finish();
+        assert_eq!(dense_expected, dense.finish_owned());
+
+        let mut sparse = StatisticalBucket::new(key(Granularity::ThirtyMinutes, 0, 1_800));
+        sparse
+            .add(
+                observation([192, 0, 2, 1], [198, 51, 100, 1], 6, 2)
+                    .with_ports(Some(53), Some(1_024)),
+            )
+            .unwrap();
+        sparse
+            .add(GroupedTrafficFact {
+                ip_version: IpVersion::V4,
+                protocol: 17,
+                src_tos: 0,
+                flows: 2,
+                packets: 4,
+                bytes: 40,
+            })
+            .unwrap();
+        sparse
+            .add(ScopedAddressesFact::new(
+                Scope::new(IpVersion::V4, Visibility::Literal, Visibility::Anonymized),
+                AddressSide::Destination,
+                [address([203, 0, 113, 1]), address([203, 0, 113, 2])],
+            ))
+            .unwrap();
+        let sparse_expected = sparse.finish();
+        assert_eq!(sparse_expected, sparse.finish_owned());
     }
 
     #[test]

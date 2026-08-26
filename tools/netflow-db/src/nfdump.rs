@@ -1,16 +1,18 @@
 //! Private decoder for the Atlantis Flow Stream emitted by the nfdump fork.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 
 use fixedbitset::FixedBitSet;
 
 use crate::{
     coverage::BucketCoverage,
     domain::{
-        AddressSet, AddressSide, BucketKey, CanonicalBucket, ExactVisibility, FlowSelection,
+        AddressSet, AddressSide, BucketKey, CanonicalBucket, DAILY_ACTIVE_MIN_BYTES,
+        DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, ExactVisibility, FlowSelection,
         Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols,
         ScopedTraffic, TrafficMetrics, Visibility,
     },
@@ -130,6 +132,9 @@ enum ErrorReason {
     NonzeroIcmpDestinationPort(u16),
     InvalidTtlOrder { minimum: u8, maximum: u8 },
     AggregateOverflow,
+    DailyActivityRequiresSelection,
+    MissingDailyActiveSources,
+    DailyActivityRequiresDailyActiveSourceSelection,
 }
 
 impl fmt::Display for ErrorReason {
@@ -178,7 +183,39 @@ impl fmt::Display for ErrorReason {
                 )
             }
             Self::AggregateOverflow => formatter.write_str("exceeds signed 64-bit aggregate range"),
+            Self::DailyActivityRequiresSelection => {
+                formatter.write_str("daily source activity requires at least one selection")
+            }
+            Self::MissingDailyActiveSources => formatter
+                .write_str("daily active-source selection was not resolved for this local day"),
+            Self::DailyActivityRequiresDailyActiveSourceSelection => formatter
+                .write_str("daily source activity requires a daily_active_sources selection"),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceActivity {
+    pub flows: i64,
+    pub packets: i64,
+    pub bytes: i64,
+}
+
+impl SourceActivity {
+    /// Qualification only needs threshold-capped counters, keeping addition overflow-free.
+    pub fn include(&mut self, other: Self) {
+        self.flows = self
+            .flows
+            .saturating_add(other.flows)
+            .min(DAILY_ACTIVE_MIN_FLOWS);
+        self.packets = self
+            .packets
+            .saturating_add(other.packets)
+            .min(DAILY_ACTIVE_MIN_PACKETS);
+        self.bytes = self
+            .bytes
+            .saturating_add(other.bytes)
+            .min(DAILY_ACTIVE_MIN_BYTES);
     }
 }
 
@@ -356,7 +393,7 @@ pub(crate) fn reduce_to_bucket<R: Read>(
     key: BucketKey,
     selection: &FlowSelection,
 ) -> Result<CanonicalBucket, NfdumpError> {
-    match reduce_stream(&mut input, selection) {
+    match reduce_stream(&mut input, selection, None) {
         Ok(scopes) => Ok(finish_bucket(scopes, key)),
         Err(error) => {
             drain_to_eof(&mut input);
@@ -365,10 +402,208 @@ pub(crate) fn reduce_to_bucket<R: Read>(
     }
 }
 
+pub(crate) fn reduce_to_bucket_with_active_sources<R: Read>(
+    mut input: R,
+    key: BucketKey,
+    selection: &FlowSelection,
+    active_sources: &AddressSet,
+) -> Result<CanonicalBucket, NfdumpError> {
+    match reduce_stream(&mut input, selection, Some(active_sources)) {
+        Ok(scopes) => Ok(finish_bucket(scopes, key)),
+        Err(error) => {
+            drain_to_eof(&mut input);
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn reduce_to_buckets_with_active_sources<R: Read>(
+    mut input: R,
+    key: BucketKey,
+    selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
+) -> Result<Vec<CanonicalBucket>, NfdumpError> {
+    match reduce_stream_for_active_sources(&mut input, selections_and_active_sources) {
+        Ok(scopes) => Ok(scopes
+            .into_iter()
+            .map(|scopes| finish_bucket(scopes, key.clone()))
+            .collect()),
+        Err(error) => {
+            drain_to_eof(&mut input);
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn reduce_to_daily_source_activity<R: Read>(
+    mut input: R,
+    selection: &FlowSelection,
+) -> Result<HashMap<IpAddr, SourceActivity>, NfdumpError> {
+    if !selection.selects_daily_active_sources() {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::DailyActivityRequiresDailyActiveSourceSelection,
+        ));
+    }
+    let mut activities =
+        reduce_to_daily_source_activities(&mut input, std::slice::from_ref(selection))?;
+    Ok(activities
+        .pop()
+        .expect("one daily selection produces one activity map"))
+}
+
+pub(crate) fn reduce_to_daily_source_activities<R: Read>(
+    mut input: R,
+    selections: &[FlowSelection],
+) -> Result<Vec<HashMap<IpAddr, SourceActivity>>, NfdumpError> {
+    validate_daily_active_selections(selections)?;
+    let mut activities = (0..selections.len())
+        .map(|_| HashMap::<IpAddr, SourceActivity>::new())
+        .collect::<Vec<_>>();
+    let result = visit_stream(&mut input, |flow, _, _| {
+        for (selection, activity) in selections.iter().zip(&mut activities) {
+            if !matches_selection(flow, selection) {
+                continue;
+            }
+            let entry = activity.entry(flow.source_address).or_default();
+            entry.include(SourceActivity {
+                flows: flow.flow_count,
+                packets: flow.packets,
+                bytes: flow.bytes,
+            });
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => Ok(activities),
+        Err(error) => {
+            drain_to_eof(&mut input);
+            Err(error)
+        }
+    }
+}
+
+fn reduce_stream_for_active_sources(
+    input: &mut impl Read,
+    selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
+) -> Result<Vec<[ScopeAccumulator; 10]>, NfdumpError> {
+    validate_daily_active_selection_pairs(selections_and_active_sources)?;
+    let mut scopes = (0..selections_and_active_sources.len())
+        .map(|_| std::array::from_fn(|_| ScopeAccumulator::default()))
+        .collect::<Vec<_>>();
+    visit_stream(input, |flow, block_index, record_ordinal| {
+        for ((selection, active_sources), scopes) in
+            selections_and_active_sources.iter().zip(&mut scopes)
+        {
+            if !matches_selection(flow, selection) || !active_sources.contains(&flow.source_address)
+            {
+                continue;
+            }
+            add_flow_to_scopes(scopes, flow, block_index, record_ordinal)?;
+        }
+        Ok(())
+    })?;
+    Ok(scopes)
+}
+
+fn validate_daily_active_selections(selections: &[FlowSelection]) -> Result<(), NfdumpError> {
+    if selections.is_empty() {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::DailyActivityRequiresSelection,
+        ));
+    }
+    if selections
+        .iter()
+        .any(|selection| !selection.selects_daily_active_sources())
+    {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::DailyActivityRequiresDailyActiveSourceSelection,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_daily_active_selection_pairs(
+    selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
+) -> Result<(), NfdumpError> {
+    if selections_and_active_sources.is_empty() {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::DailyActivityRequiresSelection,
+        ));
+    }
+    if selections_and_active_sources
+        .iter()
+        .any(|(selection, _)| !selection.selects_daily_active_sources())
+    {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::DailyActivityRequiresDailyActiveSourceSelection,
+        ));
+    }
+    Ok(())
+}
+
 fn reduce_stream<R: Read>(
     input: &mut R,
     selection: &FlowSelection,
+    active_sources: Option<&AddressSet>,
 ) -> Result<[ScopeAccumulator; 10], NfdumpError> {
+    if selection.selects_daily_active_sources() && active_sources.is_none() {
+        return Err(NfdumpError::new(
+            Phase::Aggregate,
+            Field::SourceAddress,
+            ErrorReason::MissingDailyActiveSources,
+        ));
+    }
+    let mut scopes = std::array::from_fn(|_| ScopeAccumulator::default());
+    visit_stream(input, |flow, block_index, record_ordinal| {
+        if !matches_selection(flow, selection)
+            || active_sources.is_some_and(|sources| !sources.contains(&flow.source_address))
+        {
+            return Ok(());
+        }
+        add_flow_to_scopes(&mut scopes, flow, block_index, record_ordinal)
+    })?;
+    Ok(scopes)
+}
+
+fn add_flow_to_scopes(
+    scopes: &mut [ScopeAccumulator; 10],
+    flow: &Flow,
+    block_index: u64,
+    record_ordinal: u64,
+) -> Result<(), NfdumpError> {
+    let family_base = if flow.ip_version == IpVersion::V4 {
+        0
+    } else {
+        5
+    };
+    let exact_index =
+        family_base + exact_scope_index(flow.source_anonymized, flow.destination_anonymized);
+    for index in [family_base, exact_index] {
+        scopes[index].validate_add(flow).map_err(|field| {
+            NfdumpError::new(Phase::Aggregate, field, ErrorReason::AggregateOverflow)
+                .at_block(block_index)
+                .at_record(record_ordinal)
+        })?;
+    }
+    for index in [family_base, exact_index] {
+        scopes[index].add(flow);
+    }
+    Ok(())
+}
+
+fn visit_stream<R: Read, F>(input: &mut R, mut visit: F) -> Result<(), NfdumpError>
+where
+    F: FnMut(&Flow, u64, u64) -> Result<(), NfdumpError>,
+{
     let mut header = [0_u8; 12];
     let read = read_fully(input, &mut header).map_err(|failure| {
         NfdumpError::new(
@@ -411,7 +646,6 @@ fn reduce_stream<R: Read>(
         ));
     }
 
-    let mut scopes = std::array::from_fn(|_| ScopeAccumulator::default());
     let mut payload = [0_u8; MAX_BLOCK_BYTES];
     let mut block_index = 1_u64;
     let mut record_ordinal = 0_u64;
@@ -447,7 +681,7 @@ fn reduce_stream<R: Read>(
         let count = u32::from_le_bytes(count_bytes);
         if count == 0 {
             ensure_eof(input, block_index)?;
-            return Ok(scopes);
+            return Ok(());
         }
         if count > MAX_BLOCK_RECORDS as u32 {
             return Err(NfdumpError::new(
@@ -484,33 +718,8 @@ fn reduce_stream<R: Read>(
         for record in payload[..payload_len].chunks_exact(RECORD_LEN) {
             record_ordinal += 1;
             let validated = validate_record(record, block_index, record_ordinal)?;
-            if !matches_visibility(&validated, selection) {
-                continue;
-            }
             let flow = validated.into_flow();
-            if selection.ip_prefix().is_some_and(|prefix| {
-                !prefix.contains(&flow.source_address)
-                    && !prefix.contains(&flow.destination_address)
-            }) {
-                continue;
-            }
-            let family_base = if flow.ip_version == IpVersion::V4 {
-                0
-            } else {
-                5
-            };
-            let exact_index = family_base
-                + exact_scope_index(flow.source_anonymized, flow.destination_anonymized);
-            for index in [family_base, exact_index] {
-                scopes[index].validate_add(&flow).map_err(|field| {
-                    NfdumpError::new(Phase::Aggregate, field, ErrorReason::AggregateOverflow)
-                        .at_block(block_index)
-                        .at_record(record_ordinal)
-                })?;
-            }
-            for index in [family_base, exact_index] {
-                scopes[index].add(&flow);
-            }
+            visit(&flow, block_index, record_ordinal)?;
         }
         block_index += 1;
     }
@@ -710,12 +919,23 @@ where
     i64::try_from(value).map_err(|_| error(field, ErrorReason::NumericOverflow(value)))
 }
 
-fn matches_visibility(record: &ValidatedRecord<'_>, selection: &FlowSelection) -> bool {
-    selection.src_visibility().is_none_or(|required| {
-        matches!(required, ExactVisibility::Anonymized) == record.source_anonymized
-    }) && selection.dst_visibility().is_none_or(|required| {
-        matches!(required, ExactVisibility::Anonymized) == record.destination_anonymized
-    })
+fn matches_selection(flow: &Flow, selection: &FlowSelection) -> bool {
+    selection.matches_flow_fields(
+        flow.source_address,
+        flow.destination_address,
+        flow.protocol,
+        Some(flow.source_port),
+        if flow.source_anonymized {
+            ExactVisibility::Anonymized
+        } else {
+            ExactVisibility::Literal
+        },
+        if flow.destination_anonymized {
+            ExactVisibility::Anonymized
+        } else {
+            ExactVisibility::Literal
+        },
+    )
 }
 
 const fn exact_scope_index(source_anonymized: bool, destination_anonymized: bool) -> usize {
@@ -924,6 +1144,7 @@ fn traffic_metrics(metrics: [i64; METRIC_COUNT]) -> TrafficMetrics {
 mod tests {
     use std::io::{self, Cursor, Read};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::sync::Arc;
 
     use super::*;
     use crate::domain::{Granularity, Scope};
@@ -941,6 +1162,31 @@ mod tests {
         ONE_V4_TEST_STREAM[16..88]
             .try_into()
             .expect("the exported fixture contains one fixed record")
+    }
+
+    fn daily_selection(prefix: &str) -> FlowSelection {
+        FlowSelection::from_payload(Some(&serde_json::json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": prefix,
+        })))
+        .unwrap()
+    }
+
+    fn daily_record(
+        source: [u8; 4],
+        tag: u8,
+        flows: u64,
+        packets: u64,
+        bytes: u64,
+    ) -> [u8; RECORD_LEN] {
+        let mut record = base_record();
+        record[..4].copy_from_slice(&source);
+        record[32..40].copy_from_slice(&packets.to_le_bytes());
+        record[40..48].copy_from_slice(&bytes.to_le_bytes());
+        record[48..56].copy_from_slice(&flows.to_le_bytes());
+        record[64..66].copy_from_slice(&55_000_u16.to_le_bytes());
+        record[69] = tag;
+        record
     }
 
     fn stream(records: &[[u8; RECORD_LEN]]) -> Vec<u8> {
@@ -1107,6 +1353,174 @@ mod tests {
         assert_eq!(metrics.max_ttl_sum, 15);
         assert_eq!(metrics.max_ttl_count, 3);
         assert_eq!(bucket.protocols[0].protocols, ["47", "6"]);
+    }
+
+    #[test]
+    fn daily_activity_resolves_exact_sources_before_bucket_reduction() {
+        let selection = FlowSelection::from_payload(Some(&serde_json::json!({
+            "kind": "daily_active_sources",
+            "ip_prefix": "192.0.0.0/16"
+        })))
+        .unwrap();
+        let mut first = base_record();
+        first[32..40].copy_from_slice(&5_u64.to_le_bytes());
+        first[40..48].copy_from_slice(&500_u64.to_le_bytes());
+        first[48..56].copy_from_slice(&1_u64.to_le_bytes());
+        first[64..66].copy_from_slice(&55_000_u16.to_le_bytes());
+        first[66..68].copy_from_slice(&443_u16.to_le_bytes());
+        first[69] = 0b010;
+        let mut second = first;
+        second[32..40].copy_from_slice(&15_u64.to_le_bytes());
+        second[40..48].copy_from_slice(&1_500_u64.to_le_bytes());
+        second[48..56].copy_from_slice(&2_u64.to_le_bytes());
+        let mut inactive = first;
+        inactive[0..4].copy_from_slice(&[192, 0, 3, 2]);
+        inactive[32..40].copy_from_slice(&19_u64.to_le_bytes());
+        inactive[40..48].copy_from_slice(&1_999_u64.to_le_bytes());
+        inactive[48..56].copy_from_slice(&2_u64.to_le_bytes());
+
+        let activity = reduce_to_daily_source_activity(
+            Cursor::new(stream(&[first, second, inactive])),
+            &selection,
+        )
+        .unwrap();
+        assert_eq!(
+            activity[&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))],
+            SourceActivity {
+                flows: 3,
+                packets: 20,
+                bytes: 2_000,
+            }
+        );
+        let mut active = AddressSet::default();
+        active.extend(activity.into_iter().filter_map(|(address, metrics)| {
+            FlowSelection::daily_activity_threshold_met(
+                metrics.flows,
+                metrics.packets,
+                metrics.bytes,
+            )
+            .then_some(address)
+        }));
+        let mut low_port = first;
+        low_port[64..66].copy_from_slice(&1_023_u16.to_le_bytes());
+
+        let bucket = reduce_to_bucket_with_active_sources(
+            Cursor::new(stream(&[first, inactive, low_port])),
+            key(),
+            &selection,
+            &active,
+        )
+        .unwrap();
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(bucket.traffic[0].metrics.flows, 1);
+        assert_eq!(bucket.traffic[0].metrics.packets, 5);
+        assert_eq!(bucket.traffic[0].metrics.bytes, 500);
+        assert!(reduce_to_bucket(Cursor::new(stream(&[first])), key(), &selection).is_err());
+    }
+
+    #[test]
+    fn daily_activity_maps_are_reduced_independently_with_overlapping_prefixes() {
+        let source_a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let source_b = IpAddr::V4(Ipv4Addr::new(198, 51, 2, 1));
+        let records = [
+            daily_record([192, 0, 2, 1], 0b010, 3, 20, 2_000),
+            daily_record([198, 51, 2, 1], 0b010, 4, 21, 2_100),
+            daily_record([192, 0, 2, 1], 0, 1, 1, 1),
+        ];
+        let selections = [
+            daily_selection("192.0.0.0/16"),
+            daily_selection("198.51.0.0/16"),
+            daily_selection("192.0.0.0/16"),
+        ];
+
+        let activities =
+            reduce_to_daily_source_activities(Cursor::new(stream(&records)), &selections).unwrap();
+
+        assert_eq!(activities.len(), 3);
+        assert_eq!(activities[0][&source_a].flows, 3);
+        assert_eq!(activities[0][&source_a].packets, 20);
+        assert!(!activities[0].contains_key(&source_b));
+        assert_eq!(activities[1][&source_b].flows, 3);
+        assert!(!activities[1].contains_key(&source_a));
+        assert_eq!(activities[2], activities[0]);
+    }
+
+    #[test]
+    fn active_source_buckets_fan_out_per_pair_and_allow_overlap() {
+        let source_a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let source_b = IpAddr::V4(Ipv4Addr::new(198, 51, 2, 1));
+        let selection_a = daily_selection("192.0.0.0/16");
+        let selection_b = daily_selection("198.51.0.0/16");
+        let pairs = [
+            (
+                selection_a.clone(),
+                Arc::new([source_a].into_iter().collect::<AddressSet>()),
+            ),
+            (
+                selection_a.clone(),
+                Arc::new([source_b].into_iter().collect::<AddressSet>()),
+            ),
+            (
+                selection_a,
+                Arc::new([source_a, source_b].into_iter().collect::<AddressSet>()),
+            ),
+            (
+                selection_b,
+                Arc::new([source_b].into_iter().collect::<AddressSet>()),
+            ),
+        ];
+        let records = [
+            daily_record([192, 0, 2, 1], 0b010, 3, 20, 2_000),
+            daily_record([198, 51, 2, 1], 0b010, 4, 21, 2_100),
+        ];
+
+        let buckets =
+            reduce_to_buckets_with_active_sources(Cursor::new(stream(&records)), key(), &pairs)
+                .unwrap();
+
+        assert_eq!(buckets.len(), 4);
+        let all_v4 = |bucket: &CanonicalBucket| {
+            bucket
+                .traffic
+                .iter()
+                .find(|entry| {
+                    entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                })
+                .unwrap()
+                .metrics
+                .flows
+        };
+        assert_eq!(buckets.iter().map(all_v4).collect::<Vec<_>>(), [3, 0, 3, 4]);
+        assert_eq!(
+            buckets[0].addresses[1].addresses,
+            [source_a].into_iter().collect::<AddressSet>()
+        );
+        assert_eq!(
+            buckets[3].addresses[1].addresses,
+            [source_b].into_iter().collect::<AddressSet>()
+        );
+    }
+
+    #[test]
+    fn multi_subset_decoding_rejects_empty_and_non_daily_inputs() {
+        let empty =
+            reduce_to_daily_source_activities(Cursor::new(Vec::<u8>::new()), &[]).unwrap_err();
+        assert!(matches!(
+            empty.reason,
+            ErrorReason::DailyActivityRequiresSelection
+        ));
+
+        let non_daily = reduce_to_buckets_with_active_sources(
+            Cursor::new(Vec::<u8>::new()),
+            key(),
+            &[(FlowSelection::default(), Arc::new(AddressSet::default()))],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            non_daily.reason,
+            ErrorReason::DailyActivityRequiresDailyActiveSourceSelection
+        ));
     }
 
     #[test]

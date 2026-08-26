@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     net::IpAddr,
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
@@ -33,9 +34,14 @@ pub enum PublishError {
     Storage(#[from] StorageError),
     #[error("unable to serialize MAAD rows: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("unable to build MAAD worker pool: {0}")]
+    MaadPool(String),
     #[error("aggregate bucket lacks complete five-minute coverage: {0:?}")]
     IncompleteCoverage(BucketKey),
 }
+
+const MAAD_WORKERS: usize = 2;
+static MAAD_POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
 
 /// Aggregate timings and work counts for one or more `write_buckets` calls.
 ///
@@ -334,46 +340,72 @@ fn insert_rows(
 fn maad_rows(
     address_sets: &[AddressSetRow<'_>],
 ) -> Result<Vec<AddressStructureStatsRow>, PublishError> {
-    Ok(address_sets
-        .par_iter()
+    // Filter before entering the pool so the indexed collection below keeps
+    // canonical input order while still allowing independent scopes to run in
+    // parallel.
+    let address_sets = address_sets
+        .iter()
         .filter(|addresses| addresses.scope.ip_version == IpVersion::V4)
-        .map(|addresses| {
-            let result = maad::compute(addresses.addresses.iter().filter_map(
-                |address| match address {
-                    IpAddr::V4(address) => Some(*address),
-                    IpAddr::V6(_) => None,
-                },
-            ));
-            let metadata_json = serde_json::to_string(&result.metadata)?;
-            let dimensions = dimensions(&addresses.key, addresses.scope);
-            Ok::<_, serde_json::Error>([
-                AddressStructureStatsRow {
-                    dimensions: dimensions.clone(),
-                    address_side: addresses.address_side.as_str().to_owned(),
-                    structure_kind: "structure".into(),
-                    values_json: serde_json::to_string(&result.structure)?,
-                    metadata_json: metadata_json.clone(),
-                },
-                AddressStructureStatsRow {
-                    dimensions: dimensions.clone(),
-                    address_side: addresses.address_side.as_str().to_owned(),
-                    structure_kind: "spectrum".into(),
-                    values_json: serde_json::to_string(&result.spectrum)?,
-                    metadata_json: metadata_json.clone(),
-                },
-                AddressStructureStatsRow {
-                    dimensions,
-                    address_side: addresses.address_side.as_str().to_owned(),
-                    structure_kind: "dimension".into(),
-                    values_json: serde_json::to_string(&result.dimensions)?,
-                    metadata_json,
-                },
-            ])
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect())
+        .collect::<Vec<_>>();
+    if address_sets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let pool = maad_pool()?;
+    let rows =
+        pool.install(|| {
+            address_sets
+                .par_iter()
+                .map(|addresses| {
+                    let result =
+                        maad::compute(addresses.addresses.iter().filter_map(
+                            |address| match address {
+                                IpAddr::V4(address) => Some(*address),
+                                IpAddr::V6(_) => None,
+                            },
+                        ));
+                    let metadata_json = serde_json::to_string(&result.metadata)?;
+                    let dimensions = dimensions(&addresses.key, addresses.scope);
+                    Ok::<_, serde_json::Error>([
+                        AddressStructureStatsRow {
+                            dimensions: dimensions.clone(),
+                            address_side: addresses.address_side.as_str().to_owned(),
+                            structure_kind: "structure".into(),
+                            values_json: serde_json::to_string(&result.structure)?,
+                            metadata_json: metadata_json.clone(),
+                        },
+                        AddressStructureStatsRow {
+                            dimensions: dimensions.clone(),
+                            address_side: addresses.address_side.as_str().to_owned(),
+                            structure_kind: "spectrum".into(),
+                            values_json: serde_json::to_string(&result.spectrum)?,
+                            metadata_json: metadata_json.clone(),
+                        },
+                        AddressStructureStatsRow {
+                            dimensions,
+                            address_side: addresses.address_side.as_str().to_owned(),
+                            structure_kind: "dimension".into(),
+                            values_json: serde_json::to_string(&result.dimensions)?,
+                            metadata_json,
+                        },
+                    ])
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+    Ok(rows.into_iter().flatten().collect())
+}
+
+fn maad_pool() -> Result<&'static rayon::ThreadPool, PublishError> {
+    match MAAD_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(MAAD_WORKERS)
+            .thread_name(|index| format!("maad-{index}"))
+            .build()
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(pool) => Ok(pool),
+        Err(error) => Err(PublishError::MaadPool(error.clone())),
+    }
 }
 
 fn dimensions(key: &BucketKey, scope: crate::domain::Scope) -> StatsDimensions {
@@ -401,7 +433,10 @@ mod tests {
     use super::*;
     use crate::{
         coverage::{BucketCoverage, CoverageState},
-        domain::{AddressSide, FlowObservation, IpVersion, Scope, ScopedAddressesFact, Visibility},
+        domain::{
+            AddressSet, AddressSide, FlowObservation, IpVersion, Scope, ScopedAddressesFact,
+            Visibility,
+        },
         storage::init_stats_tables,
     };
 
@@ -505,6 +540,63 @@ mod tests {
         let reverse = persist([third, first, second, second]);
 
         assert_eq!(product_rows(&forward), product_rows(&reverse));
+    }
+
+    #[test]
+    fn maad_rows_preserve_scope_order_and_bytes() {
+        let key = BucketKey::new("r1", Granularity::FiveMinutes, 0, 300);
+        let first_addresses = AddressSet::from_iter([
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3)),
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 4)),
+        ]);
+        let second_addresses = AddressSet::from_iter([
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 3)),
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 4)),
+        ]);
+        let rows = [
+            AddressSetRow {
+                key: key.clone(),
+                scope: Scope::new(IpVersion::V4, Visibility::All, Visibility::All),
+                address_side: AddressSide::Source,
+                addresses: &first_addresses,
+            },
+            AddressSetRow {
+                key,
+                scope: Scope::new(IpVersion::V4, Visibility::Literal, Visibility::All),
+                address_side: AddressSide::Destination,
+                addresses: &second_addresses,
+            },
+        ];
+
+        let first = maad_rows(&rows).unwrap();
+        let second = maad_rows(&rows).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 6);
+        assert_eq!(
+            first
+                .chunks_exact(3)
+                .map(|rows| (
+                    rows[0].dimensions.src_visibility.as_str(),
+                    rows[0].address_side.as_str(),
+                    rows.iter()
+                        .map(|row| row.structure_kind.as_str())
+                        .collect::<Vec<_>>(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("all", "source", vec!["structure", "spectrum", "dimension"]),
+                (
+                    "literal",
+                    "destination",
+                    vec!["structure", "spectrum", "dimension"]
+                ),
+            ]
+        );
     }
 
     #[test]
