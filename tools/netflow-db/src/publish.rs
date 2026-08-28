@@ -59,7 +59,9 @@ pub struct WriteBucketsProfile {
     pub(crate) port_count_insert_elapsed: Duration,
     pub(crate) maad_elapsed: Duration,
     pub(crate) address_structure_insert_elapsed: Duration,
+    #[cfg(test)]
     pub(crate) write_calls: u64,
+    #[cfg(test)]
     pub(crate) bucket_keys: u64,
     pub(crate) traffic_rows: u64,
     pub(crate) protocol_rows: u64,
@@ -72,29 +74,7 @@ pub struct WriteBucketsProfile {
 }
 
 impl WriteBucketsProfile {
-    pub(crate) fn include(&mut self, profile: Self) {
-        self.total_elapsed += profile.total_elapsed;
-        self.delete_elapsed += profile.delete_elapsed;
-        self.canonical_rows_elapsed += profile.canonical_rows_elapsed;
-        self.scalar_rows_elapsed += profile.scalar_rows_elapsed;
-        self.traffic_insert_elapsed += profile.traffic_insert_elapsed;
-        self.protocol_insert_elapsed += profile.protocol_insert_elapsed;
-        self.address_count_insert_elapsed += profile.address_count_insert_elapsed;
-        self.port_count_insert_elapsed += profile.port_count_insert_elapsed;
-        self.maad_elapsed += profile.maad_elapsed;
-        self.address_structure_insert_elapsed += profile.address_structure_insert_elapsed;
-        self.write_calls += profile.write_calls;
-        self.bucket_keys += profile.bucket_keys;
-        self.traffic_rows += profile.traffic_rows;
-        self.protocol_rows += profile.protocol_rows;
-        self.address_count_rows += profile.address_count_rows;
-        self.port_count_rows += profile.port_count_rows;
-        self.maad_address_sets += profile.maad_address_sets;
-        self.maad_addresses += profile.maad_addresses;
-        self.address_structure_rows += profile.address_structure_rows;
-        self.address_structure_json_bytes += profile.address_structure_json_bytes;
-    }
-
+    #[cfg(test)]
     pub(crate) fn other_elapsed(&self) -> Duration {
         self.total_elapsed.saturating_sub(
             self.delete_elapsed
@@ -172,7 +152,9 @@ pub(crate) fn write_buckets_profiled(
 ) -> Result<WriteBucketsProfile, PublishError> {
     let total_started = Instant::now();
     let mut profile = WriteBucketsProfile {
+        #[cfg(test)]
         write_calls: 1,
+        #[cfg(test)]
         bucket_keys: count(buckets.len()),
         ..WriteBucketsProfile::default()
     };

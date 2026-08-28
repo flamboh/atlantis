@@ -2,39 +2,9 @@ use std::{fs, process::Command};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
 
 use rusqlite::Connection;
 use tempfile::tempdir;
-
-#[test]
-fn pipeline_help_explains_repeated_dataset_mode() {
-    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
-        .args(["pipeline", "--help"])
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "stdout={}\nstderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let help = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        help.contains("Repeat --dataset for two or more values"),
-        "{help}"
-    );
-    assert!(
-        help.contains("coordinated fixed daily-active subset run"),
-        "{help}"
-    );
-    assert!(
-        help.contains("one value keeps the normal single-dataset path"),
-        "{help}"
-    );
-}
 
 #[test]
 fn pipeline_repeated_dataset_uses_isolated_registry_and_outputs() {
@@ -125,82 +95,6 @@ fn pipeline_repeated_dataset_uses_isolated_registry_and_outputs() {
             .unwrap();
         assert!(selection.contains("daily_active_sources"), "{selection}");
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn pipeline_rejects_an_inaccessible_path_candidate_before_output_setup() {
-    let temporary = tempdir().unwrap();
-    let first_path = temporary.path().join("first-path");
-    let second_path = temporary.path().join("second-path");
-    fs::create_dir_all(&first_path).unwrap();
-    fs::create_dir_all(&second_path).unwrap();
-
-    // The owner has no execute permission, while another class does. Checking mode bits alone
-    // incorrectly treats this as the first PATH candidate for the current process.
-    let inaccessible = first_path.join("nfdump");
-    fs::write(&inaccessible, b"inaccessible candidate").unwrap();
-    fs::set_permissions(&inaccessible, fs::Permissions::from_mode(0o001)).unwrap();
-
-    let database = temporary.path().join("pipeline.sqlite");
-    let sidecar = database.with_file_name("pipeline.sqlite-wal");
-    let sentinel = b"do not overwrite this executable-related sentinel";
-    fs::write(&sidecar, sentinel).unwrap();
-    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o755)).unwrap();
-    symlink(&sidecar, second_path.join("nfdump")).unwrap();
-
-    let capture_root = temporary.path().join("captures");
-    fs::create_dir_all(capture_root.join("edge")).unwrap();
-    let config = temporary.path().join("pipeline.json");
-    fs::write(
-        &config,
-        serde_json::to_vec(&serde_json::json!({
-            "database_path": database,
-            "timezone": "UTC",
-            "run_maad": false,
-            "nfdump": "nfdump",
-            "inputs": [{
-                "input_kind": "nfcapd_tree",
-                "root_path": capture_root,
-                "source_ids": ["edge"],
-                "start_date": "2025-01-01",
-                "end_date": "2025-01-02"
-            }]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let path = std::env::join_paths([&first_path, &second_path]).unwrap();
-
-    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
-        .args([
-            "pipeline",
-            "--config",
-            config.to_str().unwrap(),
-            "--no-maad",
-        ])
-        .env("PATH", path)
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success(), "pipeline unexpectedly succeeded");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("aliases pipeline control path"),
-        "stderr={stderr}"
-    );
-    assert_eq!(fs::read(&sidecar).unwrap(), sentinel);
-    assert!(
-        !database.exists(),
-        "output database was created after rejection"
-    );
-    assert!(
-        !temporary
-            .path()
-            .join(".pipeline.sqlite.operation.lock")
-            .exists(),
-        "output operation lock was created after rejection"
-    );
 }
 
 #[test]

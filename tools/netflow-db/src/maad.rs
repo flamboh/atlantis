@@ -136,7 +136,7 @@ pub fn compute_with_config(
     if addresses.len() < MIN_MAAD_ADDRESSES {
         return Ok(empty_result(addresses.len()));
     }
-    let counts = build_prefix_counts(&addresses, config.max_prefix_length);
+    let counts = build_prefix_counts(&addresses);
     let prepared = prepare_valid_moments(&counts, &config);
     if prepared.is_empty() {
         return Ok(empty_result(addresses.len()));
@@ -182,13 +182,9 @@ fn empty_result(total_addrs: usize) -> MaadResult {
     }
 }
 
-fn build_prefix_counts(addresses: &[u32], max_prefix_length: u8) -> Vec<Vec<(u32, usize)>> {
-    // Moment preparation needs each configured parent level and its children;
-    // dimensions only read the configured parent levels. Do not retain the
-    // unused /32 level range for the default /24 analysis.
-    let count_levels = usize::from(max_prefix_length) + 2;
-    let mut counts = Vec::with_capacity(count_levels);
-    for prefix_length in 0..=max_prefix_length + 1 {
+fn build_prefix_counts(addresses: &[u32]) -> Vec<Vec<(u32, usize)>> {
+    let mut counts = Vec::with_capacity(33);
+    for prefix_length in 0..=32_u8 {
         let mut prefixes = Vec::new();
         for &address in addresses {
             let prefix = prefix_of(address, prefix_length);
@@ -932,32 +928,6 @@ mod tests {
         assert_eq!(result.metadata.min_prefix_length, Some(8));
         assert_eq!(result.metadata.max_prefix_length, Some(22));
         assert_eq!(result.structure.len(), 33);
-    }
-
-    #[test]
-    fn prefix_counts_stop_after_the_configured_parent_and_child_levels() {
-        let addresses = [
-            u32::from(Ipv4Addr::new(192, 0, 2, 1)),
-            u32::from(Ipv4Addr::new(192, 0, 2, 2)),
-        ];
-
-        let default_counts =
-            build_prefix_counts(&addresses, MaadConfig::default().max_prefix_length);
-        assert_eq!(default_counts.len(), 26);
-        assert_eq!(
-            default_counts.last().unwrap(),
-            &vec![(prefix_of(addresses[0], 25), 2)]
-        );
-
-        let deepest_counts = build_prefix_counts(&addresses, 31);
-        assert_eq!(deepest_counts.len(), 33);
-        assert_eq!(
-            deepest_counts.last().unwrap(),
-            &vec![
-                (u32::from(Ipv4Addr::new(192, 0, 2, 1)), 1),
-                (u32::from(Ipv4Addr::new(192, 0, 2, 2)), 1),
-            ]
-        );
     }
 
     #[test]

@@ -26,12 +26,14 @@ pub enum RegistryError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatasetSource {
     pub source_id: String,
     pub members: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Dataset {
     pub dataset_id: String,
     #[serde(default)]
@@ -378,5 +380,32 @@ mod tests {
             registry.get("uoregon-active-0-220").unwrap().db_path,
             root.path().join("data/uoregon-active-0-220/netflow.sqlite")
         );
+    }
+
+    #[test]
+    fn registry_rejects_unknown_dataset_and_source_fields() {
+        for (registry_json, unknown_field) in [
+            (
+                r#"[{"dataset_id":"sample","root_path":"/captures","selecton":null}]"#,
+                "selecton",
+            ),
+            (
+                r#"[{"dataset_id":"sample","root_path":"/captures","sources":[{"source_id":"r1","member":["r1"]}]}]"#,
+                "member",
+            ),
+        ] {
+            let root = tempdir().unwrap();
+            let list = root.path().join("datasets.json");
+            fs::write(&list, registry_json).unwrap();
+
+            let error = DatasetRegistry::load(&list, root.path()).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{unknown_field}`")),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

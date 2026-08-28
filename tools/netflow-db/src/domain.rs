@@ -3,7 +3,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     net::IpAddr,
-    time::{Duration, Instant},
 };
 
 use fixedbitset::FixedBitSet;
@@ -1107,38 +1106,6 @@ pub struct StatisticalBucket {
     five_minute_starts: BTreeSet<i64>,
 }
 
-/// Aggregate timings for merging canonical children into one rollup builder.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StatisticalBucketIncludeProfile {
-    pub(crate) total_elapsed: Duration,
-    pub(crate) traffic_elapsed: Duration,
-    pub(crate) protocols_elapsed: Duration,
-    pub(crate) addresses_elapsed: Duration,
-    pub(crate) ports_elapsed: Duration,
-    pub(crate) coverage_elapsed: Duration,
-}
-
-impl StatisticalBucketIncludeProfile {
-    pub(crate) fn include(&mut self, profile: Self) {
-        self.total_elapsed += profile.total_elapsed;
-        self.traffic_elapsed += profile.traffic_elapsed;
-        self.protocols_elapsed += profile.protocols_elapsed;
-        self.addresses_elapsed += profile.addresses_elapsed;
-        self.ports_elapsed += profile.ports_elapsed;
-        self.coverage_elapsed += profile.coverage_elapsed;
-    }
-
-    pub(crate) fn other_elapsed(&self) -> Duration {
-        self.total_elapsed.saturating_sub(
-            self.traffic_elapsed
-                + self.protocols_elapsed
-                + self.addresses_elapsed
-                + self.ports_elapsed
-                + self.coverage_elapsed,
-        )
-    }
-}
-
 impl StatisticalBucket {
     #[must_use]
     pub fn new(key: BucketKey) -> Self {
@@ -1198,15 +1165,6 @@ impl StatisticalBucket {
     }
 
     pub fn include(&mut self, child: &CanonicalBucket) -> Result<(), DomainError> {
-        self.include_profiled(child).map(|_| ())
-    }
-
-    pub(crate) fn include_profiled(
-        &mut self,
-        child: &CanonicalBucket,
-    ) -> Result<StatisticalBucketIncludeProfile, DomainError> {
-        let total_started = Instant::now();
-        let traffic_started = Instant::now();
         let mut updates = Vec::with_capacity(child.traffic.len());
         for entry in &child.traffic {
             let mut metrics = self.traffic.get(&entry.scope).cloned().unwrap_or_default();
@@ -1216,44 +1174,28 @@ impl StatisticalBucket {
         for (scope, metrics) in updates {
             self.traffic.insert(scope, metrics);
         }
-        let traffic_elapsed = traffic_started.elapsed();
-        let protocols_started = Instant::now();
         for entry in &child.protocols {
             self.protocols
                 .entry(entry.scope)
                 .or_default()
                 .extend(entry.protocols.iter().cloned());
         }
-        let protocols_elapsed = protocols_started.elapsed();
-        let addresses_started = Instant::now();
         for entry in &child.addresses {
             self.addresses
                 .entry((entry.scope, entry.address_side))
                 .or_default()
                 .extend(entry.addresses.iter().copied());
         }
-        let addresses_elapsed = addresses_started.elapsed();
-        let ports_started = Instant::now();
         for entry in &child.ports {
             self.ports
                 .entry((entry.scope, entry.port_side))
                 .or_insert_with(empty_ports)
                 .union_with(&entry.ports);
         }
-        let ports_elapsed = ports_started.elapsed();
-        let coverage_started = Instant::now();
         self.five_minute_starts
             .extend(child.five_minute_starts.iter().copied());
         self.coverage.include(child.coverage)?;
-        let coverage_elapsed = coverage_started.elapsed();
-        Ok(StatisticalBucketIncludeProfile {
-            total_elapsed: total_started.elapsed(),
-            traffic_elapsed,
-            protocols_elapsed,
-            addresses_elapsed,
-            ports_elapsed,
-            coverage_elapsed,
-        })
+        Ok(())
     }
 
     /// Whether every five-minute child in this bucket's interval was included.

@@ -65,6 +65,10 @@ Each subset keeps its own immutable product database, product identity, transact
 and MAAD configuration. Active sets are still resolved independently. Overlapping subsets may both
 receive the same qualifying flow.
 
+Outputs commit sequentially rather than as one cross-database transaction. If the process stops
+between product commits, sibling databases can differ by at most the local day that was in flight.
+The next run sees the missing completion marker and rebuilds that day for each unfinished product.
+
 ## Input identity
 
 Each input records an exact revision. The revision contains a SHA-256 content identity and a canonical decoder fingerprint.

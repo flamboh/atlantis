@@ -1161,58 +1161,6 @@ pub fn build_nfdump_command_for_selections(
     Ok(command)
 }
 
-/// Build one range command for a complete physical member day.
-pub fn build_nfdump_range_command(
-    paths: &[PathBuf],
-    selection: &FlowSelection,
-    executable: impl AsRef<std::ffi::OsStr>,
-) -> Result<Vec<OsString>, IngestError> {
-    build_nfdump_range_command_for_selections(paths, std::slice::from_ref(selection), executable)
-}
-
-/// Build one range command for a complete physical member day and several selections.
-pub fn build_nfdump_range_command_for_selections(
-    paths: &[PathBuf],
-    selections: &[FlowSelection],
-    executable: impl AsRef<std::ffi::OsStr>,
-) -> Result<Vec<OsString>, IngestError> {
-    let first = paths
-        .first()
-        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
-    let last = paths.last().expect("nonempty range has a last path");
-    if paths.iter().any(|path| path.parent() != first.parent()) {
-        return Err(IngestError::InvalidInput(format!(
-            "nfcapd day range spans directories, including {} and {}",
-            first.display(),
-            last.display()
-        )));
-    }
-    if paths.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(IngestError::InvalidInput(
-            "nfcapd day range paths must be strictly chronological".into(),
-        ));
-    }
-    first.file_name().ok_or_else(|| {
-        IngestError::InvalidInput(format!("invalid nfcapd path: {}", first.display()))
-    })?;
-    let last_name = last.file_name().ok_or_else(|| {
-        IngestError::InvalidInput(format!("invalid nfcapd path: {}", last.display()))
-    })?;
-    let mut range = first.to_path_buf().into_os_string();
-    range.push(":");
-    range.push(last_name);
-    let mut command = vec![
-        executable.as_ref().to_owned(),
-        "-R".into(),
-        range,
-        "-q".into(),
-        "-o".into(),
-        nfdump::OUTPUT_MODE.into(),
-    ];
-    command.push(daily_active_union_filter(selections)?.into());
-    Ok(command)
-}
-
 fn daily_active_union_filter(selections: &[FlowSelection]) -> Result<String, IngestError> {
     if selections.is_empty() {
         return Err(IngestError::InvalidInput(
@@ -1302,19 +1250,8 @@ fn prepare_nfcapd_manifest(paths: &[PathBuf]) -> Result<(tempfile::TempDir, Path
     Ok((manifest, manifest_path))
 }
 
-#[cfg(unix)]
 fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(target, link)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn link_nfcapd_manifest_entry(target: &Path, link: &Path) -> std::io::Result<()> {
-    fs::hard_link(target, link)
 }
 
 fn build_nfdump_manifest_command_for_selections(
@@ -1491,26 +1428,6 @@ pub(crate) fn read_nfcapd_daily_source_activities(
     let selections = selections.to_vec();
     run_nfdump(command, context, NFDUMP_DAY_TIMEOUT, move |stdout| {
         nfdump::reduce_to_daily_source_activities(stdout, &selections)
-    })
-}
-
-pub(crate) fn read_nfcapd_daily_source_activity(
-    paths: &[PathBuf],
-    selection: &FlowSelection,
-    executable: impl AsRef<std::ffi::OsStr>,
-) -> Result<HashMap<IpAddr, nfdump::SourceActivity>, IngestError> {
-    let context = paths
-        .first()
-        .ok_or_else(|| IngestError::InvalidInput("nfcapd day range is empty".into()))?;
-    let (_manifest, manifest_path) = prepare_nfcapd_manifest(paths)?;
-    let command = build_nfdump_manifest_command_for_selections(
-        &manifest_path,
-        std::slice::from_ref(selection),
-        executable,
-    )?;
-    let selection = selection.clone();
-    run_nfdump(command, context, NFDUMP_DAY_TIMEOUT, move |stdout| {
-        nfdump::reduce_to_daily_source_activity(stdout, &selection)
     })
 }
 
@@ -1967,38 +1884,6 @@ mod tests {
     }
 
     #[test]
-    fn daily_activity_command_uses_one_source_only_member_range() {
-        let selection = FlowSelection::from_payload(Some(&json!({
-            "kind": "daily_active_sources",
-            "ip_prefix": "0.220.0.0/16"
-        })))
-        .unwrap();
-        let paths = [
-            PathBuf::from("/captures/edge/nfcapd.202506010000"),
-            PathBuf::from("/captures/edge/nfcapd.202506012355"),
-        ];
-
-        let command = build_nfdump_range_command(&paths, &selection, "nfdump").unwrap();
-
-        assert_eq!(
-            command,
-            [
-                "nfdump",
-                "-R",
-                "/captures/edge/nfcapd.202506010000:nfcapd.202506012355",
-                "-q",
-                "-o",
-                "atlantis",
-                "(src net 0.220.0.0/16 and ipv4 and (proto tcp or proto udp) and src port > 1023) or (src tun net 0.220.0.0/16 and (tun proto tcp or tun proto udp) and src port > 1023)",
-            ]
-            .map(OsString::from)
-        );
-        let filter = command.last().unwrap().to_string_lossy();
-        assert!(!filter.contains("dst port"));
-        assert!(!filter.contains("flags"));
-    }
-
-    #[test]
     fn multi_daily_activity_command_unions_prefixes_and_keeps_fixed_filter() {
         let selections = [
             FlowSelection::from_payload(Some(&json!({
@@ -2017,13 +1902,8 @@ mod tests {
             })))
             .unwrap(),
         ];
-        let paths = [
-            PathBuf::from("/captures/edge/nfcapd.202506010000"),
-            PathBuf::from("/captures/edge/nfcapd.202506012355"),
-        ];
-
         let command =
-            build_nfdump_range_command_for_selections(&paths, &selections, "nfdump").unwrap();
+            build_nfdump_command_for_selections("capture", &selections, "nfdump").unwrap();
 
         assert_eq!(
             command.last().unwrap().to_string_lossy(),
@@ -2033,9 +1913,8 @@ mod tests {
 
     #[test]
     fn multi_nfdump_commands_reject_empty_and_non_daily_selection_sets() {
-        let paths = [PathBuf::from("/captures/edge/nfcapd.202506010000")];
         assert!(matches!(
-            build_nfdump_range_command_for_selections(&paths, &[], "nfdump"),
+            build_nfdump_command_for_selections("capture", &[], "nfdump"),
             Err(IngestError::InvalidInput(message)) if message.contains("empty")
         ));
         assert!(matches!(
@@ -2296,12 +2175,13 @@ mod tests {
             "ip_prefix": "192.0.0.0/16",
         })))
         .unwrap();
-        let activity = read_nfcapd_daily_source_activity(
+        let mut activities = read_nfcapd_daily_source_activities(
             &[first.clone(), second.clone()],
-            &selection,
+            std::slice::from_ref(&selection),
             &executable,
         )
         .unwrap();
+        let activity = activities.pop().unwrap();
 
         let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
         assert_eq!(activity[&source].flows, 3);
@@ -2371,12 +2251,13 @@ mod tests {
         })))
         .unwrap();
 
-        let activity = read_nfcapd_daily_source_activity(
+        let mut activities = read_nfcapd_daily_source_activities(
             std::slice::from_ref(&capture),
-            &selection,
+            std::slice::from_ref(&selection),
             &executable,
         )
         .unwrap();
+        let activity = activities.pop().unwrap();
 
         let source = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(activity.len(), 1);

@@ -434,24 +434,6 @@ pub(crate) fn reduce_to_buckets_with_active_sources<R: Read>(
     }
 }
 
-pub(crate) fn reduce_to_daily_source_activity<R: Read>(
-    mut input: R,
-    selection: &FlowSelection,
-) -> Result<HashMap<IpAddr, SourceActivity>, NfdumpError> {
-    if !selection.selects_daily_active_sources() {
-        return Err(NfdumpError::new(
-            Phase::Aggregate,
-            Field::SourceAddress,
-            ErrorReason::DailyActivityRequiresDailyActiveSourceSelection,
-        ));
-    }
-    let mut activities =
-        reduce_to_daily_source_activities(&mut input, std::slice::from_ref(selection))?;
-    Ok(activities
-        .pop()
-        .expect("one daily selection produces one activity map"))
-}
-
 pub(crate) fn reduce_to_daily_source_activities<R: Read>(
     mut input: R,
     selections: &[FlowSelection],
@@ -1379,11 +1361,12 @@ mod tests {
         inactive[40..48].copy_from_slice(&1_999_u64.to_le_bytes());
         inactive[48..56].copy_from_slice(&2_u64.to_le_bytes());
 
-        let activity = reduce_to_daily_source_activity(
+        let mut activities = reduce_to_daily_source_activities(
             Cursor::new(stream(&[first, second, inactive])),
-            &selection,
+            std::slice::from_ref(&selection),
         )
         .unwrap();
+        let activity = activities.pop().unwrap();
         assert_eq!(
             activity[&IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))],
             SourceActivity {

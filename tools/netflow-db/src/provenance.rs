@@ -160,7 +160,6 @@ impl FileSnapshot {
     }
 }
 
-#[cfg(unix)]
 fn snapshot_from_metadata(
     path: &Path,
     metadata: &fs::Metadata,
@@ -175,32 +174,6 @@ fn snapshot_from_metadata(
         size: metadata.size(),
         mtime_ns,
         ctime_ns,
-    })
-}
-
-#[cfg(not(unix))]
-fn snapshot_from_metadata(
-    path: &Path,
-    metadata: &fs::Metadata,
-) -> Result<FileSnapshot, ProvenanceError> {
-    use std::time::UNIX_EPOCH;
-
-    let modified = metadata
-        .modified()
-        .map_err(|source| ProvenanceError::Io {
-            context: format!("failed to read input timestamp: {}", path.display()),
-            source,
-        })?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ProvenanceError::TimestampOverflow(path.to_path_buf()))?;
-    let mtime_ns = i64::try_from(modified.as_nanos())
-        .map_err(|_| ProvenanceError::TimestampOverflow(path.to_path_buf()))?;
-    Ok(FileSnapshot {
-        device: 0,
-        inode: 0,
-        size: metadata.len(),
-        mtime_ns,
-        ctime_ns: mtime_ns,
     })
 }
 
@@ -402,12 +375,6 @@ pub fn capture_csv_input_revision(
     config: &CsvSourceConfig,
 ) -> Result<(InputRevision, FileSnapshot), ProvenanceError> {
     capture_input_revision(path, "csv", csv_decoder_fingerprint(config)?)
-}
-
-pub fn capture_nfcapd_input_revision(
-    path: impl AsRef<Path>,
-) -> Result<(InputRevision, FileSnapshot), ProvenanceError> {
-    capture_input_revision(path, "nfcapd", nfcapd_decoder_fingerprint()?)
 }
 
 fn capture_input_revision(
