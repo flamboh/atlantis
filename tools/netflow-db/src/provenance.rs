@@ -160,7 +160,6 @@ impl FileSnapshot {
     }
 }
 
-#[cfg(unix)]
 fn snapshot_from_metadata(
     path: &Path,
     metadata: &fs::Metadata,
@@ -175,32 +174,6 @@ fn snapshot_from_metadata(
         size: metadata.size(),
         mtime_ns,
         ctime_ns,
-    })
-}
-
-#[cfg(not(unix))]
-fn snapshot_from_metadata(
-    path: &Path,
-    metadata: &fs::Metadata,
-) -> Result<FileSnapshot, ProvenanceError> {
-    use std::time::UNIX_EPOCH;
-
-    let modified = metadata
-        .modified()
-        .map_err(|source| ProvenanceError::Io {
-            context: format!("failed to read input timestamp: {}", path.display()),
-            source,
-        })?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ProvenanceError::TimestampOverflow(path.to_path_buf()))?;
-    let mtime_ns = i64::try_from(modified.as_nanos())
-        .map_err(|_| ProvenanceError::TimestampOverflow(path.to_path_buf()))?;
-    Ok(FileSnapshot {
-        device: 0,
-        inode: 0,
-        size: metadata.len(),
-        mtime_ns,
-        ctime_ns: mtime_ns,
     })
 }
 
@@ -355,17 +328,53 @@ pub fn nfcapd_decoder_fingerprint() -> Result<String, ProvenanceError> {
     }))
 }
 
+/// The executable identity is part of the native decoder identity.  The contract fingerprint
+/// describes the stream decoder in this crate; the executable fingerprint binds that contract to
+/// the exact nfdump implementation that produced the stream.
+pub fn nfcapd_decoder_fingerprint_for_executable(
+    executable_locator: &str,
+    executable_content_fingerprint: &str,
+) -> Result<String, ProvenanceError> {
+    fingerprint(&json!({
+        "version": 1,
+        "contract_id": nfcapd_decoder_fingerprint()?,
+        "executable": {
+            "locator": executable_locator,
+            "content_fingerprint": executable_content_fingerprint,
+        },
+    }))
+}
+
+/// One read-only snapshot of the executable used by native decoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutableRevision {
+    pub locator: String,
+    pub content_fingerprint: String,
+    pub snapshot: FileSnapshot,
+    pub decoder_fingerprint: String,
+}
+
+impl ExecutableRevision {
+    pub fn capture(path: impl AsRef<Path>) -> Result<Self, ProvenanceError> {
+        let path = path.as_ref();
+        let locator = path.to_string_lossy().into_owned();
+        let (content_fingerprint, snapshot) = capture_file_revision(path)?;
+        let decoder_fingerprint =
+            nfcapd_decoder_fingerprint_for_executable(&locator, &content_fingerprint)?;
+        Ok(Self {
+            locator,
+            content_fingerprint,
+            snapshot,
+            decoder_fingerprint,
+        })
+    }
+}
+
 pub fn capture_csv_input_revision(
     path: impl AsRef<Path>,
     config: &CsvSourceConfig,
 ) -> Result<(InputRevision, FileSnapshot), ProvenanceError> {
     capture_input_revision(path, "csv", csv_decoder_fingerprint(config)?)
-}
-
-pub fn capture_nfcapd_input_revision(
-    path: impl AsRef<Path>,
-) -> Result<(InputRevision, FileSnapshot), ProvenanceError> {
-    capture_input_revision(path, "nfcapd", nfcapd_decoder_fingerprint()?)
 }
 
 fn capture_input_revision(
