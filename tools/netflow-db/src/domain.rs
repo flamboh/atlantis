@@ -1,7 +1,7 @@
 //! Canonical, adapter-independent NetFlow observations and statistical buckets.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
     net::IpAddr,
     sync::Arc,
 };
@@ -683,11 +683,152 @@ impl FromIterator<IpAddr> for AddressSet {
     }
 }
 
+/// Packets and bytes attributed to one address within a scope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AddressTraffic {
+    pub packets: u64,
+    pub bytes: u64,
+}
+
+impl AddressTraffic {
+    #[must_use]
+    pub const fn new(packets: u64, bytes: u64) -> Self {
+        Self { packets, bytes }
+    }
+
+    fn add(&mut self, other: Self) {
+        self.packets = self.packets.saturating_add(other.packets);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C, packed)]
+struct PackedAddressTraffic {
+    packets: u64,
+    bytes: u64,
+}
+
+impl From<PackedAddressTraffic> for AddressTraffic {
+    fn from(value: PackedAddressTraffic) -> Self {
+        Self::new(value.packets, value.bytes)
+    }
+}
+
+impl From<AddressTraffic> for PackedAddressTraffic {
+    fn from(value: AddressTraffic) -> Self {
+        Self {
+            packets: value.packets,
+            bytes: value.bytes,
+        }
+    }
+}
+
+/// Unique IP addresses with their summed traffic and no iteration-order contract.
+///
+/// Counters are stored unaligned so each entry costs the address plus 16 bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AddressTotals(HashMap<IpAddr, PackedAddressTraffic>);
+
+impl AddressTotals {
+    pub fn add(&mut self, address: IpAddr, traffic: AddressTraffic) {
+        match self.0.entry(address) {
+            Entry::Occupied(mut entry) => {
+                let mut total = AddressTraffic::from(*entry.get());
+                total.add(traffic);
+                entry.insert(total.into());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(traffic.into());
+            }
+        }
+    }
+
+    /// Sum another scope's totals into this one, keeping rollups additive.
+    pub fn merge(&mut self, other: &Self) {
+        self.0.reserve(other.0.len());
+        for (address, traffic) in other.iter() {
+            self.add(address, traffic);
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (IpAddr, AddressTraffic)> + '_ {
+        self.0
+            .iter()
+            .map(|(address, traffic)| (*address, AddressTraffic::from(*traffic)))
+    }
+
+    #[must_use]
+    pub fn get(&self, address: &IpAddr) -> Option<AddressTraffic> {
+        self.0.get(address).copied().map(AddressTraffic::from)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for AddressTotals {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.iter()
+                .map(|(address, traffic)| (address, traffic.packets, traffic.bytes)),
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for AddressTotals {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let entries = Vec::<(IpAddr, u64, u64)>::deserialize(deserializer)?;
+        Ok(entries
+            .into_iter()
+            .map(|(address, packets, bytes)| (address, AddressTraffic::new(packets, bytes)))
+            .collect())
+    }
+}
+
+impl FromIterator<(IpAddr, AddressTraffic)> for AddressTotals {
+    fn from_iter<T: IntoIterator<Item = (IpAddr, AddressTraffic)>>(entries: T) -> Self {
+        let mut totals = Self::default();
+        for (address, traffic) in entries {
+            totals.add(address, traffic);
+        }
+        totals
+    }
+}
+
+/// The per-address measure a MAAD analysis weights prefixes by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MaadMeasure {
+    Addresses,
+    Packets,
+    Bytes,
+}
+
+impl MaadMeasure {
+    pub const ALL: [Self; 3] = [Self::Addresses, Self::Packets, Self::Bytes];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Addresses => "addresses",
+            Self::Packets => "packets",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedAddressesFact {
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: AddressSet,
+    pub addresses: AddressTotals,
 }
 
 impl ScopedAddressesFact {
@@ -695,7 +836,7 @@ impl ScopedAddressesFact {
     pub fn new(
         scope: Scope,
         address_side: AddressSide,
-        addresses: impl IntoIterator<Item = IpAddr>,
+        addresses: impl IntoIterator<Item = (IpAddr, AddressTraffic)>,
     ) -> Self {
         Self {
             scope,
@@ -911,7 +1052,7 @@ pub struct ScopedProtocols {
 pub struct ScopedAddresses {
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: AddressSet,
+    pub addresses: AddressTotals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1078,7 +1219,7 @@ pub struct AddressSetRow<'a> {
     pub key: BucketKey,
     pub scope: Scope,
     pub address_side: AddressSide,
-    pub addresses: &'a AddressSet,
+    pub addresses: &'a AddressTotals,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1111,7 +1252,7 @@ pub struct StatisticalBucket {
     coverage: BucketCoverage,
     traffic: BTreeMap<Scope, TrafficMetrics>,
     protocols: BTreeMap<Scope, BTreeSet<String>>,
-    addresses: BTreeMap<(Scope, AddressSide), AddressSet>,
+    addresses: BTreeMap<(Scope, AddressSide), AddressTotals>,
     ports: BTreeMap<(Scope, PortSide), FixedBitSet>,
     five_minute_starts: BTreeSet<i64>,
 }
@@ -1148,7 +1289,7 @@ impl StatisticalBucket {
                 for side in [AddressSide::Destination, AddressSide::Source] {
                     bucket
                         .addresses
-                        .insert((scope, side), AddressSet::default());
+                        .insert((scope, side), AddressTotals::default());
                     bucket.ports.insert((scope, side), empty_ports());
                 }
             }
@@ -1194,7 +1335,7 @@ impl StatisticalBucket {
             self.addresses
                 .entry((entry.scope, entry.address_side))
                 .or_default()
-                .extend(entry.addresses.iter().copied());
+                .merge(&entry.addresses);
         }
         for entry in &child.ports {
             self.ports
@@ -1320,6 +1461,10 @@ impl StatisticalBucket {
             .locality
             .ok_or(DomainError::UnclassifiedObservation)?;
         let scopes = scopes_for(observation.ip_version(), source, destination);
+        let traffic = AddressTraffic::new(
+            observation.packets.unsigned_abs(),
+            observation.bytes.unsigned_abs(),
+        );
         let mut updates = Vec::with_capacity(scopes.len());
         for scope in scopes {
             let mut metrics = self.traffic.get(&scope).cloned().unwrap_or_default();
@@ -1335,11 +1480,11 @@ impl StatisticalBucket {
             self.addresses
                 .entry((scope, AddressSide::Source))
                 .or_default()
-                .insert(observation.src_ip);
+                .add(observation.src_ip, traffic);
             self.addresses
                 .entry((scope, AddressSide::Destination))
                 .or_default()
-                .insert(observation.dst_ip);
+                .add(observation.dst_ip, traffic);
             if let Some(port) = observation.src_port {
                 insert_port(
                     self.ports
@@ -1382,7 +1527,7 @@ impl StatisticalBucket {
         self.addresses
             .entry((fact.scope, fact.address_side))
             .or_default()
-            .extend(fact.addresses.iter().copied());
+            .merge(&fact.addresses);
     }
 }
 
@@ -1438,9 +1583,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AddressSet, AddressSide, BucketKey, DomainError, EndpointLocality, FlowObservation,
-        FlowSelection, Granularity, GroupedTrafficFact, IpVersion, Locality, PortRange, Scope,
-        ScopedAddressesFact, StatisticalBucket,
+        AddressSet, AddressSide, AddressTotals, AddressTraffic, BucketKey, DomainError,
+        EndpointLocality, FlowObservation, FlowSelection, Granularity, GroupedTrafficFact,
+        IpVersion, Locality, PortRange, Scope, ScopedAddressesFact, StatisticalBucket,
     };
     use crate::coverage::{BucketCoverage, CoverageState};
     use crate::locality::{LocalityRuleConfig, LocalityRules};
@@ -1486,6 +1631,35 @@ mod tests {
 
         assert_eq!(forward, reverse);
         assert_eq!(forward.len(), 2);
+    }
+
+    #[test]
+    fn address_totals_sum_traffic_per_address_without_order_semantics() {
+        let first = "192.0.2.1".parse().unwrap();
+        let second = "2001:db8::1".parse().unwrap();
+
+        let forward: AddressTotals = [
+            (first, AddressTraffic::new(1, 10)),
+            (second, AddressTraffic::new(0, 0)),
+            (first, AddressTraffic::new(2, 20)),
+        ]
+        .into_iter()
+        .collect();
+        let mut reverse: AddressTotals =
+            [(second, AddressTraffic::new(0, 0))].into_iter().collect();
+        reverse.merge(&[(first, AddressTraffic::new(3, 30))].into_iter().collect());
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.len(), 2);
+        assert_eq!(forward.get(&first), Some(AddressTraffic::new(3, 30)));
+        assert_eq!(forward.get(&second), Some(AddressTraffic::new(0, 0)));
+        let round_trip: AddressTotals =
+            serde_json::from_value(serde_json::to_value(&forward).unwrap()).unwrap();
+        assert_eq!(round_trip, forward);
+        assert_eq!(
+            std::mem::size_of::<(IpAddr, super::PackedAddressTraffic)>(),
+            std::mem::size_of::<IpAddr>() + 16
+        );
     }
 
     #[test]
@@ -1823,7 +1997,10 @@ mod tests {
             .add(ScopedAddressesFact::new(
                 Scope::new(IpVersion::V4, Locality::External, Locality::Internal),
                 AddressSide::Destination,
-                [address([203, 0, 113, 1]), address([203, 0, 113, 2])],
+                [
+                    (address([203, 0, 113, 1]), AddressTraffic::new(1, 10)),
+                    (address([203, 0, 113, 2]), AddressTraffic::new(0, 0)),
+                ],
             ))
             .unwrap();
         let sparse_expected = sparse.finish();
@@ -1947,9 +2124,12 @@ mod tests {
                 })
                 .unwrap()
                 .addresses,
-            [address([192, 0, 2, 1]), address([192, 0, 2, 2])]
-                .into_iter()
-                .collect::<AddressSet>()
+            [
+                (address([192, 0, 2, 1]), AddressTraffic::new(1, 10)),
+                (address([192, 0, 2, 2]), AddressTraffic::new(2, 20)),
+            ]
+            .into_iter()
+            .collect::<AddressTotals>()
         );
         let rows = rolled_up.rows();
         let counts = rows
@@ -1993,7 +2173,10 @@ mod tests {
             .add(ScopedAddressesFact::new(
                 scope,
                 AddressSide::Destination,
-                [address([198, 51, 100, 3]), address([198, 51, 100, 2])],
+                [
+                    (address([198, 51, 100, 3]), AddressTraffic::new(5, 50)),
+                    (address([198, 51, 100, 2]), AddressTraffic::new(5, 50)),
+                ],
             ))
             .unwrap();
         let bucket = bucket.finish();
@@ -2017,12 +2200,12 @@ mod tests {
                 .unwrap()
                 .addresses,
             &[
-                address([198, 51, 100, 1]),
-                address([198, 51, 100, 2]),
-                address([198, 51, 100, 3]),
+                (address([198, 51, 100, 1]), AddressTraffic::new(1, 10)),
+                (address([198, 51, 100, 2]), AddressTraffic::new(6, 60)),
+                (address([198, 51, 100, 3]), AddressTraffic::new(5, 50)),
             ]
             .into_iter()
-            .collect::<AddressSet>()
+            .collect::<AddressTotals>()
         );
     }
 }

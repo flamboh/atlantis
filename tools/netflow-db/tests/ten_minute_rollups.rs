@@ -170,18 +170,21 @@ fn ten_minute_rollups_match_their_five_minute_children() {
     assert_eq!(unique_sources("10m", 0), 3);
     assert_eq!(unique_sources("10m", 600), 1);
 
-    let maad_total_addrs = |granularity: &str, bucket_start: i64| -> i64 {
+    let maad_total_addrs = |granularity: &str, bucket_start: i64, measure: &str| -> i64 {
         connection
             .query_row(
                 "SELECT json_extract(metadata_json, '$.totalAddrs') FROM address_structure_stats
                  WHERE source_id = 'edge' AND granularity = ?1 AND bucket_start = ?2
                    AND ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'
-                   AND address_side = 'source' AND structure_kind = 'structure'",
-                params![granularity, bucket_start],
+                   AND address_side = 'source' AND measure = ?3
+                   AND structure_kind = 'structure'",
+                params![granularity, bucket_start, measure],
                 |row| row.get(0),
             )
             .unwrap()
     };
-    assert_eq!(maad_total_addrs("10m", 0), 3);
-    assert_eq!(maad_total_addrs("10m", 600), 1);
+    for measure in ["addresses", "packets", "bytes"] {
+        assert_eq!(maad_total_addrs("10m", 0, measure), 3, "{measure}");
+        assert_eq!(maad_total_addrs("10m", 600, measure), 1, "{measure}");
+    }
 }

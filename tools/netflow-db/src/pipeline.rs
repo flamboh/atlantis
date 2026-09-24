@@ -1500,7 +1500,7 @@ fn bind_identity(
         })
     });
     let result_config = json!({
-        "version": 5,
+        "version": 6,
         "timezone": pipeline.timezone,
         "locality": pipeline
             .selection
@@ -1518,8 +1518,9 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 4,
-            "config": maad_config
+            "contract_version": 5,
+            "config": maad_config,
+            "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
         }
     });
     let identity = ProductIdentity::create(
