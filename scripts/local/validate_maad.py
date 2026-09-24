@@ -47,35 +47,68 @@ def parse_case_spec(raw: str) -> Case:
     return Case(name=name, path=path)
 
 
-def validate_input(path: str, ipv6: bool) -> None:
-    """Check each non-empty line without rewriting or materializing the file."""
-
+def parse_address(
+    value: str, path: str, line_number: int, ipv6: bool
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
     family = "IPv6" if ipv6 else "IPv4"
     expected_type = ipaddress.IPv6Address if ipv6 else ipaddress.IPv4Address
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise CaseError(
+            f"{path}: line {line_number}: invalid {family} address {value!r}"
+        ) from error
+    if not isinstance(address, expected_type):
+        raise CaseError(f"{path}: line {line_number}: expected {family}, got {value!r}")
+    if ipv6 and "." in value:
+        hextets = ":".join(
+            f"{(int(address) >> shift) & 0xFFFF:x}" for shift in range(112, -1, -16)
+        )
+        raise CaseError(
+            f"{path}: line {line_number}: the oracle misreads embedded IPv4 "
+            f"notation; write {value!r} as {hextets!r}"
+        )
+    return address
+
+
+def parse_measure(value: str, path: str, line_number: int) -> float:
+    try:
+        measure = float(value)
+    except ValueError as error:
+        raise CaseError(f"{path}: line {line_number}: invalid measure {value!r}") from error
+    if not math.isfinite(measure) or measure <= 0:
+        raise CaseError(f"{path}: line {line_number}: measure must be finite and positive")
+    return measure
+
+
+def validate_input(path: str, ipv6: bool, weighted: bool) -> None:
+    """Check each non-empty line without rewriting the file.
+
+    Weighted inputs must hold one ADDR,MEASURE row per distinct address: the oracle keeps
+    only the first row for a repeated address while Rust sums them.
+    """
+
+    seen: set[int] = set()
     try:
         with open(path, "r", encoding="ascii", errors="strict", newline="") as stream:
             for line_number, raw_line in enumerate(stream, start=1):
                 value = raw_line.strip()
                 if not value:
+                    family = "IPv6" if ipv6 else "IPv4"
                     raise CaseError(f"{path}: line {line_number}: expected an {family} address")
-                try:
-                    address = ipaddress.ip_address(value)
-                except ValueError as error:
+                if not weighted:
+                    parse_address(value, path, line_number, ipv6)
+                    continue
+                fields = value.split(",")
+                if len(fields) != 2:
+                    raise CaseError(f"{path}: line {line_number}: expected ADDR,MEASURE")
+                address = int(parse_address(fields[0].strip(), path, line_number, ipv6))
+                parse_measure(fields[1].strip(), path, line_number)
+                if address in seen:
                     raise CaseError(
-                        f"{path}: line {line_number}: invalid {family} address {value!r}"
-                    ) from error
-                if not isinstance(address, expected_type):
-                    raise CaseError(
-                        f"{path}: line {line_number}: expected {family}, got {value!r}"
+                        f"{path}: line {line_number}: duplicate address {fields[0]!r}"
                     )
-                if ipv6 and "." in value:
-                    hextets = ":".join(
-                        f"{(int(address) >> shift) & 0xFFFF:x}" for shift in range(112, -1, -16)
-                    )
-                    raise CaseError(
-                        f"{path}: line {line_number}: the oracle misreads embedded IPv4 "
-                        f"notation; write {value!r} as {hextets!r}"
-                    )
+                seen.add(address)
     except CaseError:
         raise
     except (OSError, UnicodeError) as error:
@@ -208,11 +241,30 @@ def compare_rows(
     return errors
 
 
+def max_deviation(
+    rust: dict[str, Any], haskell: dict[str, Any], section: str, field: str
+) -> float:
+    rust_rows = rust.get(section)
+    haskell_rows = haskell.get(section)
+    if not isinstance(rust_rows, list) or not isinstance(haskell_rows, list):
+        return math.nan
+    deviation = 0.0
+    for index, (rust_row, haskell_row) in enumerate(zip(rust_rows, haskell_rows)):
+        try:
+            rust_value = numeric(rust_row.get(field), f"rust {section}[{index}].{field}")
+            haskell_value = numeric(haskell_row.get(field), f"haskell {section}[{index}].{field}")
+        except (AttributeError, CaseError):
+            return math.nan
+        deviation = max(deviation, abs(rust_value - haskell_value))
+    return deviation
+
+
 def compare_results(
     rust: dict[str, Any],
     haskell: dict[str, Any],
     absolute: float,
     relative: float,
+    weighted: bool,
 ) -> tuple[list[str], tuple[int, int, int, int, int]]:
     errors: list[str] = []
 
@@ -242,6 +294,8 @@ def compare_results(
         "spectrum": ("alpha", "f"),
         "dimensions": ("q", "dim", "sd"),
     }
+    if weighted:
+        del section_fields["spectrum"]
     for section, fields in section_fields.items():
         errors.extend(compare_rows(rust, haskell, section, fields, absolute, relative))
         if len(errors) >= MAX_ERROR_DETAILS:
@@ -278,7 +332,10 @@ def case_specs(parser: argparse.ArgumentParser, args: argparse.Namespace) -> lis
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare Rust and Haskell MAAD JSON for local IPv4 or IPv6 address files.",
+        description=(
+            "Compare Rust and Haskell MAAD JSON for local IPv4 or IPv6 address files, or for "
+            "ADDR,MEASURE CSV files with --weighted."
+        ),
         epilog=(
             "Cases are NAME=PATH; paths are passed unchanged to both binaries. "
             "Example: %(prog)s --rust target/release/netflow-db "
@@ -287,12 +344,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rust", required=True, help="Rust netflow-db binary")
     parser.add_argument("--haskell", required=True, help="Haskell MAAD binary")
-    parser.add_argument(
-        "-6",
-        "--ipv6",
-        action="store_true",
-        help="every case contains IPv6 addresses (default: IPv4)",
-    )
     parser.add_argument(
         "--abs-tol",
         "--absolute-tolerance",
@@ -308,6 +359,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=nonnegative_float,
         default=DEFAULT_TOLERANCE,
         help=f"relative numeric tolerance (default: {DEFAULT_TOLERANCE:g})",
+    )
+    parser.add_argument(
+        "-6",
+        "--ipv6",
+        action="store_true",
+        help="every case contains IPv6 addresses (default: IPv4)",
+    )
+    parser.add_argument(
+        "--weighted",
+        action="store_true",
+        help=(
+            "cases are ADDR,MEASURE CSV files with one row per distinct address; compare "
+            "measure-weighted structure and dimensions (no spectrum)"
+        ),
     )
     parser.add_argument(
         "--case",
@@ -328,34 +393,44 @@ def run_case(
     absolute: float,
     relative: float,
     ipv6: bool,
+    weighted: bool,
 ) -> bool:
     family_args = ["--ipv6"] if ipv6 else []
+    rust_command = [
+        rust_binary,
+        "maad",
+        *family_args,
+        *(["--weighted"] if weighted else []),
+        case.path,
+    ]
+    haskell_command = [
+        haskell_binary,
+        *family_args,
+        "--input",
+        case.path,
+        "--output",
+        "-",
+        "--format",
+        "json",
+        "--structure",
+        "--dimensions",
+        *(["--csv", "--meas-col", "1"] if weighted else ["--spectrum"]),
+    ]
     try:
-        validate_input(case.path, ipv6)
-        rust = run_json([rust_binary, "maad", *family_args, case.path], "Rust")
-        haskell = run_json(
-            [
-                haskell_binary,
-                *family_args,
-                "--input",
-                case.path,
-                "--output",
-                "-",
-                "--format",
-                "json",
-                "--structure",
-                "--spectrum",
-                "--dimensions",
-            ],
-            "Haskell",
-        )
-        errors, counts = compare_results(rust, haskell, absolute, relative)
+        validate_input(case.path, ipv6, weighted)
+        rust = run_json(rust_command, "Rust")
+        haskell = run_json(haskell_command, "Haskell")
+        errors, counts = compare_results(rust, haskell, absolute, relative, weighted)
     except CaseError as error:
         print(f"{case.name}: FAIL {error}")
         return False
 
+    deviations = (
+        f"max_abs_dtau={max_deviation(rust, haskell, 'structure', 'tauTilde'):.3g} "
+        f"max_abs_ddim={max_deviation(rust, haskell, 'dimensions', 'dim'):.3g}"
+    )
     if errors:
-        print(f"{case.name}: FAIL")
+        print(f"{case.name}: FAIL {deviations}")
         for error in errors:
             print(f"  {error}")
         return False
@@ -363,7 +438,8 @@ def run_case(
     total, structure_rows, spectrum_rows, dimension_rows, prefix_count = counts
     print(
         f"{case.name}: PASS total={total} prefixes={prefix_count} "
-        f"rows=structure:{structure_rows},spectrum:{spectrum_rows},dimensions:{dimension_rows}"
+        f"rows=structure:{structure_rows},spectrum:{spectrum_rows},dimensions:{dimension_rows} "
+        f"{deviations}"
     )
     return True
 
@@ -382,6 +458,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.absolute_tolerance,
             args.relative_tolerance,
             args.ipv6,
+            args.weighted,
         ) and all_passed
     return 0 if all_passed else 1
 
