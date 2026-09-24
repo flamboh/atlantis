@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type {
 	FlowCharacteristicsResponse,
@@ -127,7 +126,7 @@ function groupPorts(rows: PortCardinalityRow[]): GroupedPortRow[] {
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 
 	try {
@@ -240,10 +239,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				})),
 				resolvedSources
 			};
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query flow characteristics:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };
