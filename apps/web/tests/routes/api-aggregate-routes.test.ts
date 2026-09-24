@@ -4,16 +4,16 @@ import { GET as getIpStats } from '../../src/routes/api/ip/stats/+server';
 import { GET as getProtocolStats } from '../../src/routes/api/protocol/stats/+server';
 import { GET as getSpectrumStats } from '../../src/routes/api/netflow/spectrum-stats/+server';
 import { GET as getStructureStats } from '../../src/routes/api/netflow/structure-stats/+server';
-import { getRequestedDataset, listDatasetSources, withDatasetDb } from '$lib/server/datasets';
+import { getRequestedDataset, listDatasetSources, withDatasetDb } from '#lib/server/datasets.ts';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	getRequestedDataset: vi.fn(),
 	listDatasetSources: vi.fn(),
 	withDatasetDb: vi.fn()
 }));
 
 function mockDatasetSession(db: object): void {
-	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, run) =>
 		run({ db: db as never, listSources: async () => [], listSourceDefinitions: async () => [] })
 	);
 }

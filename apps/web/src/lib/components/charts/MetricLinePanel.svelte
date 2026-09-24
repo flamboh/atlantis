@@ -8,18 +8,18 @@
 	} from 'chart.js';
 	import { Chart } from './chart-registry';
 	import { buildCoveragePointStyle } from './coverage-line-style';
-	import type { GroupByOption } from '$lib/components/netflow/types';
-	import type { IpGranularity } from '$lib/types/types';
+	import type { GroupByOption } from '#lib/components/netflow/types.ts';
+	import type { IpGranularity } from '#lib/types/types.ts';
 	import {
 		formatIpGranularityTick,
 		formatTemporalBucketLabel,
 		shouldHighlightIpGranularityGrid
 	} from './ip-time-axis';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
-	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
-	import { formatDateAsPSTDateString } from '$lib/utils/timezone';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { crosshairStore } from '#lib/stores/crosshair.ts';
+	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
+	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
+	import { formatDateAsPSTDateString } from '#lib/utils/timezone.ts';
 	import {
 		MIN_DRAG_PIXELS,
 		Y_AXIS_WIDTH,

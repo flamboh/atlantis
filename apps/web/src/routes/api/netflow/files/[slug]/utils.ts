@@ -1,22 +1,18 @@
-import { createDateFromPSTComponents } from '$lib/utils/timezone';
+import { createDateFromPSTComponents } from '#lib/utils/timezone.ts';
 import {
 	getDefaultDatasetId,
 	getRequestedDataset,
 	type ReadonlyDatasetDb,
 	withDatasetDb
-} from '$lib/server/datasets';
+} from '#lib/server/datasets.ts';
 
 export interface NetflowRecord {
 	router: string;
 	input_locator: string;
 }
 
-export function withDb<T>(
-	datasetId: string,
-	platform: App.Platform | undefined,
-	run: (db: ReadonlyDatasetDb) => Promise<T> | T
-) {
-	return withDatasetDb(datasetId, platform, ({ db }) => run(db));
+export function withDb<T>(datasetId: string, run: (db: ReadonlyDatasetDb) => Promise<T> | T) {
+	return withDatasetDb(datasetId, ({ db }) => run(db));
 }
 
 export function slugToBucketStart(slug: string): number | null {
@@ -44,11 +40,7 @@ export function slugToBucketStart(slug: string): number | null {
 	return Math.floor(date.getTime() / 1000);
 }
 
-export async function getNetflowFilePath(
-	platform: App.Platform | undefined,
-	slug: string,
-	router: string
-): Promise<string | null> {
+export async function getNetflowFilePath(slug: string, router: string): Promise<string | null> {
 	const bucketStart = slugToBucketStart(slug);
 	if (bucketStart === null) {
 		return null;
@@ -60,13 +52,13 @@ export async function getNetflowFilePath(
 		LIMIT 1
 	`;
 
-	const datasetId = await getDefaultDatasetId(platform);
-	return withDb(datasetId, platform, async (database) => {
+	const datasetId = await getDefaultDatasetId();
+	return withDb(datasetId, async (database) => {
 		const result = await database.get<NetflowRecord>(query, [router, bucketStart]);
 		return result?.input_locator || null;
 	});
 }
 
-export function getDatasetFromRequest(url: URL, platform?: App.Platform): Promise<string> {
-	return getRequestedDataset(url, platform);
+export function getDatasetFromRequest(url: URL): Promise<string> {
+	return getRequestedDataset(url);
 }

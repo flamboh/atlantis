@@ -5,7 +5,7 @@ import type {
 	NetflowFileSummaryRecord,
 	SpectrumData,
 	StructureFunctionData
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 import { SvelteMap } from 'svelte/reactivity';
 
 const SUMMARY_SKELETON_DELAY_MS = 150;

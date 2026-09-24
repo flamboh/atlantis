@@ -43,6 +43,34 @@ bun run dev
 
 The root `dev` command starts both applications. It does not start the pipeline.
 
+## Choose the database driver
+
+The dashboard has two database drivers. Each build and each development server includes only one of them.
+
+| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Adapter              | Default for  |
+| -------------------- | --------------------------------------------------------------------------------------------- | -------------------- | ------------ |
+| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | None (Node output)   | `vite dev`   |
+| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `adapter-cloudflare` | `vite build` |
+
+Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
+
+Set `ATLANTIS_DB_DRIVER` in the shell. The value in `.env` does not select the driver, so a deploy build cannot pick up a local SQLite setting.
+
+```bash
+bun run dev:web                            # SQLite, no Workers runtime
+ATLANTIS_DB_DRIVER=d1 bun run dev:web      # local D1 through the Workers runtime
+bun run build:web                          # Cloudflare worker with D1
+ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node output with SQLite
+```
+
+## Configure the dashboard
+
+SvelteKit options are in the `sveltekit()` call in `apps/web/vite.config.ts`. The project has no `svelte.config.js`.
+
+The dashboard loads `.env` from the repository root. `apps/web/src/env.ts` declares the runtime variables, and server code imports them from `$app/env/private`. Add a variable to `src/env.ts` before you use it.
+
+Import library modules through `#lib` with the file extension, for example `#lib/utils.ts` or `#lib/components/charts/ChartCard.svelte`.
+
 ## Run required checks
 
 Run these commands before you complete a change:
@@ -75,6 +103,8 @@ Run the Playwright suite when a browser flow changes:
 ```bash
 bun run test:e2e
 ```
+
+The suite builds a SQLite bundle, serves it with `vite preview`, and runs against a seeded fixture database.
 
 Always use `bun run test`. Do not use `bun test` in this repository.
 

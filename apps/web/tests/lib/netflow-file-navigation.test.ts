@@ -6,7 +6,7 @@ vi.mock('$app/paths', () => ({
 
 describe('buildNetflowFileHref', () => {
 	it('builds only the dataset search when provided', async () => {
-		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileSearch } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon')).toBe('?dataset=uoregon');
 		expect(buildNetflowFileSearch(' uoregon ')).toBe('?dataset=uoregon');
@@ -15,7 +15,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('includes non-all visibility scope when provided', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 		const flowScope = { srcVisibility: 'literal', dstVisibility: 'anonymized' } as const;
 
 		expect(buildNetflowFileSearch('uoregon', flowScope)).toBe(
@@ -27,7 +27,7 @@ describe('buildNetflowFileHref', () => {
 	});
 
 	it('omits all/all visibility scope', async () => {
-		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileSearch } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon', { srcVisibility: 'all', dstVisibility: 'all' })).toBe(
 			'?dataset=uoregon'
@@ -35,7 +35,7 @@ describe('buildNetflowFileHref', () => {
 	});
 
 	it('includes dataset query when provided', async () => {
-		const { buildNetflowFileHref } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileHref } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileHref('202506192010', 'uoregon')).toBe(
 			'/netflow/files/202506192010?dataset=uoregon'
@@ -50,7 +50,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('omits query when dataset is empty', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileHref('202506192010', '')).toBe('/netflow/files/202506192010');
 		expect(buildNetflowFileSearch('')).toBe('');
@@ -58,7 +58,7 @@ describe('buildNetflowFileHref', () => {
 	});
 
 	it('delegates navigation to the built href', async () => {
-		const { navigateToNetflowFile } = await import('$lib/utils/netflow-file-navigation');
+		const { navigateToNetflowFile } = await import('#lib/utils/netflow-file-navigation.ts');
 		const navigate = vi.fn().mockResolvedValue(undefined);
 
 		await navigateToNetflowFile(navigate, '202506192010', 'uoregon');

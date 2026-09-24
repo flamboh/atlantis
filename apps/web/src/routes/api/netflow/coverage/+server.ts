@@ -3,16 +3,16 @@ import {
 	IP_GRANULARITIES,
 	type IpGranularity,
 	type NetflowCoverageResponse
-} from '$lib/types/types';
-import { buildCoverageOnlyTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
+} from '#lib/types/types.ts';
+import { buildCoverageOnlyTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 import {
 	groupByToGranularity,
 	parseIpGranularity,
 	parseSourceIds,
 	parseTimestamp
-} from '$lib/server/netflow-v3';
-import { epochToPSTComponents } from '$lib/utils/timezone';
+} from '#lib/server/netflow-v3.ts';
+import { epochToPSTComponents } from '#lib/utils/timezone.ts';
 
 const GRANULARITY_SECONDS: Record<Exclude<IpGranularity, '1d'>, number> = {
 	'5m': 5 * 60,
@@ -29,7 +29,7 @@ function parseGranularity(url: URL): IpGranularity | null {
 	return groupByToGranularity(url.searchParams.get('groupBy') || 'date');
 }
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const routers = [...new Set(parseSourceIds(url.searchParams.get('routers')))];
 	const granularity = parseGranularity(url);
 	const start = parseTimestamp(url.searchParams.get('startDate'));
@@ -62,8 +62,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	}
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const timelines = await buildCoverageOnlyTimelines({
 				db,
 				granularity,

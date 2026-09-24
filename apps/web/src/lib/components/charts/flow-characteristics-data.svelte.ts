@@ -1,8 +1,8 @@
 import { onDestroy } from 'svelte';
 import { SvelteMap, SvelteURLSearchParams } from 'svelte/reactivity';
 import { watch } from 'runed';
-import { dateStringToEpochPST } from '$lib/utils/timezone';
-import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
+import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
+import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 import type {
 	FlowCharacteristicsResponse,
 	FlowVisibility,
@@ -10,13 +10,13 @@ import type {
 	ObservationStats,
 	PortCardinalityCounts,
 	TimeBucket
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 import {
 	ensureCachedWindow,
 	getMissingWindowRanges,
 	readCachedWindow,
 	type TimeRange
-} from '$lib/utils/window-cache';
+} from '#lib/utils/window-cache.ts';
 import { createRequestGate } from './flow-characteristics';
 
 export type FlowCharacteristicsFilters = {

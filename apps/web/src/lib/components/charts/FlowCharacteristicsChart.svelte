@@ -2,13 +2,13 @@
 	import ChartCard from './ChartCard.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { indexObservationBuckets, type IndexedObservationBucket } from './flow-characteristics';
-	import type { GroupByOption } from '$lib/components/netflow/types';
+	import type { GroupByOption } from '#lib/components/netflow/types.ts';
 	import type {
 		BucketCoverage,
 		FlowCharacteristicsResponse,
 		IpGranularity,
 		NetflowIpFamily
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 
 	type Props = {
 		data: FlowCharacteristicsResponse | null;

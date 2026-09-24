@@ -1,12 +1,12 @@
-import type { ReadonlyDatasetDb } from '$lib/server/datasets';
+import type { ReadonlyDatasetDb } from '#lib/server/datasets.ts';
 import type {
 	BucketCoverage,
 	CoverageState,
 	CoverageTimeline,
 	IpGranularity,
 	TimeBucket
-} from '$lib/types/types';
-import { createDateFromPSTComponents, epochToPSTComponents } from '$lib/utils/timezone';
+} from '#lib/types/types.ts';
+import { createDateFromPSTComponents, epochToPSTComponents } from '#lib/utils/timezone.ts';
 
 const GRANULARITY_SECONDS: Record<IpGranularity, number> = {
 	'5m': 5 * 60,

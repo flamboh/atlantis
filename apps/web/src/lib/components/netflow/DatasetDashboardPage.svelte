@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
-	import PrimaryFilters from '$lib/components/filters/PrimaryFilters.svelte';
-	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
-	import BreakdownChart from '$lib/components/charts/BreakdownChart.svelte';
-	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
-	import PortCardinalityChart from '$lib/components/charts/PortCardinalityChart.svelte';
-	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
-	import { createFlowCharacteristicsData } from '$lib/components/charts/flow-characteristics-data.svelte';
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
-	import { createNearViewportAttachment } from '$lib/components/netflow/near-viewport';
-	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
+	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
+	import BreakdownChart from '#lib/components/charts/BreakdownChart.svelte';
+	import FlowCharacteristicsChart from '#lib/components/charts/FlowCharacteristicsChart.svelte';
+	import PortCardinalityChart from '#lib/components/charts/PortCardinalityChart.svelte';
+	import CoverageStrip from '#lib/components/charts/CoverageStrip.svelte';
+	import { createFlowCharacteristicsData } from '#lib/components/charts/flow-characteristics-data.svelte.ts';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import { DEFAULT_DATA_OPTIONS } from '#lib/components/netflow/constants.ts';
+	import { createNearViewportAttachment } from '#lib/components/netflow/near-viewport.ts';
+	import type { DataOption, GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import type { Attachment } from 'svelte/attachments';
-	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
+	import { clampGroupByToDateRange } from '#lib/components/charts/chart-utils.ts';
 	import {
 		FLOW_SCOPE_OPTIONS,
 		type FlowVisibility,
@@ -23,11 +23,11 @@
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 	import { watch } from 'runed';
 	import { useSearchParams } from 'runed/kit';
-	import { createDateRangeSearchSchema } from '$lib/schemas';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import { createDateRangeSearchSchema } from '#lib/schemas.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 
 	const props = $props<{
 		dataset: string;

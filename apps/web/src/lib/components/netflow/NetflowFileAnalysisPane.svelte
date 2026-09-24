@@ -1,9 +1,9 @@
 <script lang="ts">
-	import SpectrumChart from '$lib/components/charts/SpectrumChart.svelte';
-	import StructureFunctionChart from '$lib/components/charts/StructureFunctionChart.svelte';
-	import { Button } from '$lib/components/ui/button';
+	import SpectrumChart from '#lib/components/charts/SpectrumChart.svelte';
+	import StructureFunctionChart from '#lib/components/charts/StructureFunctionChart.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
 	import type { FileDetailResourceView } from './file-detail-loader.svelte';
-	import type { SpectrumData, StructureFunctionData } from '$lib/types/types';
+	import type { SpectrumData, StructureFunctionData } from '#lib/types/types.ts';
 
 	type AnalysisKind = 'structure' | 'spectrum';
 

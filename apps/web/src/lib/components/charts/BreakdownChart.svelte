@@ -5,11 +5,11 @@
 	import { buildCoveragePointStyle } from './coverage-line-style';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
-	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import ChartCard from './ChartCard.svelte';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import type {
 		FlowVisibility,
 		IpGranularity,
@@ -17,8 +17,8 @@
 		ProtocolMetricKey,
 		SpectrumPoint,
 		TimeBucket
-	} from '$lib/types/types';
-	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
+	} from '#lib/types/types.ts';
+	import type { SpectrumStatsPayload } from '#lib/types/spectrum-stats.ts';
 	import {
 		BREAKDOWN_CHART_CONFIGS,
 		readLineMetric,
@@ -52,17 +52,17 @@
 		formatTemporalBucketLabel,
 		shouldHighlightIpGranularityGrid
 	} from './ip-time-axis';
-	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
-	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+	import { dateStringToEpochPST, formatDateAsPSTDateString } from '#lib/utils/timezone.ts';
+	import { crosshairStore } from '#lib/stores/crosshair.ts';
+	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
-	} from '$lib/utils/window-cache';
+	} from '#lib/utils/window-cache.ts';
 
 	const IP_TO_GROUP_BY: Record<IpGranularity, GroupByOption> = {
 		'1d': 'date',

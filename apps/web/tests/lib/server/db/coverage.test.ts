@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildCoverageTimelines, loadCoverageRows } from '$lib/server/db/coverage';
-import { dateStringToEpochPST } from '$lib/utils/timezone';
+import { buildCoverageTimelines, loadCoverageRows } from '#lib/server/db/coverage.ts';
+import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
 
 describe('buildCoverageTimelines', () => {
 	it('coalesces repeated coverage reads in one dashboard request burst', async () => {

@@ -6,12 +6,12 @@
 	import { resolve } from '$app/paths';
 	import { Chart } from './chart-registry';
 	import { buildCoveragePointStyle } from './coverage-line-style';
-	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+	import { crosshairStore } from '#lib/stores/crosshair.ts';
+	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
+	import { NETFLOW_DATA_OPTION_FIELDS } from '#lib/components/netflow/constants.ts';
 	import {
 		formatLabels,
 		getXAxisTitle,
@@ -36,7 +36,7 @@
 		epochToPSTComponents,
 		getWeekdayName,
 		type PSTDateComponents
-	} from '$lib/utils/timezone';
+	} from '#lib/utils/timezone.ts';
 	import type {
 		NetflowDataPoint,
 		GroupByOption,
@@ -45,7 +45,7 @@
 		ClickedElement,
 		ChartConfig,
 		ChartDataset
-	} from '$lib/components/netflow/types.ts';
+	} from '#lib/components/netflow/types.ts';
 
 	interface Props {
 		results: NetflowDataPoint[];

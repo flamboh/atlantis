@@ -1,5 +1,5 @@
 // schemas.ts
-import { FLOW_VISIBILITIES } from '$lib/types/types';
+import { FLOW_VISIBILITIES } from '#lib/types/types.ts';
 import { z } from 'zod';
 // Requires Zod 4+
 

@@ -1,6 +1,6 @@
 import type { RequestHandler } from './$types';
-import type { SpectrumData, SpectrumPoint } from '$lib/types/types';
-import { parseFlowScopeParams } from '$lib/server/netflow-v3';
+import type { SpectrumData, SpectrumPoint } from '#lib/types/types.ts';
+import { parseFlowScopeParams } from '#lib/server/netflow-v3.ts';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 
 const FIVE_MINUTES = '5m';
@@ -9,9 +9,9 @@ type SpectrumRow = {
 	valuesJson: string | null;
 };
 
-export const GET: RequestHandler = async ({ params, url, platform }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const { slug } = params;
-	const dataset = await getDatasetFromRequest(url, platform);
+	const dataset = await getDatasetFromRequest(url);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
 	const flowScope = parseFlowScopeParams(url);
@@ -43,7 +43,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		return await withDb(dataset, platform, async (db) => {
+		return await withDb(dataset, async (db) => {
 			const row = await db.get<SpectrumRow>(
 				`SELECT
 				values_json AS valuesJson
