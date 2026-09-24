@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { MaadStatusResponse } from '$lib/types/dimension-stats';
 import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
@@ -11,10 +10,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				'SELECT EXISTS(SELECT 1 FROM maad_q_grid) AS computed'
 			);
 			const response: MaadStatusResponse = { computed: row?.computed === 1 };
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to read MAAD status:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };

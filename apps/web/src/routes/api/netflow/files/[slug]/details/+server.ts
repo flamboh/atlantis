@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type {
 	FileIpCounts,
@@ -112,21 +111,21 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const flowDirection = parseFlowDirectionParams(url);
 
 	if ('error' in flowDirection) {
-		return json({ error: flowDirection.error }, { status: flowDirection.status });
+		return Response.json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	const maad = parseMaadParams(url);
 	if ('error' in maad) {
-		return json({ error: maad.error }, { status: maad.status });
+		return Response.json({ error: maad.error }, { status: maad.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
-		return json({ error: 'Invalid slug format' }, { status: 400 });
+		return Response.json({ error: 'Invalid slug format' }, { status: 400 });
 	}
 
 	const bucketStart = slugToBucketStart(slug);
 	if (bucketStart === null) {
-		return json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
+		return Response.json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
 	}
 
 	try {
@@ -262,7 +261,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			);
 
 			if (rows.length === 0) {
-				return json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
+				return Response.json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
 			}
 
 			const routers: NetflowFileDetailsRouter[] = rows.map((row) => {
@@ -326,10 +325,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				routers
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to fetch file details from database:', error);
-		return json({ error: 'Failed to fetch file details' }, { status: 500 });
+		return Response.json({ error: 'Failed to fetch file details' }, { status: 500 });
 	}
 };

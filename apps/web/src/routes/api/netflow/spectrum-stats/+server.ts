@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
@@ -27,11 +26,11 @@ type RawSpectrumStatsRow = {
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 	const measureError = spectrumMeasureError(params.measure);
 	if (measureError) {
-		return json({ error: measureError.error }, { status: measureError.status });
+		return Response.json({ error: measureError.error }, { status: measureError.status });
 	}
 	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
@@ -99,10 +98,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				requestedRouters: routers
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query spectrum_stats:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };

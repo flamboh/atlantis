@@ -395,7 +395,7 @@
 			if (onNavigateToFile) {
 				onNavigateToFile(slug);
 			} else {
-				goto(resolve(`/netflow/files/${slug}`));
+				goto(resolve('/netflow/files/[slug]', { slug }));
 			}
 		}
 	}

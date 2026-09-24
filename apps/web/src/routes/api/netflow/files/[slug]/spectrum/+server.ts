@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumData } from '$lib/types/types';
 import {
@@ -23,29 +22,29 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const flowDirection = parseFlowDirectionParams(url);
 
 	if ('error' in flowDirection) {
-		return json({ error: flowDirection.error }, { status: flowDirection.status });
+		return Response.json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	const maad = parseMaadParams(url);
 	if ('error' in maad) {
-		return json({ error: maad.error }, { status: maad.status });
+		return Response.json({ error: maad.error }, { status: maad.status });
 	}
 
 	const measureError = spectrumMeasureError(maad.measure);
 	if (measureError) {
-		return json({ error: measureError.error }, { status: measureError.status });
+		return Response.json({ error: measureError.error }, { status: measureError.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
-		return json({ error: 'Invalid slug format' }, { status: 400 });
+		return Response.json({ error: 'Invalid slug format' }, { status: 400 });
 	}
 
 	if (!router) {
-		return json({ error: 'Router parameter is required' }, { status: 400 });
+		return Response.json({ error: 'Router parameter is required' }, { status: 400 });
 	}
 
 	if (sourceParam === null) {
-		return json(
+		return Response.json(
 			{ error: 'Source parameter is required (true for source addresses, false for destination)' },
 			{ status: 400 }
 		);
@@ -55,7 +54,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const bucketStart = slugToBucketStart(slug);
 
 	if (bucketStart === null) {
-		return json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
+		return Response.json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
 	}
 
 	try {
@@ -86,7 +85,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			);
 
 			if (!row) {
-				return json(
+				return Response.json(
 					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
 					{ status: 404 }
 				);
@@ -94,7 +93,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 
 			const data = buildSpectrumPoints(row.spectrum) ?? [];
 			if (data.length === 0) {
-				return json(
+				return Response.json(
 					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
 					{ status: 404 }
 				);
@@ -121,10 +120,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				}
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to fetch spectrum statistics from database:', error);
-		return json({ error: 'Failed to get spectrum statistics' }, { status: 500 });
+		return Response.json({ error: 'Failed to get spectrum statistics' }, { status: 500 });
 	}
 };

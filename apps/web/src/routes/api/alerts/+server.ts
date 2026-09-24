@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getAlertsFeedForDataset } from '$lib/server/alerts';
 import { getRequestedDataset } from '$lib/server/datasets';
@@ -24,7 +23,7 @@ function parseInteger(value: string | null): number | undefined | null {
 
 function errorResponse(message: string, status: number): Response {
 	const response: ErrorResponse = { data: null, error: message };
-	return json(response, { status });
+	return Response.json(response, { status });
 }
 
 export const GET: RequestHandler = async ({ url, platform }) => {
@@ -66,7 +65,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			sort,
 			limit
 		});
-		return json(response);
+		return Response.json(response);
 	} catch (error) {
 		console.error('Failed to load alerts feed:', error);
 		return errorResponse('Failed to load alerts feed', 500);

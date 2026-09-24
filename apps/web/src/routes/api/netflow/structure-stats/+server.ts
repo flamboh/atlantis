@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { StructureStatsPayload, StructureStatsResponse } from '$lib/types/structure-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
@@ -29,7 +28,7 @@ type RawStructureStatsRow = {
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
@@ -101,10 +100,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				requestedRouters: routers
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query structure_stats:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };
