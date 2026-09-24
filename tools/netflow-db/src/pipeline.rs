@@ -3638,20 +3638,16 @@ fn expected_nfcapd_path(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::{Path, PathBuf},
+pub(crate) mod test_support {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    use jiff::Timestamp;
+
+    use super::{
+        DEFAULT_TIMEZONE, next_date_start, next_local_five_minute_start, parse_date_start,
     };
 
-    use rusqlite::Connection;
-    use serde_json::{Value, json};
-    use tempfile::tempdir;
-
-    use super::*;
-
-    fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
+    pub(crate) fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
         let stream_path = executable.with_extension("stream");
         let empty_stream_path = executable.with_extension("empty-stream");
         let mut stream = crate::nfdump::ONE_V4_TEST_STREAM.to_vec();
@@ -3679,6 +3675,41 @@ mod tests {
         .unwrap();
         fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
     }
+
+    pub(crate) fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
+        let mut bucket_start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
+        let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
+        while bucket_start < end {
+            let timestamp = Timestamp::from_second(bucket_start)
+                .unwrap()
+                .in_tz(DEFAULT_TIMEZONE)
+                .unwrap();
+            let path = root
+                .join(member)
+                .join(timestamp.strftime("%Y").to_string())
+                .join(timestamp.strftime("%m").to_string())
+                .join(timestamp.strftime("%d").to_string())
+                .join(format!("nfcapd.{}", timestamp.strftime("%Y%m%d%H%M")));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"capture").unwrap();
+            bucket_start = next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use rusqlite::Connection;
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    use super::test_support::{write_fake_nfdump, write_nfcapd_day};
+    use super::*;
 
     #[test]
     fn overlapped_publishing_finishes_a_batch_before_a_later_batch_fails() {
@@ -3744,26 +3775,6 @@ mod tests {
                 .contains("unplannable batch")
         );
         assert_eq!(*published.lock().unwrap(), [0]);
-    }
-
-    fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
-        let mut bucket_start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
-        let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
-        while bucket_start < end {
-            let timestamp = Timestamp::from_second(bucket_start)
-                .unwrap()
-                .in_tz(DEFAULT_TIMEZONE)
-                .unwrap();
-            let path = root
-                .join(member)
-                .join(timestamp.strftime("%Y").to_string())
-                .join(timestamp.strftime("%m").to_string())
-                .join(timestamp.strftime("%d").to_string())
-                .join(format!("nfcapd.{}", timestamp.strftime("%Y%m%d%H%M")));
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, b"capture").unwrap();
-            bucket_start = next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
-        }
     }
 
     fn coordinated_request(
