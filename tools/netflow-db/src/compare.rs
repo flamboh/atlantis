@@ -552,7 +552,7 @@ fn reference_bucket_missing(
         && matches!(
             granularity,
             KeyValue::Text(granularity)
-                if matches!(granularity.as_str(), "5m" | "30m" | "1h" | "1d")
+                if matches!(granularity.as_str(), "5m" | "10m" | "30m" | "1h" | "1d")
         )
         && !reference.bucket_keys.contains(&vec![
             source.clone(),
@@ -625,7 +625,7 @@ fn ordered_query(spec: &TableSpec, columns: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let granularity_filter = if spec.key_columns.contains(&"granularity") {
-        "granularity IN ('1d', '1h', '30m', '5m') AND "
+        "granularity IN ('1d', '1h', '30m', '10m', '5m') AND "
     } else {
         ""
     };

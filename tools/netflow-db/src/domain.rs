@@ -82,6 +82,8 @@ impl IpVersion {
 pub enum Granularity {
     #[serde(rename = "5m")]
     FiveMinutes,
+    #[serde(rename = "10m")]
+    TenMinutes,
     #[serde(rename = "30m")]
     ThirtyMinutes,
     #[serde(rename = "1h")]
@@ -95,6 +97,7 @@ impl Granularity {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::FiveMinutes => "5m",
+            Self::TenMinutes => "10m",
             Self::ThirtyMinutes => "30m",
             Self::OneHour => "1h",
             Self::OneDay => "1d",

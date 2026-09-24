@@ -34,7 +34,21 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
     "address_structure_stats",
     "bucket_coverage",
 ];
-const STATS_GRANULARITIES: [&str; 4] = ["5m", "30m", "1h", "1d"];
+/// Versioned product schema bound into every pipeline database identity.
+pub fn product_schema() -> serde_json::Value {
+    serde_json::json!({
+        "version": 4,
+        "tables": [
+            {"name": "traffic_stats", "version": 3},
+            {"name": "protocol_stats", "version": 2},
+            {"name": "address_count_stats", "version": 2},
+            {"name": "port_count_stats", "version": 2},
+            {"name": "address_structure_stats", "version": 2},
+            {"name": "bucket_coverage", "version": 2}
+        ]
+    })
+}
+pub const STATS_GRANULARITIES: [&str; 5] = ["5m", "10m", "30m", "1h", "1d"];
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("SQLite operation failed: {0}")]
@@ -1368,7 +1382,7 @@ pub fn init_bucket_coverage_table(connection: &Connection) -> Result<(), Storage
         "
         CREATE TABLE IF NOT EXISTS bucket_coverage (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
             coverage_state TEXT NOT NULL CHECK (coverage_state IN ('complete', 'partial', 'unknown')),
@@ -1399,7 +1413,7 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         "
         CREATE TABLE IF NOT EXISTS traffic_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -1439,7 +1453,7 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
 
         CREATE TABLE IF NOT EXISTS protocol_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -1455,7 +1469,7 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
 
         CREATE TABLE IF NOT EXISTS address_count_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -1473,7 +1487,7 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
 
         CREATE TABLE IF NOT EXISTS port_count_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -1490,7 +1504,7 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
 
         CREATE TABLE IF NOT EXISTS address_structure_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
@@ -2127,8 +2141,8 @@ impl StatsTable {
 
     pub const fn schema_version(self) -> u32 {
         match self {
-            Self::Traffic => 2,
-            Self::Protocol | Self::AddressCount | Self::PortCount | Self::AddressStructure => 1,
+            Self::Traffic => 3,
+            Self::Protocol | Self::AddressCount | Self::PortCount | Self::AddressStructure => 2,
         }
     }
 }
@@ -3141,7 +3155,7 @@ mod tests {
                     row.get::<_, i64>(0)
                 })
                 .unwrap();
-            assert_eq!(count, 12, "{table}");
+            assert_eq!(count, 15, "{table}");
             assert_eq!(
                 connection
                     .query_row(

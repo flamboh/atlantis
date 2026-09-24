@@ -99,7 +99,7 @@ struct ScalarRowsProfile {
     port_count_insert_elapsed: Duration,
 }
 
-/// Build every 30m, 1h, and local-day aggregate touched by the input envelope.
+/// Build every 10m, 30m, 1h, and local-day aggregate touched by the input envelope.
 pub fn build_rollups(
     raw: &[CanonicalBucket],
     day_floor: impl Fn(i64) -> i64,
@@ -111,6 +111,11 @@ pub fn build_rollups(
         // has 23 or 25 hours. Flooring it yields the exact next local midnight.
         let day_end = day_floor(day_start + 36 * 3_600);
         for (granularity, start, end) in [
+            (
+                Granularity::TenMinutes,
+                child.key.bucket_start.div_euclid(600) * 600,
+                child.key.bucket_start.div_euclid(600) * 600 + 600,
+            ),
             (
                 Granularity::ThirtyMinutes,
                 child.key.bucket_start.div_euclid(1_800) * 1_800,
@@ -597,10 +602,39 @@ mod tests {
 
         let rollups = build_rollups(&raw, |_| 0).unwrap();
 
-        assert_eq!(rollups.len(), 3);
+        assert_eq!(rollups.len(), 6);
         for rollup in rollups {
-            assert_eq!(rollup.coverage, BucketCoverage::new(6, 6, 0).unwrap());
+            let expected = if rollup.key.granularity == Granularity::TenMinutes {
+                BucketCoverage::new(2, 2, 0).unwrap()
+            } else {
+                BucketCoverage::new(6, 6, 0).unwrap()
+            };
+            assert_eq!(rollup.coverage, expected, "{:?}", rollup.key);
         }
+    }
+
+    #[test]
+    fn ten_minute_rollups_pair_adjacent_five_minute_children() {
+        let raw = (0..6)
+            .map(|index| {
+                StatisticalBucket::dense(BucketKey::new(
+                    "r1",
+                    Granularity::FiveMinutes,
+                    index * 300,
+                    (index + 1) * 300,
+                ))
+                .finish()
+            })
+            .collect::<Vec<_>>();
+
+        let ten_minutes = build_rollups(&raw, |_| 0)
+            .unwrap()
+            .into_iter()
+            .filter(|bucket| bucket.key.granularity == Granularity::TenMinutes)
+            .map(|bucket| (bucket.key.bucket_start, bucket.key.bucket_end))
+            .collect::<Vec<_>>();
+
+        assert_eq!(ten_minutes, vec![(0, 600), (600, 1_200), (1_200, 1_800)]);
     }
 
     #[test]
