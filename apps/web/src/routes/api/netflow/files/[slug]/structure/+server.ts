@@ -5,7 +5,7 @@ import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 import {
 	normalizeStructurePoints,
 	parseFlowDirectionParams,
-	parseMaadIpVersion
+	parseMaadParams
 } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
@@ -25,9 +25,9 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		return json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
-	const ipVersion = parseMaadIpVersion(url);
-	if (typeof ipVersion !== 'number') {
-		return json({ error: ipVersion.error }, { status: ipVersion.status });
+	const maad = parseMaadParams(url);
+	if ('error' in maad) {
+		return json({ error: maad.error }, { status: maad.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
@@ -65,16 +65,18 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND src_locality = ?
 				AND dst_locality = ?
 				AND address_side = ?
+				AND measure = ?
 				AND structure_kind = 'structure'
 			LIMIT 1`,
 				[
 					router,
 					FIVE_MINUTES,
 					bucketStart,
-					ipVersion,
+					maad.ipVersion,
 					flowDirection.srcLocality,
 					flowDirection.dstLocality,
-					isSource ? 'source' : 'destination'
+					isSource ? 'source' : 'destination',
+					maad.measure
 				]
 			);
 

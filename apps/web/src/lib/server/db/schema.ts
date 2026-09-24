@@ -331,6 +331,7 @@ export const addressStructureStats = sqliteTable(
 		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
+		measure: text('measure', { enum: ['addresses', 'packets', 'bytes'] }).notNull(),
 		structureKind: text('structure_kind', {
 			enum: ['structure', 'spectrum', 'dimension']
 		}).notNull(),
@@ -348,6 +349,7 @@ export const addressStructureStats = sqliteTable(
 				table.srcLocality,
 				table.dstLocality,
 				table.addressSide,
+				table.measure,
 				table.structureKind
 			]
 		}),
@@ -359,6 +361,7 @@ export const addressStructureStats = sqliteTable(
 			table.srcLocality,
 			table.dstLocality,
 			table.addressSide,
+			table.measure,
 			table.structureKind
 		),
 		index('idx_address_structure_stats_timeseries').on(
@@ -367,6 +370,7 @@ export const addressStructureStats = sqliteTable(
 			table.srcLocality,
 			table.dstLocality,
 			table.ipVersion,
+			table.measure,
 			table.structureKind,
 			table.bucketStart
 		),
@@ -378,6 +382,14 @@ export const addressStructureStats = sqliteTable(
 		check(
 			'address_structure_stats_dst_locality_check',
 			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_structure_stats_measure_check',
+			sql`${table.measure} IN ('addresses', 'packets', 'bytes')`
+		),
+		check(
+			'address_structure_stats_measure_spectrum_check',
+			sql`${table.measure} = 'addresses' OR ${table.structureKind} <> 'spectrum'`
 		)
 	]
 );

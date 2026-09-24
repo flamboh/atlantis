@@ -195,11 +195,11 @@ db.exec(`
 
 	INSERT INTO address_structure_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_locality, dst_locality, address_side, structure_kind,
+		src_locality, dst_locality, address_side, measure, structure_kind,
 		values_json, metadata_json
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, 4,
-		src_locality, dst_locality, address_side, structure_kind,
+		src_locality, dst_locality, address_side, 'addresses', structure_kind,
 		CASE structure_kind
 			WHEN 'spectrum' THEN '[{"alpha":0.1,"f":0.2},{"alpha":0.2,"f":0.3},{"alpha":0.3,"f":0.4}]'
 			ELSE '[{"q":1,"tau":0.2,"sd":0.01},{"q":2,"tau":0.4,"sd":0.02}]'

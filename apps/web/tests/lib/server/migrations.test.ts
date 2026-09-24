@@ -162,6 +162,7 @@ describe('D1 migrations', () => {
 						'src_locality',
 						'dst_locality',
 						'ip_version',
+						'measure',
 						'structure_kind',
 						'bucket_start'
 					]
@@ -338,6 +339,51 @@ describe('D1 migrations', () => {
 					table
 				).toEqual([{ source_id: 'stats-source-0', src_locality: 'all', dst_locality: 'all' }]);
 			}
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keys MAAD rows by measure and keeps existing rows as the addresses measure', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const measureMigration = migrations.findIndex((fileName) =>
+			fs
+				.readFileSync(path.join(migrationsDirectory, fileName), 'utf8')
+				.includes('address_structure_stats_measure_check')
+		);
+		try {
+			for (const migration of migrations.slice(0, measureMigration)) {
+				applyMigration(database, migration);
+			}
+			database
+				.prepare(
+					`INSERT INTO address_structure_stats (
+						source_id, granularity, bucket_start, bucket_end, ip_version,
+						src_locality, dst_locality, address_side, structure_kind,
+						values_json, metadata_json
+					) VALUES ('edge', '5m', 0, 300, 4, 'all', 'all', 'source', 'spectrum', '[]', '{}')`
+				)
+				.run();
+
+			for (const migration of migrations.slice(measureMigration)) {
+				applyMigration(database, migration);
+			}
+
+			expect(
+				database.prepare('SELECT measure, structure_kind FROM address_structure_stats').all()
+			).toEqual([{ measure: 'addresses', structure_kind: 'spectrum' }]);
+			const insert = database.prepare(
+				`INSERT INTO address_structure_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_locality, dst_locality, address_side, measure, structure_kind,
+					values_json, metadata_json
+				) VALUES ('edge', '5m', 0, 300, 4, 'all', 'all', 'source', ?, ?, '[]', '{}')`
+			);
+			insert.run('packets', 'structure');
+			insert.run('bytes', 'structure');
+			expect(() => insert.run('packets', 'spectrum')).toThrow(/CHECK constraint failed/);
+			expect(() => insert.run('flows', 'structure')).toThrow(/CHECK constraint failed/);
 		} finally {
 			database.close();
 		}

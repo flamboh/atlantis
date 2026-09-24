@@ -4,11 +4,7 @@ import type { SpectrumPoint } from '$lib/types/types';
 import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import {
-	parseAggregateStatsParams,
-	parseMaadIpVersion,
-	placeholders
-} from '$lib/server/netflow-v3';
+import { parseMaadStatsParams, placeholders, spectrumMeasureError } from '$lib/server/netflow-v3';
 
 type SpectrumStatsRow = SpectrumStatsPayload & {
 	router: string;
@@ -53,15 +49,15 @@ function parseSpectrumPoints(
 }
 
 export const GET: RequestHandler = async ({ url, platform }) => {
-	const params = parseAggregateStatsParams(url);
+	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
 		return json({ error: params.error }, { status: params.status });
 	}
-	const ipVersion = parseMaadIpVersion(url);
-	if (typeof ipVersion !== 'number') {
-		return json({ error: ipVersion.error }, { status: ipVersion.status });
+	const measureError = spectrumMeasureError(params.measure);
+	if (measureError) {
+		return json({ error: measureError.error }, { status: measureError.status });
 	}
-	const { routers, granularity, start, end, srcLocality, dstLocality } = params;
+	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
@@ -75,7 +71,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				dstLocality,
 				start,
 				end,
-				ipVersion
+				ipVersion,
+				measure
 			];
 
 			const query = `
@@ -93,6 +90,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND bucket_start >= ?
 				AND bucket_start < ?
 				AND ip_version = ?
+				AND measure = ?
 				AND structure_kind = 'spectrum'
 			GROUP BY ${sourceColumn}, bucket_start
 		`;

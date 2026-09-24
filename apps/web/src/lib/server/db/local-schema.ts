@@ -121,13 +121,15 @@ export const localSchemaSql = `
 		src_locality TEXT NOT NULL CHECK(src_locality IN ('all', 'internal', 'external')),
 		dst_locality TEXT NOT NULL CHECK(dst_locality IN ('all', 'internal', 'external')),
 		address_side TEXT NOT NULL CHECK(address_side IN ('source', 'destination')),
+		measure TEXT NOT NULL CHECK(measure IN ('addresses', 'packets', 'bytes')),
 		structure_kind TEXT NOT NULL CHECK(structure_kind IN ('structure', 'spectrum', 'dimension')),
 		values_json TEXT NOT NULL,
 		metadata_json TEXT NOT NULL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+		CHECK(measure = 'addresses' OR structure_kind <> 'spectrum'),
 		PRIMARY KEY(
 			source_id, granularity, bucket_start, ip_version,
-			src_locality, dst_locality, address_side, structure_kind
+			src_locality, dst_locality, address_side, measure, structure_kind
 		)
 	);
 
@@ -181,12 +183,12 @@ export const localSchemaSql = `
 	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
 		ON address_structure_stats (
 			granularity, bucket_start, source_id, ip_version,
-			src_locality, dst_locality, address_side, structure_kind
+			src_locality, dst_locality, address_side, measure, structure_kind
 		);
 	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
 		ON address_structure_stats (
 			source_id, granularity, src_locality, dst_locality,
-			ip_version, structure_kind, bucket_start
+			ip_version, measure, structure_kind, bucket_start
 		);
 	CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
 		ON port_count_stats (

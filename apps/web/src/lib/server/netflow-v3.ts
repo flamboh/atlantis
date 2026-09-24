@@ -1,14 +1,17 @@
 import {
 	DEFAULT_MAAD_IP_VERSION,
+	DEFAULT_MAAD_MEASURE,
 	FLOW_DIRECTIONS,
 	flowDirectionLocalities,
 	IP_GRANULARITIES,
 	MAAD_IP_VERSIONS,
+	MAAD_MEASURES,
 	type FlowDirection,
 	type FlowLocality,
 	type FlowLocalityPair,
 	type IpGranularity,
-	type MaadIpVersion
+	type MaadIpVersion,
+	type MaadMeasure
 } from '$lib/types/types';
 import type { SourceDefinition } from '$lib/server/datasets';
 import type { StructureFunctionPoint } from '$lib/types/types';
@@ -30,6 +33,13 @@ export interface AggregateStatsParams {
 	dstLocality: FlowLocality;
 }
 
+export interface MaadParams {
+	ipVersion: MaadIpVersion;
+	measure: MaadMeasure;
+}
+
+export type MaadStatsParams = AggregateStatsParams & MaadParams;
+
 export interface RequestValidationError {
 	error: string;
 	status: 400;
@@ -41,6 +51,7 @@ export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
 const VALID_FLOW_DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
+const VALID_MAAD_MEASURES = new Set<string>(MAAD_MEASURES);
 
 export function assertNetflowV3Database(): void {
 	return;
@@ -115,6 +126,56 @@ export function parseMaadIpVersion(url: URL): MaadIpVersion | RequestValidationE
 	}
 
 	return version;
+}
+
+export function parseMaadMeasure(url: URL): MaadMeasure | RequestValidationError {
+	const param = url.searchParams.get('measure');
+	if (param === null) {
+		return DEFAULT_MAAD_MEASURE;
+	}
+
+	if (!VALID_MAAD_MEASURES.has(param)) {
+		return {
+			error: `Invalid measure. Expected one of: ${MAAD_MEASURES.join(', ')}`,
+			status: 400
+		};
+	}
+
+	return param as MaadMeasure;
+}
+
+export function parseMaadParams(url: URL): MaadParams | RequestValidationError {
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		return ipVersion;
+	}
+
+	const measure = parseMaadMeasure(url);
+	if (typeof measure !== 'string') {
+		return measure;
+	}
+
+	return { ipVersion, measure };
+}
+
+export function parseMaadStatsParams(url: URL): MaadStatsParams | RequestValidationError {
+	const aggregate = parseAggregateStatsParams(url);
+	if ('error' in aggregate) {
+		return aggregate;
+	}
+
+	const maad = parseMaadParams(url);
+	if ('error' in maad) {
+		return maad;
+	}
+
+	return { ...aggregate, ...maad };
+}
+
+export function spectrumMeasureError(measure: MaadMeasure): RequestValidationError | null {
+	return measure === 'addresses'
+		? null
+		: { error: `Spectrum is only computed for the addresses measure, not ${measure}`, status: 400 };
 }
 
 export function parseFlowDirectionParams(

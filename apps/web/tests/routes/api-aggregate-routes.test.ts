@@ -456,7 +456,8 @@ describe('aggregate API routes', () => {
 			'all',
 			100,
 			200,
-			4
+			4,
+			'addresses'
 		]);
 		await expect(response.json()).resolves.toEqual({
 			timelines: [
@@ -516,7 +517,8 @@ describe('aggregate API routes', () => {
 			'all',
 			100,
 			200,
-			6
+			6,
+			'addresses'
 		]);
 
 		const spectrumResponse = await getSpectrumStats({
@@ -532,7 +534,8 @@ describe('aggregate API routes', () => {
 			'all',
 			100,
 			200,
-			6
+			6,
+			'addresses'
 		]);
 	});
 
@@ -558,5 +561,58 @@ describe('aggregate API routes', () => {
 		await expect(spectrumResponse.json()).resolves.toEqual({
 			error: 'Invalid ipVersion. Expected one of: 4, 6'
 		});
+	});
+
+	it('filters structure stats by the requested MAAD measure', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		for (const measure of ['addresses', 'packets', 'bytes']) {
+			all.mockClear();
+			const response = await getStructureStats({
+				url: new URL(
+					`http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&measure=${measure}`
+				)
+			} as never);
+			expect(response.status).toBe(200);
+			expect(all).toHaveBeenNthCalledWith(1, expect.stringContaining('AND measure = ?'), [
+				'1h',
+				'r1',
+				'all',
+				'all',
+				100,
+				200,
+				4,
+				measure
+			]);
+		}
+	});
+
+	it('rejects unknown measures and weighted spectrum requests', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const invalid = await getStructureStats({
+			url: new URL(
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&measure=flows'
+			)
+		} as never);
+		expect(invalid.status).toBe(400);
+		await expect(invalid.json()).resolves.toEqual({
+			error: 'Invalid measure. Expected one of: addresses, packets, bytes'
+		});
+
+		const weightedSpectrum = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&measure=packets'
+			)
+		} as never);
+		expect(weightedSpectrum.status).toBe(400);
+		await expect(weightedSpectrum.json()).resolves.toEqual({
+			error: 'Spectrum is only computed for the addresses measure, not packets'
+		});
+		expect(all).not.toHaveBeenCalled();
 	});
 });

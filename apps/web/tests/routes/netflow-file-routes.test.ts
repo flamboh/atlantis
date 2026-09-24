@@ -106,7 +106,8 @@ describe('netflow file helpers and routes', () => {
 			4,
 			'internal',
 			'external',
-			'destination'
+			'destination',
+			'addresses'
 		]);
 		expect(get).toHaveBeenNthCalledWith(3, expect.any(String), [
 			'r1',
@@ -115,7 +116,8 @@ describe('netflow file helpers and routes', () => {
 			4,
 			'internal',
 			'external',
-			'source'
+			'source',
+			'addresses'
 		]);
 		await expect(ipResponse.json()).resolves.toEqual({ ipv4Count: 1, ipv6Count: 3 });
 		await expect(spectrumResponse.json()).resolves.toEqual({
@@ -213,11 +215,13 @@ describe('netflow file helpers and routes', () => {
 			4,
 			'internal',
 			'external',
+			'addresses',
 			'5m',
 			bucketStart,
 			4,
 			'internal',
 			'external',
+			'addresses',
 			bucketStart
 		]);
 		await expect(response.json()).resolves.toEqual({
@@ -335,7 +339,8 @@ describe('netflow file helpers and routes', () => {
 			6,
 			'all',
 			'all',
-			'destination'
+			'destination',
+			'addresses'
 		]);
 		expect(get).toHaveBeenNthCalledWith(2, expect.any(String), [
 			'r1',
@@ -344,7 +349,8 @@ describe('netflow file helpers and routes', () => {
 			6,
 			'all',
 			'all',
-			'source'
+			'source',
+			'addresses'
 		]);
 	});
 
@@ -376,6 +382,50 @@ describe('netflow file helpers and routes', () => {
 		}
 	});
 
+	it('binds the requested MAAD measure into the per-file and details MAAD queries', async () => {
+		const get = vi.fn().mockResolvedValue({ valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]' });
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ get, all });
+
+		const bucketStart = slugToBucketStart('202503010005');
+
+		const structureResponse = await getStructure({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&measure=packets'
+			)
+		} as never);
+		expect(structureResponse.status).toBe(200);
+		expect(get).toHaveBeenCalledWith(expect.stringContaining('AND measure = ?'), [
+			'r1',
+			'5m',
+			bucketStart,
+			4,
+			'all',
+			'all',
+			'source',
+			'packets'
+		]);
+
+		const spectrumResponse = await getSpectrum({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=true&measure=bytes'
+			)
+		} as never);
+		expect(spectrumResponse.status).toBe(400);
+		expect(get).toHaveBeenCalledTimes(1);
+
+		await getDetails({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&measure=bytes')
+		} as never);
+		const [detailsQuery, detailsParams] = all.mock.calls[0] as [string, unknown[]];
+		expect(detailsQuery.match(/AND measure = \?/g)).toHaveLength(2);
+		expect(detailsParams.filter((value) => value === 'bytes')).toHaveLength(2);
+	});
+
 	it('binds the requested MAAD ip version into the file details MAAD query', async () => {
 		const all = vi.fn().mockResolvedValue([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
@@ -403,11 +453,13 @@ describe('netflow file helpers and routes', () => {
 			6,
 			'all',
 			'all',
+			'addresses',
 			'5m',
 			bucketStart,
 			6,
 			'all',
 			'all',
+			'addresses',
 			bucketStart
 		]);
 	});
