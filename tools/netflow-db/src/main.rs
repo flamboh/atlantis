@@ -12,6 +12,7 @@ use netflow_db::{
     compare::{CompareOptions, compare_databases},
     export::{ExtractRequest, extract_window, validate_extract_plan},
     feed, maad,
+    merge::{MergeRequest, merge_shards},
     operations::{
         UgrAssetKind, scrape_ugr16_urls, select_web_verification_window, verify_web_routes,
     },
@@ -41,6 +42,8 @@ enum Command {
     Compare(CompareArgs),
     /// Create a consistent SQLite backup or promote a candidate database.
     SqliteMaintenance(MaintenanceArgs),
+    /// Merge day-sharded pipeline products built with identical flags into a new product.
+    MergeShards(MergeShardsArgs),
     /// Extract/segment an immutable archive into a canonical nfcapd tree.
     PrepareNfcapd(PrepareArgs),
     /// Scrape deterministic UGR16 asset URLs.
@@ -191,6 +194,16 @@ struct MaintenanceArgs {
 }
 
 #[derive(Debug, Args)]
+struct MergeShardsArgs {
+    /// New product database to create; it must not exist yet.
+    #[arg(long)]
+    output: PathBuf,
+    /// Shard databases, each built by `pipeline` over a disjoint local-day range.
+    #[arg(required = true, num_args = 2..)]
+    shards: Vec<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 struct PrepareArgs {
     #[arg(long)]
     archive: PathBuf,
@@ -312,6 +325,7 @@ fn main() -> Result<()> {
                 args.target_path.display()
             );
         }
+        Command::MergeShards(args) => run_merge_shards(args)?,
         Command::PrepareNfcapd(args) => run_prepare(args)?,
         Command::ScrapeUgr16(args) => run_scrape(args)?,
         Command::VerifyWebRoutes(args) => run_web_verify(args)?,
@@ -496,6 +510,29 @@ fn run_compare(args: CompareArgs) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&report)?);
     if !report.compatible {
         bail!("candidate is not compatible with the reference in the selected window");
+    }
+    Ok(())
+}
+
+fn run_merge_shards(args: MergeShardsArgs) -> Result<()> {
+    let report = merge_shards(&MergeRequest {
+        output: args.output.clone(),
+        shards: args.shards,
+    })?;
+    println!(
+        "Merged {} shards into {}: {} completed days, window {}..{}",
+        report.shards,
+        args.output.display(),
+        report.completed_days,
+        report
+            .first_day_start
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        report
+            .last_day_end
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+    );
+    for (table, rows) in &report.table_rows {
+        println!("{table}: {rows} rows");
     }
     Ok(())
 }
