@@ -83,6 +83,7 @@ export function seedPlaywrightDatabase() {
 			src_locality TEXT NOT NULL,
 			dst_locality TEXT NOT NULL,
 			address_side TEXT NOT NULL,
+			measure TEXT NOT NULL,
 			structure_kind TEXT NOT NULL,
 			values_json TEXT NOT NULL,
 			metadata_json TEXT NOT NULL,
