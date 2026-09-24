@@ -5,7 +5,13 @@
 	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import type { FlowDirection } from '$lib/types/types';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
+	import {
+		DEFAULT_MAAD_IP_VERSION,
+		MAAD_IP_VERSION_OPTIONS,
+		type FlowDirection,
+		type MaadIpVersion
+	} from '$lib/types/types';
 	import {
 		createDateFromPSTComponents,
 		epochToPSTComponents,
@@ -29,6 +35,7 @@
 
 	let { data }: { data: NetflowFileDetailData } = $props();
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
+	let maadIpVersion = $state<MaadIpVersion>(DEFAULT_MAAD_IP_VERSION);
 
 	const formatCount = (value: number | null | undefined) =>
 		typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'N/A';
@@ -52,12 +59,20 @@
 	const nextSlug = $derived(getNextSlug(data.slug));
 
 	function syncLoader() {
-		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction);
+		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction, maadIpVersion);
 		loader.refresh();
 	}
 
 	function refreshLoader() {
 		loader?.refresh();
+	}
+
+	function handleMaadIpVersionChange(nextIpVersion: MaadIpVersion) {
+		if (nextIpVersion === maadIpVersion) {
+			return;
+		}
+		maadIpVersion = nextIpVersion;
+		syncLoader();
 	}
 
 	onMount(() => {
@@ -86,6 +101,20 @@
 				? 'Loading...'
 				: 'N/A'}
 	/>
+
+	<div class="mb-2 flex items-center gap-2">
+		<span class="text-foreground text-sm font-medium">MAAD address family:</span>
+		<SegmentedControl
+			options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
+				value: String(option.value),
+				label: option.label
+			}))}
+			value={String(maadIpVersion)}
+			onValueChange={(value) => handleMaadIpVersionChange(Number(value) as MaadIpVersion)}
+			ariaLabel="Select MAAD IP address family"
+			buttonClass="sm:min-w-32"
+		/>
+	</div>
 
 	{#if loader?.error && !loader.hasRows}
 		<NetflowFileMessageCard

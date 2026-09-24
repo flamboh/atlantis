@@ -8,6 +8,7 @@ import {
 	parseIpGranularityOrDefault,
 	parseFlowDirection,
 	parseFlowDirectionParams,
+	parseMaadIpVersion,
 	parseSourceIds,
 	parseTimestamp,
 	resolveSourceIds
@@ -143,6 +144,20 @@ describe('netflow v3 helpers', () => {
 		).toEqual({ direction: 'transit', srcLocality: 'external', dstLocality: 'external' });
 		expect(parseFlowDirectionParams(new URL('http://localhost/api/test?direction=bogus'))).toEqual({
 			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit',
+			status: 400
+		});
+	});
+
+	it('parses the MAAD ip version request param, defaulting to 4', () => {
+		expect(parseMaadIpVersion(new URL('http://localhost/api/test'))).toBe(4);
+		expect(parseMaadIpVersion(new URL('http://localhost/api/test?ipVersion=4'))).toBe(4);
+		expect(parseMaadIpVersion(new URL('http://localhost/api/test?ipVersion=6'))).toBe(6);
+		expect(parseMaadIpVersion(new URL('http://localhost/api/test?ipVersion=5'))).toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6',
+			status: 400
+		});
+		expect(parseMaadIpVersion(new URL('http://localhost/api/test?ipVersion=abc'))).toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6',
 			status: 400
 		});
 	});

@@ -16,10 +16,12 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
+		DEFAULT_MAAD_IP_VERSION,
 		type FlowDirection,
 		IP_METRIC_OPTIONS,
 		type IpGranularity,
 		type IpMetricKey,
+		type MaadIpVersion,
 		type ProtocolMetricKey
 	} from '$lib/types/types';
 	import { watch } from 'runed';
@@ -52,6 +54,7 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
+	let selectedSpectrumIpVersion = $state<MaadIpVersion>(DEFAULT_MAAD_IP_VERSION);
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
@@ -591,6 +594,7 @@
 						granularity={ipGranularity}
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
+						ipVersion={selectedSpectrumIpVersion}
 						availableRouters={availableSpectrumRouters}
 						{direction}
 						onDateChange={handleDateChange}
@@ -600,6 +604,9 @@
 						}}
 						onAddressTypeChange={(payload) => {
 							selectedSpectrumAddressType = payload.addressType;
+						}}
+						onIpVersionChange={(payload) => {
+							selectedSpectrumIpVersion = payload.ipVersion;
 						}}
 					/>
 				{:else}

@@ -2,11 +2,17 @@
 
 `scripts/local/validate_maad.py` is a small, local Rust-vs-Haskell comparison
 for address sets. It accepts one or more `NAME=PATH` cases, where each path is
-an external file containing one IPv4 address per line. The validator passes the
-same path, unchanged and in the original order, to both implementations:
+an external file containing one IPv4 address per line, or one IPv6 address per
+line with `--ipv6`. The validator passes the same path, unchanged and in the
+original order, to both implementations:
 
-- Rust: `<rust> maad <path>`
-- Haskell: `<haskell> --input <path> --output - --format json --structure --spectrum --dimensions`
+- Rust: `<rust> maad [--ipv6] <path>`
+- Haskell: `<haskell> [--ipv6] --input <path> --output - --format json --structure --spectrum --dimensions`
+
+`--ipv6` applies to every case in one run. Write IPv6 inputs as hexadecimal
+groups (`::` compression is fine). The oracle misreads embedded IPv4 notation
+such as `::ffff:192.0.2.1` without failing, so the validator rejects any IPv6
+line that contains a dot.
 
 It ignores the oracle's schema/input metadata differences, normalizes Rust's
 `prefixLengths` and the oracle's `metadata.prefix_counts[*].pl` to the same
@@ -65,10 +71,15 @@ f > 0)` to `q_max = max(1, max q >= 1 with f > 0)`. Inside it, the alpha run
   must be non-increasing (upstream `a1 >= a2`) instead of strictly decreasing.
   Structure and dimensions are unchanged.
 
-The new head also adds changes that Atlantis does not port here:
+The new head also adds IPv6 input (`--ipv6`), which Rust ports with the same
+defaults: prefix lengths `/23`--`/64`, 128-bit prefixes, and a nearly-full
+test of `log2(count) / (128 - pl)`. The IPv6 `q` grid and `full_threshold`
+match IPv4. Upstream picked `/23` as the smallest RIR allocation size, and it
+stops at `/64` because interface identifiers below `/64` are usually SLAAC or
+privacy-random bits.
 
-- IPv6 input (`--ipv6`), with default prefix lengths `/23`--`/64`, 128-bit
-  prefixes, and a nearly-full test of `log2(count) / (128 - pl)`.
+It also adds changes that Atlantis does not port:
+
 - `--test` now runs a Hotelling T² test against a linear interpolation of the
   structure function, and `--compare-structure` compares against a
   precomputed structure CSV. Atlantis does not run hypothesis tests.
@@ -93,7 +104,8 @@ python3 scripts/local/validate_maad.py \
   private-window=/path/to/private/addresses.txt
 ```
 
-Add another file as another positional `NAME=PATH` (or repeat `--case`). Use
+Add `--ipv6` to compare IPv6 files. Add another file as another positional
+`NAME=PATH` (or repeat `--case`). Use
 `--abs-tol` and `--rel-tol` when a deliberate numerical comparison needs a
 different tolerance. A passing case prints one compact summary; command,
 input, JSON, row-count, metadata, or numeric mismatches return nonzero.
@@ -101,7 +113,8 @@ input, JSON, row-count, metadata, or numeric mismatches return nonzero.
 ## Known edge cases
 
 The Haskell executable cannot produce JSON for an empty set, a singleton, or a
-set whose every prefix is filtered at the default `/8`--`/24` range. An empty
+set whose every prefix is filtered at the default range (`/8`--`/24` for IPv4,
+`/23`--`/64` for IPv6). An empty
 set fails when the oracle reads its address family; the other cases call
 `foldl1` on an empty list after filtering. All exit nonzero. Rust returns an
 empty result for these inputs. The validator reports the Haskell command

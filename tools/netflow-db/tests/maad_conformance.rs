@@ -3,22 +3,30 @@ use std::{fs, path::Path, process::Command};
 
 const ABSOLUTE_TOLERANCE: f64 = 1e-10;
 const RELATIVE_TOLERANCE: f64 = 1e-10;
-const FIXTURE_NAMES: &[&str] = &[
+const IPV4_FIXTURE_NAMES: &[&str] = &[
     "clustered",
     "random",
     "mixed",
     "threshold-ancestor",
     "balanced-branches",
 ];
+const IPV6_FIXTURE_NAMES: &[&str] = &["ipv6-clustered", "ipv6-mixed"];
 
 #[test]
 fn maad_fixtures_match_haskell_goldens() {
-    for name in FIXTURE_NAMES {
-        assert_fixture_matches_golden(name);
+    for name in IPV4_FIXTURE_NAMES {
+        assert_fixture_matches_golden(name, &[]);
     }
 }
 
-fn assert_fixture_matches_golden(name: &str) {
+#[test]
+fn ipv6_maad_fixtures_match_haskell_goldens() {
+    for name in IPV6_FIXTURE_NAMES {
+        assert_fixture_matches_golden(name, &["--ipv6"]);
+    }
+}
+
+fn assert_fixture_matches_golden(name: &str, family_args: &[&str]) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/maad-conformance")
         .join(name)
@@ -26,7 +34,8 @@ fn assert_fixture_matches_golden(name: &str) {
     let golden = fixture.with_file_name("golden.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
-        .args(["maad"])
+        .arg("maad")
+        .args(family_args)
         .arg(&fixture)
         .output()
         .unwrap();

@@ -1,11 +1,14 @@
 import {
+	DEFAULT_MAAD_IP_VERSION,
 	FLOW_DIRECTIONS,
 	flowDirectionLocalities,
 	IP_GRANULARITIES,
+	MAAD_IP_VERSIONS,
 	type FlowDirection,
 	type FlowLocality,
 	type FlowLocalityPair,
-	type IpGranularity
+	type IpGranularity,
+	type MaadIpVersion
 } from '$lib/types/types';
 import type { SourceDefinition } from '$lib/server/datasets';
 import type { StructureFunctionPoint } from '$lib/types/types';
@@ -38,6 +41,7 @@ export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
 const VALID_FLOW_DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
+const VALID_MAAD_IP_VERSIONS = new Set<number>(MAAD_IP_VERSIONS);
 
 export function assertNetflowV3Database(): void {
 	return;
@@ -95,6 +99,23 @@ export function parseDirectionParam(param: string | null): FlowDirection | Reque
 		error: `Invalid direction. Expected one of: ${FLOW_DIRECTIONS.join(', ')}`,
 		status: 400
 	};
+}
+
+export function parseMaadIpVersion(url: URL): MaadIpVersion | RequestValidationError {
+	const param = url.searchParams.get('ipVersion');
+	if (param === null) {
+		return DEFAULT_MAAD_IP_VERSION;
+	}
+
+	const value = Number(param);
+	if (!VALID_MAAD_IP_VERSIONS.has(value)) {
+		return {
+			error: `Invalid ipVersion. Expected one of: ${MAAD_IP_VERSIONS.join(', ')}`,
+			status: 400
+		};
+	}
+
+	return value as MaadIpVersion;
 }
 
 export function parseFlowDirectionParams(

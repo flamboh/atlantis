@@ -363,6 +363,22 @@ export interface IpChartState {
 	activeMetrics: IpMetricKey[];
 }
 
+export const MAAD_IP_VERSIONS = [4, 6] as const;
+
+export type MaadIpVersion = (typeof MAAD_IP_VERSIONS)[number];
+
+export const DEFAULT_MAAD_IP_VERSION: MaadIpVersion = 4;
+
+export interface MaadIpVersionOption {
+	value: MaadIpVersion;
+	label: string;
+}
+
+export const MAAD_IP_VERSION_OPTIONS: MaadIpVersionOption[] = [
+	{ value: 4, label: 'IPv4 (/8–/24)' },
+	{ value: 6, label: 'IPv6 (/23–/64)' }
+];
+
 export interface SpectrumPoint {
 	alpha: number;
 	f: number;
