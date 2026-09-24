@@ -1502,7 +1502,10 @@ fn bind_identity(
     pipeline: &ResolvedPipeline,
 ) -> Result<(), PipelineError> {
     verify_nfdump_revision(pipeline)?;
-    let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
+    let maad_config = json!({
+        "ipv4": crate::maad::MaadConfig::ipv4(),
+        "ipv6": crate::maad::MaadConfig::ipv6(),
+    });
     let schema = crate::storage::product_schema();
     let nfdump_executable = pipeline.nfdump_revision.as_ref().map(|revision| {
         json!({
@@ -1529,7 +1532,7 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 3,
+            "contract_version": 4,
             "config": maad_config
         }
     });

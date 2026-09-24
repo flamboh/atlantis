@@ -1,10 +1,12 @@
-import type {
-	FileIpCounts,
-	FlowDirection,
-	NetflowFileDetailsResponse,
-	NetflowFileSummaryRecord,
-	SpectrumData,
-	StructureFunctionData
+import {
+	DEFAULT_MAAD_IP_VERSION,
+	type FileIpCounts,
+	type FlowDirection,
+	type MaadIpVersion,
+	type NetflowFileDetailsResponse,
+	type NetflowFileSummaryRecord,
+	type SpectrumData,
+	type StructureFunctionData
 } from '$lib/types/types';
 import { SvelteMap } from 'svelte/reactivity';
 
@@ -66,16 +68,30 @@ export type NetflowFileRouterRow = {
 	};
 };
 
-function buildLoaderKey(dataset: string, slug: string, direction: FlowDirection): string {
-	return `${dataset}:${slug}:${direction}`;
+function buildLoaderKey(
+	dataset: string,
+	slug: string,
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion
+): string {
+	return `${dataset}:${slug}:${direction}:${ipVersion}`;
 }
 
-function buildDirectionSearchParams(direction: FlowDirection): Record<string, string> {
-	if (direction === 'all') {
-		return {};
+function buildScopeSearchParams(
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion
+): Record<string, string> {
+	const params: Record<string, string> = {};
+
+	if (direction !== 'all') {
+		params.direction = direction;
 	}
 
-	return { direction };
+	if (ipVersion !== DEFAULT_MAAD_IP_VERSION) {
+		params.ipVersion = String(ipVersion);
+	}
+
+	return params;
 }
 
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -95,6 +111,7 @@ class NetflowFileDetailLoader {
 	readonly dataset: string;
 	readonly slug: string;
 	readonly direction: FlowDirection;
+	readonly ipVersion: MaadIpVersion;
 	readonly key: string;
 
 	private _loading = $state(false);
@@ -107,11 +124,12 @@ class NetflowFileDetailLoader {
 	private _lastAccessedAt = Date.now();
 	private summarySkeletonDelayId: ReturnType<typeof setTimeout> | null = null;
 
-	constructor(dataset: string, slug: string, direction: FlowDirection) {
+	constructor(dataset: string, slug: string, direction: FlowDirection, ipVersion: MaadIpVersion) {
 		this.dataset = dataset;
 		this.slug = slug;
 		this.direction = direction;
-		this.key = buildLoaderKey(dataset, slug, direction);
+		this.ipVersion = ipVersion;
+		this.key = buildLoaderKey(dataset, slug, direction, ipVersion);
 	}
 
 	get loading() {
@@ -281,7 +299,7 @@ class NetflowFileDetailLoader {
 			const response = await fetch(
 				`/api/netflow/files/${this.slug}/details?${new URLSearchParams({
 					dataset: this.dataset,
-					...buildDirectionSearchParams(this.direction)
+					...buildScopeSearchParams(this.direction, this.ipVersion)
 				}).toString()}`
 			);
 
@@ -361,7 +379,7 @@ class NetflowFileDetailLoader {
 		return `/api/netflow/files/${this.slug}/${kind === 'ipCounts' ? 'ip-counts' : kind}?${new URLSearchParams(
 			{
 				dataset: this.dataset,
-				...buildDirectionSearchParams(this.direction),
+				...buildScopeSearchParams(this.direction, this.ipVersion),
 				router,
 				source: String(side === 'source')
 			}
@@ -393,13 +411,14 @@ function evictStaleLoaders() {
 export function getNetflowFileDetailLoader(
 	dataset: string,
 	slug: string,
-	direction: FlowDirection
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion = DEFAULT_MAAD_IP_VERSION
 ) {
-	const key = buildLoaderKey(dataset, slug, direction);
+	const key = buildLoaderKey(dataset, slug, direction, ipVersion);
 	let loader = fileDetailLoaders.get(key);
 
 	if (!loader) {
-		loader = new NetflowFileDetailLoader(dataset, slug, direction);
+		loader = new NetflowFileDetailLoader(dataset, slug, direction, ipVersion);
 		fileDetailLoaders.set(key, loader);
 	}
 

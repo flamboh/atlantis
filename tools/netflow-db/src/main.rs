@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fs::File,
     io::{self, BufRead, BufReader, Write},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     path::PathBuf,
 };
 
@@ -47,7 +47,7 @@ enum Command {
     ScrapeUgr16(ScrapeArgs),
     /// Verify a running web application against a built database.
     VerifyWebRoutes(WebVerifyArgs),
-    /// Compute MAAD JSON from IPv4 addresses, one per line.
+    /// Compute MAAD JSON from IPv4 (or, with --ipv6, IPv6) addresses, one per line.
     Maad(MaadArgs),
     /// Score IPv4 addresses (one per line) by Singularity alpha, as CSV.
     Singularity(SingularityArgs),
@@ -246,6 +246,9 @@ struct WebVerifyArgs {
 struct MaadArgs {
     /// Read addresses from this file instead of standard input.
     input: Option<PathBuf>,
+    /// Read IPv6 addresses and use the IPv6 prefix range (/23-/64).
+    #[arg(short = '6', long)]
+    ipv6: bool,
 }
 
 #[derive(Debug, Args)]
@@ -601,21 +604,29 @@ fn run_web_verify(args: WebVerifyArgs) -> Result<()> {
 }
 
 fn run_maad(args: MaadArgs) -> Result<()> {
-    let addresses = read_ipv4_lines(args.input)?;
-    maad::write_json(&maad::compute(addresses), io::stdout().lock())?;
+    let result = if args.ipv6 {
+        maad::compute(read_address_lines::<Ipv6Addr>(args.input, "IPv6")?)
+    } else {
+        maad::compute(read_address_lines::<Ipv4Addr>(args.input, "IPv4")?)
+    };
+    maad::write_json(&result, io::stdout().lock())?;
     io::stdout().flush()?;
     Ok(())
 }
 
 fn run_singularity(args: SingularityArgs) -> Result<()> {
-    let addresses = read_ipv4_lines(args.input)?;
+    let addresses = read_address_lines::<Ipv4Addr>(args.input, "IPv4")?;
     singularity::write_csv(&singularity::score(addresses), io::stdout().lock())?;
     io::stdout().flush()?;
     Ok(())
 }
 
-/// Read IPv4 addresses, one per line, from a file or standard input.
-fn read_ipv4_lines(input: Option<PathBuf>) -> Result<Vec<Ipv4Addr>> {
+/// Read one address family's addresses, one per line, from a file or standard input.
+fn read_address_lines<A>(input: Option<PathBuf>, family: &str) -> Result<Vec<A>>
+where
+    A: std::str::FromStr,
+    A::Err: std::error::Error + Send + Sync + 'static,
+{
     let input: Box<dyn BufRead> = match input {
         Some(path) => Box::new(BufReader::new(
             File::open(&path).with_context(|| format!("unable to open {}", path.display()))?,
@@ -631,8 +642,8 @@ fn read_ipv4_lines(input: Option<PathBuf>) -> Result<Vec<Ipv4Addr>> {
         }
         addresses.push(
             value
-                .parse::<Ipv4Addr>()
-                .with_context(|| format!("invalid IPv4 address {value:?}"))?,
+                .parse::<A>()
+                .with_context(|| format!("invalid {family} address {value:?}"))?,
         );
     }
     Ok(addresses)

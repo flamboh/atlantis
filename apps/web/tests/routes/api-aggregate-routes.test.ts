@@ -455,7 +455,8 @@ describe('aggregate API routes', () => {
 			'all',
 			'all',
 			100,
-			200
+			200,
+			4
 		]);
 		await expect(response.json()).resolves.toEqual({
 			timelines: [
@@ -495,5 +496,120 @@ describe('aggregate API routes', () => {
 			],
 			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
 		});
+	});
+
+	it('binds the requested MAAD ip version for structure and spectrum stats', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const structureResponse = await getStructureStats({
+			url: new URL(
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&ipVersion=6'
+			)
+		} as never);
+		expect(structureResponse.status).toBe(200);
+		expect(all).toHaveBeenNthCalledWith(1, expect.stringContaining('AND ip_version = ?'), [
+			'1h',
+			'r1',
+			'all',
+			'all',
+			100,
+			200,
+			6
+		]);
+
+		const spectrumResponse = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&ipVersion=6'
+			)
+		} as never);
+		expect(spectrumResponse.status).toBe(200);
+		expect(all).toHaveBeenNthCalledWith(3, expect.stringContaining('AND ip_version = ?'), [
+			'1h',
+			'r1',
+			'all',
+			'all',
+			100,
+			200,
+			6
+		]);
+	});
+
+	it('rejects an invalid MAAD ip version for structure and spectrum stats', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+
+		const structureResponse = await getStructureStats({
+			url: new URL(
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&ipVersion=5'
+			)
+		} as never);
+		expect(structureResponse.status).toBe(400);
+		await expect(structureResponse.json()).resolves.toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6'
+		});
+
+		const spectrumResponse = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&ipVersion=5'
+			)
+		} as never);
+		expect(spectrumResponse.status).toBe(400);
+		await expect(spectrumResponse.json()).resolves.toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6'
+		});
+	});
+
+	it('does not mix ip_version=6 spectrum rows with ip_version=4 rows', async () => {
+		const all = vi.fn().mockImplementation((query: string, boundParams: unknown[]) => {
+			if (!query.includes('FROM address_structure_stats')) {
+				return Promise.resolve([
+					{
+						sourceId: 'r1',
+						bucketStart: 100,
+						bucketEnd: 200,
+						coverageState: 'complete',
+						observedUnits: 1,
+						expectedUnits: 1,
+						rejectedUnits: 0
+					}
+				]);
+			}
+
+			const requestedIpVersion = boundParams[boundParams.length - 1];
+			return Promise.resolve([
+				{
+					router: 'r1',
+					bucketStart: 100,
+					bucketEnd: 200,
+					spectrumSaJson: requestedIpVersion === 6 ? '[{"alpha":9,"f":9}]' : '[{"alpha":1,"f":1}]',
+					spectrumDaJson: null
+				}
+			]);
+		});
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const v6Response = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&ipVersion=6'
+			)
+		} as never);
+		const v4Response = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200'
+			)
+		} as never);
+
+		type SpectrumBody = {
+			timelines: Array<{
+				buckets: Array<{ data: { spectrumSa: Array<{ alpha: number }> } | null }>;
+			}>;
+		};
+		const v6Body = (await v6Response.json()) as SpectrumBody;
+		const v4Body = (await v4Response.json()) as SpectrumBody;
+
+		expect(v6Body.timelines[0]?.buckets[0]?.data?.spectrumSa).toEqual([{ alpha: 9, f: 9 }]);
+		expect(v4Body.timelines[0]?.buckets[0]?.data?.spectrumSa).toEqual([{ alpha: 1, f: 1 }]);
 	});
 });

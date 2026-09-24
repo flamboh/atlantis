@@ -60,7 +60,7 @@ Run a bounded import while you test the configuration:
 
 The start date and end date are inclusive; use the same date for both to process a single day. If you omit the end date, the pipeline processes each day through the latest available day.
 
-Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 address sets, and they power the address-structure charts. Use `--no-maad` to skip them.
+Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 and IPv6 address sets, and they power the address-structure charts. IPv4 uses prefix lengths /8 to /24 and IPv6 uses /23 to /64, so the two families are separate results, not one comparable series. Use `--no-maad` to skip them.
 
 If a command fails, read [Troubleshooting](troubleshooting.md).
 

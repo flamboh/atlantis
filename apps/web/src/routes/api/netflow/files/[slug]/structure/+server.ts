@@ -2,7 +2,11 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { StructureFunctionData, StructureFunctionPoint } from '$lib/types/types';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
-import { normalizeStructurePoints, parseFlowDirectionParams } from '$lib/server/netflow-v3';
+import {
+	normalizeStructurePoints,
+	parseFlowDirectionParams,
+	parseMaadIpVersion
+} from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
 
@@ -19,6 +23,11 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 
 	if ('error' in flowDirection) {
 		return json({ error: flowDirection.error }, { status: flowDirection.status });
+	}
+
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		return json({ error: ipVersion.error }, { status: ipVersion.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
@@ -52,7 +61,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			WHERE source_id = ?
 				AND granularity = ?
 				AND bucket_start = ?
-				AND ip_version = 4
+				AND ip_version = ?
 				AND src_locality = ?
 				AND dst_locality = ?
 				AND address_side = ?
@@ -62,6 +71,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					router,
 					FIVE_MINUTES,
 					bucketStart,
+					ipVersion,
 					flowDirection.srcLocality,
 					flowDirection.dstLocality,
 					isSource ? 'source' : 'destination'

@@ -11,7 +11,11 @@ import type {
 	StructureFunctionPoint
 } from '$lib/types/types';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
-import { normalizeStructurePoints, parseFlowDirectionParams } from '$lib/server/netflow-v3';
+import {
+	normalizeStructurePoints,
+	parseFlowDirectionParams,
+	parseMaadIpVersion
+} from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
 
@@ -129,6 +133,11 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		return json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		return json({ error: ipVersion.error }, { status: ipVersion.status });
+	}
+
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
 		return json({ error: 'Invalid slug format' }, { status: 400 });
 	}
@@ -198,7 +207,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				FROM address_structure_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
-					AND ip_version = 4
+					AND ip_version = ?
 					AND src_locality = ?
 					AND dst_locality = ?
 					AND structure_kind = 'structure'
@@ -213,7 +222,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				FROM address_structure_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
-					AND ip_version = 4
+					AND ip_version = ?
 					AND src_locality = ?
 					AND dst_locality = ?
 					AND structure_kind = 'spectrum'
@@ -272,10 +281,12 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					flowDirection.dstLocality,
 					FIVE_MINUTES,
 					bucketStart,
+					ipVersion,
 					flowDirection.srcLocality,
 					flowDirection.dstLocality,
 					FIVE_MINUTES,
 					bucketStart,
+					ipVersion,
 					flowDirection.srcLocality,
 					flowDirection.dstLocality,
 					bucketStart

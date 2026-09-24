@@ -1,8 +1,8 @@
-//! In-process MAAD-compatible multifractal analysis for IPv4 address sets.
+//! In-process MAAD-compatible multifractal analysis for IPv4 and IPv6 address sets.
 
 use serde::Serialize;
 use std::io::Write;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 const MIN_MAAD_ADDRESSES: usize = 2;
 const SCHEMA_VERSION: u32 = 3;
@@ -10,11 +10,88 @@ const DEFAULT_FULL_THRESHOLD: f64 = 0.05;
 const DEFAULT_Q_STEP: f64 = 1.0 / 8.0;
 const DEFAULT_Q_MIN: f64 = -0.5;
 const DEFAULT_Q_MAX: f64 = 3.5;
-const DEFAULT_MIN_PREFIX_LENGTH: u8 = 8;
-const DEFAULT_MAX_PREFIX_LENGTH: u8 = 24;
-const MAX_PARENT_PREFIX_LENGTH: u8 = 31;
+const DEFAULT_IPV4_MIN_PREFIX_LENGTH: u8 = 8;
+const DEFAULT_IPV4_MAX_PREFIX_LENGTH: u8 = 24;
+const DEFAULT_IPV6_MIN_PREFIX_LENGTH: u8 = 23;
+const DEFAULT_IPV6_MAX_PREFIX_LENGTH: u8 = 64;
 const MAX_Q_VALUES: usize = 1025;
 const GRID_EPSILON: f64 = 1e-12;
+
+/// Fixed-width address bits whose prefixes MAAD partitions.
+pub trait PrefixBits: Copy + Ord {
+    const WIDTH: u8;
+
+    /// The leading `prefix_length` bits, right-aligned.
+    fn prefix(self, prefix_length: u8) -> Self;
+
+    /// The right-aligned prefix one bit longer, with the new bit set to `bit`.
+    fn child(self, bit: bool) -> Self;
+}
+
+impl PrefixBits for u32 {
+    const WIDTH: u8 = 32;
+
+    fn prefix(self, prefix_length: u8) -> Self {
+        if prefix_length == 0 {
+            0
+        } else {
+            self >> (Self::WIDTH - prefix_length)
+        }
+    }
+
+    fn child(self, bit: bool) -> Self {
+        (self << 1) | Self::from(bit)
+    }
+}
+
+impl PrefixBits for u128 {
+    const WIDTH: u8 = 128;
+
+    fn prefix(self, prefix_length: u8) -> Self {
+        if prefix_length == 0 {
+            0
+        } else {
+            self >> (Self::WIDTH - prefix_length)
+        }
+    }
+
+    fn child(self, bit: bool) -> Self {
+        (self << 1) | Self::from(bit)
+    }
+}
+
+/// An address family MAAD can analyze, with its upstream default prefix range.
+pub trait MaadAddress: Copy {
+    type Bits: PrefixBits;
+
+    fn bits(self) -> Self::Bits;
+
+    fn default_config() -> MaadConfig;
+}
+
+impl MaadAddress for Ipv4Addr {
+    type Bits = u32;
+
+    fn bits(self) -> u32 {
+        u32::from(self)
+    }
+
+    fn default_config() -> MaadConfig {
+        MaadConfig::ipv4()
+    }
+}
+
+impl MaadAddress for Ipv6Addr {
+    type Bits = u128;
+
+    fn bits(self) -> u128 {
+        u128::from(self)
+    }
+
+    fn default_config() -> MaadConfig {
+        MaadConfig::ipv6()
+    }
+}
 
 /// Configuration for the in-process MAAD estimator.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -28,16 +105,36 @@ pub struct MaadConfig {
     pub full_threshold: f64,
 }
 
-impl Default for MaadConfig {
-    fn default() -> Self {
+impl MaadConfig {
+    pub const fn ipv4() -> Self {
+        Self::with_prefix_range(
+            DEFAULT_IPV4_MIN_PREFIX_LENGTH,
+            DEFAULT_IPV4_MAX_PREFIX_LENGTH,
+        )
+    }
+
+    pub const fn ipv6() -> Self {
+        Self::with_prefix_range(
+            DEFAULT_IPV6_MIN_PREFIX_LENGTH,
+            DEFAULT_IPV6_MAX_PREFIX_LENGTH,
+        )
+    }
+
+    const fn with_prefix_range(min_prefix_length: u8, max_prefix_length: u8) -> Self {
         Self {
             q_min: DEFAULT_Q_MIN,
             q_max: DEFAULT_Q_MAX,
             q_step: DEFAULT_Q_STEP,
-            min_prefix_length: DEFAULT_MIN_PREFIX_LENGTH,
-            max_prefix_length: DEFAULT_MAX_PREFIX_LENGTH,
+            min_prefix_length,
+            max_prefix_length,
             full_threshold: DEFAULT_FULL_THRESHOLD,
         }
+    }
+}
+
+impl Default for MaadConfig {
+    fn default() -> Self {
+        Self::ipv4()
     }
 }
 
@@ -62,11 +159,12 @@ pub enum MaadError {
     #[error("required q={q} is not on the configured q grid")]
     RequiredQNotOnGrid { q: f64 },
     #[error(
-        "prefix range must satisfy 0 <= min < max <= 31 (min={min_prefix_length}, max={max_prefix_length})"
+        "prefix range must satisfy 0 <= min < max < {address_bits} (min={min_prefix_length}, max={max_prefix_length})"
     )]
     InvalidPrefixRange {
         min_prefix_length: u8,
         max_prefix_length: u8,
+        address_bits: u8,
     },
     #[error("full_threshold must be finite and in [0, 1) (full_threshold={full_threshold})")]
     InvalidFullThreshold { full_threshold: f64 },
@@ -119,25 +217,25 @@ struct PreparedMoment {
     child_counts: Vec<Vec<usize>>,
 }
 
-/// Compute MAAD-compatible output from an IPv4 address set.
-pub fn compute(addresses: impl IntoIterator<Item = Ipv4Addr>) -> MaadResult {
-    compute_with_config(addresses, MaadConfig::default())
+/// Compute MAAD-compatible output from one address family's address set.
+pub fn compute<A: MaadAddress>(addresses: impl IntoIterator<Item = A>) -> MaadResult {
+    compute_with_config(addresses, A::default_config())
         .expect("the default MAAD configuration must be valid")
 }
 
 /// Compute MAAD-compatible output using an explicitly validated configuration.
-pub fn compute_with_config(
-    addresses: impl IntoIterator<Item = Ipv4Addr>,
+pub fn compute_with_config<A: MaadAddress>(
+    addresses: impl IntoIterator<Item = A>,
     config: MaadConfig,
 ) -> Result<MaadResult, MaadError> {
-    let q_values = validate_config(&config)?;
-    let mut addresses: Vec<_> = addresses.into_iter().map(u32::from).collect();
+    let q_values = validate_config(&config, A::Bits::WIDTH)?;
+    let mut addresses: Vec<_> = addresses.into_iter().map(A::bits).collect();
     addresses.sort_unstable();
     addresses.dedup();
     if addresses.len() < MIN_MAAD_ADDRESSES {
         return Ok(empty_result(addresses.len()));
     }
-    let counts = build_prefix_counts(&addresses);
+    let counts = build_prefix_counts(&addresses, config.max_prefix_length + 1);
     let prepared = prepare_valid_moments(&counts, &config);
     if prepared.is_empty() {
         return Ok(empty_result(addresses.len()));
@@ -183,12 +281,15 @@ fn empty_result(total_addrs: usize) -> MaadResult {
     }
 }
 
-fn build_prefix_counts(addresses: &[u32]) -> Vec<Vec<(u32, usize)>> {
-    let mut counts = Vec::with_capacity(33);
-    for prefix_length in 0..=32_u8 {
+fn build_prefix_counts<B: PrefixBits>(
+    addresses: &[B],
+    max_prefix_length: u8,
+) -> Vec<Vec<(B, usize)>> {
+    let mut counts = Vec::with_capacity(usize::from(max_prefix_length) + 1);
+    for prefix_length in 0..=max_prefix_length {
         let mut prefixes = Vec::new();
         for &address in addresses {
-            let prefix = prefix_of(address, prefix_length);
+            let prefix = address.prefix(prefix_length);
             if let Some((last_prefix, count)) = prefixes.last_mut()
                 && *last_prefix == prefix
             {
@@ -202,15 +303,7 @@ fn build_prefix_counts(addresses: &[u32]) -> Vec<Vec<(u32, usize)>> {
     counts
 }
 
-const fn prefix_of(address: u32, prefix_length: u8) -> u32 {
-    if prefix_length == 0 {
-        0
-    } else {
-        address >> (32 - prefix_length)
-    }
-}
-
-fn validate_config(config: &MaadConfig) -> Result<Vec<f64>, MaadError> {
+fn validate_config(config: &MaadConfig, address_bits: u8) -> Result<Vec<f64>, MaadError> {
     if !config.q_min.is_finite() || !config.q_max.is_finite() {
         return Err(MaadError::NonFiniteQBounds {
             q_min: config.q_min,
@@ -229,11 +322,12 @@ fn validate_config(config: &MaadConfig) -> Result<Vec<f64>, MaadError> {
         });
     }
     if config.min_prefix_length >= config.max_prefix_length
-        || config.max_prefix_length > MAX_PARENT_PREFIX_LENGTH
+        || config.max_prefix_length >= address_bits
     {
         return Err(MaadError::InvalidPrefixRange {
             min_prefix_length: config.min_prefix_length,
             max_prefix_length: config.max_prefix_length,
+            address_bits,
         });
     }
     if !config.full_threshold.is_finite() || !(0.0..1.0).contains(&config.full_threshold) {
@@ -283,12 +377,12 @@ fn validate_config(config: &MaadConfig) -> Result<Vec<f64>, MaadError> {
     Ok(q_values)
 }
 
-fn is_valid_parent(count: usize, prefix_length: u8, full_threshold: f64) -> bool {
-    count > 1 && (count as f64).log2() / f64::from(32 - prefix_length) < 1.0 - full_threshold
+fn is_valid_parent<B: PrefixBits>(count: usize, prefix_length: u8, full_threshold: f64) -> bool {
+    count > 1 && (count as f64).log2() / f64::from(B::WIDTH - prefix_length) < 1.0 - full_threshold
 }
 
-fn prepare_valid_moments(
-    counts: &[Vec<(u32, usize)>],
+fn prepare_valid_moments<B: PrefixBits>(
+    counts: &[Vec<(B, usize)>],
     config: &MaadConfig,
 ) -> Vec<(u8, PreparedMoment)> {
     let mut prepared = Vec::new();
@@ -325,9 +419,9 @@ fn prepare_valid_moments(
     prepared
 }
 
-fn prepare_moment_at_length(
-    parents: &[(u32, usize)],
-    children: &[(u32, usize)],
+fn prepare_moment_at_length<B: PrefixBits>(
+    parents: &[(B, usize)],
+    children: &[(B, usize)],
     path_allowed: &[bool],
     prefix_length: u8,
     full_threshold: f64,
@@ -337,16 +431,17 @@ fn prepare_moment_at_length(
     let mut next_child = 0;
 
     for (parent_index, &(prefix, count)) in parents.iter().enumerate() {
-        let first_child = prefix << 1;
+        let first_child = prefix.child(false);
+        let last_child = prefix.child(true);
         while next_child < children.len() && children[next_child].0 < first_child {
             next_child += 1;
         }
         let child_start = next_child;
-        while next_child < children.len() && children[next_child].0 <= first_child | 1 {
+        while next_child < children.len() && children[next_child].0 <= last_child {
             next_child += 1;
         }
         if path_allowed[parent_index]
-            && is_valid_parent(count, prefix_length, full_threshold)
+            && is_valid_parent::<B>(count, prefix_length, full_threshold)
             && child_start < next_child
         {
             parent_counts.push(count);
@@ -365,9 +460,9 @@ fn prepare_moment_at_length(
     }
 }
 
-fn propagate_allowed_paths(
-    parents: &[(u32, usize)],
-    children: &[(u32, usize)],
+fn propagate_allowed_paths<B: PrefixBits>(
+    parents: &[(B, usize)],
+    children: &[(B, usize)],
     path_allowed: &[bool],
     prefix_length: u8,
     full_threshold: f64,
@@ -376,17 +471,18 @@ fn propagate_allowed_paths(
     let mut next_child = 0;
 
     for (parent_index, &(prefix, count)) in parents.iter().enumerate() {
-        let first_child = prefix << 1;
+        let first_child = prefix.child(false);
+        let last_child = prefix.child(true);
         while next_child < children.len() && children[next_child].0 < first_child {
             next_child += 1;
         }
         let child_start = next_child;
-        while next_child < children.len() && children[next_child].0 <= first_child | 1 {
+        while next_child < children.len() && children[next_child].0 <= last_child {
             next_child += 1;
         }
         let is_branch = next_child - child_start == 2;
         let allowed = path_allowed[parent_index]
-            && (!is_branch || is_valid_parent(count, prefix_length, full_threshold));
+            && (!is_branch || is_valid_parent::<B>(count, prefix_length, full_threshold));
         child_path_allowed.extend(std::iter::repeat_n(allowed, next_child - child_start));
     }
 
@@ -519,8 +615,8 @@ fn compute_spectrum(structure: &[StructureRow], q_step: f64) -> Vec<SpectrumRow>
     rows
 }
 
-fn compute_dimensions(
-    counts: &[Vec<(u32, usize)>],
+fn compute_dimensions<B: PrefixBits>(
+    counts: &[Vec<(B, usize)>],
     prefix_lengths: &[u8],
     structure: &[StructureRow],
     total_addresses: usize,
@@ -557,8 +653,8 @@ fn dimension_rows(structure: &[StructureRow], information_dimension: f64) -> Vec
     ]
 }
 
-fn info_dimension(
-    counts: &[Vec<(u32, usize)>],
+fn info_dimension<B: PrefixBits>(
+    counts: &[Vec<(B, usize)>],
     prefix_lengths: &[u8],
     total_addresses: usize,
 ) -> f64 {
@@ -602,16 +698,23 @@ mod tests {
         assert!((left - right).abs() <= 1e-12, "{left} != {right}");
     }
 
-    fn reference_compute(
-        addresses: impl IntoIterator<Item = Ipv4Addr>,
+    fn reference_compute<A: MaadAddress>(
+        addresses: impl IntoIterator<Item = A>,
         config: MaadConfig,
-    ) -> MaadResult {
-        let addresses: BTreeSet<_> = addresses.into_iter().map(u32::from).collect();
+    ) -> MaadResult
+    where
+        A::Bits: Into<u128>,
+    {
+        let width = A::Bits::WIDTH;
+        let addresses: BTreeSet<u128> = addresses
+            .into_iter()
+            .map(|address| address.bits().into())
+            .collect();
         if addresses.len() < MIN_MAAD_ADDRESSES {
             return empty_result(addresses.len());
         }
-        let counts = reference_prefix_counts(&addresses);
-        let prepared = reference_prepare_valid_moments(&counts, &config);
+        let counts = reference_prefix_counts(&addresses, width);
+        let prepared = reference_prepare_valid_moments(&counts, &config, width);
         if prepared.is_empty() {
             return empty_result(addresses.len());
         }
@@ -636,12 +739,20 @@ mod tests {
         }
     }
 
-    fn reference_prefix_counts(addresses: &BTreeSet<u32>) -> Vec<BTreeMap<u32, usize>> {
-        let mut counts = vec![BTreeMap::new(); 33];
+    fn reference_prefix_counts(
+        addresses: &BTreeSet<u128>,
+        width: u8,
+    ) -> Vec<BTreeMap<u128, usize>> {
+        let mut counts = vec![BTreeMap::new(); usize::from(width) + 1];
         for &address in addresses {
-            for prefix_length in 0..=32_u8 {
+            for prefix_length in 0..=width {
+                let prefix = if prefix_length == 0 {
+                    0
+                } else {
+                    address >> (width - prefix_length)
+                };
                 *counts[usize::from(prefix_length)]
-                    .entry(prefix_of(address, prefix_length))
+                    .entry(prefix)
                     .or_default() += 1;
             }
         }
@@ -649,8 +760,9 @@ mod tests {
     }
 
     fn reference_prepare_valid_moments(
-        counts: &[BTreeMap<u32, usize>],
+        counts: &[BTreeMap<u128, usize>],
         config: &MaadConfig,
+        width: u8,
     ) -> Vec<(u8, PreparedMoment)> {
         let mut prepared = Vec::new();
         let mut path_allowed = BTreeMap::from([(0, true)]);
@@ -664,7 +776,12 @@ mod tests {
                 let mut child_counts = Vec::new();
                 for (&prefix, &count) in parents {
                     if !path_allowed[&prefix]
-                        || !reference_valid_parent(count, prefix_length, config.full_threshold)
+                        || !reference_valid_parent(
+                            count,
+                            prefix_length,
+                            config.full_threshold,
+                            width,
+                        )
                     {
                         continue;
                     }
@@ -702,6 +819,7 @@ mod tests {
                                     parent_count,
                                     prefix_length,
                                     config.full_threshold,
+                                    width,
                                 ));
                         (child, allowed)
                     })
@@ -712,8 +830,13 @@ mod tests {
         prepared
     }
 
-    fn reference_valid_parent(count: usize, prefix_length: u8, full_threshold: f64) -> bool {
-        count > 1 && (count as f64).log2() / f64::from(32 - prefix_length) < 1.0 - full_threshold
+    fn reference_valid_parent(
+        count: usize,
+        prefix_length: u8,
+        full_threshold: f64,
+        width: u8,
+    ) -> bool {
+        count > 1 && (count as f64).log2() / f64::from(width - prefix_length) < 1.0 - full_threshold
     }
 
     fn reference_q_values(config: &MaadConfig) -> Vec<f64> {
@@ -781,7 +904,7 @@ mod tests {
     }
 
     fn reference_dimensions(
-        counts: &[BTreeMap<u32, usize>],
+        counts: &[BTreeMap<u128, usize>],
         prefix_lengths: &[u8],
         structure: &[StructureRow],
         total_addresses: usize,
@@ -843,8 +966,11 @@ mod tests {
         ]
     }
 
-    fn assert_matches_reference(addresses: Vec<Ipv4Addr>) {
-        let config = MaadConfig::default();
+    fn assert_matches_reference<A: MaadAddress>(addresses: Vec<A>)
+    where
+        A::Bits: Into<u128>,
+    {
+        let config = A::default_config();
         let result = compute_with_config(addresses.clone(), config).unwrap();
         let reference = reference_compute(addresses, config);
         assert_eq!(result.metadata, reference.metadata);
@@ -896,9 +1022,116 @@ mod tests {
         }
     }
 
+    fn documentation_ipv6(bits: u128) -> Ipv6Addr {
+        Ipv6Addr::from(u128::from(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0)) | bits)
+    }
+
+    #[test]
+    fn ipv6_optimized_path_matches_the_ordered_map_reference() {
+        let dense_subnets: Vec<_> = (0..=255_u128)
+            .map(|subnet| documentation_ipv6(subnet << 64))
+            .collect();
+        let mut clustered = Vec::new();
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for site in 0..8_u128 {
+            for _ in 0..64 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let subnet = u128::from(state >> 60);
+                clustered.push(documentation_ipv6(
+                    (site << 80) | (subnet << 64) | u128::from(state),
+                ));
+            }
+        }
+        let duplicate_and_boundaries = vec![
+            Ipv6Addr::UNSPECIFIED,
+            Ipv6Addr::from(u128::MAX),
+            documentation_ipv6(1),
+            documentation_ipv6(1),
+            documentation_ipv6(2),
+        ];
+        for addresses in [
+            Vec::new(),
+            vec![Ipv6Addr::LOCALHOST],
+            dense_subnets,
+            clustered,
+            duplicate_and_boundaries,
+        ] {
+            assert_matches_reference(addresses);
+        }
+    }
+
+    #[test]
+    fn ipv6_uses_upstream_default_prefix_range() {
+        let dense_subnets = (0..=255_u128).map(|subnet| documentation_ipv6(subnet << 64));
+
+        let result = compute(dense_subnets);
+
+        assert_eq!(result.metadata.total_addrs, 256);
+        assert_eq!(
+            result.metadata.prefix_lengths,
+            (23..=63).collect::<Vec<_>>()
+        );
+        assert_eq!(result.structure.len(), 33);
+        assert_eq!(
+            result
+                .dimensions
+                .iter()
+                .map(|row| row.q)
+                .collect::<Vec<_>>(),
+            vec![0.0, 1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn ipv6_nearly_full_threshold_uses_128_bit_capacity() {
+        let full_slash_120 = (0..=255_u128).map(documentation_ipv6);
+        let config = MaadConfig {
+            min_prefix_length: 119,
+            max_prefix_length: 121,
+            ..MaadConfig::ipv6()
+        };
+
+        let result = compute_with_config(full_slash_120, config).unwrap();
+
+        assert_eq!(result.metadata.prefix_lengths, vec![119]);
+    }
+
+    #[test]
+    fn prefix_range_is_bounded_by_the_address_width() {
+        let ipv4 = [Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(192, 0, 2, 2)];
+        let ipv6 = [documentation_ipv6(1), documentation_ipv6(2)];
+        let widest_ipv6 = MaadConfig {
+            min_prefix_length: 23,
+            max_prefix_length: 127,
+            ..MaadConfig::ipv6()
+        };
+
+        assert_eq!(
+            compute_with_config(ipv4, MaadConfig::ipv6()),
+            Err(MaadError::InvalidPrefixRange {
+                min_prefix_length: 23,
+                max_prefix_length: 64,
+                address_bits: 32,
+            })
+        );
+        assert!(compute_with_config(ipv6, widest_ipv6).is_ok());
+        assert!(
+            compute_with_config(
+                ipv6,
+                MaadConfig {
+                    max_prefix_length: 128,
+                    ..widest_ipv6
+                }
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn empty_singleton_and_duplicate_sets_have_empty_results() {
-        let empty = compute(std::iter::empty());
+        let empty = compute(std::iter::empty::<Ipv4Addr>());
         let singleton = compute([Ipv4Addr::new(192, 0, 2, 1)]);
         let duplicate = compute([Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(192, 0, 2, 1)]);
 
@@ -1017,7 +1250,7 @@ mod tests {
     #[test]
     fn json_uses_the_established_maad_contract() {
         let mut output = Vec::new();
-        write_json(&compute(std::iter::empty()), &mut output).unwrap();
+        write_json(&compute(std::iter::empty::<Ipv4Addr>()), &mut output).unwrap();
 
         assert_eq!(
             String::from_utf8(output).unwrap(),
@@ -1130,11 +1363,11 @@ mod tests {
         };
 
         assert!(matches!(
-            compute_with_config([], too_many_values),
+            compute_with_config::<Ipv4Addr>([], too_many_values),
             Err(MaadError::QGridTooLarge { .. })
         ));
         assert_eq!(
-            compute_with_config([], rounded_but_absent_q2),
+            compute_with_config::<Ipv4Addr>([], rounded_but_absent_q2),
             Err(MaadError::RequiredQNotOnGrid { q: 2.0 })
         );
     }

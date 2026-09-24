@@ -4,7 +4,11 @@ import type { SpectrumPoint } from '$lib/types/types';
 import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
+import {
+	parseAggregateStatsParams,
+	parseMaadIpVersion,
+	placeholders
+} from '$lib/server/netflow-v3';
 
 type SpectrumStatsRow = SpectrumStatsPayload & {
 	router: string;
@@ -53,6 +57,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	if ('error' in params) {
 		return json({ error: params.error }, { status: params.status });
 	}
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		return json({ error: ipVersion.error }, { status: ipVersion.status });
+	}
 	const { routers, granularity, start, end, srcLocality, dstLocality } = params;
 
 	try {
@@ -60,7 +68,15 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		return await withDatasetDb(dataset, platform, async ({ db }) => {
 			const tableName = 'address_structure_stats';
 			const sourceColumn = 'source_id';
-			const queryParams = [granularity, ...routers, srcLocality, dstLocality, start, end];
+			const queryParams = [
+				granularity,
+				...routers,
+				srcLocality,
+				dstLocality,
+				start,
+				end,
+				ipVersion
+			];
 
 			const query = `
 			SELECT
@@ -76,7 +92,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				AND dst_locality = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
-				AND ip_version = 4
+				AND ip_version = ?
 				AND structure_kind = 'spectrum'
 			GROUP BY ${sourceColumn}, bucket_start
 		`;

@@ -159,16 +159,10 @@ pub(crate) fn write_buckets_profiled(
         profile.address_count_insert_elapsed += scalar.address_count_insert_elapsed;
         profile.port_count_insert_elapsed += scalar.port_count_insert_elapsed;
         if run_maad {
-            profile.maad_address_sets += count(
-                rows.address_sets
-                    .iter()
-                    .filter(|addresses| addresses.scope.ip_version == IpVersion::V4)
-                    .count(),
-            );
+            profile.maad_address_sets += count(rows.address_sets.len());
             profile.maad_addresses += rows
                 .address_sets
                 .iter()
-                .filter(|addresses| addresses.scope.ip_version == IpVersion::V4)
                 .map(|addresses| count(addresses.addresses.len()))
                 .sum::<u64>();
             let maad_started = Instant::now();
@@ -281,59 +275,62 @@ fn insert_rows(
 fn maad_rows(
     address_sets: &[AddressSetRow<'_>],
 ) -> Result<Vec<AddressStructureStatsRow>, PublishError> {
-    // Filter before entering the pool so the indexed collection below keeps
-    // canonical input order while still allowing independent scopes to run in
-    // parallel.
-    let address_sets = address_sets
-        .iter()
-        .filter(|addresses| addresses.scope.ip_version == IpVersion::V4)
-        .collect::<Vec<_>>();
     if address_sets.is_empty() {
         return Ok(Vec::new());
     }
 
     let pool = maad_pool()?;
-    let rows =
-        pool.install(|| {
-            address_sets
-                .par_iter()
-                .map(|addresses| {
-                    let result =
-                        maad::compute(addresses.addresses.iter().filter_map(
-                            |address| match address {
-                                IpAddr::V4(address) => Some(*address),
-                                IpAddr::V6(_) => None,
-                            },
-                        ));
-                    let metadata_json = serde_json::to_string(&result.metadata)?;
-                    let dimensions = dimensions(&addresses.key, addresses.scope);
-                    Ok::<_, serde_json::Error>([
-                        AddressStructureStatsRow {
-                            dimensions: dimensions.clone(),
-                            address_side: addresses.address_side.as_str().to_owned(),
-                            structure_kind: "structure".into(),
-                            values_json: serde_json::to_string(&result.structure)?,
-                            metadata_json: metadata_json.clone(),
-                        },
-                        AddressStructureStatsRow {
-                            dimensions: dimensions.clone(),
-                            address_side: addresses.address_side.as_str().to_owned(),
-                            structure_kind: "spectrum".into(),
-                            values_json: serde_json::to_string(&result.spectrum)?,
-                            metadata_json: metadata_json.clone(),
-                        },
-                        AddressStructureStatsRow {
-                            dimensions,
-                            address_side: addresses.address_side.as_str().to_owned(),
-                            structure_kind: "dimension".into(),
-                            values_json: serde_json::to_string(&result.dimensions)?,
-                            metadata_json,
-                        },
-                    ])
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+    let rows = pool.install(|| {
+        address_sets
+            .par_iter()
+            .map(|addresses| {
+                let result = maad_result(addresses);
+                let metadata_json = serde_json::to_string(&result.metadata)?;
+                let dimensions = dimensions(&addresses.key, addresses.scope);
+                Ok::<_, serde_json::Error>([
+                    AddressStructureStatsRow {
+                        dimensions: dimensions.clone(),
+                        address_side: addresses.address_side.as_str().to_owned(),
+                        structure_kind: "structure".into(),
+                        values_json: serde_json::to_string(&result.structure)?,
+                        metadata_json: metadata_json.clone(),
+                    },
+                    AddressStructureStatsRow {
+                        dimensions: dimensions.clone(),
+                        address_side: addresses.address_side.as_str().to_owned(),
+                        structure_kind: "spectrum".into(),
+                        values_json: serde_json::to_string(&result.spectrum)?,
+                        metadata_json: metadata_json.clone(),
+                    },
+                    AddressStructureStatsRow {
+                        dimensions,
+                        address_side: addresses.address_side.as_str().to_owned(),
+                        structure_kind: "dimension".into(),
+                        values_json: serde_json::to_string(&result.dimensions)?,
+                        metadata_json,
+                    },
+                ])
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
     Ok(rows.into_iter().flatten().collect())
+}
+
+fn maad_result(addresses: &AddressSetRow<'_>) -> maad::MaadResult {
+    match addresses.scope.ip_version {
+        IpVersion::V4 => maad::compute(addresses.addresses.iter().filter_map(
+            |address| match address {
+                IpAddr::V4(address) => Some(*address),
+                IpAddr::V6(_) => None,
+            },
+        )),
+        IpVersion::V6 => maad::compute(addresses.addresses.iter().filter_map(
+            |address| match address {
+                IpAddr::V6(address) => Some(*address),
+                IpAddr::V4(_) => None,
+            },
+        )),
+    }
 }
 
 fn maad_pool() -> Result<&'static rayon::ThreadPool, PublishError> {
@@ -367,7 +364,7 @@ fn count(value: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use rusqlite::Connection;
 
@@ -419,7 +416,7 @@ mod tests {
                     row.get::<_, i64>(0)
                 })
                 .unwrap(),
-            30
+            60
         );
         assert_eq!(profile.bucket_keys, 1);
         assert_eq!(profile.write_calls, 1);
@@ -427,8 +424,8 @@ mod tests {
         assert_eq!(profile.protocol_rows, 10);
         assert_eq!(profile.address_count_rows, 20);
         assert_eq!(profile.port_count_rows, 40);
-        assert_eq!(profile.maad_address_sets, 10);
-        assert_eq!(profile.address_structure_rows, 30);
+        assert_eq!(profile.maad_address_sets, 20);
+        assert_eq!(profile.address_structure_rows, 60);
         assert!(profile.address_structure_json_bytes > 0);
         assert!(profile.total_elapsed >= profile.other_elapsed());
     }
@@ -538,5 +535,28 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn maad_rows_use_the_ipv6_prefix_range_for_ipv6_scopes() {
+        let base = u128::from(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0));
+        let addresses = AddressSet::from_iter(
+            (0..=255_u128).map(|subnet| IpAddr::V6(Ipv6Addr::from(base | (subnet << 64)))),
+        );
+        let rows = [AddressSetRow {
+            key: BucketKey::new("r1", Granularity::FiveMinutes, 0, 300),
+            scope: Scope::new(IpVersion::V6, Locality::All, Locality::All),
+            address_side: AddressSide::Source,
+            addresses: &addresses,
+        }];
+
+        let rows = maad_rows(&rows).unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.dimensions.ip_version == 6));
+        let metadata: serde_json::Value = serde_json::from_str(&rows[0].metadata_json).unwrap();
+        assert_eq!(metadata["totalAddrs"], 256);
+        assert_eq!(metadata["minPrefixLength"], 23);
+        assert_eq!(metadata["maxPrefixLength"], 63);
     }
 }
