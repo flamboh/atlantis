@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
 	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
@@ -16,8 +17,6 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { clampGroupByToDateRange } from '#lib/components/charts/chart-utils.ts';
 	import {
-		DEFAULT_MAAD_IP_VERSION,
-		DEFAULT_MAAD_MEASURE,
 		type FlowDirection,
 		IP_METRIC_OPTIONS,
 		type IpGranularity,
@@ -28,10 +27,9 @@
 		type ProtocolMetricKey
 	} from '#lib/types/types.ts';
 	import type { DimensionMetricKey } from '#lib/types/dimension-stats.ts';
-	import { watch } from 'runed';
-	import { useSearchParams } from 'runed/kit';
-	import { createDateRangeSearchSchema } from '#lib/schemas.ts';
+	import { createDateRangeSearch, type DateRangeSearch } from '#lib/schemas.ts';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
+	import { navigateToSearchParams } from '#lib/utils/search-navigation.ts';
 
 	const props = $props<{
 		dataset: string;
@@ -42,13 +40,20 @@
 		title?: string;
 	}>();
 
-	const params = (() =>
-		useSearchParams(createDateRangeSearchSchema(props.defaultStartDate), {
-			noScroll: true
-		}))();
-	let startDate = $state(params.startDate);
-	let endDate = $state(params.endDate);
-	let selectedGroupBy = $state<GroupByOption>(params.groupBy as GroupByOption);
+	const dateRangeSearch = $derived(createDateRangeSearch(props.defaultStartDate));
+	let search = $derived(dateRangeSearch.parse(page.url.searchParams));
+	const startDate = $derived(search.startDate);
+	const endDate = $derived(search.endDate);
+	const selectedGroupBy = $derived(clampGroupByToDateRange(search.groupBy, startDate, endDate));
+
+	function updateSearch(patch: Partial<DateRangeSearch>) {
+		const next = { ...search, ...patch };
+		next.groupBy = clampGroupByToDateRange(next.groupBy, next.startDate, next.endDate);
+		if (dateRangeSearch.equals(search, next)) return;
+		search = next;
+		void navigateToSearchParams(goto, dateRangeSearch.serialize(page.url.searchParams, next));
+	}
+
 	function createRouterConfig(routers: string[]): RouterConfig {
 		const routerConfig: RouterConfig = {};
 		for (const router of routers) {
@@ -164,11 +169,9 @@
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
 	const hasLocality = $derived(props.hasLocality ?? true);
-	const ipVersion = $derived<MaadIpVersion>(params.ipVersion);
-	const direction = $derived<FlowDirection>(
-		hasLocality ? (params.direction as FlowDirection) : 'all'
-	);
-	const measure = $derived(params.measure as MaadMeasure);
+	const ipVersion = $derived<MaadIpVersion>(search.ipVersion);
+	const direction = $derived<FlowDirection>(hasLocality ? search.direction : 'all');
+	const measure = $derived<MaadMeasure>(search.measure);
 	const maadComputed = $derived(props.maadComputed ?? true);
 	const maadUnavailableCopy = $derived(
 		maadComputed
@@ -334,44 +337,6 @@
 			.sort();
 	}
 
-	watch(
-		() => params.startDate,
-		(next) => {
-			if (next !== startDate) {
-				startDate = next;
-			}
-		}
-	);
-
-	watch(
-		() => params.endDate,
-		(next) => {
-			if (next !== endDate) {
-				endDate = next;
-			}
-		}
-	);
-
-	watch(
-		() => params.groupBy,
-		(next) => {
-			const value = next as GroupByOption;
-			if (value !== selectedGroupBy) {
-				selectedGroupBy = value;
-			}
-		}
-	);
-
-	$effect(() => {
-		const clampedGroupBy = clampGroupByToDateRange(selectedGroupBy, startDate, endDate);
-		if (clampedGroupBy !== selectedGroupBy) {
-			selectedGroupBy = clampedGroupBy;
-			if (params.groupBy !== clampedGroupBy) {
-				params.groupBy = clampedGroupBy;
-			}
-		}
-	});
-
 	onMount(() => {
 		loadChartOrder();
 		activateChart(chartOrder[0] ?? 'dashboard');
@@ -401,27 +366,19 @@
 	});
 
 	function handleStartDateChange(payload: { startDate: string }) {
-		startDate = payload.startDate;
-		params.startDate = startDate;
+		updateSearch({ startDate: payload.startDate });
 	}
 
 	function handleEndDateChange(payload: { endDate: string }) {
-		endDate = payload.endDate;
-		params.endDate = endDate;
+		updateSearch({ endDate: payload.endDate });
 	}
 
 	function handleDateChange(payload: { startDate: string; endDate: string }) {
-		startDate = payload.startDate;
-		endDate = payload.endDate;
-		params.update({ startDate, endDate });
+		updateSearch({ startDate: payload.startDate, endDate: payload.endDate });
 	}
 
 	function handleGroupByChange(payload: { groupBy: GroupByOption }) {
-		if (payload.groupBy === params.groupBy) {
-			return;
-		}
-		selectedGroupBy = payload.groupBy;
-		params.groupBy = selectedGroupBy;
+		updateSearch({ groupBy: payload.groupBy });
 	}
 
 	function handleMetricDrillDown(
@@ -429,8 +386,7 @@
 		nextStartDate: string,
 		nextEndDate: string
 	) {
-		handleGroupByChange({ groupBy });
-		handleDateChange({ startDate: nextStartDate, endDate: nextEndDate });
+		updateSearch({ groupBy, startDate: nextStartDate, endDate: nextEndDate });
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
@@ -455,38 +411,21 @@
 	}
 
 	function handleDirectionChange(payload: { direction: FlowDirection }) {
-		if (payload.direction === params.direction) {
-			return;
-		}
-		params.direction = payload.direction;
+		updateSearch({ direction: payload.direction });
 	}
 
 	function handleIpVersionChange(payload: { ipVersion: MaadIpVersion }) {
-		if (payload.ipVersion === params.ipVersion) {
-			return;
-		}
-		params.ipVersion = payload.ipVersion;
+		updateSearch({ ipVersion: payload.ipVersion });
 	}
 
 	function handleMeasureChange(payload: { measure: MaadMeasure }) {
-		if (payload.measure === params.measure) {
-			return;
-		}
-		params.measure = payload.measure;
+		updateSearch({ measure: payload.measure });
 	}
 
 	function handleResetView() {
-		const today = new Date().toJSON().slice(0, 10);
-		selectedGroupBy = 'date';
-		startDate = props.defaultStartDate;
-		endDate = today;
-		params.update({
-			groupBy: selectedGroupBy,
-			startDate,
-			endDate,
-			direction: 'all',
-			ipVersion: DEFAULT_MAAD_IP_VERSION,
-			measure: DEFAULT_MAAD_MEASURE
+		updateSearch({
+			...dateRangeSearch.defaults,
+			endDate: new Date().toJSON().slice(0, 10)
 		});
 	}
 </script>
