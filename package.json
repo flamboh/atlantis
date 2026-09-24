@@ -34,8 +34,5 @@
   },
   "workspaces": [
     "apps/*"
-  ],
-  "patchedDependencies": {
-    "runed@0.36.0": "patches/runed@0.36.0.patch"
-  }
+  ]
 }

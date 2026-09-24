@@ -1,6 +1,4 @@
-import { onDestroy } from 'svelte';
 import { SvelteMap, SvelteURLSearchParams } from 'svelte/reactivity';
-import { watch } from 'runed';
 import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
 import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 import type {
@@ -114,141 +112,156 @@ function readCachedData(key: string, requestedRange: TimeRange): FlowCharacteris
 	};
 }
 
+type CharacteristicsRequest =
+	| { kind: 'idle' }
+	| { kind: 'waiting' }
+	| { kind: 'invalid'; error: string }
+	| {
+			kind: 'fetch';
+			id: string;
+			key: string;
+			requestedRange: TimeRange;
+			baseParams: Record<string, string>;
+			missing: boolean;
+	  };
+
+type FetchRequest = Extract<CharacteristicsRequest, { kind: 'fetch' }>;
+
+type SettledRequest = {
+	id: string;
+	data: FlowCharacteristicsResponse | null;
+	error: string | null;
+};
+
+function describeRequest(filtersKey: string): CharacteristicsRequest {
+	const filters = JSON.parse(filtersKey) as FlowCharacteristicsFilters;
+	if (!filters.enabled) return { kind: 'idle' };
+	if (!filters.routersLoaded) return { kind: 'waiting' };
+
+	const routers = selectedSources(filters.routers);
+	if (routers.length === 0) {
+		return { kind: 'invalid', error: 'Select at least one source to view flow characteristics' };
+	}
+
+	const requestedRange = {
+		start: dateStringToEpochPST(filters.startDate),
+		end: dateStringToEpochPST(filters.endDate, true)
+	};
+	const key = cacheKey(filters, routers);
+	return {
+		kind: 'fetch',
+		id: filtersKey,
+		key,
+		requestedRange,
+		baseParams: {
+			dataset: filters.dataset,
+			routers: routers.join(','),
+			granularity: GROUP_BY_TO_GRANULARITY[filters.groupBy],
+			srcVisibility: filters.srcVisibility,
+			dstVisibility: filters.dstVisibility
+		},
+		missing: getMissingWindowRanges(key, requestedRange).length > 0
+	};
+}
+
+async function fetchCharacteristics(
+	request: FetchRequest,
+	signal: AbortSignal
+): Promise<FlowCharacteristicsResponse> {
+	await ensureCachedWindow<CachedCharacteristicsRecord>({
+		key: request.key,
+		requestedRange: request.requestedRange,
+		signal,
+		fetchRange: async (range, signal) => {
+			const params = new SvelteURLSearchParams({
+				...request.baseParams,
+				startDate: range.start.toString(),
+				endDate: range.end.toString()
+			});
+			const response = await fetch(`/api/netflow/characteristics?${params}`, { signal });
+			if (!response.ok) throw new Error((await response.text()) || 'Request failed');
+			const next = (await response.json()) as FlowCharacteristicsResponse;
+			return [
+				...next.resolvedSources.map(
+					(sourceId, sourceIndex): CachedCharacteristicsRecord => ({
+						kind: 'source',
+						sourceId,
+						sourceIndex
+					})
+				),
+				...next.observationBuckets.map(
+					(bucket): CachedCharacteristicsRecord => ({ kind: 'observation', bucket })
+				),
+				...next.portTimelines.flatMap((timeline) =>
+					timeline.buckets.map(
+						(bucket): CachedCharacteristicsRecord => ({
+							kind: 'port',
+							sourceId: timeline.sourceId,
+							bucket
+						})
+					)
+				)
+			];
+		},
+		getRecordKey: (record) => {
+			if (record.kind === 'source') return `source:${record.sourceId}`;
+			if (record.kind === 'observation') return `observation:${record.bucket.bucketStart}`;
+			return `port:${record.sourceId}:${record.bucket.bucketStart}`;
+		},
+		compareRecords: (left, right) =>
+			recordStart(left) - recordStart(right) ||
+			(left.kind === 'port' ? left.sourceId : '').localeCompare(
+				right.kind === 'port' ? right.sourceId : ''
+			)
+	});
+	return readCachedData(request.key, request.requestedRange);
+}
+
 /** Share one cached characteristics request between the observation and port cards. */
 export function createFlowCharacteristicsData(
 	getFilters: () => FlowCharacteristicsFilters
 ): FlowCharacteristicsData {
-	let data = $state.raw<FlowCharacteristicsResponse | null>(null);
-	let loading = $state(false);
-	let error = $state<string | null>(null);
+	const filtersKey = $derived(JSON.stringify(getFilters()));
+	const request = $derived(describeRequest(filtersKey));
+	let settled = $state.raw<SettledRequest | null>(null);
 	const requestGate = createRequestGate();
-	let requestController: AbortController | null = null;
 
-	async function loadData(filters: FlowCharacteristicsFilters) {
+	$effect(() => {
+		if (request.kind !== 'fetch') return;
+		const current = request;
 		const token = requestGate.begin();
-		requestController?.abort();
-		requestController = null;
-
-		if (!filters.enabled) {
-			data = null;
-			error = null;
-			loading = false;
-			return;
-		}
-		if (!filters.routersLoaded) {
-			data = null;
-			error = null;
-			loading = true;
-			return;
-		}
-
-		const routers = selectedSources(filters.routers);
-		if (routers.length === 0) {
-			data = null;
-			error = 'Select at least one source to view flow characteristics';
-			loading = false;
-			return;
-		}
-
-		const granularity = GROUP_BY_TO_GRANULARITY[filters.groupBy];
-		const requestedRange = {
-			start: dateStringToEpochPST(filters.startDate),
-			end: dateStringToEpochPST(filters.endDate, true)
-		};
-		const key = cacheKey(filters, routers);
-		loading = getMissingWindowRanges(key, requestedRange).length > 0;
-		error = null;
-		const baseParams = new SvelteURLSearchParams({
-			dataset: filters.dataset,
-			routers: routers.join(','),
-			granularity,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
-		});
 		const controller = new AbortController();
-		requestController = controller;
-
-		try {
-			await ensureCachedWindow<CachedCharacteristicsRecord>({
-				key,
-				requestedRange,
-				signal: controller.signal,
-				fetchRange: async (range, signal) => {
-					const params = new SvelteURLSearchParams({
-						...Object.fromEntries(baseParams.entries()),
-						startDate: range.start.toString(),
-						endDate: range.end.toString()
-					});
-					const response = await fetch(`/api/netflow/characteristics?${params}`, { signal });
-					if (!response.ok) throw new Error((await response.text()) || 'Request failed');
-					const next = (await response.json()) as FlowCharacteristicsResponse;
-					return [
-						...next.resolvedSources.map(
-							(sourceId, sourceIndex): CachedCharacteristicsRecord => ({
-								kind: 'source',
-								sourceId,
-								sourceIndex
-							})
-						),
-						...next.observationBuckets.map(
-							(bucket): CachedCharacteristicsRecord => ({ kind: 'observation', bucket })
-						),
-						...next.portTimelines.flatMap((timeline) =>
-							timeline.buckets.map(
-								(bucket): CachedCharacteristicsRecord => ({
-									kind: 'port',
-									sourceId: timeline.sourceId,
-									bucket
-								})
-							)
-						)
-					];
-				},
-				getRecordKey: (record) => {
-					if (record.kind === 'source') return `source:${record.sourceId}`;
-					if (record.kind === 'observation') return `observation:${record.bucket.bucketStart}`;
-					return `port:${record.sourceId}:${record.bucket.bucketStart}`;
-				},
-				compareRecords: (left, right) =>
-					recordStart(left) - recordStart(right) ||
-					(left.kind === 'port' ? left.sourceId : '').localeCompare(
-						right.kind === 'port' ? right.sourceId : ''
-					)
-			});
-			if (requestGate.isCurrent(token)) data = readCachedData(key, requestedRange);
-		} catch (reason) {
-			if (requestGate.isCurrent(token)) {
+		fetchCharacteristics(current, controller.signal).then(
+			(data) => {
+				if (requestGate.isCurrent(token)) settled = { id: current.id, data, error: null };
+			},
+			(reason: unknown) => {
+				if (!requestGate.isCurrent(token)) return;
 				if (reason instanceof DOMException && reason.name === 'AbortError') return;
-				data = null;
-				error = reason instanceof Error ? reason.message : 'Failed to load flow characteristics';
+				settled = {
+					id: current.id,
+					data: null,
+					error: reason instanceof Error ? reason.message : 'Failed to load flow characteristics'
+				};
 			}
-		} finally {
-			if (requestGate.isCurrent(token)) {
-				loading = false;
-				if (requestController === controller) requestController = null;
-			}
-		}
-	}
-
-	watch(
-		() => JSON.stringify(getFilters()),
-		() => void loadData(getFilters())
-	);
-
-	onDestroy(() => {
-		requestGate.begin();
-		requestController?.abort();
+		);
+		return () => {
+			requestGate.begin();
+			controller.abort();
+		};
 	});
 
 	return {
 		get data() {
-			return data;
+			return request.kind === 'fetch' ? (settled?.data ?? null) : null;
 		},
 		get loading() {
-			return loading;
+			if (request.kind === 'waiting') return true;
+			return request.kind === 'fetch' && settled?.id !== request.id && request.missing;
 		},
 		get error() {
-			return error;
+			if (request.kind === 'invalid') return request.error;
+			return request.kind === 'fetch' && settled?.id === request.id ? settled.error : null;
 		}
 	};
 }
