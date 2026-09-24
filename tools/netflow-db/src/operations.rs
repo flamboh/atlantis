@@ -120,12 +120,12 @@ pub fn select_web_verification_window(
               ON st.source_id = ts.source_id AND st.granularity = '5m'
              AND st.bucket_start = ts.bucket_start AND st.ip_version = 4
              AND st.src_locality = 'all' AND st.dst_locality = 'all'
-             AND st.structure_kind = 'structure'
+             AND st.measure = 'addresses' AND st.structure_kind = 'structure'
             JOIN address_structure_stats sp
               ON sp.source_id = ts.source_id AND sp.granularity = '5m'
              AND sp.bucket_start = ts.bucket_start AND sp.ip_version = 4
              AND sp.src_locality = 'all' AND sp.dst_locality = 'all'
-             AND sp.structure_kind = 'spectrum'
+             AND sp.measure = 'addresses' AND sp.structure_kind = 'spectrum'
             WHERE ts.source_id = ?1 AND ts.granularity = '5m'
               AND ts.src_locality = 'all' AND ts.dst_locality = 'all'
             ORDER BY ts.bucket_start LIMIT 1

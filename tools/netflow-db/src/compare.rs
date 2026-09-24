@@ -94,6 +94,7 @@ const TABLES: &[TableSpec] = &[
             "src_locality",
             "dst_locality",
             "address_side",
+            "measure",
             "structure_kind",
             "bucket_end",
         ],

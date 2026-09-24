@@ -11,7 +11,7 @@ The pipeline binds each database to one product identity. The identity contains 
 - The canonical endpoint-locality rules
 - The pipeline timezone
 - The native decoder contract
-- The MAAD enabled state
+- The MAAD enabled state, contract version, configuration, and measure set
 
 The pipeline rejects a database when its identity differs. Build a new database for a different product identity.
 
@@ -75,6 +75,20 @@ count and SHA-256 digest of the aggregated prefix list and the deduplicated addr
 rules or splitting a prefix does not change the identity. Any change to the matched address space
 does, and address-file contents are read on every run. The digest keeps private address lists out of
 database metadata and export manifests.
+
+## MAAD measures
+
+Each scope and address side keeps one entry per unique address with its summed packets and bytes.
+Rollups merge children by summing those counters per address, so a rollup's per-address totals
+equal the sums over its five-minute children. The per-address map adds 16 bytes to each address
+entry.
+
+Every MAAD computation runs three measures on the same entries, for both IP versions and every
+granularity. `addresses` weighs each address as 1 and stores structure, spectrum, and dimensions.
+`packets` and `bytes` weight moments and D1 entropy by the summed counter and store structure and
+dimensions only. Prefix validity always uses distinct-address counts. A weighted measure excludes
+addresses whose counter sums to 0 and records the excluded count as `zeroWeightAddrs` in the row
+metadata. The measure set is part of the result configuration identity.
 
 ## Coordinated subset runs
 

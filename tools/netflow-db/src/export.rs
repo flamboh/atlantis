@@ -381,6 +381,7 @@ fn required_columns(table: &str) -> Vec<&'static str> {
         "port_count_stats" => vec!["port_side", "port_range", "unique_port_count"],
         "address_structure_stats" => vec![
             "address_side",
+            "measure",
             "structure_kind",
             "values_json",
             "metadata_json",

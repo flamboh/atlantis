@@ -114,7 +114,7 @@ fn compare_rejects_ipv6_maad_rows_missing_from_a_reference_bucket() {
     Connection::open(&candidate)
         .unwrap()
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,6,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,6,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
             [],
         )
         .unwrap();
@@ -137,7 +137,7 @@ fn compare_rejects_ipv6_maad_rows_for_an_unrelated_source() {
     Connection::open(&candidate)
         .unwrap()
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r2','5m',0,300,6,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+            "INSERT INTO address_structure_stats VALUES ('r2','5m',0,300,6,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
             [],
         )
         .unwrap();
@@ -237,7 +237,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
                 ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
                 dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
-                structure_kind TEXT NOT NULL, values_json TEXT NOT NULL,
+                measure TEXT NOT NULL, structure_kind TEXT NOT NULL, values_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL
             );
             CREATE TABLE processed_inputs (
@@ -269,7 +269,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
         .unwrap();
     connection
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,4,'all','all','source','dimension',?1,'{\"totalAddrs\":2}')",
+            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,4,'all','all','source','addresses','dimension',?1,'{\"totalAddrs\":2}')",
             [format!("[{{\"q\":1,\"dim\":{dimension}}}]")],
         )
         .unwrap();
@@ -281,7 +281,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
         .unwrap();
     connection
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r1','30m',3600,5400,4,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+            "INSERT INTO address_structure_stats VALUES ('r1','30m',3600,5400,4,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
             [],
         )
         .unwrap();
@@ -300,7 +300,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
             .unwrap();
         connection
             .execute(
-                "INSERT INTO address_structure_stats VALUES ('r1','30m',0,1800,4,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+                "INSERT INTO address_structure_stats VALUES ('r1','30m',0,1800,4,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
                 [],
             )
             .unwrap();

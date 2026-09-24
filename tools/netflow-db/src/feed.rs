@@ -414,9 +414,9 @@ fn collect_total_ipv4_addresses(bucket: CanonicalBucket, addresses: &mut BTreeSe
         {
             continue;
         }
-        for address in scoped.addresses.iter() {
+        for (address, _) in scoped.addresses.iter() {
             if let IpAddr::V4(address) = address {
-                addresses.insert(*address);
+                addresses.insert(address);
             }
         }
     }
