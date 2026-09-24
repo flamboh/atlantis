@@ -24,6 +24,7 @@ use crate::{
         StatisticalBucket,
     },
     ingest::{self, IngestError, ProducerError},
+    locality::{LocalityRuleConfig, LocalityRules},
     nfdump,
     provenance::{
         ExecutableRevision, ExpectedAbsence, FileSnapshot, InputRevision, ProvenanceError,
@@ -177,6 +178,8 @@ struct PipelineConfigFile {
     nfdump: Option<String>,
     #[serde(default)]
     selection: Value,
+    #[serde(default)]
+    locality: Vec<LocalityRuleConfig>,
     inputs: Vec<InputSpec>,
     #[serde(default)]
     datasets: Vec<Dataset>,
@@ -802,6 +805,19 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
         } else {
             requested_selection
         };
+        if let Some(dataset) = config
+            .datasets
+            .iter()
+            .find(|dataset| !dataset.locality.is_empty())
+        {
+            return Err(PipelineError::InvalidConfig(format!(
+                "dataset {:?} declares locality inside a pipeline config; declare `locality` at the top level of the config",
+                dataset.dataset_id
+            )));
+        }
+        let locality = LocalityRules::from_config(&config.locality, &std::env::current_dir()?)
+            .map_err(|error| PipelineError::InvalidConfig(error.to_string()))?;
+        let selection = bind_locality(selection, locality)?;
         validate_selection_inputs(&selection, &config.inputs)?;
         if request.force {
             let tree_count = config
@@ -882,6 +898,7 @@ fn resolve_dataset_request(
             "overriding a dataset's flow selection requires an explicit --database-path".into(),
         ));
     }
+    let selection = bind_locality(selection, dataset.locality_rules()?)?;
     let (nfdump, nfdump_revision) = match shared_nfdump {
         Some((path, revision)) => (path.to_owned(), Some(revision.clone())),
         None => {
@@ -916,6 +933,20 @@ fn resolve_dataset_request(
 
 fn selection_from_value(value: &Value) -> Result<FlowSelection, DomainError> {
     FlowSelection::from_payload((!value.is_null()).then_some(value))
+}
+
+fn bind_locality(
+    selection: FlowSelection,
+    locality: LocalityRules,
+) -> Result<FlowSelection, PipelineError> {
+    if locality.is_empty()
+        && (selection.src_locality().is_some() || selection.dst_locality().is_some())
+    {
+        return Err(PipelineError::InvalidConfig(
+            "selections that filter on endpoint locality require locality rules; without rules every endpoint is external".into(),
+        ));
+    }
+    Ok(selection.with_locality(Arc::new(locality)))
 }
 
 fn validate_selection_inputs(
@@ -1466,8 +1497,13 @@ fn bind_identity(
         })
     });
     let result_config = json!({
-        "version": 4,
+        "version": 5,
         "timezone": pipeline.timezone,
+        "locality": pipeline
+            .selection
+            .locality()
+            .identity_payload()
+            .map_err(|error| PipelineError::InvalidConfig(error.to_string()))?,
         "nfcapd_decoder": {
             "protocol_version": nfdump::CONTRACT_VERSION,
             "input_contract": nfdump::INPUT_CONTRACT,
@@ -3735,6 +3771,7 @@ mod tests {
                 "root_path": root,
                 "db_path": database,
                 "source_ids": ["edge"],
+                "locality": [{"type": "tos_anonymized"}],
                 "selection": {
                     "kind": "daily_active_sources",
                     "ip_prefix": "72.5.0.0/16"
@@ -3762,7 +3799,39 @@ mod tests {
         .unwrap();
 
         assert!(resolved.selection.selects_daily_active_sources());
+        assert!(!resolved.selection.locality().is_empty());
         assert_eq!(resolved.database_path, database);
+    }
+
+    #[test]
+    fn locality_filters_require_locality_rules() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("captures");
+        fs::create_dir_all(root.join("edge")).unwrap();
+        let executable = temporary.path().join("fake-nfdump");
+        write_fake_nfdump(&executable, &temporary.path().join("invocations"));
+        let registry = temporary.path().join("datasets.json");
+        fs::write(
+            &registry,
+            serde_json::to_vec(&json!([{
+                "dataset_id": "active",
+                "root_path": root,
+                "db_path": temporary.path().join("active.sqlite"),
+                "source_ids": ["edge"],
+                "selection": {
+                    "kind": "daily_active_sources",
+                    "ip_prefix": "72.5.0.0/16"
+                }
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut request = coordinated_request(registry, &executable, "2025-06-01", "2025-06-01");
+        request.dataset_id = Some("active".into());
+
+        let error = resolve_request(&request).unwrap_err().to_string();
+
+        assert!(error.contains("require locality rules"), "{error}");
     }
 
     #[test]
@@ -3785,6 +3854,7 @@ mod tests {
                     "root_path": root,
                     "db_path": first_db,
                     "source_ids": ["edge"],
+                    "locality": [{"type": "tos_anonymized"}],
                     "selection": {
                         "kind": "daily_active_sources",
                         "ip_prefix": "192.0.0.0/16"
@@ -3795,6 +3865,7 @@ mod tests {
                     "root_path": root,
                     "db_path": second_db,
                     "source_ids": ["edge"],
+                    "locality": [{"type": "tos_anonymized"}],
                     "selection": {
                         "kind": "daily_active_sources",
                         "ip_prefix": "198.51.0.0/16"

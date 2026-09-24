@@ -149,28 +149,28 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
             CREATE TABLE traffic_stats (
                 source_id TEXT NOT NULL, granularity TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
-                ip_version INTEGER NOT NULL, src_visibility TEXT NOT NULL,
-                dst_visibility TEXT NOT NULL, flows INTEGER NOT NULL
+                ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
+                dst_locality TEXT NOT NULL, flows INTEGER NOT NULL
             );
             CREATE TABLE protocol_stats (
                 source_id TEXT NOT NULL, granularity TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
-                ip_version INTEGER NOT NULL, src_visibility TEXT NOT NULL,
-                dst_visibility TEXT NOT NULL, unique_protocols_count INTEGER NOT NULL,
+                ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
+                dst_locality TEXT NOT NULL, unique_protocols_count INTEGER NOT NULL,
                 protocols_list TEXT NOT NULL
             );
             CREATE TABLE address_count_stats (
                 source_id TEXT NOT NULL, granularity TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
-                ip_version INTEGER NOT NULL, src_visibility TEXT NOT NULL,
-                dst_visibility TEXT NOT NULL, address_side TEXT NOT NULL,
+                ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
+                dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
                 unique_address_count INTEGER NOT NULL
             );
             CREATE TABLE address_structure_stats (
                 source_id TEXT NOT NULL, granularity TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
-                ip_version INTEGER NOT NULL, src_visibility TEXT NOT NULL,
-                dst_visibility TEXT NOT NULL, address_side TEXT NOT NULL,
+                ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
+                dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
                 structure_kind TEXT NOT NULL, values_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL
             );

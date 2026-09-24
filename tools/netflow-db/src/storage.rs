@@ -37,13 +37,13 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
 /// Versioned product schema bound into every pipeline database identity.
 pub fn product_schema() -> serde_json::Value {
     serde_json::json!({
-        "version": 4,
+        "version": 5,
         "tables": [
-            {"name": "traffic_stats", "version": 3},
-            {"name": "protocol_stats", "version": 2},
-            {"name": "address_count_stats", "version": 2},
-            {"name": "port_count_stats", "version": 2},
-            {"name": "address_structure_stats", "version": 2},
+            {"name": "traffic_stats", "version": 4},
+            {"name": "protocol_stats", "version": 3},
+            {"name": "address_count_stats", "version": 3},
+            {"name": "port_count_stats", "version": 3},
+            {"name": "address_structure_stats", "version": 3},
             {"name": "bucket_coverage", "version": 2}
         ]
     })
@@ -1417,8 +1417,8 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             flows INTEGER NOT NULL,
             flows_tcp INTEGER NOT NULL,
             flows_udp INTEGER NOT NULL,
@@ -1444,12 +1444,12 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             max_ttl_count INTEGER NOT NULL,
             average_max_ttl REAL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
-        ON traffic_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+        ON traffic_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality);
         CREATE INDEX IF NOT EXISTS idx_traffic_stats_timeseries
-        ON traffic_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON traffic_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS protocol_stats (
             source_id TEXT NOT NULL,
@@ -1457,15 +1457,15 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             unique_protocols_count INTEGER NOT NULL,
             protocols_list TEXT NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_protocol_stats_timeseries
-        ON protocol_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON protocol_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS address_count_stats (
             source_id TEXT NOT NULL,
@@ -1473,17 +1473,17 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
             unique_address_count INTEGER NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, address_side)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_count_stats_query
-        ON address_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side);
+        ON address_count_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side);
         CREATE INDEX IF NOT EXISTS idx_address_count_stats_timeseries
-        ON address_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON address_count_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS port_count_stats (
             source_id TEXT NOT NULL,
@@ -1491,16 +1491,16 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             port_side TEXT NOT NULL CHECK (port_side IN ('source', 'destination')),
             port_range TEXT NOT NULL CHECK (port_range IN ('low', 'high')),
             unique_port_count INTEGER NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, port_side, port_range)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, port_side, port_range)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
-        ON port_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON port_count_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS address_structure_stats (
             source_id TEXT NOT NULL,
@@ -1508,20 +1508,20 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
             structure_kind TEXT NOT NULL CHECK (structure_kind IN ('structure', 'spectrum', 'dimension')),
             values_json TEXT NOT NULL,
             metadata_json TEXT NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, address_side, structure_kind)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side, structure_kind)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
-        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side, structure_kind);
+        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side, structure_kind);
         CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
         ON address_structure_stats (
-            source_id, granularity, src_visibility, dst_visibility,
+            source_id, granularity, src_locality, dst_locality,
             ip_version, structure_kind, bucket_start
         );
 
@@ -1861,8 +1861,8 @@ pub struct StatsDimensions {
     pub bucket_start: i64,
     pub bucket_end: i64,
     pub ip_version: i64,
-    pub src_visibility: String,
-    pub dst_visibility: String,
+    pub src_locality: String,
+    pub dst_locality: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1933,7 +1933,7 @@ pub fn insert_traffic_stats_rows(
         "
         INSERT OR REPLACE INTO traffic_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility,
+            src_locality, dst_locality,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
             packets, packets_tcp, packets_udp, packets_icmp, packets_other,
             bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
@@ -1951,8 +1951,8 @@ pub fn insert_traffic_stats_rows(
             dimensions.bucket_start,
             dimensions.bucket_end,
             dimensions.ip_version,
-            dimensions.src_visibility,
-            dimensions.dst_visibility,
+            dimensions.src_locality,
+            dimensions.dst_locality,
             row.flows,
             row.flows_tcp,
             row.flows_udp,
@@ -1990,7 +1990,7 @@ pub fn insert_protocol_stats_rows(
         "
         INSERT OR REPLACE INTO protocol_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, unique_protocols_count, protocols_list
+            src_locality, dst_locality, unique_protocols_count, protocols_list
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
@@ -2002,8 +2002,8 @@ pub fn insert_protocol_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.unique_protocols_count,
             row.protocols_list
         ])?;
@@ -2019,7 +2019,7 @@ pub fn insert_address_count_stats_rows(
         "
         INSERT OR REPLACE INTO address_count_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, address_side, unique_address_count
+            src_locality, dst_locality, address_side, unique_address_count
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
@@ -2031,8 +2031,8 @@ pub fn insert_address_count_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.address_side,
             row.unique_address_count
         ])?;
@@ -2048,7 +2048,7 @@ pub fn insert_port_count_stats_rows(
         "
         INSERT OR REPLACE INTO port_count_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, port_side, port_range, unique_port_count
+            src_locality, dst_locality, port_side, port_range, unique_port_count
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ",
     )?;
@@ -2060,8 +2060,8 @@ pub fn insert_port_count_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.port_side,
             row.port_range,
             row.unique_port_count
@@ -2078,7 +2078,7 @@ pub fn insert_address_structure_stats_rows(
         "
         INSERT OR REPLACE INTO address_structure_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, address_side, structure_kind,
+            src_locality, dst_locality, address_side, structure_kind,
             values_json, metadata_json
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         ",
@@ -2091,8 +2091,8 @@ pub fn insert_address_structure_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.address_side,
             row.structure_kind,
             row.values_json,
@@ -2257,8 +2257,8 @@ impl StatsDimensions {
             bucket_start: 0,
             bucket_end: 300,
             ip_version: 4,
-            src_visibility: "all".into(),
-            dst_visibility: "all".into(),
+            src_locality: "all".into(),
+            dst_locality: "all".into(),
         }
     }
 }
@@ -3025,8 +3025,8 @@ mod tests {
                     bucket_start,
                     bucket_end: bucket_start + 300,
                     ip_version: 4,
-                    src_visibility: "all".into(),
-                    dst_visibility: "all".into(),
+                    src_locality: "all".into(),
+                    dst_locality: "all".into(),
                 };
                 let mut traffic = TrafficStatsRow::example();
                 traffic.dimensions = dimensions.clone();
@@ -3223,9 +3223,9 @@ mod tests {
 			.execute_batch(
 				"
 				CREATE INDEX idx_protocol_stats_query
-				ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+				ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality);
 				CREATE INDEX idx_port_count_stats_query
-				ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, port_side, port_range);
+				ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, port_side, port_range);
 				",
 			)
 			.unwrap();
@@ -3237,8 +3237,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3248,8 +3248,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3259,8 +3259,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3270,8 +3270,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3281,8 +3281,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "ip_version",
                     "structure_kind",
                     "bucket_start",

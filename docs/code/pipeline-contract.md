@@ -8,6 +8,7 @@ The pipeline binds each database to one product identity. The identity contains 
 
 - The schema version and table versions
 - The normalized flow selection
+- The canonical endpoint-locality rules
 - The pipeline timezone
 - The native decoder contract
 - The MAAD enabled state
@@ -20,18 +21,18 @@ A database with populated pipeline tables and no product identity is not adopted
 
 Selection conditions use AND logic. The IP prefix matches either endpoint.
 
-Source visibility and destination visibility are independent conditions. Keep each selected population in a separate database.
+Source locality and destination locality are independent conditions. Keep each selected population in a separate database.
 
 Coverage is observed before selection. Thus, selected-out buckets remain as dense zero buckets.
 
-Native nfcapd input pushes the IP prefix condition into the nfdump filter. Visibility conditions apply before statistics accumulate.
+Native nfcapd input pushes the IP prefix condition into the nfdump filter. Locality conditions apply before statistics accumulate.
 
 `daily_active_sources` is a separate, fixed selection policy for the UOregon `/16` candidate
 products. It accepts exactly one IPv4 `/16` and exactly one `nfcapd_tree` input. For each complete
 local calendar day, it makes two bounded passes over every unique physical member:
 
-1. Select anonymized IPv4 source traffic in the `/16` that uses TCP or UDP and source port 1024 or
-   greater. Sum flows, packets, and bytes by exact source address across physical members.
+1. Select IPv4 traffic from an internal source in the `/16` that uses TCP or UDP and source port
+   1024 or greater. Sum flows, packets, and bytes by exact source address across physical members.
 2. Mark sources active at the inclusive thresholds of 3 flows, 20 packets, and 2,000 bytes. Publish
    only the same qualifying-flow population from active sources into the existing five-minute and
    rollup contracts.
@@ -44,6 +45,36 @@ days.
 The normalized product identity records the entire fixed policy. It is not compatible with an old
 prefix-only database. A late or changed input can alter the active set for every five-minute bucket
 in a day, so repair requires a whole-day `--force` rebuild inside the existing day transaction.
+
+## Endpoint locality and direction
+
+Each dataset declares locality rules (see [dataset configuration](../user/datasets.md#classify-internal-and-external-endpoints)).
+An endpoint is `internal` when any rule matches: a listed CIDR prefix, a listed address, or, with
+`tos_anonymized`, the UOregon anonymizer flag in the low two source-ToS bits (bit 1 for the source,
+bit 0 for the destination). Every other endpoint is `external`. Adapters classify each flow once,
+before selection and aggregation. CSV and native nfcapd input use the same rules, and the native
+stream carries the ToS flags in its record tag.
+
+The stats tables keep the endpoint pair in `src_locality` and `dst_locality`. Every bucket and IP
+version stores five dense rows: `all`/`all` and the four exact pairs. Missing combinations are
+zero-filled rows, and the exact pairs sum to the `all` row for additive metrics at every
+granularity. Readers derive direction from the pair:
+
+| `src_locality` | `dst_locality` | Direction |
+| -------------- | -------------- | --------- |
+| `internal`     | `external`     | egress    |
+| `external`     | `internal`     | ingress   |
+| `internal`     | `internal`     | lateral   |
+| `external`     | `external`     | transit   |
+| `all`          | `all`          | all       |
+
+Transit remains a first-class scope so misclassified or unexpected records stay visible.
+
+The result configuration identity contains the canonical rules: the `tos_anonymized` flag and a
+count and SHA-256 digest of the aggregated prefix list and the deduplicated address list. Reordering
+rules or splitting a prefix does not change the identity. Any change to the matched address space
+does, and address-file contents are read on every run. The digest keeps private address lists out of
+database metadata and export manifests.
 
 ## Coordinated subset runs
 

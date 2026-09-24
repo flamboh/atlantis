@@ -201,8 +201,8 @@ const COMMON_COLUMNS: &[&str] = &[
     "bucket_start",
     "bucket_end",
     "ip_version",
-    "src_visibility",
-    "dst_visibility",
+    "src_locality",
+    "dst_locality",
     "processed_at",
 ];
 
@@ -1031,7 +1031,7 @@ mod tests {
                 .execute(
                     "INSERT INTO traffic_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, flows, flows_tcp, flows_udp,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
                     flows_icmp, flows_other, packets, packets_tcp, packets_udp,
                     packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
                     bytes_icmp, bytes_other, duration_sum_ms, duration_count,

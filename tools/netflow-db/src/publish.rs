@@ -356,8 +356,8 @@ fn dimensions(key: &BucketKey, scope: crate::domain::Scope) -> StatsDimensions {
         bucket_start: key.bucket_start,
         bucket_end: key.bucket_end,
         ip_version: i64::from(scope.ip_version.number()),
-        src_visibility: scope.src_visibility.as_str().to_owned(),
-        dst_visibility: scope.dst_visibility.as_str().to_owned(),
+        src_locality: scope.src_locality.as_str().to_owned(),
+        dst_locality: scope.dst_locality.as_str().to_owned(),
     }
 }
 
@@ -374,8 +374,8 @@ mod tests {
     use super::*;
     use crate::{
         domain::{
-            AddressSet, AddressSide, FlowObservation, Granularity, IpVersion, Scope,
-            ScopedAddressesFact, StatisticalBucket, Visibility,
+            AddressSet, AddressSide, EndpointLocality, FlowObservation, Granularity, IpVersion,
+            Locality, Scope, ScopedAddressesFact, StatisticalBucket,
         },
         storage::init_stats_tables,
     };
@@ -396,7 +396,8 @@ mod tests {
                     128,
                     0,
                 )
-                .unwrap(),
+                .unwrap()
+                .with_locality(EndpointLocality::Internal, EndpointLocality::External),
             )
             .unwrap();
 
@@ -405,7 +406,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT flows FROM traffic_stats WHERE ip_version = 4 AND src_visibility = 'all' AND dst_visibility = 'all'",
+                    "SELECT flows FROM traffic_stats WHERE ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
@@ -441,7 +442,7 @@ mod tests {
                 StatisticalBucket::dense(BucketKey::new("r1", Granularity::FiveMinutes, 0, 300));
             builder
                 .add(ScopedAddressesFact::new(
-                    Scope::new(IpVersion::V4, Visibility::All, Visibility::All),
+                    Scope::new(IpVersion::V4, Locality::All, Locality::All),
                     AddressSide::Source,
                     addresses,
                 ))
@@ -464,11 +465,11 @@ mod tests {
             (
                 query(
                     connection,
-                    "SELECT printf('%s|%s|%s|%s|%d', ip_version, src_visibility, dst_visibility, address_side, unique_address_count) FROM address_count_stats ORDER BY ip_version, src_visibility, dst_visibility, address_side",
+                    "SELECT printf('%s|%s|%s|%s|%d', ip_version, src_locality, dst_locality, address_side, unique_address_count) FROM address_count_stats ORDER BY ip_version, src_locality, dst_locality, address_side",
                 ),
                 query(
                     connection,
-                    "SELECT printf('%s|%s|%s|%s|%s|%s|%s', ip_version, src_visibility, dst_visibility, address_side, structure_kind, values_json, metadata_json) FROM address_structure_stats ORDER BY ip_version, src_visibility, dst_visibility, address_side, structure_kind",
+                    "SELECT printf('%s|%s|%s|%s|%s|%s|%s', ip_version, src_locality, dst_locality, address_side, structure_kind, values_json, metadata_json) FROM address_structure_stats ORDER BY ip_version, src_locality, dst_locality, address_side, structure_kind",
                 ),
             )
         }
@@ -500,13 +501,13 @@ mod tests {
         let rows = [
             AddressSetRow {
                 key: key.clone(),
-                scope: Scope::new(IpVersion::V4, Visibility::All, Visibility::All),
+                scope: Scope::new(IpVersion::V4, Locality::All, Locality::All),
                 address_side: AddressSide::Source,
                 addresses: &first_addresses,
             },
             AddressSetRow {
                 key,
-                scope: Scope::new(IpVersion::V4, Visibility::Literal, Visibility::All),
+                scope: Scope::new(IpVersion::V4, Locality::External, Locality::All),
                 address_side: AddressSide::Destination,
                 addresses: &second_addresses,
             },
@@ -521,7 +522,7 @@ mod tests {
             first
                 .chunks_exact(3)
                 .map(|rows| (
-                    rows[0].dimensions.src_visibility.as_str(),
+                    rows[0].dimensions.src_locality.as_str(),
                     rows[0].address_side.as_str(),
                     rows.iter()
                         .map(|row| row.structure_kind.as_str())
@@ -531,7 +532,7 @@ mod tests {
             vec![
                 ("all", "source", vec!["structure", "spectrum", "dimension"]),
                 (
-                    "literal",
+                    "external",
                     "destination",
                     vec!["structure", "spectrum", "dimension"]
                 ),

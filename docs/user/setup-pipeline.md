@@ -113,7 +113,7 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
   --end-date <YYYY-MM-DD> \
   --database-path data/example-public/netflow.sqlite \
   --ip-prefix 192.0.2.0/24 \
-  --src-visibility literal
+  --src-locality internal
 ```
 
 A selected population is a different database product. Thus, selection options require an explicit `--database-path`.
@@ -124,11 +124,14 @@ Available selection options are:
 
 - `--ip-prefix`
 - `--daily-active-sources`
-- `--src-visibility literal|anonymized`
-- `--dst-visibility literal|anonymized`
+- `--src-locality internal|external`
+- `--dst-locality internal|external`
+
+Locality filters use the dataset's [locality rules](datasets.md#classify-internal-and-external-endpoints).
+A pipeline configuration declares its rules in a top-level `locality` array.
 
 `--daily-active-sources` applies the fixed active-user definition used to choose the UOregon
-candidate subnets. It requires an IPv4 `/16` and cannot be combined with the visibility flags:
+candidate subnets. It requires an IPv4 `/16` and locality rules, and it cannot be combined with the locality flags:
 
 ```bash
 ./scripts/netflow-db.sh pipeline \
@@ -142,7 +145,7 @@ candidate subnets. It requires an IPv4 `/16` and cannot be combined with the vis
 
 For each complete local day, the pipeline sums qualifying traffic by exact source address across
 each unique physical capture member. A source is active when it has at least 3 flows, 20 packets,
-and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an anonymized source in the
+and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an internal source in the
 target `/16`, with source port at least 1024. Destination ports and TCP flags are unrestricted.
 Only that qualifying traffic from active sources is published.
 
@@ -167,9 +170,10 @@ Put flow selection in the top-level `selection` object:
 {
   "selection": {
     "ip_prefix": "192.0.2.0/24",
-    "src_visibility": "literal",
-    "dst_visibility": "anonymized"
+    "src_locality": "internal",
+    "dst_locality": "external"
   },
+  "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
   "inputs": []
 }
 ```
