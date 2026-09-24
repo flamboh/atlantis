@@ -24,6 +24,7 @@ The repository does not contain the general SQLite-to-D1 data-load process.
 | `apps/web`         | Provides the SvelteKit data dashboard.             |
 | `apps/landing`     | Provides the Astro marketing site.                 |
 | `tools/netflow-db` | Builds and maintains NetFlow databases.            |
+| `infra`            | Defines the Alchemy deployment stacks.             |
 | `scripts`          | Provides build and local-operation commands.       |
 | `vendor`           | Contains optional third-party Git submodules.      |
 | `docs/user`        | Contains installation and operation procedures.    |
@@ -34,7 +35,7 @@ The repository does not contain the general SQLite-to-D1 data-load process.
 
 The local dashboard reads SQLite databases with `better-sqlite3`. It opens these databases in read-only mode.
 
-The deployed dashboard reads the `DB` Cloudflare D1 binding from `cloudflare:workers`.
+The deployed dashboard reads the `DB` Cloudflare D1 binding from `cloudflare:workers`. `infra/cloudflare.ts` defines the worker and the D1 database as an Alchemy stack. Alchemy builds the worker with its own SvelteKit adapter and applies the D1 migrations during a deploy.
 
 The build selects one database driver. `apps/web/src/lib/server/db/d1.ts` reads D1, and `apps/web/src/lib/server/db/sqlite.ts` reads the pipeline SQLite files. Server code imports the driver as `#db`. [Development](development.md#choose-the-database-driver) explains the selection.
 
@@ -46,7 +47,7 @@ The Rust pipeline in `tools/netflow-db` owns the pipeline-product semantics. It 
 
 Native nfcapd ingestion uses the pinned nfdump fork in `vendor/nfdump`. The fork streams a private binary contract that the pipeline decodes directly.
 
-The web application owns the D1 schema definition. The Drizzle files in `apps/web/drizzle` contain the D1 migrations.
+The web application owns the D1 schema definition. The Drizzle files in `apps/web/drizzle` contain the D1 migrations. Alchemy records applied migrations in the `__alchemy_migrations` table of each D1 database.
 
 Both implementations must keep compatible table and column contracts. No automated test compares the two schema definitions. Check both sides when you change one.
 

@@ -1,5 +1,4 @@
 import { fileURLToPath } from 'node:url';
-import cloudflare from '@sveltejs/adapter-cloudflare';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
@@ -25,6 +24,11 @@ function resolveDatabaseDriver(
 	if (configured !== 'd1' && configured !== 'sqlite') {
 		throw new Error(`ATLANTIS_DB_DRIVER must be 'd1' or 'sqlite', received '${configured}'`);
 	}
+	if (configured === 'd1' && command === 'serve') {
+		throw new Error(
+			'The d1 driver runs only in a deployed worker. Deploy a stage with `bun run deploy:cloudflare --stage <name>`.'
+		);
+	}
 	return configured;
 }
 
@@ -40,6 +44,12 @@ function databaseDriver(driver: DatabaseDriver): Plugin {
 				D1_CONDITION,
 				...(options.resolve.conditions ?? defaultServerConditions)
 			];
+		},
+		resolveId: {
+			filter: { id: /^cloudflare:workers$/ },
+			handler(id) {
+				return driver === 'd1' ? { id, external: true } : undefined;
+			}
 		}
 	};
 }
@@ -53,7 +63,6 @@ export default defineConfig(({ command, mode, isPreview = false }) => {
 			databaseDriver(driver),
 			sveltekit({
 				preprocess: vitePreprocess(),
-				adapter: driver === 'd1' ? cloudflare() : undefined,
 				env: {
 					dir: '../..'
 				}

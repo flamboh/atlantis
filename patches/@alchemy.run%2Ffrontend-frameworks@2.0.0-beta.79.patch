@@ -1,0 +1,57 @@
+diff --git a/dist/_chunks/cloudflare-CLQL645D.js b/dist/_chunks/cloudflare-CLQL645D.js
+index b9d0358ff8a2a4f068915340b4e804b7ec09dbf1..91bd9643d1ab06b3b90f96c555c624a23f990d45 100644
+--- a/dist/_chunks/cloudflare-CLQL645D.js
++++ b/dist/_chunks/cloudflare-CLQL645D.js
+@@ -24,7 +24,7 @@ const matches_kit_route = (pathname) => {
+     if (!path.startsWith(base_path)) return false;
+     path = path.slice(base_path.length) || '/';
+   }
+-  for (const route of manifest._.routes) {
++  for (const route of routes) {
+     if (route.pattern.test(path)) return true;
+   }
+   return false;
+@@ -46,15 +46,13 @@ const spaDeferral = (assetsBinding) => `
+       }
+ `;
+ const generateWorkerShim = (options) => `
+-import { Server } from ${JSON.stringify(options.serverImport)};
+-import { manifest, prerendered, base_path } from ${JSON.stringify(options.manifestImport)};
++import { server } from ${JSON.stringify(options.serverImport)};
++import { assets, app_path, prerendered, base_path, routes } from ${JSON.stringify(options.manifestImport)};
+ import { env } from 'cloudflare:workers';
+ 
+-const server = new Server(manifest);
+-
+-const app_path = \`/\${manifest.appPath}\`;
+-const immutable = \`\${app_path}/immutable/\`;
+-const version_file = \`\${app_path}/version.json\`;
++const app_dir = \`/\${app_path}\`;
++const immutable = \`\${app_dir}/immutable/\`;
++const version_file = \`\${app_dir}/version.json\`;
+ 
+ // Inline pragma-cache over \`caches.default\` (replaces the upstream
+ // adapter's external cache dependency).
+@@ -135,7 +133,7 @@ export default {
+     const filename = stripped_pathname.slice(base_path.length + 1);
+     if (filename) {
+       is_static_asset =
+-        manifest.assets.has(filename) || manifest.assets.has(filename + '/index.html');
++        assets.has(filename) || assets.has(filename + '/index.html');
+     }
+ 
+     let location = pathname.at(-1) === '/' ? stripped_pathname : pathname + '/';
+@@ -237,10 +235,11 @@ const makeCloudflareAdapter = (options = {}) => {
+ 			builder.writeClient(assetsDest);
+ 			builder.writePrerendered(assetsDest);
+ 			if (options.notFoundHandling === "single-page-application") await generateFallbackInProcess(builder, NodePath.join(assetsDest, "index.html"));
+-			NodeFs.writeFileSync(NodePath.join(tmp, "manifest.js"), `export const manifest = ${builder.generateManifest({ relativePath: posixify(NodePath.relative(tmp, builder.getServerDirectory())) })};\n\nexport const prerendered = new Set(${JSON.stringify(builder.prerendered.paths)});\n\nexport const base_path = ${JSON.stringify(builder.config.kit.paths.base)};\n`);
++			builder.generateServerInstance(NodePath.join(tmp, "server.js"));
++			NodeFs.writeFileSync(NodePath.join(tmp, "manifest.js"), `export const assets = new Set(${JSON.stringify(builder.manifest.assets.map((asset) => asset.path))});\n\nexport const app_path = ${JSON.stringify(builder.getAppPath())};\n\nexport const prerendered = new Set(${JSON.stringify(builder.prerendered.paths)});\n\nexport const base_path = ${JSON.stringify(builder.config.kit.paths.base)};\n\nexport const routes = [${builder.routes.map((route) => `{ pattern: ${route.pattern} }`).join(", ")}];\n`);
+ 			const workerEntry = NodePath.join(dest, "_worker.js");
+ 			NodeFs.writeFileSync(workerEntry, generateWorkerShim({
+-				serverImport: `./${posixify(NodePath.relative(dest, builder.getServerDirectory()))}/index.js`,
++				serverImport: `./${posixify(NodePath.relative(dest, tmp))}/server.js`,
+ 				manifestImport: `./${posixify(NodePath.relative(dest, tmp))}/manifest.js`,
+ 				assetsBinding,
+ 				notFoundHandling: options.notFoundHandling

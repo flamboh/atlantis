@@ -17,18 +17,20 @@ function indexColumns(database: Database.Database, indexName: string): string[] 
 function migrationFiles(): string[] {
 	return fs
 		.readdirSync(migrationsDirectory)
-		.filter((fileName) => fileName.endsWith('.sql'))
+		.filter((entry) => fs.existsSync(path.join(migrationsDirectory, entry, 'migration.sql')))
 		.sort();
 }
 
-function migrationIndexContaining(migrations: string[], needle: string): number {
-	return migrations.findIndex((fileName) =>
-		fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes(needle)
-	);
+function migrationSql(migration: string): string {
+	return fs.readFileSync(path.join(migrationsDirectory, migration, 'migration.sql'), 'utf8');
 }
 
-function applyMigration(database: Database.Database, fileName: string): void {
-	database.exec(fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8'));
+function migrationIndexContaining(migrations: string[], needle: string): number {
+	return migrations.findIndex((migration) => migrationSql(migration).includes(needle));
+}
+
+function applyMigration(database: Database.Database, migration: string): void {
+	database.exec(migrationSql(migration));
 }
 
 function seedPlannerStatistics(database: Database.Database): void {
