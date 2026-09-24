@@ -64,6 +64,44 @@ Dataset mode calculates MAAD statistics by default. MAAD statistics describe the
 
 If a command fails, read [Troubleshooting](troubleshooting.md).
 
+## Process coordinated subsets
+
+Repeat `--dataset` for two or more registry entries that select subsets of one nfcapd tree.
+Native runs must name the pinned ATLANTIS nfdump fork explicitly:
+
+```bash
+./scripts/netflow-db.sh pipeline \
+  --nfdump target/nfdump/libexec/nfdump \
+  --dataset campus-a \
+  --dataset campus-b \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD>
+```
+
+Coordinated mode accepts only registry-backed `daily_active_sources` products. It rejects a run
+unless all selected entries have compatible inputs and execution settings:
+
+- Dataset IDs and output database paths must be unique.
+- Every entry must use the same canonical nfcapd root, logical source layout, and timezone.
+- Every entry must use the same whole local-day window, force setting, MAAD setting, coverage
+  setting, and nfdump executable revision.
+- Each entry supplies its own `daily_active_sources` prefix and `db_path`.
+- Output databases, locks, and sidecars must not overlap one another or the capture tree.
+
+Do not combine repeated `--dataset` with `--config`, `--database-path`, `--start-time`, `--end-time`,
+or command-line selection flags. Configure selection and output paths in `datasets.json`. The
+command has no parent dataset or `source_dataset` relation.
+
+The pipeline discovers the capture plan once, scans each day once, and fans the decoded flow stream
+out to the selected products. A missing required capture leaves that day unpublished for every
+product. Each product still has its own identity, active-source set, transaction, and completion
+marker, so overlapping prefixes may contain the same qualifying flow.
+
+After a successful run, repeating the exact command is a no-op. The report says
+`Published five-minute buckets: 0`, and the pipeline does not rewrite completed days. If a previous
+run stopped between product commits, the next run rebuilds only the unfinished day for the affected
+product.
+
 ## Select flows
 
 Selection conditions use AND logic. The IP prefix can match the source endpoint or the destination endpoint.
@@ -79,12 +117,39 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
 ```
 
 A selected population is a different database product. Thus, selection options require an explicit `--database-path`.
+Dataset registry entries may instead persist a `selection` beside their dedicated `db_path`; dataset
+mode applies that selection automatically.
 
 Available selection options are:
 
 - `--ip-prefix`
+- `--daily-active-sources`
 - `--src-visibility literal|anonymized`
 - `--dst-visibility literal|anonymized`
+
+`--daily-active-sources` applies the fixed active-user definition used to choose the UOregon
+candidate subnets. It requires an IPv4 `/16` and cannot be combined with the visibility flags:
+
+```bash
+./scripts/netflow-db.sh pipeline \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --database-path data/example-active/netflow.sqlite \
+  --ip-prefix 0.220.0.0/16 \
+  --daily-active-sources
+```
+
+For each complete local day, the pipeline sums qualifying traffic by exact source address across
+each unique physical capture member. A source is active when it has at least 3 flows, 20 packets,
+and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an anonymized source in the
+target `/16`, with source port at least 1024. Destination ports and TCP flags are unrestricted.
+Only that qualifying traffic from active sources is published.
+
+This mode supports exactly one `nfcapd_tree` input and whole local days. A day missing any expected
+physical capture is skipped rather than published as zero. If input evidence changes after a day
+was published, rebuild the whole day with `--force`; a single five-minute repair is not safe because
+it can change the active-source set for every bucket in that day.
 
 ## Use a pipeline configuration
 
@@ -106,6 +171,27 @@ Put flow selection in the top-level `selection` object:
     "dst_visibility": "anonymized"
   },
   "inputs": []
+}
+```
+
+The equivalent active-source selection is deliberately a named policy rather than configurable
+thresholds:
+
+```json
+{
+  "selection": {
+    "kind": "daily_active_sources",
+    "ip_prefix": "0.220.0.0/16"
+  },
+  "inputs": [
+    {
+      "input_kind": "nfcapd_tree",
+      "root_path": "/path/to/captures",
+      "source_ids": ["gateway-a", "gateway-b"],
+      "start_date": "2025-06-01",
+      "end_date": "2026-06-29"
+    }
+  ]
 }
 ```
 

@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,12 +26,14 @@ pub enum RegistryError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatasetSource {
     pub source_id: String,
     pub members: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Dataset {
     pub dataset_id: String,
     #[serde(default)]
@@ -51,13 +54,19 @@ pub struct Dataset {
     pub source_ids: Vec<String>,
     #[serde(default)]
     pub sources: Vec<DatasetSource>,
+    /// Optional product selection applied automatically by dataset-mode pipeline runs.
+    #[serde(default)]
+    pub selection: Value,
 }
 
 impl Dataset {
     pub fn validate(&mut self, repository_root: &Path) -> Result<(), RegistryError> {
         self.dataset_id = self.dataset_id.trim().to_owned();
-        if self.dataset_id.is_empty() {
-            return Err(RegistryError::Invalid("dataset_id cannot be empty".into()));
+        if !is_safe_path_component(&self.dataset_id) {
+            return Err(RegistryError::Invalid(format!(
+                "dataset_id {:?} must be exactly one normal path component",
+                self.dataset_id
+            )));
         }
         if self.label.trim().is_empty() {
             self.label = title(&self.dataset_id);
@@ -167,10 +176,14 @@ impl DatasetRegistry {
     }
 
     pub fn load_default(repository_root: &Path) -> Result<Self, RegistryError> {
-        let configured = env::var_os("DATASETS_CONFIG_PATH")
+        Self::load(Self::default_path(repository_root), repository_root)
+    }
+
+    /// Return the registry path selected by the environment, or the repository default.
+    pub fn default_path(repository_root: &Path) -> PathBuf {
+        env::var_os("DATASETS_CONFIG_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|| repository_root.join("datasets.json"));
-        Self::load(configured, repository_root)
+            .unwrap_or_else(|| repository_root.join("datasets.json"))
     }
 
     pub fn get(&self, dataset_id: &str) -> Result<&Dataset, RegistryError> {
@@ -317,5 +330,82 @@ mod tests {
             registry.get("sample_data").unwrap().db_path,
             root.path().join("data/sample_data/netflow.sqlite")
         );
+    }
+
+    #[test]
+    fn registry_rejects_dataset_ids_that_are_not_safe_path_components() {
+        for dataset_id in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "/outside",
+            "nested/id",
+            r"nested\id",
+        ] {
+            let root = tempdir().unwrap();
+            let list = root.path().join("datasets.json");
+            fs::write(
+                &list,
+                serde_json::json!([{
+                    "dataset_id": dataset_id,
+                    "root_path": "/captures"
+                }])
+                .to_string(),
+            )
+            .unwrap();
+
+            let error = DatasetRegistry::load(&list, root.path()).unwrap_err();
+            assert!(
+                error.to_string().contains("dataset_id")
+                    && error.to_string().contains("one normal path component"),
+                "dataset_id {dataset_id:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_accepts_hyphenated_dataset_ids() {
+        let root = tempdir().unwrap();
+        let list = root.path().join("datasets.json");
+        fs::write(
+            &list,
+            r#"[{"dataset_id":"uoregon-active-0-220","root_path":"/captures"}]"#,
+        )
+        .unwrap();
+
+        let registry = DatasetRegistry::load(&list, root.path()).unwrap();
+
+        assert_eq!(
+            registry.get("uoregon-active-0-220").unwrap().db_path,
+            root.path().join("data/uoregon-active-0-220/netflow.sqlite")
+        );
+    }
+
+    #[test]
+    fn registry_rejects_unknown_dataset_and_source_fields() {
+        for (registry_json, unknown_field) in [
+            (
+                r#"[{"dataset_id":"sample","root_path":"/captures","selecton":null}]"#,
+                "selecton",
+            ),
+            (
+                r#"[{"dataset_id":"sample","root_path":"/captures","sources":[{"source_id":"r1","member":["r1"]}]}]"#,
+                "member",
+            ),
+        ] {
+            let root = tempdir().unwrap();
+            let list = root.path().join("datasets.json");
+            fs::write(&list, registry_json).unwrap();
+
+            let error = DatasetRegistry::load(&list, root.path()).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{unknown_field}`")),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

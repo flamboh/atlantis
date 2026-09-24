@@ -206,6 +206,7 @@ dependencies = [
  "ipnet",
  "jiff",
  "libc",
+ "nix",
  "parquet",
  "rayon",
  "regex",

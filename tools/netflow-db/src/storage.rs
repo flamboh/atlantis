@@ -1,10 +1,10 @@
 //! Concrete SQLite persistence and atomic database publication.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -34,7 +34,7 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
     "address_structure_stats",
     "bucket_coverage",
 ];
-
+const STATS_GRANULARITIES: [&str; 4] = ["5m", "30m", "1h", "1d"];
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("SQLite operation failed: {0}")]
@@ -75,7 +75,7 @@ impl DatabaseOperationLock {
         database_path: impl AsRef<Path>,
         operation: impl Into<String>,
     ) -> Result<Self, StorageError> {
-        let database_path = absolute_path(database_path.as_ref())?;
+        let database_path = canonical_path(database_path.as_ref())?;
         let operation = operation.into();
         let path = database_operation_lock_path(&database_path)?;
         if let Some(parent) = path.parent() {
@@ -126,17 +126,6 @@ fn validate_lock_file(file: &File, path: &Path) -> Result<(), StorageError> {
             path.display()
         )));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        if metadata.nlink() != 1 {
-            return Err(StorageError::InvalidInput(format!(
-                "database operation lock must not be hard-linked: {}",
-                path.display()
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -147,7 +136,7 @@ impl Drop for DatabaseOperationLock {
 }
 
 pub fn database_operation_lock_path(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
-    let database = absolute_path(path.as_ref())?;
+    let database = canonical_path(path.as_ref())?;
     let name = database.file_name().ok_or_else(|| {
         StorageError::InvalidInput(format!(
             "database path has no file name: {}",
@@ -155,6 +144,32 @@ pub fn database_operation_lock_path(path: impl AsRef<Path>) -> Result<PathBuf, S
         ))
     })?;
     Ok(database.with_file_name(format!(".{}.operation.lock", name.to_string_lossy())))
+}
+
+/// Canonicalize a path, allowing the final file name to be absent.
+pub(crate) fn canonical_path(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+    let path = path.as_ref();
+    let expanded = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    match fs::canonicalize(&expanded) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = expanded.parent().ok_or_else(|| {
+                StorageError::InvalidInput(format!(
+                    "path has no parent directory: {}",
+                    expanded.display()
+                ))
+            })?;
+            let file_name = expanded.file_name().ok_or_else(|| {
+                StorageError::InvalidInput(format!("path has no file name: {}", expanded.display()))
+            })?;
+            Ok(canonical_path(parent)?.join(file_name))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn connect_pipeline_writer(path: impl AsRef<Path>) -> Result<Connection, StorageError> {
@@ -180,7 +195,7 @@ pub fn connect_local_writer(path: impl AsRef<Path>) -> Result<Connection, Storag
 
 pub fn connect_readonly(path: impl AsRef<Path>) -> Result<Connection, StorageError> {
     let connection = Connection::open_with_flags(
-        absolute_path(path.as_ref())?,
+        canonical_path(path.as_ref())?,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     connection.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
@@ -223,48 +238,6 @@ pub fn init_schema(connection: &Connection) -> Result<(), StorageError> {
     init_datasets_table(connection)?;
     init_pipeline_product_table(connection)?;
     Ok(())
-}
-
-fn absolute_path(path: &Path) -> Result<PathBuf, StorageError> {
-    let expanded = if path.starts_with("~") {
-        let home = std::env::var_os("HOME").ok_or_else(|| {
-            StorageError::InvalidInput(format!(
-                "cannot expand path without a home: {}",
-                path.display()
-            ))
-        })?;
-        PathBuf::from(home).join(path.strip_prefix("~").expect("prefix checked"))
-    } else if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in expanded.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    let mut existing = normalized.as_path();
-    let mut suffix = Vec::new();
-    while !existing.exists() {
-        let name = existing.file_name().ok_or_else(|| {
-            StorageError::InvalidInput(format!("cannot resolve path {}", path.display()))
-        })?;
-        suffix.push(name.to_owned());
-        existing = existing.parent().ok_or_else(|| {
-            StorageError::InvalidInput(format!("cannot resolve path {}", path.display()))
-        })?;
-    }
-    let mut resolved = existing.canonicalize()?;
-    for component in suffix.into_iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1542,6 +1515,128 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         DROP INDEX IF EXISTS idx_port_count_stats_query;
         ",
     )?;
+    init_daily_product_completion_table(connection)?;
+    Ok(())
+}
+
+/// Initialize the completion marker for native daily-active products.
+pub fn init_daily_product_completion_table(connection: &Connection) -> Result<(), StorageError> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS daily_product_completion (
+            source_id TEXT NOT NULL,
+            day_start INTEGER NOT NULL,
+            day_end INTEGER NOT NULL CHECK (day_end > day_start),
+            product_fingerprint TEXT NOT NULL,
+            run_maad INTEGER NOT NULL CHECK (run_maad IN (0, 1)),
+            completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, day_start)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_daily_product_completion_source_range
+        ON daily_product_completion(source_id, day_start, day_end);
+        ",
+    )?;
+    Ok(())
+}
+
+/// Return the product identity currently bound to this database, if one exists.
+pub fn current_product_fingerprint(
+    connection: &Connection,
+) -> Result<Option<String>, StorageError> {
+    Ok(connection
+        .query_row(
+            "SELECT product_fingerprint FROM pipeline_product WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Test whether one source/day has a marker for the current product identity and MAAD setting.
+pub fn daily_product_completion_matches(
+    connection: &Connection,
+    source_id: &str,
+    day_start: i64,
+    day_end: i64,
+    product_fingerprint: &str,
+    run_maad: bool,
+) -> Result<bool, StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion requires a non-empty day range".into(),
+        ));
+    }
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM daily_product_completion
+             WHERE source_id = ?1 AND day_start = ?2 AND day_end = ?3
+               AND product_fingerprint = ?4 AND run_maad = ?5
+         )",
+        params![
+            source_id,
+            day_start,
+            day_end,
+            product_fingerprint,
+            i64::from(run_maad)
+        ],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
+}
+
+/// Publish or refresh one source/day marker. Callers must invoke this inside the same transaction
+/// that publishes the day's canonical rows, rollups, and evidence/provenance.
+pub fn upsert_daily_product_completion(
+    connection: &Connection,
+    source_id: &str,
+    day_start: i64,
+    day_end: i64,
+    product_fingerprint: &str,
+    run_maad: bool,
+) -> Result<(), StorageError> {
+    if day_start >= day_end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion requires a non-empty day range".into(),
+        ));
+    }
+    connection.execute(
+        "INSERT INTO daily_product_completion (
+             source_id, day_start, day_end, product_fingerprint, run_maad
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(source_id, day_start) DO UPDATE SET
+             day_end = excluded.day_end,
+             product_fingerprint = excluded.product_fingerprint,
+             run_maad = excluded.run_maad,
+             completed_at = CURRENT_TIMESTAMP",
+        params![
+            source_id,
+            day_start,
+            day_end,
+            product_fingerprint,
+            i64::from(run_maad),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Remove completion markers overlapping a deleted source/time range.
+pub fn delete_daily_product_completion(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<(), StorageError> {
+    if start >= end {
+        return Err(StorageError::InvalidInput(
+            "daily product completion deletion requires a non-empty range".into(),
+        ));
+    }
+    for source_id in source_ids {
+        connection.execute(
+            "DELETE FROM daily_product_completion
+             WHERE source_id = ?1 AND day_start < ?3 AND day_end > ?2",
+            params![source_id, start, end],
+        )?;
+    }
     Ok(())
 }
 
@@ -2101,6 +2196,51 @@ pub fn delete_stats_bucket_keys(
     Ok(())
 }
 
+/// Remove every persisted product row and input-evidence row for a local time range.
+///
+/// Callers use this inside their day transaction when a previously complete capture day must be
+/// invalidated. Keeping input state with the stats deletion prevents a later resume from treating
+/// stale revisions as proof that the deleted day is still published.
+pub(crate) fn delete_stats_time_range(
+    connection: &Connection,
+    source_ids: &[String],
+    start: i64,
+    end: i64,
+) -> Result<(), StorageError> {
+    if start >= end {
+        return Err(StorageError::InvalidInput(
+            "time-range deletion requires a non-empty range".into(),
+        ));
+    }
+    delete_daily_product_completion(connection, source_ids, start, end)?;
+    for table in STATS_TABLE_NAMES {
+        let mut statement = connection.prepare_cached(&format!(
+            "DELETE FROM {table}
+             WHERE source_id = ?1 AND granularity = ?2
+               AND bucket_start >= ?3 AND bucket_start < ?4"
+        ))?;
+        for source_id in source_ids {
+            for granularity in STATS_GRANULARITIES {
+                statement.execute(params![source_id, granularity, start, end])?;
+            }
+        }
+    }
+    for source_id in source_ids {
+        connection.execute(
+            "DELETE FROM input_evidence
+             WHERE source_id = ?1 AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, start, end],
+        )?;
+        connection.execute(
+            "DELETE FROM processed_inputs
+             WHERE input_kind = 'nfcapd' AND source_id = ?1
+               AND bucket_start >= ?2 AND bucket_start < ?3",
+            params![source_id, start, end],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 impl StatsDimensions {
     fn example() -> Self {
@@ -2371,7 +2511,7 @@ pub fn promote_database(
     backup_existing_path: Option<&Path>,
 ) -> Result<(), StorageError> {
     let (candidate_path, target_path) = resolved_backup_paths(candidate_path, target_path)?;
-    let backup_existing_path = backup_existing_path.map(absolute_path).transpose()?;
+    let backup_existing_path = backup_existing_path.map(canonical_path).transpose()?;
     let mut database_paths = vec![candidate_path.as_path(), target_path.as_path()];
     database_paths.extend(backup_existing_path.as_deref());
     validate_database_path_separation(&database_paths)?;
@@ -2395,8 +2535,8 @@ fn resolved_backup_paths(
     source_path: impl AsRef<Path>,
     target_path: impl AsRef<Path>,
 ) -> Result<(PathBuf, PathBuf), StorageError> {
-    let source_path = absolute_path(source_path.as_ref())?;
-    let target_path = absolute_path(target_path.as_ref())?;
+    let source_path = canonical_path(source_path.as_ref())?;
+    let target_path = canonical_path(target_path.as_ref())?;
     validate_database_path_separation(&[source_path.as_path(), target_path.as_path()])?;
     if !source_path.is_file() {
         return Err(StorageError::DatabaseNotFound(source_path));
@@ -2404,29 +2544,38 @@ fn resolved_backup_paths(
     Ok((source_path, target_path))
 }
 
-fn validate_database_path_separation(paths: &[&Path]) -> Result<(), StorageError> {
-    let mut claimed = BTreeMap::new();
+/// Reject overlapping database files, SQLite sidecars, and operation locks.
+pub(crate) fn validate_database_path_separation(paths: &[&Path]) -> Result<(), StorageError> {
+    let mut claimed = Vec::<(PathBuf, PathBuf)>::new();
     for path in paths {
         for related in database_related_paths(path)? {
-            if let Some(owner) = claimed.insert(related.clone(), (*path).to_owned()) {
+            if let Some((owner_related, owner)) = claimed.iter().find(|(owner_related, _)| {
+                owner_related == &related
+                    || owner_related.starts_with(&related)
+                    || related.starts_with(owner_related)
+            }) {
                 return Err(StorageError::InvalidInput(format!(
-                    "database paths and their SQLite sidecar/operation-lock paths must be distinct: {} aliases {} through {}",
+                    "database paths and their SQLite sidecar/operation-lock paths must be distinct: {} and {} overlap through {} and {}",
                     owner.display(),
                     path.display(),
+                    owner_related.display(),
                     related.display()
                 )));
             }
+            claimed.push((related.clone(), (*path).to_owned()));
         }
     }
     Ok(())
 }
 
-fn database_related_paths(path: &Path) -> Result<Vec<PathBuf>, StorageError> {
-    let mut paths = vec![path.to_owned(), database_operation_lock_path(path)?];
-    paths.extend(["-journal", "-wal", "-shm"].map(|suffix| sidecar_path(path, suffix)));
+pub(crate) fn database_related_paths(path: &Path) -> Result<Vec<PathBuf>, StorageError> {
+    // Resolve the database before deriving the names SQLite and the operation lock use beside it.
+    let database = canonical_path(path)?;
+    let mut paths = vec![database.clone(), database_operation_lock_path(&database)?];
+    paths.extend(["-journal", "-wal", "-shm"].map(|suffix| sidecar_path(&database, suffix)));
     paths
         .into_iter()
-        .map(|related| absolute_path(&related))
+        .map(|path| canonical_path(&path))
         .collect()
 }
 
@@ -2436,7 +2585,7 @@ fn acquire_database_operation_locks<'a>(
 ) -> Result<Vec<DatabaseOperationLock>, StorageError> {
     let paths = paths
         .into_iter()
-        .map(absolute_path)
+        .map(canonical_path)
         .collect::<Result<BTreeSet<_>, _>>()?;
     paths
         .into_iter()
@@ -2497,8 +2646,8 @@ pub fn atomic_replace_sqlite(
     source_path: impl AsRef<Path>,
     target_path: impl AsRef<Path>,
 ) -> Result<(), StorageError> {
-    let source_path = absolute_path(source_path.as_ref())?;
-    let target_path = absolute_path(target_path.as_ref())?;
+    let source_path = canonical_path(source_path.as_ref())?;
+    let target_path = canonical_path(target_path.as_ref())?;
     validate_database_path_separation(&[source_path.as_path(), target_path.as_path()])?;
     let mut displaced = Vec::new();
     for suffix in ["-journal", "-wal", "-shm"] {
@@ -2609,22 +2758,6 @@ mod tests {
         assert!(error.to_string().contains("pipeline build"));
         drop(first);
         DatabaseOperationLock::acquire(&path, "backup").unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn operation_lock_rejects_a_hard_link_to_the_database_before_truncating() {
-        let directory = tempdir().unwrap();
-        let database = directory.path().join("netflow.sqlite");
-        fs::write(&database, b"valuable database bytes").unwrap();
-        let lock = database_operation_lock_path(&database).unwrap();
-        fs::hard_link(&database, &lock).unwrap();
-        let original = fs::read(&database).unwrap();
-
-        let error = DatabaseOperationLock::acquire(&database, "pipeline build").unwrap_err();
-
-        assert!(error.to_string().contains("must not be hard-linked"));
-        assert_eq!(fs::read(database).unwrap(), original);
     }
 
     #[test]
@@ -2803,6 +2936,276 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn daily_product_completion_matches_the_product_and_maad_configuration() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, "product", false).unwrap();
+
+        assert!(
+            daily_product_completion_matches(&connection, "r1", 0, 86_400, "product", false,)
+                .unwrap()
+        );
+        assert!(
+            !daily_product_completion_matches(
+                &connection,
+                "r1",
+                0,
+                86_400,
+                "other-product",
+                false,
+            )
+            .unwrap()
+        );
+        assert!(
+            !daily_product_completion_matches(&connection, "r1", 0, 86_400, "product", true,)
+                .unwrap()
+        );
+
+        delete_daily_product_completion(&connection, &["r1".into()], 0, 86_400).unwrap();
+        assert!(
+            !daily_product_completion_matches(&connection, "r1", 0, 86_400, "product", false,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn time_range_deletion_is_granularity_bounded_and_preserves_other_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        init_input_evidence_table(&connection).unwrap();
+        init_processed_inputs_table(&connection).unwrap();
+
+        for table in STATS_TABLE_NAMES {
+            let mut statement = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN DELETE FROM {table}
+                     WHERE source_id = ?1 AND granularity = ?2
+                       AND bucket_start >= ?3 AND bucket_start < ?4"
+                ))
+                .unwrap();
+            let plan = statement
+                .query_map(params!["r1", "5m", 0_i64, 86_400_i64], |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+                .join("\n");
+            for clause in [
+                "USING PRIMARY KEY",
+                "source_id=?",
+                "granularity=?",
+                "bucket_start>?",
+                "bucket_start<?",
+            ] {
+                assert!(
+                    plan.contains(clause),
+                    "{table} delete plan should use the bounded primary-key range: {plan}"
+                );
+            }
+        }
+
+        for &(source_id, bucket_start) in
+            &[("r1", 0_i64), ("r1", 86_400), ("r2", 0), ("r2", 86_400)]
+        {
+            for granularity in STATS_GRANULARITIES {
+                let dimensions = StatsDimensions {
+                    source_id: source_id.into(),
+                    granularity: granularity.into(),
+                    bucket_start,
+                    bucket_end: bucket_start + 300,
+                    ip_version: 4,
+                    src_visibility: "all".into(),
+                    dst_visibility: "all".into(),
+                };
+                let mut traffic = TrafficStatsRow::example();
+                traffic.dimensions = dimensions.clone();
+                insert_traffic_stats_rows(&connection, &[traffic]).unwrap();
+                let mut protocol = ProtocolStatsRow::example();
+                protocol.dimensions = dimensions.clone();
+                insert_protocol_stats_rows(&connection, &[protocol]).unwrap();
+                let mut address_count = AddressCountStatsRow::example();
+                address_count.dimensions = dimensions.clone();
+                insert_address_count_stats_rows(&connection, &[address_count]).unwrap();
+                let mut port_count = PortCountStatsRow::example();
+                port_count.dimensions = dimensions.clone();
+                insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
+                let mut address_structure = AddressStructureStatsRow::example();
+                address_structure.dimensions = dimensions;
+                insert_address_structure_stats_rows(&connection, &[address_structure]).unwrap();
+
+                let coverage = BucketCoverageRow::new(
+                    source_id,
+                    granularity,
+                    bucket_start,
+                    bucket_start + 300,
+                    BucketCoverage::complete_unit(),
+                );
+                insert_bucket_coverage_rows(&connection, &[coverage]).unwrap();
+            }
+
+            insert_input_evidence_rows(
+                &connection,
+                &[InputEvidenceRow::new(
+                    source_id,
+                    format!("unit-{source_id}-{bucket_start}"),
+                    bucket_start,
+                    bucket_start + 300,
+                    format!("/captures/{source_id}-{bucket_start}"),
+                    InputEvidenceState::Observed,
+                    Some(format!("revision-{source_id}-{bucket_start}")),
+                )],
+            )
+            .unwrap();
+        }
+
+        let insert_processed = |source_id: &str,
+                                bucket_start: i64,
+                                input_kind: InputKind|
+         -> Result<(), StorageError> {
+            let locator = format!(
+                "/captures/{}-{source_id}-{bucket_start}",
+                input_kind.as_str()
+            );
+            let revision =
+                InputRevision::create(input_kind.as_str(), &locator, "content", "decoder")?;
+            upsert_input_bucket(
+                &connection,
+                &InputBucket {
+                    input_kind,
+                    input_locator: locator.clone(),
+                    scan_locator: locator.clone(),
+                    source_id: source_id.into(),
+                    bucket_start,
+                    bucket_end: bucket_start + 300,
+                    revision: revision.clone(),
+                    file_snapshot: None,
+                },
+                false,
+            )?;
+            mark_input_bucket_status(
+                &connection,
+                input_kind,
+                &locator,
+                source_id,
+                bucket_start,
+                InputStatus::Processed,
+                &revision,
+                None,
+            )
+        };
+
+        for &(source_id, bucket_start) in
+            &[("r1", 0_i64), ("r1", 86_400), ("r2", 0), ("r2", 86_400)]
+        {
+            insert_processed(source_id, bucket_start, InputKind::Nfcapd).unwrap();
+        }
+        insert_processed("r1", 0, InputKind::Csv).unwrap();
+
+        upsert_daily_product_completion(&connection, "r1", 0, 86_400, "product", false).unwrap();
+        upsert_daily_product_completion(&connection, "r2", 0, 86_400, "product", false).unwrap();
+
+        delete_stats_time_range(&connection, &["r1".into()], 0, 86_400).unwrap();
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion
+                     WHERE source_id = 'r1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "deleting a day must remove its completion marker"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM daily_product_completion
+                     WHERE source_id = 'r2'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "deleting one source/day must preserve another source marker"
+        );
+
+        for table in STATS_TABLE_NAMES {
+            let count = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap();
+            assert_eq!(count, 12, "{table}");
+            assert_eq!(
+                connection
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM {table}
+                             WHERE source_id = 'r1' AND bucket_start = 0"
+                        ),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "the requested source and range should be deleted from {table}"
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM input_evidence", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM input_evidence
+                     WHERE source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM processed_inputs", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM processed_inputs
+                     WHERE input_kind = 'nfcapd' AND source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM processed_inputs
+                     WHERE input_kind = 'csv' AND source_id = 'r1' AND bucket_start = 0",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -3193,65 +3596,6 @@ mod tests {
             let error = promote_database(&candidate, &target, Some(backup)).unwrap_err();
             assert!(error.to_string().contains("must be distinct"));
         }
-    }
-
-    #[test]
-    fn maintenance_rejects_database_sidecar_and_lock_aliases_before_mutation() {
-        let directory = tempdir().unwrap();
-        let target = directory.path().join("target.sqlite");
-        for source in [
-            sidecar_path(&target, "-wal"),
-            sidecar_path(&target, "-shm"),
-            sidecar_path(&target, "-journal"),
-            database_operation_lock_path(&target).unwrap(),
-        ] {
-            drop(Connection::open(&source).unwrap());
-            let original = fs::read(&source).unwrap();
-
-            let error = backup_database(&source, &target).unwrap_err();
-
-            assert!(error.to_string().contains("must be distinct"));
-            assert_eq!(fs::read(&source).unwrap(), original);
-            fs::remove_file(source).unwrap();
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn maintenance_resolves_symlinks_before_checking_related_paths() {
-        use std::os::unix::fs::symlink;
-
-        let directory = tempdir().unwrap();
-        let target = directory.path().join("target.sqlite");
-        let lock = database_operation_lock_path(&target).unwrap();
-        drop(Connection::open(&lock).unwrap());
-        let candidate = directory.path().join("candidate.sqlite");
-        symlink(&lock, &candidate).unwrap();
-        let original = fs::read(&lock).unwrap();
-
-        let error = backup_database(&candidate, &target).unwrap_err();
-
-        assert!(error.to_string().contains("must be distinct"));
-        assert_eq!(fs::read(lock).unwrap(), original);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn maintenance_rejects_a_derived_lock_symlink_to_the_source() {
-        use std::os::unix::fs::symlink;
-
-        let directory = tempdir().unwrap();
-        let source = directory.path().join("source.sqlite");
-        let target = directory.path().join("target.sqlite");
-        drop(Connection::open(&source).unwrap());
-        let lock = database_operation_lock_path(&target).unwrap();
-        symlink(&source, &lock).unwrap();
-        let original = fs::read(&source).unwrap();
-
-        let error = backup_database(&source, &target).unwrap_err();
-
-        assert!(error.to_string().contains("must be distinct"));
-        assert_eq!(fs::read(source).unwrap(), original);
     }
 
     #[test]

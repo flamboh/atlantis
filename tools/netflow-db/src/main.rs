@@ -61,8 +61,9 @@ enum Command {
 struct PipelineArgs {
     #[arg(long, conflicts_with = "dataset")]
     config: Option<PathBuf>,
+    /// Dataset ID. Repeat --dataset for two or more values to start one coordinated fixed daily-active subset run; one value keeps the normal single-dataset path.
     #[arg(long, requires = "start_date", conflicts_with = "config")]
-    dataset: Option<String>,
+    dataset: Vec<String>,
     #[arg(long)]
     start_date: Option<String>,
     #[arg(long)]
@@ -77,6 +78,13 @@ struct PipelineArgs {
     datasets: Option<PathBuf>,
     #[arg(long)]
     ip_prefix: Option<String>,
+    /// Select qualifying flows from sources active over each complete local day.
+    #[arg(
+        long,
+        requires = "ip_prefix",
+        conflicts_with_all = ["src_visibility", "dst_visibility"]
+    )]
+    daily_active_sources: bool,
     #[arg(long, value_enum)]
     src_visibility: Option<VisibilityArg>,
     #[arg(long, value_enum)]
@@ -328,14 +336,24 @@ fn main() -> Result<()> {
 }
 
 fn run_pipeline(args: PipelineArgs) -> Result<()> {
-    let selection = serde_json::json!({
-        "ip_prefix": args.ip_prefix,
-        "src_visibility": args.src_visibility.map(VisibilityArg::as_str),
-        "dst_visibility": args.dst_visibility.map(VisibilityArg::as_str),
-    });
-    let report = netflow_db::pipeline::run(netflow_db::pipeline::PipelineRequest {
+    let mut selection = serde_json::Map::new();
+    if args.daily_active_sources {
+        selection.insert("kind".into(), serde_json::json!("daily_active_sources"));
+    }
+    selection.insert("ip_prefix".into(), serde_json::json!(args.ip_prefix));
+    selection.insert(
+        "src_visibility".into(),
+        serde_json::json!(args.src_visibility.map(VisibilityArg::as_str)),
+    );
+    selection.insert(
+        "dst_visibility".into(),
+        serde_json::json!(args.dst_visibility.map(VisibilityArg::as_str)),
+    );
+    let selection = serde_json::Value::Object(selection);
+    let dataset_ids = args.dataset;
+    let request = netflow_db::pipeline::PipelineRequest {
         config_path: args.config,
-        dataset_id: args.dataset,
+        dataset_id: (dataset_ids.len() == 1).then(|| dataset_ids[0].clone()),
         datasets_path: args.datasets,
         start_date: args.start_date,
         end_date: args.end_date,
@@ -347,13 +365,25 @@ fn run_pipeline(args: PipelineArgs) -> Result<()> {
         force: args.force,
         run_maad: !args.no_maad,
         require_complete: args.require_complete,
-    })?;
+    };
+    let report = if dataset_ids.len() > 1 {
+        netflow_db::pipeline::run_many(request, dataset_ids)?
+    } else {
+        netflow_db::pipeline::run(request)?
+    };
     println!(
         "Five-minute coverage: {} complete, {} partial, {} unknown",
         report.complete_five_minute_buckets,
         report.partial_five_minute_buckets,
         report.unknown_five_minute_buckets
     );
+    println!(
+        "Published five-minute buckets: {}",
+        report.five_minute_buckets
+    );
+    if report.skipped_inputs != 0 {
+        println!("Skipped inputs: {}", report.skipped_inputs);
+    }
     Ok(())
 }
 

@@ -26,6 +26,49 @@ Coverage is observed before selection. Thus, selected-out buckets remain as dens
 
 Native nfcapd input pushes the IP prefix condition into the nfdump filter. Visibility conditions apply before statistics accumulate.
 
+`daily_active_sources` is a separate, fixed selection policy for the UOregon `/16` candidate
+products. It accepts exactly one IPv4 `/16` and exactly one `nfcapd_tree` input. For each complete
+local calendar day, it makes two bounded passes over every unique physical member:
+
+1. Select anonymized IPv4 source traffic in the `/16` that uses TCP or UDP and source port 1024 or
+   greater. Sum flows, packets, and bytes by exact source address across physical members.
+2. Mark sources active at the inclusive thresholds of 3 flows, 20 packets, and 2,000 bytes. Publish
+   only the same qualifying-flow population from active sources into the existing five-minute and
+   rollup contracts.
+
+There is no destination-port filter and no TCP-flag or SYN filter. Overlapping logical sources do
+not double-count activity because the first pass deduplicates their physical members. A day with
+any missing physical capture is not published. Activity resets at local midnight, including DST
+days.
+
+The normalized product identity records the entire fixed policy. It is not compatible with an old
+prefix-only database. A late or changed input can alter the active set for every five-minute bucket
+in a day, so repair requires a whole-day `--force` rebuild inside the existing day transaction.
+
+## Coordinated subset runs
+
+Repeat `--dataset` for two or more registry entries to build coordinated subset products. Each entry
+supplies its own root and source configuration. Entries do not point to a parent dataset or a
+`source_dataset`.
+
+Multi mode supports only `daily_active_sources`. The selected entries must resolve to the same
+nfcapd root and logical source layout, and one whole local-day window. The command rejects `--config`,
+`--database-path`, partial time bounds, and ambiguous selection overrides. It takes each output path
+from the corresponding registry entry.
+
+The run coordinates one daily eligibility scan and one publication scan across the subsets. These
+remain two physical phases because qualification needs the complete local day before any bucket can
+publish. Local-day completeness is shared, so an incomplete required day blocks publication for every
+subset.
+
+Each subset keeps its own immutable product database, product identity, transactions, resume state,
+and MAAD configuration. Active sets are still resolved independently. Overlapping subsets may both
+receive the same qualifying flow.
+
+Outputs commit sequentially rather than as one cross-database transaction. If the process stops
+between product commits, sibling databases can differ by at most the local day that was in flight.
+The next run sees the missing completion marker and rebuilds that day for each unfinished product.
+
 ## Input identity
 
 Each input records an exact revision. The revision contains a SHA-256 content identity and a canonical decoder fingerprint.
@@ -80,6 +123,16 @@ Native nfcapd input uses the pinned Atlantis nfdump fork in `vendor/nfdump`. The
 The fork's stdout is the private `atlantis-flow-stream-v1` binary contract. The pipeline decodes this stream directly into canonical scopes before MAAD runs. There is no intermediate reduce step.
 
 The pipeline stops when the fork executable is absent or incompatible.
+
+Request resolution stores the executable's canonical path, one SHA-256 content identity, and a
+cheap device/inode/size/timestamp snapshot. The binary identity is part of the product config and
+the native input decoder fingerprint, so replacing the executable requires a fresh product and
+cannot mix revisions in a resumed database. The snapshot is rechecked around activity and decode
+scans and immediately before native publication commits; a change rolls that transaction back.
+
+Before creating an output directory, lock, or database, the pipeline runs one bounded probe against
+an isolated empty `-R` directory. The probe requires the exact empty Atlantis stream (header,
+terminator, and EOF), including for incomplete-day requests.
 
 To update the fork, rebase its `atlantis-binary-v1` branch onto a reviewed upstream nfdump tag and run the fork's serial test suite. Then advance this repository's submodule pointer and run `./vendor/scripts/compile-nfdump.sh`. Treat a protocol or normalization change as a versioned wire-contract change. Update the Rust decoder and the provenance revision in the same change.
 
