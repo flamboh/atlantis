@@ -211,6 +211,59 @@ On the native path, nfcapd input needs the fork path: set the top-level `"nfdump
 
 Time limits must align with local-day boundaries.
 
+## Process a date range on several hosts
+
+Days are independent, so a long nfcapd range can be split into day shards that run on different
+hosts and then merged into one product.
+The [pipeline contract](../code/pipeline-contract.md#day-sharded-products) explains why the shards
+never overlap.
+
+Each host needs:
+
+- read access to the capture tree at the same absolute path, for example on a shared filesystem;
+- the same `netflow-db` binary, pinned nfdump fork, and dataset registry, all under one absolute
+  directory that has the same path on every host. The nfdump path is part of the product identity,
+  so a different path produces an incompatible shard;
+- enough host-local disk for its shard database. Write shards to local disk, not to a shared
+  network filesystem.
+
+`scripts/netflow-db-cluster.sh` runs the whole flow from one machine: it splits the inclusive date
+range into one contiguous shard per slot, runs `pipeline` on each host over ssh, copies consistent
+snapshots back, merges them, and runs `verify`:
+
+```bash
+./scripts/netflow-db-cluster.sh \
+  --hosts nodeA,nodeB,nodeC:2 \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output data/example/netflow.sqlite \
+  --deploy-bin target/release/netflow-db \
+  --deploy-nfdump target/nfdump/libexec/nfdump \
+  --deploy-datasets /path/to/datasets.json
+```
+
+`host:N` runs N shards on that host at once. Hosts install into `$HOME/atlantis-cluster` unless
+you set `--remote-dir` or `NETFLOW_CLUSTER_REMOTE_DIR`; the directory holds `bin/`, `nfdump/`,
+`datasets.json`, and the shard databases in `work/`. Pipeline flags after `--` apply to every
+shard. If a shard fails, rerun the same command: the split is deterministic, and every shard
+resumes after its last completed day. The script deletes the snapshots it copies back, but leaves
+the remote shard databases in place so a later run can resume from them. Delete `work/` on each
+host when you are finished.
+
+To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
+`--end-date` over a different day range, then run:
+
+```bash
+./scripts/netflow-db.sh merge-shards --output data/example/netflow.sqlite shard-*.sqlite
+```
+
+The output must not exist yet. The command refuses shards with different product identities,
+schemas, source layouts, or dataset metadata, and shards whose completed days overlap. It also
+refuses rows outside a shard's completed days. One merge accepts up to 11 shards, and a merged
+product can be merged again. After the merge, rerunning `pipeline` over the merged days with the
+same flags and nfdump path publishes zero buckets.
+
 ## Verify the output
 
 Run the compatibility check after the pipeline finishes:
