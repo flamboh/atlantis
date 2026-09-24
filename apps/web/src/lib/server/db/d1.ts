@@ -1,5 +1,4 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { env } from 'cloudflare:workers';
 import {
 	makePrepared,
 	type DatabaseDriver,
@@ -40,8 +39,13 @@ function createD1Db(d1: D1Database): ReadonlyDatasetDb {
 	return db;
 }
 
+async function bindingDb(): Promise<ReadonlyDatasetDb> {
+	const { env } = await import('cloudflare:workers');
+	return createD1Db(env.DB);
+}
+
 async function listDatasetRows(): Promise<DatasetRow[]> {
-	const db = createD1Db(env.DB);
+	const db = await bindingDb();
 	return db.all<DatasetRow>(
 		`
 			SELECT
@@ -57,7 +61,7 @@ async function listDatasetRows(): Promise<DatasetRow[]> {
 }
 
 async function getDatasetRow(datasetId: string): Promise<DatasetRow> {
-	const db = createD1Db(env.DB);
+	const db = await bindingDb();
 	const dataset = await db.get<DatasetRow>(
 		`
 			SELECT
@@ -84,7 +88,7 @@ export default {
 	listDatasetRows,
 	getDatasetRow,
 	async acquireDatasetDb() {
-		return { db: createD1Db(env.DB), release: () => undefined };
+		return { db: await bindingDb(), release: () => undefined };
 	},
 	async readAlertsFeed() {
 		return null;

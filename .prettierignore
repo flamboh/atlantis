@@ -4,4 +4,4 @@ vendor/maad
 vendor/nfdump
 apps/landing/dist
 apps/landing/.astro
-apps/web/drizzle/*.sql
+apps/web/drizzle/*/migration.sql

@@ -9,6 +9,7 @@ node_modules
 /result
 /apps/web/.svelte-kit
 /apps/web/build
+/apps/web/dist
 /apps/web/playwright-report
 /apps/web/test-results
 __pycache__
@@ -49,3 +50,6 @@ data/**
 /tools/netflow-db/maad_fast
 /tools/netflow-db/nfdump_reducer
 /tools/netflow-db/nfdump_reducer.build-id
+
+# Alchemy
+.alchemy

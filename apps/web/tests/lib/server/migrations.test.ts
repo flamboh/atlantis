@@ -16,12 +16,14 @@ function indexColumns(database: Database.Database, indexName: string): string[] 
 function migrationFiles(): string[] {
 	return fs
 		.readdirSync(migrationsDirectory)
-		.filter((fileName) => fileName.endsWith('.sql'))
+		.filter((entry) => fs.existsSync(path.join(migrationsDirectory, entry, 'migration.sql')))
 		.sort();
 }
 
-function applyMigration(database: Database.Database, fileName: string): void {
-	database.exec(fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8'));
+function applyMigration(database: Database.Database, migration: string): void {
+	database.exec(
+		fs.readFileSync(path.join(migrationsDirectory, migration, 'migration.sql'), 'utf8')
+	);
 }
 
 function seedPlannerStatistics(database: Database.Database): void {

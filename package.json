@@ -2,7 +2,7 @@
   "name": "atlantis",
   "devDependencies": {
     "concurrently": "^9.2.1",
-    "drizzle-kit": "^0.31.10",
+    "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "husky": "^9.1.7"
   },
   "packageManager": "bun@1.2.16",
@@ -15,9 +15,12 @@
     "build": "bun run build:landing",
     "build:web": "bun run --cwd apps/web build",
     "build:landing": "bun run --cwd apps/landing build",
+    "deploy:cloudflare": "ATLANTIS_DB_DRIVER=d1 alchemy deploy infra/cloudflare.ts",
+    "plan:cloudflare": "ATLANTIS_DB_DRIVER=d1 alchemy plan infra/cloudflare.ts",
+    "destroy:cloudflare": "alchemy destroy infra/cloudflare.ts",
     "check:web": "bun run --cwd apps/web check",
-    "lint": "bun run --cwd apps/web lint && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
-    "typecheck": "bun run --cwd apps/web typecheck && cargo check --workspace --all-targets --locked",
+    "lint": "bun run --cwd apps/web lint && bun run --cwd infra lint && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd infra typecheck && cargo check --workspace --all-targets --locked",
     "format": "bunx prettier --write . && cargo fmt --all",
     "format:check": "bunx prettier --check . && cargo fmt --all --check",
     "test": "bun run test:web && bun run test:db",
@@ -33,6 +36,10 @@
     "check:db": "cargo check --workspace --all-targets --locked"
   },
   "workspaces": [
-    "apps/*"
-  ]
+    "apps/*",
+    "infra"
+  ],
+  "patchedDependencies": {
+    "@alchemy.run/frontend-frameworks@2.0.0-beta.79": "patches/@alchemy.run%2Ffrontend-frameworks@2.0.0-beta.79.patch"
+  }
 }

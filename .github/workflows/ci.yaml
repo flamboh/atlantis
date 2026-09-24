@@ -43,10 +43,10 @@ jobs:
         run: bun run check:web
 
       - name: Lint
-        run: bun run --cwd apps/web lint
+        run: bun run --cwd apps/web lint && bun run --cwd infra lint
 
       - name: Typecheck
-        run: bun run --cwd apps/web typecheck
+        run: bun run --cwd apps/web typecheck && bun run --cwd infra typecheck
 
       - name: Test
         run: bun run test:web
