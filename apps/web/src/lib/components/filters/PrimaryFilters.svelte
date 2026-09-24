@@ -18,6 +18,7 @@
 		{ value: 'date', label: 'Day' },
 		{ value: 'hour', label: 'Hour' },
 		{ value: '30min', label: '30 min' },
+		{ value: '10min', label: '10 min' },
 		{ value: '5min', label: '5 min' }
 	];
 

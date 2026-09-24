@@ -120,6 +120,56 @@ describe('/api/netflow/coverage GET', () => {
 		expect(JSON.stringify(body)).not.toContain('data');
 	});
 
+	it('zero-fills 10 minute coverage on 600 second boundaries', async () => {
+		const all = vi.fn().mockResolvedValue([
+			{
+				sourceId: 'r1',
+				bucketStart: 0,
+				bucketEnd: 600,
+				coverageState: 'complete',
+				observedUnits: 2,
+				expectedUnits: 2,
+				rejectedUnits: 0
+			}
+		]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const response = await GET({
+			url: new URL(
+				'http://localhost/api/netflow/coverage?dataset=alpha&routers=r1&groupBy=10min&startDate=0&endDate=1200'
+			)
+		} as never);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toEqual({
+			timelines: [
+				{
+					sourceId: 'r1',
+					buckets: [
+						{
+							bucketStart: 0,
+							bucketEnd: 600,
+							coverage: { state: 'complete', observedUnits: 2, expectedUnits: 2 }
+						},
+						{
+							bucketStart: 600,
+							bucketEnd: 1200,
+							coverage: { state: 'unknown', observedUnits: 0, expectedUnits: 0 }
+						}
+					]
+				}
+			],
+			requestedRouters: ['r1']
+		});
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('FROM bucket_coverage'), [
+			'10m',
+			'r1',
+			0,
+			1200
+		]);
+	});
+
 	it('accepts explicit granularity and rejects invalid time windows', async () => {
 		const invalidGranularity = await GET({
 			url: new URL(
@@ -134,7 +184,7 @@ describe('/api/netflow/coverage GET', () => {
 
 		expect(invalidGranularity.status).toBe(400);
 		await expect(invalidGranularity.json()).resolves.toEqual({
-			error: 'Invalid granularity. Expected one of: 5m, 30m, 1h, 1d'
+			error: 'Invalid granularity. Expected one of: 5m, 10m, 30m, 1h, 1d'
 		});
 		expect(invalidRange.status).toBe(400);
 		await expect(invalidRange.json()).resolves.toEqual({

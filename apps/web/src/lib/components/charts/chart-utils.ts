@@ -253,6 +253,7 @@ export function formatLabels(results: NetflowDataPoint[], groupBy: GroupByOption
 			case 'hour':
 				return `${year}-${month}-${day} ${hours}:00`;
 			case '30min':
+			case '10min':
 			case '5min':
 				return `${year}-${month}-${day} ${hours}:${minutes}`;
 			default:
@@ -294,6 +295,8 @@ export function getXAxisTitle(groupBy: GroupByOption): string {
 			return 'Hour';
 		case '30min':
 			return '30 Minutes';
+		case '10min':
+			return '10 Minutes';
 		case '5min':
 			return '5 Minutes';
 		default:
@@ -359,6 +362,7 @@ export function groupByBucketDurationMs(groupBy: GroupByOption): number {
 	if (groupBy === 'date') return 24 * 60 * 60 * 1000;
 	if (groupBy === 'hour') return 60 * 60 * 1000;
 	if (groupBy === '30min') return 30 * 60 * 1000;
+	if (groupBy === '10min') return 10 * 60 * 1000;
 	return 5 * 60 * 1000;
 }
 
@@ -366,7 +370,8 @@ const GROUP_BY_DETAIL_LEVEL: Record<GroupByOption, number> = {
 	date: 0,
 	hour: 1,
 	'30min': 2,
-	'5min': 3
+	'10min': 3,
+	'5min': 4
 };
 
 function parseDateInputToUtcMs(value: string): number | null {
@@ -403,10 +408,12 @@ export function chooseAdaptiveGranularity(rangeMs: number): GroupByOption {
 
 	// Midpoints between known-good drilldown windows.
 	const fiveMinCutoff = (oneDay + sevenDays) / 2; // 4 days
+	const tenMinCutoff = fiveMinCutoff * 2;
 	const thirtyMinCutoff = (sevenDays + thirtyOneDays) / 2; // 19 days
 	const hourCutoff = thirtyOneDays * 2; // 62 days
 
 	if (rangeMs <= fiveMinCutoff) return '5min';
+	if (rangeMs <= tenMinCutoff) return '10min';
 	if (rangeMs <= thirtyMinCutoff) return '30min';
 	if (rangeMs <= hourCutoff) return 'hour';
 	return 'date';
@@ -481,7 +488,7 @@ export function formatNetflowTick(
 		return hours === 0 ? `${weekday} ${month}/${day}` : '';
 	}
 
-	if (groupBy === '30min') {
+	if (groupBy === '30min' || groupBy === '10min') {
 		if (minutes === 0 && (hours === 0 || hours === 12)) {
 			return `${weekday} ${month}/${day} ${hours.toString().padStart(2, '0')}:00`;
 		}
@@ -516,7 +523,7 @@ export function shouldHighlightNetflowGrid(
 	if (groupBy === 'hour') {
 		return hours === 0;
 	}
-	if (groupBy === '30min') {
+	if (groupBy === '30min' || groupBy === '10min') {
 		return minutes === 0 && (hours === 0 || hours === 12);
 	}
 	if (groupBy === '5min') {

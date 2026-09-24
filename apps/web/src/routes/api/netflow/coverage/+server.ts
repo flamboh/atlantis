@@ -17,6 +17,7 @@ import { epochToPSTComponents } from '$lib/utils/timezone';
 
 const GRANULARITY_SECONDS: Record<Exclude<IpGranularity, '1d'>, number> = {
 	'5m': 5 * 60,
+	'10m': 10 * 60,
 	'30m': 30 * 60,
 	'1h': 60 * 60
 };

@@ -30,7 +30,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS bucket_coverage (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL CHECK(bucket_end > bucket_start),
 		coverage_state TEXT NOT NULL CHECK(coverage_state IN ('complete', 'partial', 'unknown')),
@@ -49,7 +49,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS traffic_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
@@ -85,7 +85,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS protocol_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
@@ -99,7 +99,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS address_count_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
@@ -113,7 +113,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS address_structure_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
@@ -132,7 +132,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS port_count_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),

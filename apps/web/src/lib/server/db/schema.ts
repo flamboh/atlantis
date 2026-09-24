@@ -64,7 +64,7 @@ export const bucketCoverage = sqliteTable(
 	'bucket_coverage',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		coverageState: text('coverage_state', {
@@ -127,7 +127,7 @@ export const trafficStats = sqliteTable(
 	'traffic_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
@@ -170,7 +170,7 @@ export const protocolStats = sqliteTable(
 	'protocol_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
@@ -206,7 +206,7 @@ export const addressCountStats = sqliteTable(
 	'address_count_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
@@ -252,7 +252,7 @@ export const portCountStats = sqliteTable(
 	'port_count_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
@@ -291,7 +291,7 @@ export const addressStructureStats = sqliteTable(
 	'address_structure_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),

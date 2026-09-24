@@ -28,11 +28,14 @@ describe('netflow v3 helpers', () => {
 		expect(groupByToGranularity('date')).toBe('1d');
 		expect(groupByToGranularity('hour')).toBe('1h');
 		expect(groupByToGranularity('30min')).toBe('30m');
+		expect(groupByToGranularity('10min')).toBe('10m');
 		expect(groupByToGranularity('5min')).toBe('5m');
 	});
 
 	it('parses stored IP granularity request values', () => {
 		expect(parseIpGranularity('5m')).toBe('5m');
+		expect(parseIpGranularity('10m')).toBe('10m');
+		expect(parseIpGranularity('10min')).toBeNull();
 		expect(parseIpGranularity('bad')).toBeNull();
 		expect(parseIpGranularityOrDefault(null)).toBe('1h');
 		expect(parseIpGranularityOrDefault('bad')).toBe('1h');
@@ -60,6 +63,12 @@ describe('netflow v3 helpers', () => {
 		});
 
 		expect(
+			parseAggregateStatsParams(
+				new URL('http://localhost/api/test?routers=r1&granularity=10m&startDate=100&endDate=200')
+			)
+		).toMatchObject({ granularity: '10m' });
+
+		expect(
 			parseAggregateStatsParams(new URL('http://localhost/api/test?startDate=100&endDate=200'))
 		).toEqual({ error: 'No routers selected', status: 400 });
 		expect(
@@ -77,7 +86,7 @@ describe('netflow v3 helpers', () => {
 				new URL('http://localhost/api/test?routers=r1&granularity=weekly&startDate=100&endDate=200')
 			)
 		).toEqual({
-			error: 'Invalid granularity. Expected one of: 5m, 30m, 1h, 1d',
+			error: 'Invalid granularity. Expected one of: 5m, 10m, 30m, 1h, 1d',
 			status: 400
 		});
 		expect(
@@ -92,6 +101,12 @@ describe('netflow v3 helpers', () => {
 
 	it('keeps raw bucket starts for 5 minute requests', () => {
 		expect(getBucketStartQuery('bucket_start', '5min')).toBe('bucket_start');
+	});
+
+	it('floors 10 minute requests to local 600 second buckets', () => {
+		const query = getBucketStartQuery('bucket_start', '10min');
+		expect(query).toContain('/ 600) * 600');
+		expect(query).toContain("'localtime'");
 	});
 
 	it('normalizes structure points from MAAD variants', () => {
