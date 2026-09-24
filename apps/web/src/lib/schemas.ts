@@ -5,7 +5,7 @@ import {
 	FLOW_DIRECTIONS,
 	MAAD_IP_VERSIONS,
 	MAAD_MEASURES
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 import { z } from 'zod';
 // Requires Zod 4+
 

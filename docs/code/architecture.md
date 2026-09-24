@@ -34,7 +34,9 @@ The repository does not contain the general SQLite-to-D1 data-load process.
 
 The local dashboard reads SQLite databases with `better-sqlite3`. It opens these databases in read-only mode.
 
-The deployed dashboard reads the `DB` Cloudflare D1 binding. `ATLANTIS_DB_DRIVER=sqlite` forces the local SQLite path.
+The deployed dashboard reads the `DB` Cloudflare D1 binding from `cloudflare:workers`.
+
+The build selects one database driver. `apps/web/src/lib/server/db/d1.ts` reads D1, and `apps/web/src/lib/server/db/sqlite.ts` reads the pipeline SQLite files. Server code imports the driver as `#db`. [Development](development.md#choose-the-database-driver) explains the selection.
 
 The landing site has no database. It builds static files in `apps/landing/dist`.
 
@@ -50,7 +52,7 @@ Both implementations must keep compatible table and column contracts. No automat
 
 ## Main technology
 
-- SvelteKit 2 and Svelte 5
+- SvelteKit 3, Svelte 5, and Vite 8
 - Astro 6
 - TypeScript
 - Tailwind CSS 4

@@ -1,13 +1,13 @@
 import type { RequestHandler } from './$types';
-import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
+import type { SpectrumStatsPayload, SpectrumStatsResponse } from '#lib/types/spectrum-stats.ts';
+import { buildCoverageTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 import {
 	buildSpectrumPoints,
 	parseMaadStatsParams,
 	placeholders,
 	spectrumMeasureError
-} from '$lib/server/netflow-v3';
+} from '#lib/server/netflow-v3.ts';
 
 type SpectrumStatsRow = SpectrumStatsPayload & {
 	router: string;
@@ -23,7 +23,7 @@ type RawSpectrumStatsRow = {
 	daSpectrum: Uint8Array | null;
 };
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
 		return Response.json({ error: params.error }, { status: params.status });
@@ -35,8 +35,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const tableName = 'address_maad_stats';
 			const sourceColumn = 'source_id';
 			const queryParams = [

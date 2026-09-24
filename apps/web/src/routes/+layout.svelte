@@ -3,9 +3,9 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { Sun, Moon } from '@lucide/svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { theme } from '$lib/stores/theme.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
 
 	let { children } = $props();
 

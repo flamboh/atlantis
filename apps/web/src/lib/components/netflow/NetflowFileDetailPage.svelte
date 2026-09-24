@@ -1,24 +1,24 @@
 <script lang="ts">
 	import { afterNavigate, goto } from '$app/navigation';
-	import { getNetflowFileDetailLoader } from '$lib/components/netflow/file-detail-loader.svelte';
-	import NetflowFileHeader from '$lib/components/netflow/NetflowFileHeader.svelte';
-	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
-	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
-	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import MaadIpVersionFilter from '$lib/components/filters/MaadIpVersionFilter.svelte';
-	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import { getNetflowFileDetailLoader } from '#lib/components/netflow/file-detail-loader.svelte.ts';
+	import NetflowFileHeader from '#lib/components/netflow/NetflowFileHeader.svelte';
+	import NetflowFileLoadingSkeleton from '#lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
+	import NetflowFileMessageCard from '#lib/components/netflow/NetflowFileMessageCard.svelte';
+	import NetflowFileRouterCard from '#lib/components/netflow/NetflowFileRouterCard.svelte';
+	import MaadIpVersionFilter from '#lib/components/filters/MaadIpVersionFilter.svelte';
+	import MaadMeasureFilter from '#lib/components/filters/MaadMeasureFilter.svelte';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
 		maadMeasureHasSpectrum,
 		type FlowDirection,
 		type MaadIpVersion,
 		type MaadMeasure
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 	import {
 		createDateFromPSTComponents,
 		epochToPSTComponents,
 		formatTimestampAsPST
-	} from '$lib/utils/timezone';
+	} from '#lib/utils/timezone.ts';
 	import { onMount } from 'svelte';
 
 	type NetflowFileDetailData = {
@@ -89,11 +89,7 @@
 			data.direction,
 			nextIpVersion,
 			data.measure,
-			{
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true
-			}
+			{ replace: true, reset: false }
 		);
 	}
 
@@ -108,11 +104,7 @@
 			data.direction,
 			data.ipVersion,
 			measure,
-			{
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true
-			}
+			{ replace: true, reset: false }
 		);
 	}
 

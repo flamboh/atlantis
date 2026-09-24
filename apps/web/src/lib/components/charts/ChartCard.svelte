@@ -1,6 +1,6 @@
 <script lang="ts">
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import * as Card from '$lib/components/ui/card';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import * as Card from '#lib/components/ui/card/index.ts';
 	import type { Snippet } from 'svelte';
 
 	let {

@@ -20,7 +20,7 @@ The dashboard and all `bun run` commands need these tools:
 | ------- | ------------------------- | --------------- |
 | Git     | Current supported version | Git releases    |
 | Bun     | 1.2.16                    | `package.json`  |
-| Node.js | 22.16.0                   | `.node-version` |
+| Node.js | 24.4.1                    | `.node-version` |
 
 Node.js is necessary even though Bun installs the packages. The development server runs under Node.js, and `bun install` needs Node.js on `PATH` to download the prebuilt SQLite driver. Without it, the install prints a `better-sqlite3` warning and the dashboard cannot open a database (see [Troubleshooting](troubleshooting.md)).
 

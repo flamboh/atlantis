@@ -5,8 +5,8 @@ import {
 	type IpStatsBucket,
 	type ProtocolMetricKey,
 	type ProtocolStatsBucket
-} from '$lib/types/types';
-import type { DimensionMetricKey, DimensionStatsPayload } from '$lib/types/dimension-stats';
+} from '#lib/types/types.ts';
+import type { DimensionMetricKey, DimensionStatsPayload } from '#lib/types/dimension-stats.ts';
 
 export type BreakdownChartKind = 'ip' | 'protocol' | 'dimensions' | 'spectrum';
 export type BreakdownMetricKey = IpMetricKey | ProtocolMetricKey | DimensionMetricKey;

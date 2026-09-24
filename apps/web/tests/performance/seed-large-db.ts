@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-// Node's type-stripping runner requires the extension; this script is not bundled by Vite.
-// @ts-expect-error allowImportingTsExtensions is intentionally disabled for application code.
 import { localSchemaSql } from '../../src/lib/server/db/local-schema.ts';
 
 const outputPath = path.resolve(process.argv[2] ?? '/tmp/atlantis-web-perf.sqlite');

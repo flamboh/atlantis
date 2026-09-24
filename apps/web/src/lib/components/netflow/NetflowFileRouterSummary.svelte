@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { FileDetailResourceView, NetflowFileRouterRow } from './file-detail-loader.svelte';
-	import type { FileIpCounts } from '$lib/types/types';
-	import * as Card from '$lib/components/ui/card';
+	import type { FileIpCounts } from '#lib/types/types.ts';
+	import * as Card from '#lib/components/ui/card/index.ts';
 
 	let {
 		row,

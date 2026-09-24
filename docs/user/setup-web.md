@@ -37,6 +37,8 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
 
 2. In `.env`, set `DEFAULT_DATASET` to your dataset ID. This step is optional. Without it, the dashboard uses the first discovered dataset.
 
+   The dashboard reads `DEFAULT_DATASET`, `LOCAL_SQLITE_PATH`, and `DATABASE_PATH` from `.env`. `apps/web/src/env.ts` lists these variables.
+
 3. Start the dashboard.
 
    ```bash

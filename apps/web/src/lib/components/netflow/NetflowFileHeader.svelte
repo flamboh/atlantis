@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { buildNetflowFileHref } from '$lib/utils/netflow-file-navigation';
-	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import type { FlowDirection, MaadIpVersion, MaadMeasure } from '$lib/types/types';
+	import { buildNetflowFileHref } from '#lib/utils/netflow-file-navigation.ts';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import type { FlowDirection, MaadIpVersion, MaadMeasure } from '#lib/types/types.ts';
 
 	let {
 		dataset,

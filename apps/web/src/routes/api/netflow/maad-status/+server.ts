@@ -1,11 +1,11 @@
 import type { RequestHandler } from './$types';
-import type { MaadStatusResponse } from '$lib/types/dimension-stats';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
+import type { MaadStatusResponse } from '#lib/types/dimension-stats.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const row = await db.get<{ computed: number }>(
 				'SELECT EXISTS(SELECT 1 FROM maad_q_grid) AS computed'
 			);

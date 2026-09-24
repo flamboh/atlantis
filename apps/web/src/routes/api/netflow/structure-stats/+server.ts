@@ -1,13 +1,13 @@
 import type { RequestHandler } from './$types';
-import type { StructureStatsPayload, StructureStatsResponse } from '$lib/types/structure-stats';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
+import type { StructureStatsPayload, StructureStatsResponse } from '#lib/types/structure-stats.ts';
+import { buildCoverageTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 import {
 	buildStructurePoints,
 	getMaadQGrid,
 	parseMaadStatsParams,
 	placeholders
-} from '$lib/server/netflow-v3';
+} from '#lib/server/netflow-v3.ts';
 
 type StructureStatsRow = StructureStatsPayload & {
 	router: string;
@@ -25,7 +25,7 @@ type RawStructureStatsRow = {
 	daTauSd: Uint8Array | null;
 };
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
 		return Response.json({ error: params.error }, { status: params.status });
@@ -33,8 +33,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const qGrid = await getMaadQGrid(db, ipVersion);
 
 			const tableName = 'address_maad_stats';

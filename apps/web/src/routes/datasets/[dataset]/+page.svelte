@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
-	import DatasetDashboardPage from '$lib/components/netflow/DatasetDashboardPage.svelte';
+	import DatasetDashboardPage from '#lib/components/netflow/DatasetDashboardPage.svelte';
 
 	let { data }: PageProps = $props();
 </script>

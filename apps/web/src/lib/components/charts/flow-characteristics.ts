@@ -5,7 +5,7 @@ import type {
 	PortCardinalityCounts,
 	PortCardinalityTimeline,
 	TimeBucket
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 
 export interface RequestGate {
 	begin(): number;

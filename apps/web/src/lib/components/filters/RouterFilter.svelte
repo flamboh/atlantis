@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import type { RouterConfig } from '$lib/components/netflow/types.ts';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
+	import type { RouterConfig } from '#lib/components/netflow/types.ts';
 
 	interface Props {
 		routers: RouterConfig;

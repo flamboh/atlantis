@@ -16,7 +16,7 @@ mkShell {
     pkgs.gnumake
     pkgs.gnutar
     pkgs.libtool
-    pkgs.nodejs
+    pkgs.nodejs_24
     pkgs.pkg-config
     pkgs.python3
     pkgs.rustup
