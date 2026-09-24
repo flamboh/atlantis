@@ -21,7 +21,7 @@
 		RouterConfig
 	} from './types.ts';
 	import type {
-		FlowVisibility,
+		FlowDirection,
 		NetflowIpFamily,
 		NetflowMetricTotals,
 		NetflowStatsResponse,
@@ -37,8 +37,7 @@
 		routers: RouterConfig;
 		routersLoaded: boolean;
 		dataOptions: DataOption[];
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
 		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
@@ -102,8 +101,7 @@
 		endDate: string;
 		groupBy: GroupByOption;
 		routers: RouterConfig;
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
 	};
 
 	let lastFiltersKey = '';
@@ -132,8 +130,7 @@
 			dataset: props.dataset,
 			groupBy: filters.groupBy,
 			routers: selectedRouters,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 	}
 
@@ -177,8 +174,7 @@
 			dataset: props.dataset,
 			routers: selectedRouters.join(','),
 			groupBy: filters.groupBy,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 
 		try {
@@ -241,10 +237,7 @@
 	}
 
 	function handleNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, {
-			srcVisibility: props.srcVisibility,
-			dstVisibility: props.dstVisibility
-		});
+		void navigateToNetflowFile(goto, slug, props.dataset, props.direction);
 	}
 
 	function handleChartTypeChange(newChartType: ChartTypeOption) {
@@ -261,8 +254,7 @@
 			endDate: props.endDate,
 			groupBy: props.groupBy,
 			routers: props.routers,
-			srcVisibility: props.srcVisibility,
-			dstVisibility: props.dstVisibility
+			direction: props.direction
 		};
 
 		const selectedRouters = deriveSelectedRouters(filters.routers);
@@ -293,8 +285,7 @@
 			endDate: filters.endDate,
 			groupBy: filters.groupBy,
 			routers: selectedRouters,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 
 		if (nextKey === lastFiltersKey) {

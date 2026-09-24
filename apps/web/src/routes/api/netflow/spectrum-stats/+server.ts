@@ -53,14 +53,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	if ('error' in params) {
 		return json({ error: params.error }, { status: params.status });
 	}
-	const { routers, granularity, start, end, srcVisibility, dstVisibility } = params;
+	const { routers, granularity, start, end, srcLocality, dstLocality } = params;
 
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		return await withDatasetDb(dataset, platform, async ({ db }) => {
 			const tableName = 'address_structure_stats';
 			const sourceColumn = 'source_id';
-			const queryParams = [granularity, ...routers, srcVisibility, dstVisibility, start, end];
+			const queryParams = [granularity, ...routers, srcLocality, dstLocality, start, end];
 
 			const query = `
 			SELECT
@@ -72,8 +72,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			FROM ${tableName}
 			WHERE granularity = ?
 				AND ${sourceColumn} IN (${placeholders(routers)})
-				AND src_visibility = ?
-				AND dst_visibility = ?
+				AND src_locality = ?
+				AND dst_locality = ?
 				AND bucket_start >= ?
 				AND bucket_start < ?
 				AND ip_version = 4

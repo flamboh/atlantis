@@ -11,7 +11,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import type {
-		FlowVisibility,
+		FlowDirection,
 		IpGranularity,
 		IpMetricKey,
 		ProtocolMetricKey,
@@ -97,8 +97,7 @@
 		availableRouters?: string[];
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
-		srcVisibility?: FlowVisibility;
-		dstVisibility?: FlowVisibility;
+		direction?: FlowDirection;
 		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
@@ -646,10 +645,7 @@
 			const labelForSlug = activeLabel ?? label;
 			const slug = generateSlugFromLabel(labelForSlug, '5min');
 			if (slug) {
-				void navigateToNetflowFile(goto, slug, props.dataset, {
-					srcVisibility: props.srcVisibility ?? 'all',
-					dstVisibility: props.dstVisibility ?? 'all'
-				});
+				void navigateToNetflowFile(goto, slug, props.dataset, props.direction ?? 'all');
 			}
 			return;
 		}
@@ -1181,8 +1177,7 @@
 		endDate: string;
 		granularity: IpGranularity;
 		routers: string[];
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
 	};
 
 	let lastFiltersKey = '';
@@ -1203,8 +1198,7 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 	}
 
@@ -1224,8 +1218,7 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers.join(','),
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 
 		try {
@@ -1338,8 +1331,7 @@
 				endDate: props.endDate ?? formatDate(today),
 				granularity: props.granularity ?? config.defaultGranularity,
 				routers: selectedRouters,
-				srcVisibility: props.srcVisibility ?? 'all',
-				dstVisibility: props.dstVisibility ?? 'all'
+				direction: props.direction ?? 'all'
 			};
 
 			currentGranularity = filters.granularity;
@@ -1377,8 +1369,7 @@
 		const endDateProp = props.endDate;
 		const granularityProp = props.granularity;
 		const nextAddressType = props.addressType ?? 'sa';
-		const srcVisibility = props.srcVisibility ?? 'all';
-		const dstVisibility = props.dstVisibility ?? 'all';
+		const direction = props.direction ?? 'all';
 
 		if (nextAddressType !== addressType) {
 			addressType = nextAddressType;
@@ -1400,8 +1391,7 @@
 			// The spectrum card displays one source at a time. Fetching every available source
 			// multiplied its SQL work and response size while the client discarded all but this one.
 			routers: nextRouter ? [nextRouter] : [],
-			srcVisibility,
-			dstVisibility
+			direction
 		};
 
 		currentGranularity = filters.granularity;

@@ -137,8 +137,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			const commonParams = [
 				...resolvedSources,
 				params.granularity,
-				params.srcVisibility,
-				params.dstVisibility,
+				params.srcLocality,
+				params.dstLocality,
 				params.start,
 				params.end
 			];
@@ -158,8 +158,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				FROM traffic_stats
 				WHERE source_id IN (${sourcePlaceholders})
 					AND granularity = ?
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 					AND bucket_start >= ?
 					AND bucket_start < ?
 				GROUP BY +bucket_start, +ip_version
@@ -183,8 +183,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				FROM port_count_stats
 				WHERE source_id IN (${sourcePlaceholders})
 					AND granularity = ?
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 					AND bucket_start >= ?
 					AND bucket_start < ?
 				GROUP BY source_id, bucket_start

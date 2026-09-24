@@ -63,31 +63,31 @@ db.exec(`
 	INSERT INTO perf_day_buckets SELECT bucket_start FROM perf_buckets WHERE bucket_start % 86400 = 28800;
 
 	-- Keep the complete production scope shape in the 5m data. For the larger
-	-- rollups, retain the all/all baseline and add one competing visibility
-	-- scope only where the dashboard profiler looks so its visibility-leading
+	-- rollups, retain the all/all baseline and add one competing direction
+	-- scope only where the dashboard profiler looks so its locality-leading
 	-- indexes have a representative alternative without multiplying the whole
 	-- fixture by ten.
 	CREATE TEMP TABLE perf_scopes (
 		ip_version INTEGER NOT NULL,
-		src_visibility TEXT NOT NULL,
-		dst_visibility TEXT NOT NULL,
+		src_locality TEXT NOT NULL,
+		dst_locality TEXT NOT NULL,
 		hourly_start INTEGER NOT NULL,
 		hourly_end INTEGER NOT NULL,
-		PRIMARY KEY(ip_version, src_visibility, dst_visibility)
+		PRIMARY KEY(ip_version, src_locality, dst_locality)
 	) WITHOUT ROWID;
 	INSERT INTO perf_scopes (
-		ip_version, src_visibility, dst_visibility, hourly_start, hourly_end
+		ip_version, src_locality, dst_locality, hourly_start, hourly_end
 	) VALUES
 		(4, 'all', 'all', ${firstBucket}, ${firstBucket + fiveMinuteBucketCount * 300}),
 		(6, 'all', 'all', ${firstBucket}, ${firstBucket + fiveMinuteBucketCount * 300}),
-		(4, 'literal', 'literal', ${profilerStartBucket}, ${profilerEndBucket}),
-		(6, 'literal', 'literal', ${profilerStartBucket}, ${profilerEndBucket}),
-		(4, 'literal', 'anonymized', 0, 0),
-		(6, 'literal', 'anonymized', 0, 0),
-		(4, 'anonymized', 'literal', 0, 0),
-		(6, 'anonymized', 'literal', 0, 0),
-		(4, 'anonymized', 'anonymized', 0, 0),
-		(6, 'anonymized', 'anonymized', 0, 0);
+		(4, 'internal', 'internal', ${profilerStartBucket}, ${profilerEndBucket}),
+		(6, 'internal', 'internal', ${profilerStartBucket}, ${profilerEndBucket}),
+		(4, 'internal', 'external', 0, 0),
+		(6, 'internal', 'external', 0, 0),
+		(4, 'external', 'internal', 0, 0),
+		(6, 'external', 'internal', 0, 0),
+		(4, 'external', 'external', 0, 0),
+		(6, 'external', 'external', 0, 0);
 
 	INSERT INTO datasets (
 		id, label, default_start_date, source_mode, discovery_mode, sort_order
@@ -98,7 +98,7 @@ db.exec(`
 
 	INSERT INTO traffic_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility,
+		src_locality, dst_locality,
 		flows, flows_tcp, flows_udp, flows_icmp, flows_other,
 		packets, packets_tcp, packets_udp, packets_icmp, packets_other,
 		bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
@@ -107,7 +107,7 @@ db.exec(`
 		max_ttl_sum, max_ttl_count, average_max_ttl
 	)
 	SELECT source_id, '5m', bucket_start, bucket_start + 300, ip_version,
-		src_visibility, dst_visibility,
+		src_locality, dst_locality,
 		100, 70, 20, 5, 5, 1000, 700, 200, 50, 50,
 		100000, 70000, 20000, 5000, 5000,
 		10000, 100, 100, 6400, 100, 64, 12800, 100, 128
@@ -115,7 +115,7 @@ db.exec(`
 
 	INSERT INTO traffic_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility,
+		src_locality, dst_locality,
 		flows, flows_tcp, flows_udp, flows_icmp, flows_other,
 		packets, packets_tcp, packets_udp, packets_icmp, packets_other,
 		bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
@@ -124,7 +124,7 @@ db.exec(`
 		max_ttl_sum, max_ttl_count, average_max_ttl
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, ip_version,
-		src_visibility, dst_visibility, 12 * 100, 12 * 70, 12 * 20,
+		src_locality, dst_locality, 12 * 100, 12 * 70, 12 * 20,
 		12 * 5, 12 * 5, 12 * 1000, 12 * 700,
 		12 * 200, 12 * 50, 12 * 50, 12 * 100000,
 		12 * 70000, 12 * 20000, 12 * 5000, 12 * 5000,
@@ -165,29 +165,29 @@ db.exec(`
 
 	INSERT INTO protocol_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility, unique_protocols_count, protocols_list
+		src_locality, dst_locality, unique_protocols_count, protocols_list
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, ip_version,
-		src_visibility, dst_visibility, 4, '[6,17,1,58]'
+		src_locality, dst_locality, 4, '[6,17,1,58]'
 	FROM perf_sources CROSS JOIN perf_hour_buckets CROSS JOIN perf_scopes
 	WHERE bucket_start >= hourly_start AND bucket_start < hourly_end;
 
 	INSERT INTO address_count_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility, address_side, unique_address_count
+		src_locality, dst_locality, address_side, unique_address_count
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, ip_version,
-		src_visibility, dst_visibility, address_side, 1000
+		src_locality, dst_locality, address_side, 1000
 	FROM perf_sources CROSS JOIN perf_hour_buckets CROSS JOIN perf_scopes
 	CROSS JOIN (SELECT 'source' AS address_side UNION ALL SELECT 'destination')
 	WHERE bucket_start >= hourly_start AND bucket_start < hourly_end;
 
 	INSERT INTO port_count_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility, port_side, port_range, unique_port_count
+		src_locality, dst_locality, port_side, port_range, unique_port_count
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, ip_version,
-		src_visibility, dst_visibility, port_side, port_range, 128
+		src_locality, dst_locality, port_side, port_range, 128
 	FROM perf_sources CROSS JOIN perf_hour_buckets CROSS JOIN perf_scopes
 	CROSS JOIN (SELECT 'source' AS port_side UNION ALL SELECT 'destination')
 	CROSS JOIN (SELECT 'low' AS port_range UNION ALL SELECT 'high')
@@ -195,11 +195,11 @@ db.exec(`
 
 	INSERT INTO address_structure_stats (
 		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_visibility, dst_visibility, address_side, structure_kind,
+		src_locality, dst_locality, address_side, structure_kind,
 		values_json, metadata_json
 	)
 	SELECT source_id, '1h', bucket_start, bucket_start + 3600, 4,
-		src_visibility, dst_visibility, address_side, structure_kind,
+		src_locality, dst_locality, address_side, structure_kind,
 		CASE structure_kind
 			WHEN 'spectrum' THEN '[{"alpha":0.1,"f":0.2},{"alpha":0.2,"f":0.3},{"alpha":0.3,"f":0.4}]'
 			ELSE '[{"q":1,"tau":0.2,"sd":0.01},{"q":2,"tau":0.4,"sd":0.02}]'

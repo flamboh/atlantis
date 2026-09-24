@@ -13,25 +13,20 @@ describe('buildNetflowFileHref', () => {
 		expect(buildNetflowFileSearch('my dataset')).toBe('?dataset=my%20dataset');
 	});
 
-	it('includes non-all visibility scope when provided', async () => {
+	it('includes a non-all direction when provided', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
 			await import('$lib/utils/netflow-file-navigation');
-		const flowScope = { srcVisibility: 'literal', dstVisibility: 'anonymized' } as const;
 
-		expect(buildNetflowFileSearch('uoregon', flowScope)).toBe(
-			'?dataset=uoregon&srcVisibility=literal&dstVisibility=anonymized'
-		);
-		expect(buildNetflowFileHref('202506192010', 'uoregon', flowScope)).toBe(
-			'/netflow/files/202506192010?dataset=uoregon&srcVisibility=literal&dstVisibility=anonymized'
+		expect(buildNetflowFileSearch('uoregon', 'ingress')).toBe('?dataset=uoregon&direction=ingress');
+		expect(buildNetflowFileHref('202506192010', 'uoregon', 'ingress')).toBe(
+			'/netflow/files/202506192010?dataset=uoregon&direction=ingress'
 		);
 	});
 
-	it('omits all/all visibility scope', async () => {
+	it('omits an all direction', async () => {
 		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
 
-		expect(buildNetflowFileSearch('uoregon', { srcVisibility: 'all', dstVisibility: 'all' })).toBe(
-			'?dataset=uoregon'
-		);
+		expect(buildNetflowFileSearch('uoregon', 'all')).toBe('?dataset=uoregon');
 	});
 
 	it('includes dataset query when provided', async () => {
@@ -65,13 +60,10 @@ describe('buildNetflowFileHref', () => {
 
 		expect(navigate).toHaveBeenCalledWith('/netflow/files/202506192010?dataset=uoregon');
 
-		await navigateToNetflowFile(navigate, '202506192010', 'my dataset', {
-			srcVisibility: 'anonymized',
-			dstVisibility: 'literal'
-		});
+		await navigateToNetflowFile(navigate, '202506192010', 'my dataset', 'egress');
 
 		expect(navigate).toHaveBeenLastCalledWith(
-			'/netflow/files/202506192010?dataset=my%20dataset&srcVisibility=anonymized&dstVisibility=literal'
+			'/netflow/files/202506192010?dataset=my%20dataset&direction=egress'
 		);
 	});
 });

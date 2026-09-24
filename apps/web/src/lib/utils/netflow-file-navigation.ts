@@ -1,8 +1,8 @@
 import type { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import type { FlowScope } from '$lib/types/types';
+import type { FlowDirection } from '$lib/types/types';
 
-export function buildNetflowFileSearch(dataset?: string, flowScope?: Partial<FlowScope>): string {
+export function buildNetflowFileSearch(dataset?: string, direction?: FlowDirection): string {
 	const normalizedDataset = dataset?.trim();
 	const searchParams: string[] = [];
 
@@ -10,13 +10,8 @@ export function buildNetflowFileSearch(dataset?: string, flowScope?: Partial<Flo
 		searchParams.push(`dataset=${encodeURIComponent(normalizedDataset)}`);
 	}
 
-	if (
-		flowScope?.srcVisibility &&
-		flowScope?.dstVisibility &&
-		(flowScope.srcVisibility !== 'all' || flowScope.dstVisibility !== 'all')
-	) {
-		searchParams.push(`srcVisibility=${encodeURIComponent(flowScope.srcVisibility)}`);
-		searchParams.push(`dstVisibility=${encodeURIComponent(flowScope.dstVisibility)}`);
+	if (direction && direction !== 'all') {
+		searchParams.push(`direction=${encodeURIComponent(direction)}`);
 	}
 
 	const search = searchParams.join('&');
@@ -30,17 +25,17 @@ export function buildNetflowFileSearch(dataset?: string, flowScope?: Partial<Flo
 export function buildNetflowFileHref(
 	slug: string,
 	dataset?: string,
-	flowScope?: Partial<FlowScope>
+	direction?: FlowDirection
 ): string {
 	const pathname = resolve('/netflow/files/[slug]', { slug });
-	return `${pathname}${buildNetflowFileSearch(dataset, flowScope)}`;
+	return `${pathname}${buildNetflowFileSearch(dataset, direction)}`;
 }
 
 export function navigateToNetflowFile(
 	navigate: typeof goto,
 	slug: string,
 	dataset?: string,
-	flowScope?: Partial<FlowScope>
+	direction?: FlowDirection
 ): Promise<void> {
-	return navigate(buildNetflowFileHref(slug, dataset, flowScope));
+	return navigate(buildNetflowFileHref(slug, dataset, direction));
 }

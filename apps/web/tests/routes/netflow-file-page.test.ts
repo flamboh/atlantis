@@ -22,9 +22,7 @@ describe('/netflow/files/[slug] page load', () => {
 
 		const result = await load({
 			params: { slug: '202503010005' },
-			url: new URL(
-				'http://localhost/netflow/files/202503010005?srcVisibility=literal&dstVisibility=anonymized'
-			),
+			url: new URL('http://localhost/netflow/files/202503010005?direction=ingress'),
 			fetch
 		} as never);
 
@@ -32,8 +30,7 @@ describe('/netflow/files/[slug] page load', () => {
 		expect(result).toEqual({
 			dataset: 'alpha',
 			slug: '202503010005',
-			srcVisibility: 'literal',
-			dstVisibility: 'anonymized',
+			direction: 'ingress',
 			fileInfo: {
 				year: '2025',
 				month: '03',
@@ -45,17 +42,17 @@ describe('/netflow/files/[slug] page load', () => {
 		});
 	});
 
-	it('rejects invalid visibility params', async () => {
+	it('rejects invalid direction params', async () => {
 		await expect(
 			load({
 				params: { slug: '202503010005' },
-				url: new URL('http://localhost/netflow/files/202503010005?dstVisibility=bogus'),
+				url: new URL('http://localhost/netflow/files/202503010005?direction=bogus'),
 				fetch: vi.fn()
 			} as never)
 		).rejects.toMatchObject({
 			status: 400,
 			body: {
-				message: 'Invalid dstVisibility. Expected one of: all, literal, anonymized'
+				message: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 			}
 		});
 	});
