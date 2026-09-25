@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { ProtocolStatsBucket, ProtocolStatsResponse } from '$lib/types/types';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
@@ -8,7 +7,7 @@ import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3'
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 	const { routers, granularity, start, end, srcVisibility, dstVisibility } = params;
 
@@ -64,12 +63,12 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				}))
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query protocol_stats:', error);
 		const message = error instanceof Error ? error.message : 'Database query failed';
 		const status = message.startsWith('Unknown dataset') ? 400 : 500;
-		return json({ error: message }, { status });
+		return Response.json({ error: message }, { status });
 	}
 };

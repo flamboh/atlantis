@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { parseFlowScopeParams } from '$lib/server/netflow-v3';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
@@ -20,19 +19,19 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const flowScope = parseFlowScopeParams(url);
 
 	if ('error' in flowScope) {
-		return json({ error: flowScope.error }, { status: flowScope.status });
+		return Response.json({ error: flowScope.error }, { status: flowScope.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
-		return json({ error: 'Invalid slug format' }, { status: 400 });
+		return Response.json({ error: 'Invalid slug format' }, { status: 400 });
 	}
 
 	if (!router) {
-		return json({ error: 'Router parameter is required' }, { status: 400 });
+		return Response.json({ error: 'Router parameter is required' }, { status: 400 });
 	}
 
 	if (sourceParam === null) {
-		return json(
+		return Response.json(
 			{ error: 'Source parameter is required (true for source addresses, false for destination)' },
 			{ status: 400 }
 		);
@@ -42,7 +41,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const bucketStart = slugToBucketStart(slug);
 
 	if (bucketStart === null) {
-		return json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
+		return Response.json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
 	}
 
 	try {
@@ -64,7 +63,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			);
 
 			if (!row) {
-				return json(
+				return Response.json(
 					{ error: `IP statistics not found for router ${router} at ${slug}` },
 					{ status: 404 }
 				);
@@ -74,10 +73,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				? { ipv4Count: row.saIpv4Count, ipv6Count: row.saIpv6Count }
 				: { ipv4Count: row.daIpv4Count, ipv6Count: row.daIpv6Count };
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to fetch IP counts from database:', error);
-		return json({ error: 'Failed to get IP counts' }, { status: 500 });
+		return Response.json({ error: 'Failed to get IP counts' }, { status: 500 });
 	}
 };

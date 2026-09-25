@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
 	IP_GRANULARITIES,
@@ -37,26 +36,26 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	const end = parseTimestamp(url.searchParams.get('endDate'));
 
 	if (routers.length === 0) {
-		return json({ error: 'No routers selected' }, { status: 400 });
+		return Response.json({ error: 'No routers selected' }, { status: 400 });
 	}
 
 	if (granularity === null) {
-		return json(
+		return Response.json(
 			{ error: `Invalid granularity. Expected one of: ${IP_GRANULARITIES.join(', ')}` },
 			{ status: 400 }
 		);
 	}
 
 	if (start === null || end === null) {
-		return json({ error: 'Invalid start or end time' }, { status: 400 });
+		return Response.json({ error: 'Invalid start or end time' }, { status: 400 });
 	}
 
 	if (start >= end) {
-		return json({ error: 'Start time must be before end time' }, { status: 400 });
+		return Response.json({ error: 'Start time must be before end time' }, { status: 400 });
 	}
 
 	if (!isAlignedToGranularity(start, granularity) || !isAlignedToGranularity(end, granularity)) {
-		return json(
+		return Response.json(
 			{ error: `Start and end times must align to ${granularity} bucket boundaries` },
 			{ status: 400 }
 		);
@@ -73,13 +72,16 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				sourceIds: routers
 			});
 
-			return json({ timelines, requestedRouters: routers } satisfies NetflowCoverageResponse);
+			return Response.json({
+				timelines,
+				requestedRouters: routers
+			} satisfies NetflowCoverageResponse);
 		});
 	} catch (error) {
 		console.error('Failed to query bucket_coverage:', error);
 		const message = error instanceof Error ? error.message : 'Database query failed';
 		const status = message.startsWith('Unknown dataset') ? 400 : 500;
-		return json({ error: status === 400 ? message : 'Database query failed' }, { status });
+		return Response.json({ error: status === 400 ? message : 'Database query failed' }, { status });
 	}
 };
 

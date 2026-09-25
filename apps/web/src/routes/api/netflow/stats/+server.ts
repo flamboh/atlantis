@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type {
 	NetflowIpFamily,
@@ -110,20 +109,20 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	const end = parseTimestamp(endDate);
 
 	if (routers.length === 0) {
-		return json({ error: 'No routers selected' }, { status: 400 });
+		return Response.json({ error: 'No routers selected' }, { status: 400 });
 	}
 
 	if (start === null || end === null) {
-		return json({ error: 'Invalid start or end time' }, { status: 400 });
+		return Response.json({ error: 'Invalid start or end time' }, { status: 400 });
 	}
 
 	if (start >= end) {
-		return json({ error: 'Start time must be before end time' }, { status: 400 });
+		return Response.json({ error: 'Start time must be before end time' }, { status: 400 });
 	}
 
 	const flowScope = parseFlowScopeParams(url);
 	if ('error' in flowScope) {
-		return json({ error: flowScope.error }, { status: flowScope.status });
+		return Response.json({ error: flowScope.error }, { status: flowScope.status });
 	}
 
 	try {
@@ -182,10 +181,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			});
 			const result = timelines.get('result') ?? [];
 			const availableIpFamilies: NetflowIpFamily[] = ['all', 'ipv4', 'ipv6'];
-			return json({ result, availableIpFamilies } satisfies NetflowStatsResponse);
+			return Response.json({ result, availableIpFamilies } satisfies NetflowStatsResponse);
 		});
 	} catch (error) {
 		console.error('Database error:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };
