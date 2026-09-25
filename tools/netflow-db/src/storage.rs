@@ -2138,13 +2138,6 @@ impl StatsTable {
             Self::AddressStructure => "address_structure_stats",
         }
     }
-
-    pub const fn schema_version(self) -> u32 {
-        match self {
-            Self::Traffic => 3,
-            Self::Protocol | Self::AddressCount | Self::PortCount | Self::AddressStructure => 2,
-        }
-    }
 }
 
 pub fn insert_stats_payload(

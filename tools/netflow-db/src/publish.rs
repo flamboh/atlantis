@@ -1,7 +1,6 @@
-//! Convert canonical buckets into persistent rows and build safe rollups.
+//! Convert canonical buckets into persistent rows.
 
 use std::{
-    collections::BTreeMap,
     net::IpAddr,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -12,10 +11,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 use crate::{
-    domain::{
-        AddressSetRow, BucketKey, CanonicalBucket, CanonicalRows, DomainError, Granularity,
-        IpVersion, StatisticalBucket,
-    },
+    domain::{AddressSetRow, BucketKey, CanonicalBucket, CanonicalRows, DomainError, IpVersion},
     maad,
     storage::{
         AddressCountStatsRow, AddressStructureStatsRow, BucketCoverageRow, PortCountStatsRow,
@@ -97,48 +93,6 @@ struct ScalarRowsProfile {
     protocol_insert_elapsed: Duration,
     address_count_insert_elapsed: Duration,
     port_count_insert_elapsed: Duration,
-}
-
-/// Build every 10m, 30m, 1h, and local-day aggregate touched by the input envelope.
-pub fn build_rollups(
-    raw: &[CanonicalBucket],
-    day_floor: impl Fn(i64) -> i64,
-) -> Result<Vec<CanonicalBucket>, PublishError> {
-    let mut builders: BTreeMap<(String, Granularity, i64), StatisticalBucket> = BTreeMap::new();
-    for child in raw {
-        let day_start = day_floor(child.key.bucket_start);
-        // This lands in the following civil day even when the current local day
-        // has 23 or 25 hours. Flooring it yields the exact next local midnight.
-        let day_end = day_floor(day_start + 36 * 3_600);
-        for (granularity, start, end) in [
-            (
-                Granularity::TenMinutes,
-                child.key.bucket_start.div_euclid(600) * 600,
-                child.key.bucket_start.div_euclid(600) * 600 + 600,
-            ),
-            (
-                Granularity::ThirtyMinutes,
-                child.key.bucket_start.div_euclid(1_800) * 1_800,
-                child.key.bucket_start.div_euclid(1_800) * 1_800 + 1_800,
-            ),
-            (
-                Granularity::OneHour,
-                child.key.bucket_start.div_euclid(3_600) * 3_600,
-                child.key.bucket_start.div_euclid(3_600) * 3_600 + 3_600,
-            ),
-            (Granularity::OneDay, day_start, day_end),
-        ] {
-            let key = (child.key.source_id.clone(), granularity, start);
-            let builder = builders.entry(key.clone()).or_insert_with(|| {
-                StatisticalBucket::new(BucketKey::new(key.0.clone(), granularity, start, end))
-            });
-            builder.include(child)?;
-        }
-    }
-    Ok(builders
-        .into_values()
-        .map(|builder| builder.finish())
-        .collect())
 }
 
 /// Replace all row families for these bucket keys as one caller-owned transaction.
@@ -419,10 +373,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        coverage::{BucketCoverage, CoverageState},
         domain::{
-            AddressSet, AddressSide, FlowObservation, IpVersion, Scope, ScopedAddressesFact,
-            Visibility,
+            AddressSet, AddressSide, FlowObservation, Granularity, IpVersion, Scope,
+            ScopedAddressesFact, StatisticalBucket, Visibility,
         },
         storage::init_stats_tables,
     };
@@ -584,140 +537,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    #[test]
-    fn rollups_keep_touched_edges_without_extending_the_input_envelope() {
-        let raw = (0..6)
-            .map(|index| {
-                StatisticalBucket::dense(BucketKey::new(
-                    "r1",
-                    Granularity::FiveMinutes,
-                    index * 300,
-                    (index + 1) * 300,
-                ))
-                .finish()
-            })
-            .collect::<Vec<_>>();
-
-        let rollups = build_rollups(&raw, |_| 0).unwrap();
-
-        assert_eq!(rollups.len(), 6);
-        for rollup in rollups {
-            let expected = if rollup.key.granularity == Granularity::TenMinutes {
-                BucketCoverage::new(2, 2, 0).unwrap()
-            } else {
-                BucketCoverage::new(6, 6, 0).unwrap()
-            };
-            assert_eq!(rollup.coverage, expected, "{:?}", rollup.key);
-        }
-    }
-
-    #[test]
-    fn ten_minute_rollups_pair_adjacent_five_minute_children() {
-        let raw = (0..6)
-            .map(|index| {
-                StatisticalBucket::dense(BucketKey::new(
-                    "r1",
-                    Granularity::FiveMinutes,
-                    index * 300,
-                    (index + 1) * 300,
-                ))
-                .finish()
-            })
-            .collect::<Vec<_>>();
-
-        let ten_minutes = build_rollups(&raw, |_| 0)
-            .unwrap()
-            .into_iter()
-            .filter(|bucket| bucket.key.granularity == Granularity::TenMinutes)
-            .map(|bucket| (bucket.key.bucket_start, bucket.key.bucket_end))
-            .collect::<Vec<_>>();
-
-        assert_eq!(ten_minutes, vec![(0, 600), (600, 1_200), (1_200, 1_800)]);
-    }
-
-    #[test]
-    fn rollups_publish_structurally_complete_windows_with_partial_coverage() {
-        let raw = (0..6)
-            .map(|index| {
-                let key = BucketKey::new(
-                    "r1",
-                    Granularity::FiveMinutes,
-                    index * 300,
-                    (index + 1) * 300,
-                );
-                if index == 2 {
-                    StatisticalBucket::new(key)
-                        .with_coverage(BucketCoverage::new(1, 0, 0).unwrap())
-                        .finish()
-                } else {
-                    StatisticalBucket::dense(key).finish()
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let rollups = build_rollups(&raw, |_| 0).unwrap();
-        let thirty_minutes = rollups
-            .iter()
-            .find(|bucket| bucket.key.granularity == Granularity::ThirtyMinutes)
-            .unwrap();
-
-        assert_eq!(thirty_minutes.coverage.state(), CoverageState::Partial);
-        assert_eq!(thirty_minutes.coverage.expected_units(), 6);
-        assert_eq!(thirty_minutes.coverage.observed_units(), 5);
-    }
-
-    #[test]
-    fn all_unknown_rollup_has_coverage_without_synthetic_metrics() {
-        let raw = (0..6)
-            .map(|index| {
-                StatisticalBucket::new(BucketKey::new(
-                    "r1",
-                    Granularity::FiveMinutes,
-                    index * 300,
-                    (index + 1) * 300,
-                ))
-                .with_coverage(BucketCoverage::new(1, 0, 0).unwrap())
-                .finish()
-            })
-            .collect::<Vec<_>>();
-
-        let rollups = build_rollups(&raw, |_| 0).unwrap();
-        let thirty_minutes = rollups
-            .iter()
-            .find(|bucket| bucket.key.granularity == Granularity::ThirtyMinutes)
-            .unwrap();
-
-        assert_eq!(thirty_minutes.coverage.state(), CoverageState::Unknown);
-        assert!(thirty_minutes.traffic.is_empty());
-        assert!(thirty_minutes.protocols.is_empty());
-        assert!(thirty_minutes.addresses.is_empty());
-        assert!(thirty_minutes.ports.is_empty());
-    }
-
-    #[test]
-    fn daily_rollup_uses_the_next_local_midnight_on_short_days() {
-        let raw = (0..276)
-            .map(|index| {
-                StatisticalBucket::dense(BucketKey::new(
-                    "r1",
-                    Granularity::FiveMinutes,
-                    index * 300,
-                    (index + 1) * 300,
-                ))
-                .finish()
-            })
-            .collect::<Vec<_>>();
-        let day_floor = |timestamp| if timestamp < 82_800 { 0 } else { 82_800 };
-
-        let rollups = build_rollups(&raw, day_floor).unwrap();
-        let day = rollups
-            .iter()
-            .find(|bucket| bucket.key.granularity == Granularity::OneDay)
-            .unwrap();
-
-        assert_eq!(day.key.bucket_end, 82_800);
-        assert!(day.has_complete_five_minute_coverage());
     }
 }

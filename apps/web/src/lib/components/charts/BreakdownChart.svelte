@@ -74,7 +74,7 @@
 
 	const GROUP_BY_TRANSITIONS: Record<GroupByOption, GroupByOption | null> = {
 		date: 'hour',
-		hour: '30min',
+		hour: '10min',
 		'30min': '5min',
 		'10min': '5min',
 		'5min': null

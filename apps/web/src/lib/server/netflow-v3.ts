@@ -287,23 +287,6 @@ export function groupByToGranularity(groupBy: string): IpGranularity {
 	return FIVE_MINUTE_GRANULARITY;
 }
 
-const LOCAL_BUCKET_SECONDS: Record<Exclude<IpGranularity, '5m'>, number> = {
-	'10m': 600,
-	'30m': 1800,
-	'1h': 3600,
-	'1d': 86400
-};
-
-export function getBucketStartQuery(columnName: string, groupBy: string): string {
-	const granularity = groupByToGranularity(groupBy);
-	if (granularity === '5m') {
-		return columnName;
-	}
-
-	const bucketSize = LOCAL_BUCKET_SECONDS[granularity];
-	return `(CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day', 'utc', printf('+%d seconds', ((CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime')) AS integer) - CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day')) AS integer)) / ${bucketSize}) * ${bucketSize}))) AS integer))`;
-}
-
 export function normalizeStructurePoints(
 	points: RawStructureFunctionPoint[]
 ): StructureFunctionPoint[] {

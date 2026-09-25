@@ -368,7 +368,7 @@
 			const endOfWeek = new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000);
 			const startDateStr = formatDateAsPSTDateString(startOfWeek);
 			const endDateStr = formatDateAsPSTDateString(endOfWeek);
-			onDrillDown?.('30min', startDateStr, endDateStr);
+			onDrillDown?.('10min', startDateStr, endDateStr);
 		} else if (groupBy === '30min' || groupBy === '10min') {
 			const endDate = new Date(clickedDate.getTime() + 24 * 60 * 60 * 1000);
 			const startDateStr = formatDateAsPSTDateString(clickedDate);

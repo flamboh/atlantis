@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-	getBucketStartQuery,
 	getNetflowSchemaVersion,
 	groupByToGranularity,
 	normalizeStructurePoints,
@@ -97,16 +96,6 @@ describe('netflow v3 helpers', () => {
 			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized',
 			status: 400
 		});
-	});
-
-	it('keeps raw bucket starts for 5 minute requests', () => {
-		expect(getBucketStartQuery('bucket_start', '5min')).toBe('bucket_start');
-	});
-
-	it('floors 10 minute requests to local 600 second buckets', () => {
-		const query = getBucketStartQuery('bucket_start', '10min');
-		expect(query).toContain('/ 600) * 600');
-		expect(query).toContain("'localtime'");
 	});
 
 	it('normalizes structure points from MAAD variants', () => {

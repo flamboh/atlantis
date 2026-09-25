@@ -398,15 +398,16 @@ export function getInclusiveDateRangeMs(startDate: string, endDate: string): num
 
 /**
  * Choose granularity from selected range duration.
- * Thresholds are calibrated from existing click drilldown windows:
- * 1 day -> 5min, 7 days -> 30min, 31 days -> hour.
+ * Click drilldown windows land on the same choices:
+ * 1 day -> 5min, 7 days -> 10min, 31 days -> hour.
+ * Cutoffs: 5min up to 4 days, 10min up to 8 days, 30min up to 19 days,
+ * hour up to 62 days, then date.
  */
 export function chooseAdaptiveGranularity(rangeMs: number): GroupByOption {
 	const oneDay = 24 * 60 * 60 * 1000;
 	const sevenDays = 7 * oneDay;
 	const thirtyOneDays = 31 * oneDay;
 
-	// Midpoints between known-good drilldown windows.
 	const fiveMinCutoff = (oneDay + sevenDays) / 2; // 4 days
 	const tenMinCutoff = fiveMinCutoff * 2;
 	const thirtyMinCutoff = (sevenDays + thirtyOneDays) / 2; // 19 days
