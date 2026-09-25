@@ -22,16 +22,17 @@ Show a table schema:
 
 ## Main tables
 
-| Table                     | Content                                                    |
-| ------------------------- | ---------------------------------------------------------- |
-| `datasets`                | Public dataset metadata                                    |
-| `source_members`          | Logical-source membership                                  |
-| `traffic_stats`           | Flow, packet, byte, duration, and TTL metrics              |
-| `protocol_stats`          | Unique protocol counts and protocol lists                  |
-| `address_count_stats`     | Unique source-address and destination-address counts       |
-| `port_count_stats`        | Unique low-port and high-port counts                       |
-| `address_structure_stats` | MAAD structure, spectrum, and dimension values per measure |
-| `processed_inputs`        | Input processing state and provenance                      |
+| Table                 | Content                                                    |
+| --------------------- | ---------------------------------------------------------- |
+| `datasets`            | Public dataset metadata                                    |
+| `source_members`      | Logical-source membership                                  |
+| `traffic_stats`       | Flow, packet, byte, duration, and TTL metrics              |
+| `protocol_stats`      | Unique protocol counts and protocol lists                  |
+| `address_count_stats` | Unique source-address and destination-address counts       |
+| `port_count_stats`    | Unique low-port and high-port counts                       |
+| `address_maad_stats`  | MAAD dimensions, structure, and spectrum per measure       |
+| `maad_q_grid`         | The q grid of each IP version's stored structure functions |
+| `processed_inputs`    | Input processing state and provenance                      |
 
 The `granularity` value is `5m`, `10m`, `30m`, `1h`, or `1d`.
 
@@ -119,34 +120,50 @@ ORDER BY source_id, bucket_start, ip_version, port_side, port_range;
 
 ## Query MAAD results
 
-`address_structure_stats` stores one MAAD analysis per bucket, IP version, locality pair, address
-side, and `measure`:
+`address_maad_stats` stores one MAAD analysis per bucket, IP version, locality pair, address side,
+and `measure`:
 
-| `measure`   | Weights each address by                  | Stored `structure_kind` rows         |
-| ----------- | ---------------------------------------- | ------------------------------------ |
-| `addresses` | 1 (distinct addresses)                   | `structure`, `spectrum`, `dimension` |
-| `packets`   | Packets summed over the bucket and scope | `structure`, `dimension`             |
-| `bytes`     | Bytes summed over the bucket and scope   | `structure`, `dimension`             |
+| `measure`   | Weights each address by                  | `spectrum`                   |
+| ----------- | ---------------------------------------- | ---------------------------- |
+| `addresses` | 1 (distinct addresses)                   | Stored, possibly zero-length |
+| `packets`   | Packets summed over the bucket and scope | `NULL` (not computed)        |
+| `bytes`     | Bytes summed over the bucket and scope   | `NULL` (not computed)        |
 
 Weighted measures keep the address-count prefix tests and weight only the moments and the entropy.
-Addresses with zero summed packets or bytes are left out of that measure. Their count is stored in
-`metadata_json` as `zeroWeightAddrs`. Always filter on `measure`. Otherwise results for different
-measures mix:
+Addresses with zero summed packets or bytes are left out of that measure, and `zero_weight_addrs`
+counts them. `total_addrs`, `min_prefix_length`, and `max_prefix_length` describe the analyzed set.
+Always filter on `measure`. Otherwise results for different measures mix.
+
+`d0`, `d1`, and `d2` are the generalized dimensions as `REAL`. `tau` and `tau_sd` are little-endian
+32-bit float arrays with one value per q. Element `i` is at `q = q_min + i * q_step`, from the
+`maad_q_grid` row of the same `ip_version`. `spectrum` holds little-endian 32-bit `(alpha, f)` pairs.
+A result with too few addresses has `NULL` dimensions and curves. The D0 and D2 standard deviations
+are the `tau_sd` values at q = 0 and q = 2. D1 has no standard deviation.
 
 ```sql
 SELECT
     source_id,
     bucket_start,
     address_side,
-    values_json
-FROM address_structure_stats
+    d0,
+    d1,
+    d2,
+    total_addrs
+FROM address_maad_stats
 WHERE granularity = '1h'
   AND ip_version = 4
   AND src_locality = 'all'
   AND dst_locality = 'all'
   AND measure = 'packets'
-  AND structure_kind = 'dimension'
 ORDER BY source_id, bucket_start, address_side;
+```
+
+Decode a curve outside SQL, for example in Python:
+
+```python
+import struct
+
+values = struct.unpack(f"<{len(blob) // 4}f", blob)
 ```
 
 ## Query observation averages

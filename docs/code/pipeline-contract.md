@@ -87,8 +87,27 @@ Every MAAD computation runs three measures on the same entries, for both IP vers
 granularity. `addresses` weighs each address as 1 and stores structure, spectrum, and dimensions.
 `packets` and `bytes` weight moments and D1 entropy by the summed counter and store structure and
 dimensions only. Prefix validity always uses distinct-address counts. A weighted measure excludes
-addresses whose counter sums to 0 and records the excluded count as `zeroWeightAddrs` in the row
-metadata. The measure set is part of the result configuration identity.
+addresses whose counter sums to 0 and records the excluded count in `zero_weight_addrs`. The
+measure set is part of the result configuration identity.
+
+## MAAD storage
+
+`address_maad_stats` holds one row per bucket, scope, address side, and measure. Dimensions are
+`REAL`. The structure function (`tau`), its standard deviation (`tau_sd`), and the spectrum are
+little-endian f32 BLOBs. The only rounding is `value as f32`, which rounds to the nearest even.
+Nothing else rounds, truncates, or drops a value.
+
+- `tau` and `tau_sd` hold `q_count` values each. Element `i` is at `q_min + i * q_step` from the
+  `maad_q_grid` row of the same IP version.
+- `spectrum` holds interleaved `(alpha, f)` pairs. A zero-length BLOB is a computed, empty
+  spectrum. `NULL` means the measure does not compute one.
+- A result below the minimum address count stores `NULL` dimensions and curves.
+- D0 is `-tau(0)` and D2 is `tau(2)`. Their standard deviations are the `tau_sd` values at those q.
+  D1 has no standard deviation.
+
+`verify` checks every curve against the q grid and the spectrum presence of every measure.
+`compare` checks dimensions and each curve element within the MAAD tolerance. Changing this
+encoding is a MAAD contract change, so it needs a fresh product database.
 
 ## Coordinated subset runs
 
