@@ -1,0 +1,68 @@
+diff --git a/lib/Docker/Container.d.ts b/lib/Docker/Container.d.ts
+index 1132b60513040b72a1c51cfe2342c9c31a3c4031..4d34e38f9226ed14227914ebd3b8c3260a9700f8 100644
+--- a/lib/Docker/Container.d.ts
++++ b/lib/Docker/Container.d.ts
+@@ -57,6 +57,7 @@ export interface ContainerProps {
+     start?: boolean;
+     /** Docker healthcheck configuration. */
+     healthcheck?: Container.Healthcheck;
++    memory?: string;
+ }
+ export declare namespace Container {
+     type Status = "created" | "running" | "paused" | "restarting" | "removing" | "exited" | "dead";
+diff --git a/lib/Docker/Container.js b/lib/Docker/Container.js
+index eda60bf2183cfda4a47c410f00a92c32ed5afbd2..c8d09e19d588b64e5e35a1d1959538231588bd73 100644
+--- a/lib/Docker/Container.js
++++ b/lib/Docker/Container.js
+@@ -289,6 +289,7 @@ const makeCreateArgs = (id, news, instanceId) => dockerPhysicalName(id, news, in
+     label: news.labels,
+     "stop-timeout": toSeconds(news.stopTimeout)?.toString(),
+     rm: news.removeOnExit ?? false,
++    memory: news.memory,
+     ...(news.healthcheck
+         ? {
+             "health-cmd": Array.isArray(news.healthcheck.cmd)
+diff --git a/lib/Docker/Docker.d.ts b/lib/Docker/Docker.d.ts
+index 932a35f17b74317e3d9b431aaca5b72923c02120..895bcd7c6298dd9dd151707f387d5f4300c552ef 100644
+--- a/lib/Docker/Docker.d.ts
++++ b/lib/Docker/Docker.d.ts
+@@ -48,6 +48,7 @@ declare const Docker_base: Context.ServiceClass<Docker, "@alchemy/Docker", {
+             p: Array<string> | undefined;
+             /** `--add-host` entries, each `hostname:address`. */
+             "add-host"?: Array<string> | undefined;
++            memory?: string | undefined;
+             command: Array<string> | undefined;
+             label?: Record<string, string>;
+             context?: string;
+diff --git a/src/Docker/Container.ts b/src/Docker/Container.ts
+index 366e65915c9405bd12f629a1dc3cce64b5f64c38..30bb7bebe96b24a5e11e773b6005ead6c0a76a03 100644
+--- a/src/Docker/Container.ts
++++ b/src/Docker/Container.ts
+@@ -63,6 +63,7 @@ export interface ContainerProps {
+   start?: boolean;
+   /** Docker healthcheck configuration. */
+   healthcheck?: Container.Healthcheck;
++  memory?: string;
+ }
+ 
+ export declare namespace Container {
+@@ -502,6 +503,7 @@ const makeCreateArgs = (id: string, news: ContainerProps, instanceId: string) =>
+         label: news.labels,
+         "stop-timeout": toSeconds(news.stopTimeout)?.toString(),
+         rm: news.removeOnExit ?? false,
++        memory: news.memory,
+         ...(news.healthcheck
+           ? {
+               "health-cmd": Array.isArray(news.healthcheck.cmd)
+diff --git a/src/Docker/Docker.ts b/src/Docker/Docker.ts
+index ef0f9ffa1641f8a4c2003d19030dd9ec6cacc852..45930c0a576ad5854cf2e7e83420e8d27df038a6 100644
+--- a/src/Docker/Docker.ts
++++ b/src/Docker/Docker.ts
+@@ -89,6 +89,7 @@ export class Docker extends Context.Service<
+         p: Array<string> | undefined;
+         /** `--add-host` entries, each `hostname:address`. */
+         "add-host"?: Array<string> | undefined;
++        memory?: string | undefined;
+         command: Array<string> | undefined;
+         label?: Record<string, string>;
+         context?: string;
