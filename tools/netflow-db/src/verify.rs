@@ -94,6 +94,7 @@ pub fn verify_database(
             ));
         }
     }
+    assert_maad_encoding(&connection)?;
     if options.require_maad_data {
         assert_maad_measures_present(&connection)?;
     }
@@ -325,7 +326,7 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "address_structure_stats",
+        "address_maad_stats",
         &[
             "source_id",
             "granularity",
@@ -336,12 +337,19 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "dst_locality",
             "address_side",
             "measure",
-            "structure_kind",
-            "values_json",
-            "metadata_json",
-            "processed_at",
+            "total_addrs",
+            "zero_weight_addrs",
+            "min_prefix_length",
+            "max_prefix_length",
+            "d0",
+            "d1",
+            "d2",
+            "tau",
+            "tau_sd",
+            "spectrum",
         ],
     ),
+    ("maad_q_grid", &["ip_version", "q_min", "q_step", "q_count"]),
 ];
 
 const LEGACY_TABLES: &[&str] = &[
@@ -510,13 +518,10 @@ fn ipv4_literal(value: &str) -> Option<&str> {
         })
 }
 
-/// Every scope must carry a structure row for each MAAD measure.
+/// Every scope must carry a row for each MAAD measure.
 fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyError> {
     let counts = connection
-        .prepare(
-            "SELECT measure, COUNT(*) FROM address_structure_stats
-             WHERE structure_kind = 'structure' GROUP BY measure",
-        )?
+        .prepare("SELECT measure, COUNT(*) FROM address_maad_stats GROUP BY measure")?
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?
@@ -524,16 +529,52 @@ fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyErr
     let expected = counts.get("addresses").copied().unwrap_or_default();
     if expected == 0 {
         return Err(VerifyError::Incompatible(
-            "address_structure_stats has no addresses structure rows".into(),
+            "address_maad_stats has no addresses rows".into(),
         ));
     }
     for measure in ["packets", "bytes"] {
         let actual = counts.get(measure).copied().unwrap_or_default();
         if actual != expected {
             return Err(VerifyError::Incompatible(format!(
-                "address_structure_stats has {actual} {measure} structure rows; expected {expected}"
+                "address_maad_stats has {actual} {measure} rows; expected {expected}"
             )));
         }
+    }
+    Ok(())
+}
+
+/// Every stored curve must hold one f32 per q of its IP version's grid, and only the
+/// addresses measure may store a spectrum, which it always does.
+fn assert_maad_encoding(connection: &Connection) -> Result<(), VerifyError> {
+    let (ungridded, bad_tau, bad_spectrum): (i64, i64, i64) = connection.query_row(
+        "SELECT
+             COALESCE(SUM(s.tau IS NOT NULL AND g.q_count IS NULL), 0),
+             COALESCE(SUM(s.tau IS NOT NULL AND (
+                 typeof(s.tau) <> 'blob' OR typeof(s.tau_sd) <> 'blob'
+                 OR length(s.tau) <> 4 * g.q_count
+             )), 0),
+             COALESCE(SUM(CASE WHEN s.measure = 'addresses'
+                 THEN s.spectrum IS NULL OR typeof(s.spectrum) <> 'blob'
+                 ELSE s.spectrum IS NOT NULL END), 0)
+         FROM address_maad_stats s
+         LEFT JOIN maad_q_grid g ON g.ip_version = s.ip_version",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if ungridded != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {ungridded} curves without a maad_q_grid row"
+        )));
+    }
+    if bad_tau != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {bad_tau} tau or tau_sd blobs that do not match the q grid"
+        )));
+    }
+    if bad_spectrum != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {bad_spectrum} rows whose spectrum presence does not match the measure"
+        )));
     }
     Ok(())
 }
@@ -638,10 +679,10 @@ fn assert_ipv6_maad_rows(
     )?;
     let has_maad = connection.query_row(
         "SELECT EXISTS (
-            SELECT 1 FROM address_structure_stats
+            SELECT 1 FROM address_maad_stats
             WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
               AND src_locality = 'all' AND dst_locality = 'all'
-              AND measure = 'addresses' AND structure_kind = 'structure'
+              AND measure = 'addresses'
               AND bucket_start >= ?2 AND bucket_start < ?3
         )",
         params![source_id, bucket_start, bucket_end],
@@ -649,7 +690,7 @@ fn assert_ipv6_maad_rows(
     )?;
     if has_traffic && !has_maad {
         return Err(VerifyError::Incompatible(
-            "IPv6 traffic has no IPv6 MAAD structure rows".into(),
+            "IPv6 traffic has no IPv6 MAAD rows".into(),
         ));
     }
     Ok(())
@@ -724,25 +765,27 @@ const PROTOCOL_QUERY: &str = "
     ORDER BY source_id, bucket_start LIMIT 1";
 
 const STRUCTURE_QUERY: &str = "
-    SELECT source_id, bucket_start,
-           MAX(CASE WHEN address_side = 'source' THEN values_json END),
-           MAX(CASE WHEN address_side = 'destination' THEN values_json END)
-    FROM address_structure_stats
-    WHERE granularity = '1h' AND source_id IN (?)
-      AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
-      AND src_locality = 'all' AND dst_locality = 'all'
-      AND measure = 'addresses' AND structure_kind = 'structure'
-    GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
+    SELECT s.source_id, s.bucket_start,
+           MAX(CASE WHEN s.address_side = 'source' THEN s.tau END),
+           MAX(CASE WHEN s.address_side = 'destination' THEN s.tau END),
+           MAX(g.q_min), MAX(g.q_step)
+    FROM address_maad_stats s
+    JOIN maad_q_grid g ON g.ip_version = s.ip_version
+    WHERE s.granularity = '1h' AND s.source_id IN (?)
+      AND s.bucket_start >= ? AND s.bucket_start < ? AND s.ip_version = 4
+      AND s.src_locality = 'all' AND s.dst_locality = 'all'
+      AND s.measure = 'addresses'
+    GROUP BY s.source_id, s.bucket_start ORDER BY s.source_id, s.bucket_start LIMIT 1";
 
 const SPECTRUM_QUERY: &str = "
     SELECT source_id, bucket_start,
-           MAX(CASE WHEN address_side = 'source' THEN values_json END),
-           MAX(CASE WHEN address_side = 'destination' THEN values_json END)
-    FROM address_structure_stats
+           MAX(CASE WHEN address_side = 'source' THEN spectrum END),
+           MAX(CASE WHEN address_side = 'destination' THEN spectrum END)
+    FROM address_maad_stats
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
       AND src_locality = 'all' AND dst_locality = 'all'
-      AND measure = 'addresses' AND structure_kind = 'spectrum'
+      AND measure = 'addresses'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
 const FILE_DETAILS_QUERY: &str = "
@@ -845,12 +888,11 @@ mod tests {
 
         connection
             .execute(
-                "INSERT INTO address_structure_stats (
+                "INSERT INTO address_maad_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_locality, dst_locality, address_side, measure, structure_kind,
-                    values_json, metadata_json
+                    src_locality, dst_locality, address_side, measure, total_addrs, spectrum
                  ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 'source', 'addresses',
-                    'structure', '[]', '{}')",
+                    0, X'')",
                 [],
             )
             .unwrap();
@@ -858,18 +900,17 @@ mod tests {
     }
 
     #[test]
-    fn maad_data_requires_a_structure_row_for_every_measure() {
+    fn maad_data_requires_a_row_for_every_measure() {
         let connection = Connection::open_in_memory().unwrap();
         init_schema(&connection).unwrap();
         let insert = |measure: &str, bucket_start: i64| {
             connection
                 .execute(
-                    "INSERT INTO address_structure_stats (
+                    "INSERT INTO address_maad_stats (
                         source_id, granularity, bucket_start, bucket_end, ip_version,
-                        src_locality, dst_locality, address_side, measure, structure_kind,
-                        values_json, metadata_json
-                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', 'source', ?1,
-                              'structure', '[]', '{}')",
+                        src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', 'source', ?1, 0,
+                              CASE WHEN ?1 = 'addresses' THEN X'' END)",
                     params![measure, bucket_start],
                 )
                 .unwrap();
@@ -883,24 +924,60 @@ mod tests {
         insert("addresses", 300);
         insert("packets", 300);
         let error = assert_maad_measures_present(&connection).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("1 bytes structure rows; expected 2")
-        );
+        assert!(error.to_string().contains("1 bytes rows; expected 2"));
         assert!(
             connection
                 .execute(
-                    "INSERT INTO address_structure_stats (
-                        source_id, granularity, bucket_start, bucket_end, ip_version,
-                        src_locality, dst_locality, address_side, measure, structure_kind,
-                        values_json, metadata_json
-                    ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all', 'source', 'packets',
-                              'spectrum', '[]', '{}')",
+                    "UPDATE address_maad_stats SET spectrum = X'' WHERE measure = 'packets'",
                     [],
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn maad_encoding_requires_grid_sized_curves_and_measure_spectra() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let tau = crate::maad::encode_f32([0.5; 33]);
+        let insert = |measure: &str, tau: &[u8], spectrum: Option<&[u8]>| {
+            connection.execute(
+                "INSERT OR REPLACE INTO address_maad_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, address_side, measure, total_addrs,
+                    d0, d1, d2, tau, tau_sd, spectrum
+                ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all', 'source', ?1, 2,
+                          1.0, 1.0, 1.0, ?2, ?2, ?3)",
+                params![measure, tau, spectrum],
+            )
+        };
+
+        insert("addresses", &tau, Some(&[])).unwrap();
+        insert("packets", &tau, None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("2 curves without a maad_q_grid row")
+        );
+
+        connection
+            .execute(
+                "INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count)
+                 VALUES (4, -0.5, 0.125, 33)",
+                [],
+            )
+            .unwrap();
+        assert!(assert_maad_encoding(&connection).is_ok());
+
+        insert("packets", &tau[4..], None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(error.to_string().contains("1 tau or tau_sd blobs"));
+
+        insert("packets", &tau, None).unwrap();
+        insert("addresses", &tau, None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(error.to_string().contains("1 rows whose spectrum presence"));
     }
 
     #[test]

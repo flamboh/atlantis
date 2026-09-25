@@ -8,8 +8,8 @@ fn compare_accepts_candidate_only_keys_and_maad_rounding() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
-    create_shared_database(&candidate, 42, 0.500_000_000_01, true);
-    create_shared_database(&reference, 42, 0.5, false);
+    create_shared_database(&candidate, 42, 0.500_000_1, &[0.5, 1.000_000_1], true);
+    create_shared_database(&reference, 42, 0.5, &[0.5, 1.0], false);
 
     let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
         .args([
@@ -21,7 +21,7 @@ fn compare_accepts_candidate_only_keys_and_maad_rounding() {
             "--end",
             "600",
             "--maad-absolute-tolerance",
-            "0.000000001",
+            "0.000001",
         ])
         .output()
         .unwrap();
@@ -35,10 +35,46 @@ fn compare_accepts_candidate_only_keys_and_maad_rounding() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["compatible"], true);
     assert_eq!(report["tables"]["traffic_stats"]["candidate_only_rows"], 1);
-    assert_eq!(
-        report["tables"]["address_structure_stats"]["mismatched_rows"],
-        0
+    assert_eq!(report["tables"]["address_maad_stats"]["mismatched_rows"], 0);
+    assert!(
+        report["tables"]["address_maad_stats"]["max_maad_absolute_delta"]
+            .as_f64()
+            .unwrap()
+            > 0.0
     );
+}
+
+#[test]
+fn compare_rejects_maad_curves_outside_the_tolerance_or_of_another_length() {
+    for candidate_tau in [[0.5, 1.001].as_slice(), [0.5].as_slice()] {
+        let temporary = tempdir().unwrap();
+        let candidate = temporary.path().join("candidate.sqlite");
+        let reference = temporary.path().join("reference.sqlite");
+        create_shared_database(&candidate, 42, 0.5, candidate_tau, false);
+        create_shared_database(&reference, 42, 0.5, &[0.5, 1.0], false);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+            .args([
+                "compare",
+                candidate.to_str().unwrap(),
+                reference.to_str().unwrap(),
+                "--start",
+                "0",
+                "--end",
+                "600",
+                "--maad-absolute-tolerance",
+                "0.000001",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report["tables"]["address_maad_stats"]["mismatched_rows"], 1,
+            "{candidate_tau:?}"
+        );
+    }
 }
 
 #[test]
@@ -46,8 +82,8 @@ fn compare_rejects_a_shared_scalar_mismatch() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
-    create_shared_database(&candidate, 43, 0.5, false);
-    create_shared_database(&reference, 42, 0.5, false);
+    create_shared_database(&candidate, 43, 0.5, &[0.5], false);
+    create_shared_database(&reference, 42, 0.5, &[0.5], false);
 
     let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
         .args([
@@ -73,8 +109,8 @@ fn compare_rejects_a_candidate_only_scope_inside_a_reference_bucket() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
-    create_shared_database(&candidate, 42, 0.5, false);
-    create_shared_database(&reference, 42, 0.5, false);
+    create_shared_database(&candidate, 42, 0.5, &[0.5], false);
+    create_shared_database(&reference, 42, 0.5, &[0.5], false);
     Connection::open(&candidate)
         .unwrap()
         .execute(
@@ -109,13 +145,13 @@ fn compare_accepts_maad_rows_for_an_ip_version_the_reference_lacks() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
-    create_shared_database(&candidate, 42, 0.5, false);
-    create_shared_database(&reference, 42, 0.5, false);
+    create_shared_database(&candidate, 42, 0.5, &[0.5], false);
+    create_shared_database(&reference, 42, 0.5, &[0.5], false);
     let insert_v6 = |path: &std::path::Path, side: &str| {
         Connection::open(path)
             .unwrap()
             .execute(
-                "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,6,'all','all',?1,'addresses','dimension','[]','{\"totalAddrs\":0}')",
+                "INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,6,'all','all',?1,'addresses',0,NULL,NULL)",
                 [side],
             )
             .unwrap();
@@ -141,7 +177,7 @@ fn compare_accepts_maad_rows_for_an_ip_version_the_reference_lacks() {
     let (success, report) = run();
     assert!(success, "{report}");
     assert_eq!(
-        report["tables"]["address_structure_stats"]["unexpected_candidate_only_rows"],
+        report["tables"]["address_maad_stats"]["unexpected_candidate_only_rows"],
         0
     );
 
@@ -149,7 +185,7 @@ fn compare_accepts_maad_rows_for_an_ip_version_the_reference_lacks() {
     let (success, report) = run();
     assert!(!success);
     assert_eq!(
-        report["tables"]["address_structure_stats"]["unexpected_candidate_only_rows"],
+        report["tables"]["address_maad_stats"]["unexpected_candidate_only_rows"],
         1
     );
 }
@@ -159,8 +195,8 @@ fn compare_accepts_a_dense_zero_scope_missing_from_the_reference() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
-    create_shared_database(&candidate, 42, 0.5, false);
-    create_shared_database(&reference, 42, 0.5, false);
+    create_shared_database(&candidate, 42, 0.5, &[0.5], false);
+    create_shared_database(&reference, 42, 0.5, &[0.5], false);
     Connection::open(&candidate)
         .unwrap()
         .execute(
@@ -191,7 +227,20 @@ fn compare_accepts_a_dense_zero_scope_missing_from_the_reference() {
     );
 }
 
-fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, extra: bool) {
+fn f32_blob(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn create_shared_database(
+    path: &std::path::Path,
+    flows: i64,
+    dimension: f64,
+    tau: &[f32],
+    extra: bool,
+) {
     let connection = Connection::open(path).unwrap();
     connection
         .execute_batch(
@@ -216,13 +265,12 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
                 dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
                 unique_address_count INTEGER NOT NULL
             );
-            CREATE TABLE address_structure_stats (
+            CREATE TABLE address_maad_stats (
                 source_id TEXT NOT NULL, granularity TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
                 ip_version INTEGER NOT NULL, src_locality TEXT NOT NULL,
                 dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
-                measure TEXT NOT NULL, structure_kind TEXT NOT NULL, values_json TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
+                measure TEXT NOT NULL, total_addrs INTEGER NOT NULL, d1 REAL, tau BLOB
             );
             CREATE TABLE processed_inputs (
                 input_kind TEXT NOT NULL, input_locator TEXT NOT NULL,
@@ -253,8 +301,8 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
         .unwrap();
     connection
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,4,'all','all','source','addresses','dimension',?1,'{\"totalAddrs\":2}')",
-            [format!("[{{\"q\":1,\"dim\":{dimension}}}]")],
+            "INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,4,'all','all','source','addresses',2,?1,?2)",
+            rusqlite::params![dimension, f32_blob(tau)],
         )
         .unwrap();
     connection
@@ -265,7 +313,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
         .unwrap();
     connection
         .execute(
-            "INSERT INTO address_structure_stats VALUES ('r1','30m',3600,5400,4,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
+            "INSERT INTO address_maad_stats VALUES ('r1','30m',3600,5400,4,'all','all','source','addresses',0,NULL,NULL)",
             [],
         )
         .unwrap();
@@ -284,7 +332,7 @@ fn create_shared_database(path: &std::path::Path, flows: i64, dimension: f64, ex
             .unwrap();
         connection
             .execute(
-                "INSERT INTO address_structure_stats VALUES ('r1','30m',0,1800,4,'all','all','source','addresses','dimension','[]','{\"totalAddrs\":0}')",
+                "INSERT INTO address_maad_stats VALUES ('r1','30m',0,1800,4,'all','all','source','addresses',0,NULL,NULL)",
                 [],
             )
             .unwrap();

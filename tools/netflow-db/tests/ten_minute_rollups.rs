@@ -120,7 +120,7 @@ fn ten_minute_rollups_match_their_five_minute_children() {
         "protocol_stats",
         "address_count_stats",
         "port_count_stats",
-        "address_structure_stats",
+        "address_maad_stats",
     ] {
         let rows: i64 = connection
             .query_row(
@@ -173,11 +173,10 @@ fn ten_minute_rollups_match_their_five_minute_children() {
     let maad_total_addrs = |granularity: &str, bucket_start: i64, measure: &str| -> i64 {
         connection
             .query_row(
-                "SELECT json_extract(metadata_json, '$.totalAddrs') FROM address_structure_stats
+                "SELECT total_addrs FROM address_maad_stats
                  WHERE source_id = 'edge' AND granularity = ?1 AND bucket_start = ?2
                    AND ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'
-                   AND address_side = 'source' AND measure = ?3
-                   AND structure_kind = 'structure'",
+                   AND address_side = 'source' AND measure = ?3",
                 params![granularity, bucket_start, measure],
                 |row| row.get(0),
             )
