@@ -74,7 +74,7 @@ export function seedPlaywrightDatabase() {
 			unique_address_count INTEGER NOT NULL,
 			processed_at TEXT DEFAULT CURRENT_TIMESTAMP
 		);
-		CREATE TABLE address_structure_stats (
+		CREATE TABLE address_maad_stats (
 			source_id TEXT NOT NULL,
 			granularity TEXT NOT NULL,
 			bucket_start INTEGER NOT NULL,
@@ -84,10 +84,20 @@ export function seedPlaywrightDatabase() {
 			dst_locality TEXT NOT NULL,
 			address_side TEXT NOT NULL,
 			measure TEXT NOT NULL,
-			structure_kind TEXT NOT NULL,
-			values_json TEXT NOT NULL,
-			metadata_json TEXT NOT NULL,
-			processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+			total_addrs INTEGER NOT NULL,
+			zero_weight_addrs INTEGER NOT NULL DEFAULT 0,
+			min_prefix_length INTEGER,
+			max_prefix_length INTEGER,
+			d0 REAL, d1 REAL, d2 REAL,
+			tau BLOB,
+			tau_sd BLOB,
+			spectrum BLOB
+		);
+		CREATE TABLE maad_q_grid (
+			ip_version INTEGER PRIMARY KEY,
+			q_min REAL NOT NULL,
+			q_step REAL NOT NULL,
+			q_count INTEGER NOT NULL
 		);
 		CREATE TABLE port_count_stats (
 			source_id TEXT NOT NULL,
@@ -124,6 +134,9 @@ export function seedPlaywrightDatabase() {
 			source_id, granularity, bucket_start, bucket_end,
 			coverage_state, observed_units, expected_units, rejected_units
 		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0);
+		INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
+			(4, -0.5, 0.125, 33),
+			(6, -0.5, 0.125, 33);
 	`);
 	database.close();
 	return { databasePath, fixtureDirectory };

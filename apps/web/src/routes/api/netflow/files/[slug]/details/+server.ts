@@ -12,7 +12,9 @@ import type {
 } from '$lib/types/types';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 import {
-	normalizeStructurePoints,
+	buildSpectrumPoints,
+	buildStructurePoints,
+	getMaadQGrid,
 	parseFlowDirectionParams,
 	parseMaadParams
 } from '$lib/server/netflow-v3';
@@ -27,41 +29,21 @@ type FileDetailsRow = NetflowFileSummaryRecord & {
 	daIpv4Count: number | null;
 	saIpv6Count: number | null;
 	daIpv6Count: number | null;
-	structureJsonSa: string | null;
-	structureJsonDa: string | null;
-	spectrumJsonSa: string | null;
-	spectrumJsonDa: string | null;
+	saTau: Uint8Array | null;
+	saTauSd: Uint8Array | null;
+	daTau: Uint8Array | null;
+	daTauSd: Uint8Array | null;
+	saSpectrum: Uint8Array | null;
+	daSpectrum: Uint8Array | null;
 };
-
-function parseStructure(raw: string | null): StructureFunctionPoint[] | null {
-	if (!raw) return null;
-
-	try {
-		return normalizeStructurePoints(JSON.parse(raw) as StructureFunctionPoint[]);
-	} catch (error) {
-		console.error('Failed to parse structure JSON from database:', error);
-		return null;
-	}
-}
-
-function parseSpectrum(raw: string | null): SpectrumPoint[] | null {
-	if (!raw) return null;
-
-	try {
-		return JSON.parse(raw) as SpectrumPoint[];
-	} catch (error) {
-		console.error('Failed to parse spectrum JSON from database:', error);
-		return null;
-	}
-}
 
 function buildStructureData(
 	slug: string,
 	router: string,
 	addressType: 'Source' | 'Destination',
-	points: StructureFunctionPoint[] | null
+	points: StructureFunctionPoint[]
 ): StructureFunctionData | null {
-	if (!points || points.length === 0) return null;
+	if (points.length === 0) return null;
 
 	const qValues = points.map((point) => point.q);
 	const qRange =
@@ -149,129 +131,117 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 
 	try {
 		return await withDb(dataset, platform, async (db) => {
+			const qGrid = await getMaadQGrid(db, maad.ipVersion);
+
 			const rows = await db.all<FileDetailsRow>(
 				`WITH ns AS (
+					SELECT
+						source_id AS router,
+						bucket_start,
+						MAX(bucket_end) AS bucket_end,
+						SUM(flows) AS flows,
+						SUM(flows_tcp) AS flows_tcp,
+						SUM(flows_udp) AS flows_udp,
+						SUM(flows_icmp) AS flows_icmp,
+						SUM(flows_other) AS flows_other,
+						SUM(packets) AS packets,
+						SUM(packets_tcp) AS packets_tcp,
+						SUM(packets_udp) AS packets_udp,
+						SUM(packets_icmp) AS packets_icmp,
+						SUM(packets_other) AS packets_other,
+						SUM(bytes) AS bytes,
+						SUM(bytes_tcp) AS bytes_tcp,
+						SUM(bytes_udp) AS bytes_udp,
+						SUM(bytes_icmp) AS bytes_icmp,
+						SUM(bytes_other) AS bytes_other,
+						NULL AS first_timestamp,
+						NULL AS last_timestamp,
+						NULL AS msec_first,
+						NULL AS msec_last,
+						NULL AS sequence_failures,
+						MAX(processed_at) AS processed_at
+					FROM traffic_stats
+					WHERE granularity = ?
+						AND bucket_start = ?
+						AND src_locality = ?
+						AND dst_locality = ?
+					GROUP BY source_id, bucket_start
+				),
+				ip AS (
+					SELECT
+						source_id,
+						bucket_start,
+						SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
+						SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
+						SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
+						SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
+					FROM address_count_stats
+					WHERE granularity = ?
+						AND bucket_start = ?
+						AND src_locality = ?
+						AND dst_locality = ?
+					GROUP BY source_id, bucket_start
+				),
+				maad AS (
+					SELECT
+						source_id,
+						bucket_start,
+						MAX(CASE WHEN address_side = 'source' THEN tau END) AS saTau,
+						MAX(CASE WHEN address_side = 'source' THEN tau_sd END) AS saTauSd,
+						MAX(CASE WHEN address_side = 'destination' THEN tau END) AS daTau,
+						MAX(CASE WHEN address_side = 'destination' THEN tau_sd END) AS daTauSd,
+						MAX(CASE WHEN address_side = 'source' THEN spectrum END) AS saSpectrum,
+						MAX(CASE WHEN address_side = 'destination' THEN spectrum END) AS daSpectrum
+					FROM address_maad_stats
+					WHERE granularity = ?
+						AND bucket_start = ?
+						AND ip_version = ?
+						AND src_locality = ?
+						AND dst_locality = ?
+						AND measure = ?
+					GROUP BY source_id, bucket_start
+				)
 				SELECT
-					source_id AS router,
-					bucket_start,
-					MAX(bucket_end) AS bucket_end,
-					SUM(flows) AS flows,
-					SUM(flows_tcp) AS flows_tcp,
-					SUM(flows_udp) AS flows_udp,
-					SUM(flows_icmp) AS flows_icmp,
-					SUM(flows_other) AS flows_other,
-					SUM(packets) AS packets,
-					SUM(packets_tcp) AS packets_tcp,
-					SUM(packets_udp) AS packets_udp,
-					SUM(packets_icmp) AS packets_icmp,
-					SUM(packets_other) AS packets_other,
-					SUM(bytes) AS bytes,
-					SUM(bytes_tcp) AS bytes_tcp,
-					SUM(bytes_udp) AS bytes_udp,
-					SUM(bytes_icmp) AS bytes_icmp,
-					SUM(bytes_other) AS bytes_other,
-					NULL AS first_timestamp,
-					NULL AS last_timestamp,
-					NULL AS msec_first,
-					NULL AS msec_last,
-					NULL AS sequence_failures,
-					MAX(processed_at) AS processed_at
-				FROM traffic_stats
-				WHERE granularity = ?
-					AND bucket_start = ?
-					AND src_locality = ?
-					AND dst_locality = ?
-				GROUP BY source_id, bucket_start
-			),
-			ip AS (
-				SELECT
-					source_id,
-					bucket_start,
-					SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,
-					SUM(CASE WHEN address_side = 'destination' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS daIpv4Count,
-					SUM(CASE WHEN address_side = 'source' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS saIpv6Count,
-					SUM(CASE WHEN address_side = 'destination' AND ip_version = 6 THEN unique_address_count ELSE 0 END) AS daIpv6Count
-				FROM address_count_stats
-				WHERE granularity = ?
-					AND bucket_start = ?
-					AND src_locality = ?
-					AND dst_locality = ?
-				GROUP BY source_id, bucket_start
-			),
-			st AS (
-				SELECT
-					source_id,
-					bucket_start,
-					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS structureJsonSa,
-					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS structureJsonDa
-				FROM address_structure_stats
-				WHERE granularity = ?
-					AND bucket_start = ?
-					AND ip_version = ?
-					AND src_locality = ?
-					AND dst_locality = ?
-					AND measure = ?
-					AND structure_kind = 'structure'
-				GROUP BY source_id, bucket_start
-			),
-			sp AS (
-				SELECT
-					source_id,
-					bucket_start,
-					MAX(CASE WHEN address_side = 'source' THEN values_json END) AS spectrumJsonSa,
-					MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS spectrumJsonDa
-				FROM address_structure_stats
-				WHERE granularity = ?
-					AND bucket_start = ?
-					AND ip_version = ?
-					AND src_locality = ?
-					AND dst_locality = ?
-					AND measure = ?
-					AND structure_kind = 'spectrum'
-				GROUP BY source_id, bucket_start
-			)
-			SELECT
-				ns.*,
-				pi.input_locator AS file_path,
-				pi.input_kind,
-				pi.status AS input_status,
-				pi.error_message AS input_error_message,
-				COALESCE(ns.processed_at, pi.processed_at, pi.discovered_at) AS processed_at,
-				ip.saIpv4Count,
-				ip.daIpv4Count,
-				ip.saIpv6Count,
-				ip.daIpv6Count,
-				st.structureJsonSa,
-				st.structureJsonDa,
-				sp.spectrumJsonSa,
-				sp.spectrumJsonDa
-			FROM ns
-			LEFT JOIN (
-				SELECT
-					source_id,
-					bucket_start,
-					MIN(input_locator) AS input_locator,
-					MIN(input_kind) AS input_kind,
-					MAX(status) AS status,
-					MAX(error_message) AS error_message,
-					MAX(discovered_at) AS discovered_at,
-					MAX(processed_at) AS processed_at
-				FROM processed_inputs
-				WHERE bucket_start = ?
-				GROUP BY source_id, bucket_start
-			) pi
-				ON pi.source_id = ns.router
-				AND pi.bucket_start = ns.bucket_start
-				LEFT JOIN ip
-					ON ip.source_id = ns.router
-					AND ip.bucket_start = ns.bucket_start
-				LEFT JOIN st
-					ON st.source_id = ns.router
-					AND st.bucket_start = ns.bucket_start
-				LEFT JOIN sp
-					ON sp.source_id = ns.router
-					AND sp.bucket_start = ns.bucket_start
-				ORDER BY ns.router`,
+					ns.*,
+					pi.input_locator AS file_path,
+					pi.input_kind,
+					pi.status AS input_status,
+					pi.error_message AS input_error_message,
+					COALESCE(ns.processed_at, pi.processed_at, pi.discovered_at) AS processed_at,
+					ip.saIpv4Count,
+					ip.daIpv4Count,
+					ip.saIpv6Count,
+					ip.daIpv6Count,
+					maad.saTau,
+					maad.saTauSd,
+					maad.daTau,
+					maad.daTauSd,
+					maad.saSpectrum,
+					maad.daSpectrum
+				FROM ns
+				LEFT JOIN (
+					SELECT
+						source_id,
+						bucket_start,
+						MIN(input_locator) AS input_locator,
+						MIN(input_kind) AS input_kind,
+						MAX(status) AS status,
+						MAX(error_message) AS error_message,
+						MAX(discovered_at) AS discovered_at,
+						MAX(processed_at) AS processed_at
+					FROM processed_inputs
+					WHERE bucket_start = ?
+					GROUP BY source_id, bucket_start
+				) pi
+					ON pi.source_id = ns.router
+					AND pi.bucket_start = ns.bucket_start
+					LEFT JOIN ip
+						ON ip.source_id = ns.router
+						AND ip.bucket_start = ns.bucket_start
+					LEFT JOIN maad
+						ON maad.source_id = ns.router
+						AND maad.bucket_start = ns.bucket_start
+					ORDER BY ns.router`,
 				[
 					FIVE_MINUTES,
 					bucketStart,
@@ -287,12 +257,6 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					flowDirection.srcLocality,
 					flowDirection.dstLocality,
 					maad.measure,
-					FIVE_MINUTES,
-					bucketStart,
-					maad.ipVersion,
-					flowDirection.srcLocality,
-					flowDirection.dstLocality,
-					maad.measure,
 					bucketStart
 				]
 			);
@@ -302,10 +266,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			}
 
 			const routers: NetflowFileDetailsRouter[] = rows.map((row) => {
-				const structureSourcePoints = parseStructure(row.structureJsonSa);
-				const structureDestinationPoints = parseStructure(row.structureJsonDa);
-				const spectrumSourcePoints = parseSpectrum(row.spectrumJsonSa);
-				const spectrumDestinationPoints = parseSpectrum(row.spectrumJsonDa);
+				const structureSourcePoints = buildStructurePoints(row.saTau, row.saTauSd, qGrid);
+				const structureDestinationPoints = buildStructurePoints(row.daTau, row.daTauSd, qGrid);
+				const spectrumSourcePoints = buildSpectrumPoints(row.saSpectrum);
+				const spectrumDestinationPoints = buildSpectrumPoints(row.daSpectrum);
 
 				return {
 					summary: {
