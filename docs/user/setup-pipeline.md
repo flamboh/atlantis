@@ -211,6 +211,86 @@ On the native path, nfcapd input needs the fork path: set the top-level `"nfdump
 
 Time limits must align with local-day boundaries.
 
+## Process a date range on several hosts
+
+Days are independent, so a long nfcapd range can be split into day shards that run on different
+hosts and then merged into one product.
+The [pipeline contract](../code/pipeline-contract.md#day-sharded-products) explains why the shards
+never overlap.
+
+Each host needs:
+
+- read access to the capture tree at the same absolute path, for example on a shared filesystem;
+- the same `netflow-db` binary, pinned nfdump fork, and dataset registry, all under one absolute
+  directory that has the same path on every host. The nfdump path is part of the product identity,
+  so a different path produces an incompatible shard;
+- enough host-local disk for its shard database. Write shards to local disk, not to a shared
+  network filesystem.
+
+`scripts/netflow-db-cluster.sh` runs the whole flow from one machine. It splits the inclusive date
+range into one contiguous shard per slot and starts `pipeline` on each host as a detached job, so
+a dropped ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
+shard back, merges the snapshots, and runs `verify`:
+
+```bash
+./scripts/netflow-db-cluster.sh \
+  --hosts nodeA,nodeB,nodeC:2 \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output data/example/netflow.sqlite \
+  --deploy-bin target/release/netflow-db \
+  --deploy-nfdump target/nfdump/libexec/nfdump \
+  --deploy-datasets /path/to/datasets.json
+```
+
+- `host:N` runs N shards on that host at once.
+- Hosts install into `--remote-dir` (or `NETFLOW_CLUSTER_REMOTE_DIR`). The default is
+  `$HOME/atlantis-cluster`, expanded with this machine's `$HOME`, so every host must be able to
+  use that absolute path. The directory holds `bin/`, `nfdump/`, `datasets.json`, and the shard
+  databases, logs, and exit-status files in `work/`.
+- The `--deploy-*` options replace files atomically. Do not replace nfdump while a shard is running
+  on that host: the running pipeline detects the change and stops, and a different nfdump build
+  produces an incompatible product.
+- Pipeline flags after `--` apply to every shard.
+- Each remote shard database is named after its dataset and day range. The script records the
+  host and day-range layout in `<output>.shards/layout` and refuses a rerun whose `--hosts`,
+  dates, or dataset differ. To start over with a different layout, delete that file.
+- If a shard fails or you interrupt the script, rerun the same command. A shard that is still
+  running is reattached instead of started twice, and a restarted shard resumes after its last
+  completed day. Ctrl-C stops only the local script; remote shards keep running.
+- The script merges with `merge-shards --consume`, which deletes each local shard copy in
+  `<output>.shards` as soon as its rows are committed, so local disk peaks near the output size
+  plus one shard. Pass `--keep-shards` to merge without consuming and keep the copies. The logs
+  and layout stay in `<output>.shards` either way.
+- If the merge fails, rerun the same command. The remote shard databases are the source of truth:
+  the rerun copies every shard back again and deletes the partial merge from the failed run
+  first. The script leaves the remote shard databases in place, so delete `work/` on each host
+  when you are finished.
+
+To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
+`--end-date` over a different day range, then run:
+
+```bash
+./scripts/netflow-db.sh merge-shards --output data/example/netflow.sqlite shard-*.sqlite
+```
+
+The output must not exist yet. The command refuses shards with different product identities,
+schemas, source layouts, or dataset metadata, and shards whose completed days overlap. It also
+refuses rows outside a shard's completed days, and completed days without full five-minute
+coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
+again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
+path publishes zero buckets.
+
+When disk is tight, add `--consume`. The command still runs every check on every shard before it
+changes anything. It then moves the first shard into the temporary output, or copies it if the
+output is on another filesystem, and deletes each other shard with its SQLite sidecars once that
+shard's rows are durably committed. Peak disk is about the output size plus one shard. If a
+consuming merge fails after it has consumed a shard, it keeps the temporary output: a valid
+partial product that holds exactly the consumed shards. The error names the consumed shards and
+the partial file, and prints the command that resumes the merge from the partial and the
+remaining shards, which are left untouched.
+
 ## Verify the output
 
 Run the compatibility check after the pipeline finishes:

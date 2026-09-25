@@ -1,0 +1,1139 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::File,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
+use thiserror::Error;
+
+use crate::{
+    provenance::canonical_json,
+    storage::{
+        DatabaseOperationLock, StorageError, atomic_replace_sqlite, canonical_path,
+        connect_local_writer, connect_readonly, database_operation_lock_path,
+        database_related_paths, optimize_all_query_planner_statistics,
+        validate_database_path_separation,
+    },
+};
+
+const DAY_OWNED_TABLES: [&str; 8] = [
+    "traffic_stats",
+    "protocol_stats",
+    "address_count_stats",
+    "port_count_stats",
+    "address_structure_stats",
+    "bucket_coverage",
+    "input_evidence",
+    "processed_inputs",
+];
+
+const SHARED_TABLES: [&str; 5] = [
+    "pipeline_product",
+    "nfcapd_source_layout",
+    "datasets",
+    "source_members",
+    "processed_input_scans",
+];
+
+const MARKER_TABLE: &str = "daily_product_completion";
+
+#[derive(Debug, Error)]
+pub enum MergeError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("SQLite operation failed: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Provenance(#[from] crate::provenance::ProvenanceError),
+    #[error("filesystem operation failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("cannot merge shards: {0}")]
+    Refused(String),
+    #[error(
+        "merge stopped after consuming {consumed}: {source}. The days of those shards now exist only in the partial product {partial}. Resume with: netflow-db merge-shards --consume --output {output} {partial} {remaining}"
+    )]
+    PartiallyConsumed {
+        source: Box<MergeError>,
+        output: String,
+        partial: String,
+        consumed: String,
+        remaining: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct MergeRequest {
+    pub output: PathBuf,
+    pub shards: Vec<PathBuf>,
+    pub consume: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MergeReport {
+    pub shards: usize,
+    pub completed_days: usize,
+    pub first_day_start: Option<i64>,
+    pub last_day_end: Option<i64>,
+    pub table_rows: BTreeMap<String, i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProductRow {
+    schema_json: String,
+    selection_json: String,
+    config_json: String,
+    product_fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DatasetRow {
+    id: String,
+    label: String,
+    source_mode: String,
+    discovery_mode: String,
+    sort_order: i64,
+}
+
+#[derive(Debug)]
+struct ShardSummary {
+    path: PathBuf,
+    schema: Vec<(String, String, Option<String>)>,
+    product: ProductRow,
+    layout_fingerprint: String,
+    datasets: BTreeSet<DatasetRow>,
+    default_start_dates: BTreeMap<String, String>,
+    source_members: BTreeSet<(String, String, String)>,
+    days: Vec<(i64, i64)>,
+    table_rows: BTreeMap<String, i64>,
+}
+
+pub fn merge_shards(request: &MergeRequest) -> Result<MergeReport, MergeError> {
+    if request.shards.is_empty() {
+        return Err(refused("at least one shard database is required"));
+    }
+    let output = canonical_path(&request.output)?;
+    let shards = request
+        .shards
+        .iter()
+        .map(canonical_path)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut all_paths = shards.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    all_paths.push(output.as_path());
+    validate_database_path_separation(&all_paths)?;
+    for shard in &shards {
+        if !shard.is_file() {
+            return Err(StorageError::DatabaseNotFound(shard.clone()).into());
+        }
+    }
+    reject_existing_output(&output)?;
+
+    let mut locks = Vec::with_capacity(shards.len() + 1);
+    for path in shards.iter().chain([&output]) {
+        locks.push(DatabaseOperationLock::acquire(path, "merge-shards")?);
+    }
+    reject_existing_output(&output)?;
+
+    let summaries = shards
+        .iter()
+        .map(|path| summarize_shard(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_compatible(&summaries)?;
+    let days = validate_disjoint_days(&summaries)?;
+    let default_start_dates = merged_default_start_dates(&summaries);
+
+    let parent = output
+        .parent()
+        .ok_or_else(|| refused(format!("output path has no parent: {}", output.display())))?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = tempfile::Builder::new()
+        .prefix(&format!(
+            ".{}.",
+            output.file_name().unwrap_or_default().to_string_lossy()
+        ))
+        .suffix(".merge.tmp")
+        .tempfile_in(parent)?;
+    let (_, temporary_path) = temporary.keep().map_err(|error| error.error)?;
+    let mut consumed = Vec::new();
+    let result = write_merged(
+        &temporary_path,
+        &summaries,
+        &default_start_dates,
+        request.consume.then_some(&mut consumed),
+    )
+    .and_then(|table_rows| {
+        reject_existing_output(&output)?;
+        atomic_replace_sqlite(&temporary_path, &output)?;
+        File::open(parent)?.sync_all()?;
+        Ok(table_rows)
+    });
+    let table_rows = match result {
+        Ok(table_rows) => table_rows,
+        Err(error) if consumed.is_empty() => {
+            for path in database_related_paths(&temporary_path).unwrap_or_default() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+        Err(error) => {
+            let remaining = shards
+                .iter()
+                .filter(|shard| !consumed.contains(shard))
+                .map(|shard| shard.display().to_string())
+                .collect::<Vec<_>>();
+            return Err(MergeError::PartiallyConsumed {
+                source: Box::new(error),
+                output: output.display().to_string(),
+                partial: temporary_path.display().to_string(),
+                consumed: consumed
+                    .iter()
+                    .map(|shard| shard.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                remaining: remaining.join(" "),
+            });
+        }
+    };
+    drop(locks);
+    for shard in &consumed {
+        if let Ok(lock) = database_operation_lock_path(shard) {
+            let _ = std::fs::remove_file(lock);
+        }
+    }
+    Ok(MergeReport {
+        shards: summaries.len(),
+        completed_days: days.len(),
+        first_day_start: days.first().map(|day| day.0),
+        last_day_end: days.last().map(|day| day.1),
+        table_rows,
+    })
+}
+
+fn refused(message: impl Into<String>) -> MergeError {
+    MergeError::Refused(message.into())
+}
+
+fn reject_existing_output(output: &Path) -> Result<(), MergeError> {
+    if output.exists() {
+        return Err(refused(format!(
+            "output {} already exists; merge into a new product database",
+            output.display()
+        )));
+    }
+    Ok(())
+}
+
+fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
+    let connection = connect_readonly(path)?;
+    let label = path.display().to_string();
+    let schema = connection
+        .prepare(
+            "SELECT type, name, sql FROM sqlite_master
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<Vec<(String, String, Option<String>)>>>()?;
+    let tables = schema
+        .iter()
+        .filter(|(kind, _, _)| kind == "table")
+        .map(|(_, name, _)| name.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected = DAY_OWNED_TABLES
+        .iter()
+        .chain(&SHARED_TABLES)
+        .chain(&[MARKER_TABLE])
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if tables != expected {
+        let missing = expected.difference(&tables).copied().collect::<Vec<_>>();
+        let unknown = tables.difference(&expected).copied().collect::<Vec<_>>();
+        return Err(refused(format!(
+            "{label} is not an nfcapd-tree pipeline product (missing tables: [{}], unknown tables: [{}])",
+            missing.join(", "),
+            unknown.join(", ")
+        )));
+    }
+
+    let product = connection
+        .query_row(
+            "SELECT schema_json, selection_json, config_json, product_fingerprint
+             FROM pipeline_product WHERE singleton = 1",
+            [],
+            |row| {
+                Ok(ProductRow {
+                    schema_json: row.get(0)?,
+                    selection_json: row.get(1)?,
+                    config_json: row.get(2)?,
+                    product_fingerprint: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| refused(format!("{label} has no bound product identity")))?;
+    let expected_schema = canonical_json(&crate::pipeline::product_schema())?;
+    if product.schema_json != expected_schema {
+        return Err(refused(format!(
+            "{label} records table contract {} but this build writes {expected_schema}",
+            product.schema_json
+        )));
+    }
+    let layout_fingerprint = connection
+        .query_row(
+            "SELECT layout_fingerprint FROM nfcapd_source_layout WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| refused(format!("{label} has no bound nfcapd source layout")))?;
+
+    let mut datasets = BTreeSet::new();
+    let mut default_start_dates = BTreeMap::new();
+    let mut statement = connection.prepare(
+        "SELECT id, label, default_start_date, source_mode, discovery_mode, sort_order FROM datasets",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        default_start_dates.insert(id.clone(), row.get(2)?);
+        datasets.insert(DatasetRow {
+            id,
+            label: row.get(1)?,
+            source_mode: row.get(3)?,
+            discovery_mode: row.get(4)?,
+            sort_order: row.get(5)?,
+        });
+    }
+    drop(rows);
+    drop(statement);
+    let source_members = connection
+        .prepare("SELECT dataset_id, source_id, member_id FROM source_members")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+
+    let csv_scans: i64 =
+        connection.query_row("SELECT COUNT(*) FROM processed_input_scans", [], |row| {
+            row.get(0)
+        })?;
+    let csv_inputs: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM processed_inputs WHERE input_kind != 'nfcapd'",
+        [],
+        |row| row.get(0),
+    )?;
+    if csv_scans != 0 || csv_inputs != 0 {
+        return Err(refused(format!(
+            "{label} contains CSV inputs; only nfcapd-tree products carry daily completion markers"
+        )));
+    }
+
+    let mut markers = Vec::new();
+    let mut days = BTreeSet::new();
+    let mut statement = connection.prepare(
+        "SELECT source_id, day_start, day_end, product_fingerprint
+         FROM daily_product_completion",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let source_id: String = row.get(0)?;
+        let fingerprint: String = row.get(3)?;
+        if fingerprint != product.product_fingerprint {
+            return Err(refused(format!(
+                "{label} has a completion marker for source {source_id:?} from a different product identity"
+            )));
+        }
+        let day = (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?);
+        days.insert(day);
+        markers.push((source_id, day));
+    }
+    drop(rows);
+    drop(statement);
+    let days = days.into_iter().collect::<Vec<_>>();
+    if let Some(pair) = days.windows(2).find(|pair| pair[0].1 > pair[1].0) {
+        return Err(refused(format!(
+            "{label} has completion markers with inconsistent day bounds [{}, {}) and [{}, {})",
+            pair[0].0, pair[0].1, pair[1].0, pair[1].1
+        )));
+    }
+
+    let timezone = serde_json::from_str::<serde_json::Value>(&product.config_json)
+        .ok()
+        .and_then(|config| config["timezone"].as_str().map(str::to_owned))
+        .ok_or_else(|| refused(format!("{label} records no pipeline timezone")))?;
+    validate_marker_coverage(&connection, &label, &markers, &timezone)?;
+
+    let mut table_rows = BTreeMap::new();
+    for table in DAY_OWNED_TABLES {
+        let (rows, outside) = scan_day_ownership(&connection, table, &days)?;
+        if let Some(bucket_start) = outside {
+            return Err(refused(format!(
+                "{label} has {table} rows at bucket_start {bucket_start} outside its completed days"
+            )));
+        }
+        table_rows.insert(table.to_owned(), rows);
+    }
+    let markers: i64 =
+        connection.query_row(&format!("SELECT COUNT(*) FROM {MARKER_TABLE}"), [], |row| {
+            row.get(0)
+        })?;
+    table_rows.insert(MARKER_TABLE.to_owned(), markers);
+
+    Ok(ShardSummary {
+        path: path.to_owned(),
+        schema,
+        product,
+        layout_fingerprint,
+        datasets,
+        default_start_dates,
+        source_members,
+        days,
+        table_rows,
+    })
+}
+
+fn validate_marker_coverage(
+    connection: &Connection,
+    label: &str,
+    markers: &[(String, (i64, i64))],
+    timezone: &str,
+) -> Result<(), MergeError> {
+    let mut expected_by_day = BTreeMap::new();
+    let mut statement = connection.prepare(
+        "SELECT COUNT(*) FROM bucket_coverage
+         WHERE source_id = ?1 AND granularity = '5m' AND bucket_start >= ?2 AND bucket_start < ?3",
+    )?;
+    for (source_id, (start, end)) in markers {
+        let expected = match expected_by_day.get(&(*start, *end)) {
+            Some(expected) => *expected,
+            None => {
+                let expected = local_five_minute_buckets(*start, *end, timezone)?;
+                expected_by_day.insert((*start, *end), expected);
+                expected
+            }
+        };
+        let actual: i64 = statement.query_row(params![source_id, start, end], |row| row.get(0))?;
+        if actual != expected {
+            return Err(refused(format!(
+                "{label} marks source {source_id:?} complete for [{start}, {end}) but has {actual} of {expected} five-minute coverage rows; build every shard with an explicit --end-date"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn local_five_minute_buckets(start: i64, end: i64, timezone: &str) -> Result<i64, MergeError> {
+    let mut count = 0;
+    let mut bucket_start = start;
+    while bucket_start < end {
+        count += 1;
+        bucket_start = crate::pipeline::next_local_five_minute_start(bucket_start, timezone)
+            .map_err(|error| refused(format!("cannot enumerate local buckets: {error}")))?;
+    }
+    Ok(count)
+}
+
+fn scan_day_ownership(
+    connection: &Connection,
+    table: &str,
+    days: &[(i64, i64)],
+) -> Result<(i64, Option<i64>), MergeError> {
+    let mut statement = connection.prepare(&format!("SELECT bucket_start FROM {table}"))?;
+    let mut rows = statement.query([])?;
+    let mut count = 0_i64;
+    while let Some(row) = rows.next()? {
+        let bucket_start: i64 = row.get(0)?;
+        count += 1;
+        let index = days.partition_point(|day| day.0 <= bucket_start);
+        if index == 0 || bucket_start >= days[index - 1].1 {
+            return Ok((count, Some(bucket_start)));
+        }
+    }
+    Ok((count, None))
+}
+
+fn validate_compatible(summaries: &[ShardSummary]) -> Result<(), MergeError> {
+    let first = &summaries[0];
+    let first_label = first.path.display();
+    for shard in &summaries[1..] {
+        let label = shard.path.display();
+        if shard.schema != first.schema {
+            return Err(refused(format!(
+                "SQLite schema of {label} differs from {first_label}"
+            )));
+        }
+        if shard.product != first.product {
+            let mut components = Vec::new();
+            for (name, left, right) in [
+                (
+                    "schema",
+                    &first.product.schema_json,
+                    &shard.product.schema_json,
+                ),
+                (
+                    "selection",
+                    &first.product.selection_json,
+                    &shard.product.selection_json,
+                ),
+                (
+                    "config",
+                    &first.product.config_json,
+                    &shard.product.config_json,
+                ),
+            ] {
+                if left != right {
+                    components.push(format!("{name}: {first_label}={left} {label}={right}"));
+                }
+            }
+            if components.is_empty() {
+                components.push("product fingerprint".to_owned());
+            }
+            return Err(refused(format!(
+                "product identity of {label} differs from {first_label}: {}",
+                components.join("; ")
+            )));
+        }
+        if shard.layout_fingerprint != first.layout_fingerprint {
+            return Err(refused(format!(
+                "nfcapd source layout of {label} differs from {first_label}"
+            )));
+        }
+        if shard.datasets != first.datasets || shard.source_members != first.source_members {
+            return Err(refused(format!(
+                "dataset metadata of {label} differs from {first_label}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_disjoint_days(summaries: &[ShardSummary]) -> Result<Vec<(i64, i64)>, MergeError> {
+    let mut owned = summaries
+        .iter()
+        .enumerate()
+        .flat_map(|(index, shard)| shard.days.iter().map(move |day| (*day, index)))
+        .collect::<Vec<_>>();
+    owned.sort_unstable();
+    for pair in owned.windows(2) {
+        let ((left, left_shard), (right, right_shard)) = (pair[0], pair[1]);
+        if left.1 > right.0 {
+            return Err(refused(format!(
+                "completed days overlap: [{}, {}) in {} and [{}, {}) in {}",
+                left.0,
+                left.1,
+                summaries[left_shard].path.display(),
+                right.0,
+                right.1,
+                summaries[right_shard].path.display()
+            )));
+        }
+    }
+    Ok(owned.into_iter().map(|(day, _)| day).collect())
+}
+
+fn merged_default_start_dates(summaries: &[ShardSummary]) -> BTreeMap<String, String> {
+    let mut merged = BTreeMap::<String, String>::new();
+    for shard in summaries {
+        for (id, date) in &shard.default_start_dates {
+            merged
+                .entry(id.clone())
+                .and_modify(|current| {
+                    if date < current {
+                        current.clone_from(date);
+                    }
+                })
+                .or_insert_with(|| date.clone());
+        }
+    }
+    merged
+}
+
+fn write_merged(
+    path: &Path,
+    summaries: &[ShardSummary],
+    default_start_dates: &BTreeMap<String, String>,
+    mut consumed: Option<&mut Vec<PathBuf>>,
+) -> Result<BTreeMap<String, i64>, MergeError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| refused(format!("temporary path has no parent: {}", path.display())))?;
+    match consumed.as_deref_mut() {
+        Some(consumed) => {
+            move_shard(&summaries[0].path, path, parent)?;
+            consumed.push(summaries[0].path.clone());
+        }
+        None => copy_database(&summaries[0].path, path)?,
+    }
+    let mut connection = connect_local_writer(path)?;
+    if consumed.is_some() {
+        connection.pragma_update(None, "journal_mode", "DELETE")?;
+        connection.pragma_update(None, "synchronous", "FULL")?;
+    } else {
+        connection.pragma_update(None, "journal_mode", "OFF")?;
+        connection.pragma_update(None, "synchronous", "OFF")?;
+    }
+    connection.pragma_update(None, "cache_size", -262_144)?;
+    let tables = DAY_OWNED_TABLES
+        .iter()
+        .chain(&[MARKER_TABLE])
+        .copied()
+        .collect::<Vec<_>>();
+    let mut table_rows = summaries[0].table_rows.clone();
+    for shard in &summaries[1..] {
+        connection.execute(
+            "ATTACH DATABASE ?1 AS shard",
+            [shard.path.to_string_lossy()],
+        )?;
+        let transaction = connection.transaction()?;
+        for table in &tables {
+            let inserted = transaction.execute(
+                &format!("INSERT INTO main.{table} SELECT * FROM shard.{table}"),
+                [],
+            )?;
+            let expected = shard.table_rows[*table];
+            if i64::try_from(inserted).ok() != Some(expected) {
+                return Err(refused(format!(
+                    "{table} copied {inserted} rows from {} but validation counted {expected}",
+                    shard.path.display()
+                )));
+            }
+            *table_rows.entry((*table).to_owned()).or_default() += expected;
+        }
+        transaction.commit()?;
+        connection.execute("DETACH DATABASE shard", [])?;
+        if let Some(consumed) = consumed.as_deref_mut() {
+            remove_database_files(&shard.path)?;
+            consumed.push(shard.path.clone());
+        }
+    }
+    for (id, date) in default_start_dates {
+        connection.execute(
+            "UPDATE main.datasets SET default_start_date = ?2 WHERE id = ?1",
+            params![id, date],
+        )?;
+    }
+    optimize_all_query_planner_statistics(&connection)?;
+    drop(connection);
+    File::open(path)?.sync_all()?;
+    Ok(table_rows)
+}
+
+fn copy_database(source: &Path, target: &Path) -> Result<(), MergeError> {
+    let base = connect_readonly(source)?;
+    let mut destination = connect_local_writer(target)?;
+    let backup = Backup::new(&base, &mut destination)?;
+    backup.run_to_completion(1_024, Duration::ZERO, None)?;
+    Ok(())
+}
+
+fn move_shard(shard: &Path, target: &Path, target_parent: &Path) -> Result<(), MergeError> {
+    connect_local_writer(shard)?;
+    match std::fs::rename(shard, target) {
+        Ok(()) => {
+            File::open(target_parent)?.sync_all()?;
+            remove_database_files(shard)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            copy_database(shard, target)?;
+            File::open(target)?.sync_all()?;
+            remove_database_files(shard)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_database_files(path: &Path) -> Result<(), MergeError> {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let file = PathBuf::from(format!("{}{suffix}", path.display()));
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use rusqlite::{Connection, types::Value as SqlValue};
+    use serde_json::{Value, json};
+    use tempfile::{TempDir, tempdir};
+
+    use super::*;
+    use crate::{
+        pipeline::{
+            PipelineRequest, run,
+            test_support::{write_fake_nfdump, write_nfcapd_day},
+        },
+        verify::{VerifyOptions, verify_database},
+    };
+
+    const TIMESTAMP_COLUMNS: [&str; 4] =
+        ["processed_at", "discovered_at", "completed_at", "bound_at"];
+
+    struct Fixture {
+        directory: TempDir,
+        registry: PathBuf,
+        executable: PathBuf,
+        invocations: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(days: &[&str]) -> Self {
+            Self::with_members(&[("edge", days)])
+        }
+
+        fn with_members(members: &[(&str, &[&str])]) -> Self {
+            let directory = tempdir().unwrap();
+            let root = directory.path().join("captures");
+            for (member, days) in members {
+                for day in *days {
+                    write_nfcapd_day(&root, member, day);
+                }
+            }
+            let source_ids = members
+                .iter()
+                .map(|(member, _)| *member)
+                .collect::<Vec<_>>();
+            let executable = directory.path().join("fake-nfdump");
+            let invocations = directory.path().join("invocations");
+            write_fake_nfdump(&executable, &invocations);
+            let registry = directory.path().join("datasets.json");
+            fs::write(
+                &registry,
+                serde_json::to_vec(&json!([{
+                    "dataset_id": "edge",
+                    "root_path": root,
+                    "db_path": directory.path().join("unused.sqlite"),
+                    "source_ids": source_ids,
+                }]))
+                .unwrap(),
+            )
+            .unwrap();
+            Self {
+                directory,
+                registry,
+                executable,
+                invocations,
+            }
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.directory.path().join(name)
+        }
+
+        fn run(&self, database: &Path, start: &str, end: &str, run_maad: bool) -> usize {
+            self.run_window(database, start, Some(end), run_maad)
+        }
+
+        fn run_window(
+            &self,
+            database: &Path,
+            start: &str,
+            end: Option<&str>,
+            run_maad: bool,
+        ) -> usize {
+            run(PipelineRequest {
+                config_path: None,
+                dataset_id: Some("edge".into()),
+                datasets_path: Some(self.registry.clone()),
+                start_date: Some(start.into()),
+                end_date: end.map(Into::into),
+                start_time: None,
+                end_time: None,
+                database_path: Some(database.to_owned()),
+                selection: Value::Null,
+                nfdump: self.executable.to_string_lossy().into_owned(),
+                force: false,
+                run_maad,
+                require_complete: false,
+            })
+            .unwrap()
+            .five_minute_buckets
+        }
+
+        fn invocation_count(&self) -> usize {
+            fs::read_to_string(&self.invocations)
+                .map(|log| log.lines().count())
+                .unwrap_or(0)
+        }
+
+        fn merge(&self, output: &Path, shards: &[&Path]) -> Result<MergeReport, MergeError> {
+            self.merge_with(output, shards, false)
+        }
+
+        fn merge_with(
+            &self,
+            output: &Path,
+            shards: &[&Path],
+            consume: bool,
+        ) -> Result<MergeReport, MergeError> {
+            merge_shards(&MergeRequest {
+                output: output.to_owned(),
+                shards: shards.iter().map(|shard| (*shard).to_owned()).collect(),
+                consume,
+            })
+        }
+    }
+
+    fn table_contents(database: &Path, table: &str) -> Vec<Vec<SqlValue>> {
+        let connection = Connection::open(database).unwrap();
+        let columns = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .into_iter()
+            .filter(|column| !TIMESTAMP_COLUMNS.contains(&column.as_str()))
+            .collect::<Vec<_>>();
+        let list = columns.join(", ");
+        let mut statement = connection
+            .prepare(&format!("SELECT {list} FROM {table} ORDER BY {list}"))
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                (0..columns.len())
+                    .map(|index| row.get::<_, SqlValue>(index))
+                    .collect()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn merged_shards_match_a_single_run_and_resume_as_a_no_op() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02", "2025-06-03"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let single = fixture.path("single.sqlite");
+        let merged = fixture.path("merged.sqlite");
+        assert_eq!(fixture.run(&first, "2025-06-01", "2025-06-01", true), 288);
+        assert_eq!(fixture.run(&second, "2025-06-02", "2025-06-03", true), 576);
+        assert_eq!(fixture.run(&single, "2025-06-01", "2025-06-03", true), 864);
+
+        let report = fixture.merge(&merged, &[&second, &first]).unwrap();
+        assert_eq!(report.shards, 2);
+        assert_eq!(report.completed_days, 3);
+
+        for table in DAY_OWNED_TABLES
+            .iter()
+            .chain(&SHARED_TABLES)
+            .chain(&[MARKER_TABLE])
+        {
+            assert_eq!(
+                table_contents(&merged, table),
+                table_contents(&single, table),
+                "{table} differs from the single-process product"
+            );
+        }
+        verify_database(
+            &merged,
+            &VerifyOptions {
+                source_id: None,
+                dataset_id: Some("edge".into()),
+                require_data: true,
+                require_maad_data: true,
+                require_processed: true,
+                require_rollup_parity: true,
+                require_no_raw_ip: true,
+            },
+        )
+        .unwrap();
+
+        let invocations = fixture.invocation_count();
+        assert_eq!(fixture.run(&merged, "2025-06-01", "2025-06-03", true), 0);
+        assert_eq!(fixture.invocation_count(), invocations);
+        assert_eq!(
+            table_contents(&merged, "traffic_stats"),
+            table_contents(&single, "traffic_stats")
+        );
+    }
+
+    #[test]
+    fn mismatched_product_identity_is_refused_before_writing() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let merged = fixture.path("merged.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", true);
+        fixture.run(&second, "2025-06-02", "2025-06-02", false);
+
+        let error = fixture.merge(&merged, &[&first, &second]).unwrap_err();
+        assert!(
+            matches!(&error, MergeError::Refused(message) if message.contains("product identity") && message.contains("config")),
+            "{error}"
+        );
+        assert!(!merged.exists());
+    }
+
+    #[test]
+    fn overlapping_days_are_refused_before_writing() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02", "2025-06-03"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let merged = fixture.path("merged.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-02", false);
+        fixture.run(&second, "2025-06-02", "2025-06-03", false);
+
+        for consume in [false, true] {
+            let error = fixture
+                .merge_with(&merged, &[&first, &second], consume)
+                .unwrap_err();
+            assert!(
+                matches!(&error, MergeError::Refused(message) if message.contains("overlap")),
+                "{error}"
+            );
+            assert!(!merged.exists());
+            assert!(first.exists() && second.exists());
+        }
+    }
+
+    #[test]
+    fn rows_outside_completed_days_are_refused() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let merged = fixture.path("merged.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", false);
+        fixture.run(&second, "2025-06-02", "2025-06-02", false);
+        Connection::open(&second)
+            .unwrap()
+            .execute("DELETE FROM daily_product_completion", [])
+            .unwrap();
+
+        let error = fixture.merge(&merged, &[&first, &second]).unwrap_err();
+        assert!(
+            matches!(&error, MergeError::Refused(message) if message.contains("outside its completed days")),
+            "{error}"
+        );
+        assert!(!merged.exists());
+    }
+
+    fn assert_refused(result: Result<MergeReport, MergeError>, fragment: &str) {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(&error, MergeError::Refused(message) if message.contains(fragment)),
+            "{error}"
+        );
+    }
+
+    fn two_day_shards(fixture: &Fixture) -> (PathBuf, PathBuf) {
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", false);
+        fixture.run(&second, "2025-06-02", "2025-06-02", false);
+        (first, second)
+    }
+
+    #[test]
+    fn failed_write_removes_the_temporary_output() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let (first, second) = two_day_shards(&fixture);
+        for shard in [&first, &second] {
+            Connection::open(shard)
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER reject_insert BEFORE INSERT ON traffic_stats
+                     BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+                )
+                .unwrap();
+        }
+        let merged = fixture.path("merged.sqlite");
+
+        let error = fixture.merge(&merged, &[&first, &second]).unwrap_err();
+        assert!(error.to_string().contains("injected failure"), "{error}");
+        assert!(!merged.exists());
+        let leftovers = fs::read_dir(fixture.directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".merge.tmp"))
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn csv_shards_are_refused() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let (first, second) = two_day_shards(&fixture);
+        Connection::open(&second)
+            .unwrap()
+            .execute(
+                "INSERT INTO processed_input_scans (
+                     input_kind, input_locator, status, content_fingerprint,
+                     decoder_fingerprint, revision_fingerprint
+                 ) VALUES ('csv', 'flows.csv', 'processed', 'a', 'b', 'c')",
+                [],
+            )
+            .unwrap();
+
+        assert_refused(
+            fixture.merge(&fixture.path("merged.sqlite"), &[&first, &second]),
+            "CSV inputs",
+        );
+    }
+
+    #[test]
+    fn schema_mismatch_is_refused() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let (first, second) = two_day_shards(&fixture);
+        Connection::open(&second)
+            .unwrap()
+            .execute("CREATE INDEX extra_flows ON traffic_stats(flows)", [])
+            .unwrap();
+
+        assert_refused(
+            fixture.merge(&fixture.path("merged.sqlite"), &[&first, &second]),
+            "SQLite schema",
+        );
+    }
+
+    #[test]
+    fn shard_without_end_date_zero_fill_is_refused() {
+        let fixture = Fixture::with_members(&[
+            ("edge", &["2025-06-01", "2025-06-02"]),
+            ("late", &["2025-06-01"]),
+        ]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", false);
+        fixture.run_window(&second, "2025-06-02", None, false);
+
+        assert_refused(
+            fixture.merge(&fixture.path("merged.sqlite"), &[&first, &second]),
+            "explicit --end-date",
+        );
+
+        let with_end = fixture.path("with-end.sqlite");
+        fixture.run(&with_end, "2025-06-02", "2025-06-02", false);
+        fixture
+            .merge(&fixture.path("merged.sqlite"), &[&first, &with_end])
+            .unwrap();
+    }
+
+    fn database_files(directory: &Path, name: &str) -> Vec<String> {
+        fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|file| file.starts_with(name))
+            .collect()
+    }
+
+    fn assert_matches_single(merged: &Path, single: &Path) {
+        for table in DAY_OWNED_TABLES
+            .iter()
+            .chain(&SHARED_TABLES)
+            .chain(&[MARKER_TABLE])
+        {
+            assert_eq!(
+                table_contents(merged, table),
+                table_contents(single, table),
+                "{table} differs from the single-process product"
+            );
+        }
+    }
+
+    #[test]
+    fn consuming_merge_moves_and_deletes_shards() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02", "2025-06-03"]);
+        let shards = ["2025-06-01", "2025-06-02", "2025-06-03"].map(|day| {
+            let path = fixture.path(&format!("shard-{day}.sqlite"));
+            fixture.run(&path, day, day, false);
+            path
+        });
+        let single = fixture.path("single.sqlite");
+        fixture.run(&single, "2025-06-01", "2025-06-03", false);
+        let merged = fixture.path("merged.sqlite");
+
+        let report = fixture
+            .merge_with(&merged, &shards.each_ref().map(PathBuf::as_path), true)
+            .unwrap();
+
+        assert_eq!(report.completed_days, 3);
+        assert!(database_files(fixture.directory.path(), "shard-").is_empty());
+        assert!(database_files(fixture.directory.path(), ".shard-").is_empty());
+        assert_matches_single(&merged, &single);
+        assert_eq!(fixture.run(&merged, "2025-06-01", "2025-06-03", false), 0);
+    }
+
+    #[test]
+    fn failed_consuming_merge_keeps_unconsumed_shards_and_resumes_from_the_partial() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02", "2025-06-03"]);
+        let third_day = jiff::civil::date(2025, 6, 3)
+            .in_tz("America/Los_Angeles")
+            .unwrap()
+            .timestamp()
+            .as_second();
+        let trigger = format!(
+            "CREATE TRIGGER reject_third_day BEFORE INSERT ON traffic_stats
+             WHEN NEW.bucket_start >= {third_day}
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+        );
+        let shards = ["2025-06-01", "2025-06-02", "2025-06-03"].map(|day| {
+            let path = fixture.path(&format!("shard-{day}.sqlite"));
+            fixture.run(&path, day, day, false);
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(&trigger)
+                .unwrap();
+            path
+        });
+        let third_before = table_contents(&shards[2], "traffic_stats");
+        let merged = fixture.path("merged.sqlite");
+
+        let error = fixture
+            .merge_with(&merged, &shards.each_ref().map(PathBuf::as_path), true)
+            .unwrap_err();
+
+        let MergeError::PartiallyConsumed {
+            partial,
+            consumed,
+            remaining,
+            ..
+        } = &error
+        else {
+            panic!("{error}");
+        };
+        assert!(error.to_string().contains("injected failure"), "{error}");
+        assert!(!merged.exists());
+        assert!(!shards[0].exists() && !shards[1].exists());
+        assert!(consumed.contains("shard-2025-06-01") && consumed.contains("shard-2025-06-02"));
+        assert!(remaining.contains("shard-2025-06-03") && !remaining.contains("06-02"));
+        assert_eq!(table_contents(&shards[2], "traffic_stats"), third_before);
+
+        let partial = PathBuf::from(partial);
+        for database in [&partial, &shards[2]] {
+            Connection::open(database)
+                .unwrap()
+                .execute_batch("DROP TRIGGER reject_third_day")
+                .unwrap();
+        }
+        fixture
+            .merge_with(&merged, &[&partial, &shards[2]], true)
+            .unwrap();
+        assert!(!partial.exists() && !shards[2].exists());
+        let single = fixture.path("single.sqlite");
+        fixture.run(&single, "2025-06-01", "2025-06-03", false);
+        assert_matches_single(&merged, &single);
+    }
+
+    #[test]
+    fn existing_output_is_refused() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", false);
+        fixture.run(&second, "2025-06-02", "2025-06-02", false);
+        let merged = fixture.path("merged.sqlite");
+        fs::write(&merged, b"").unwrap();
+
+        let error = fixture.merge(&merged, &[&first, &second]).unwrap_err();
+        assert!(
+            matches!(&error, MergeError::Refused(message) if message.contains("already exists")),
+            "{error}"
+        );
+    }
+}

@@ -1452,13 +1452,8 @@ fn count_incomplete_coverage_ranges(
     Ok(incomplete)
 }
 
-fn bind_identity(
-    connection: &Connection,
-    pipeline: &ResolvedPipeline,
-) -> Result<(), PipelineError> {
-    verify_nfdump_revision(pipeline)?;
-    let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
-    let schema = json!({
+pub(crate) fn product_schema() -> Value {
+    json!({
         "version": 3,
         "tables": [
             {"name":"traffic_stats","version":2},
@@ -1468,7 +1463,16 @@ fn bind_identity(
             {"name":"address_structure_stats","version":1},
             {"name":"bucket_coverage","version":1}
         ]
-    });
+    })
+}
+
+fn bind_identity(
+    connection: &Connection,
+    pipeline: &ResolvedPipeline,
+) -> Result<(), PipelineError> {
+    verify_nfdump_revision(pipeline)?;
+    let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
+    let schema = product_schema();
     let nfdump_executable = pipeline.nfdump_revision.as_ref().map(|revision| {
         json!({
             "locator": revision.locator,
@@ -3345,7 +3349,10 @@ fn aggregate_bounds(
     Ok((start, end))
 }
 
-fn next_local_five_minute_start(bucket_start: i64, timezone: &str) -> Result<i64, PipelineError> {
+pub(crate) fn next_local_five_minute_start(
+    bucket_start: i64,
+    timezone: &str,
+) -> Result<i64, PipelineError> {
     let current = Timestamp::from_second(bucket_start)
         .and_then(|timestamp| timestamp.in_tz(timezone))
         .map_err(|error| PipelineError::Time(error.to_string()))?;
@@ -3493,20 +3500,16 @@ fn expected_nfcapd_path(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::{Path, PathBuf},
+pub(crate) mod test_support {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    use jiff::Timestamp;
+
+    use super::{
+        DEFAULT_TIMEZONE, next_date_start, next_local_five_minute_start, parse_date_start,
     };
 
-    use rusqlite::Connection;
-    use serde_json::{Value, json};
-    use tempfile::tempdir;
-
-    use super::*;
-
-    fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
+    pub(crate) fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
         let stream_path = executable.with_extension("stream");
         let empty_stream_path = executable.with_extension("empty-stream");
         let mut stream = crate::nfdump::ONE_V4_TEST_STREAM.to_vec();
@@ -3535,7 +3538,7 @@ mod tests {
         fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
+    pub(crate) fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
         let mut bucket_start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
         let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
         while bucket_start < end {
@@ -3554,6 +3557,21 @@ mod tests {
             bucket_start = next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use rusqlite::Connection;
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    use super::test_support::{write_fake_nfdump, write_nfcapd_day};
+    use super::*;
 
     fn coordinated_request(
         registry: PathBuf,

@@ -13,6 +13,7 @@ pub mod export;
 pub mod feed;
 pub mod ingest;
 pub mod maad;
+pub mod merge;
 pub(crate) mod nfdump;
 pub mod normalize;
 pub mod operations;

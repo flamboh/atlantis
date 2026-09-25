@@ -116,6 +116,52 @@ The `--start-time` and `--end-time` limits are half-open. Their boundaries must 
 
 The observation schema stores duration and TTL sums and counts. It also stores port-cardinality rows.
 
+## Day-sharded products
+
+Every stored row belongs to exactly one local day. The coarsest rollup is `1d`, and every rollup
+bucket (`30m`, `1h`, `1d`) is computed from the local wall clock, so it never crosses local
+midnight. nfcapd-tree windows must start and end on local-day boundaries, and the pipeline
+processes and commits one local day at a time together with its `daily_product_completion`
+markers.
+
+Zero-fill depends on the requested window, which is not part of the product identity. Each
+member's first and last capture in the whole tree bound its coverage. With an explicit end date,
+the pipeline also publishes coverage for every five-minute bucket of the requested window. Without
+one, days outside a member's capture bounds get no coverage rows for that member, yet still receive
+completion markers. A day therefore publishes the same rows alone or inside a longer range only
+when every run names an explicit end date.
+
+`netflow-db merge-shards` relies on this. It combines pipeline products built over disjoint
+local-day ranges into a new product and refuses before it writes anything unless:
+
+- every shard has the same SQLite schema, the table contract this build writes, the same product
+  identity (schema, selection, and result configuration, including the nfdump path and digest),
+  the same nfcapd source layout, and the same dataset metadata;
+- every shard is an nfcapd-tree product without CSV inputs;
+- every completion marker names the shard's product identity;
+- every completion marker has one five-minute `bucket_coverage` row for each local five-minute
+  bucket of its source and day, which rejects shards built without an explicit end date;
+- completed days do not overlap across shards;
+- every row of every day-owned table (stats, `bucket_coverage`, `input_evidence`,
+  `processed_inputs`) lies inside one of its own shard's completed days.
+
+The last two checks together prove that shard keys are disjoint. Plain inserts would also fail on
+any primary-key conflict. The merge writes a private temporary file beside the output: it copies
+the first shard with the SQLite backup API, then attaches, inserts, commits, and detaches each
+remaining shard in turn, with journaling and synchronous writes off. It checks each insert's row
+count against validation, syncs the file, and renames it into place, so the output appears only
+when the merge is complete. An inferred dataset `default_start_date` becomes the earliest shard
+date. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
+product is itself a valid shard.
+
+`--consume` keeps peak disk near the output size plus one shard. After every check passes, the
+merge renames the first shard into the temporary output (or copies it across filesystems), then
+commits each remaining shard with a rollback journal and `synchronous=FULL`. Only after that
+commit returns does it delete the shard and its sidecars. A failure therefore never loses data:
+each shard is either untouched or durably inside the temporary output, whose completed days are
+exactly the consumed shards. The merge keeps that partial product and reports it, and merging the
+partial with the remaining shards resumes the job.
+
 ## Native decoder contract
 
 Native nfcapd input uses the pinned Atlantis nfdump fork in `vendor/nfdump`. The pipeline invokes the fork with `-o atlantis`.
