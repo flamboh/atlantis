@@ -2629,32 +2629,54 @@ fn process_nfcapd_tree_day(
     if start >= end {
         return Ok(());
     }
-    let mut batch = plan_batch(start)?;
+    let first = plan_batch(start)?;
     verify_nfdump_revision(first_pipeline)?;
-    let mut decoded = decode_batch(&batch.requests)?;
-    verify_nfdump_revision(first_pipeline)?;
-    // Decoding the next batch overlaps publishing the current one, so decode
-    // workers keep running while MAAD and SQLite writes for this batch proceed.
-    // At most two decoded batches are held at once.
-    loop {
-        let upcoming = if batch.following < end {
+    publish_overlapped(
+        first,
+        |batch| {
+            (batch.following < end).then(|| {
+                verify_nfdump_revision(first_pipeline)?;
+                plan_batch(batch.following)
+            })
+        },
+        |batch| {
+            let decoded = decode_batch(&batch.requests)?;
             verify_nfdump_revision(first_pipeline)?;
-            Some(plan_batch(batch.following)?)
-        } else {
-            None
-        };
-        let (published, upcoming_decoded) = std::thread::scope(|scope| {
-            let decoding = upcoming
-                .as_ref()
-                .map(|upcoming| scope.spawn(|| decode_batch(&upcoming.requests)));
-            let published = publish_nfcapd_tree_batch(
+            Ok(decoded)
+        },
+        |batch, decoded| {
+            publish_nfcapd_tree_batch(
                 &batch.prepared,
-                &decoded,
+                decoded,
                 sinks,
                 pending,
                 aggregates,
                 &timezone,
-            );
+            )
+        },
+    )
+}
+
+/// Publish batches in order while the following batch decodes on a scoped thread.
+///
+/// Planning, revision checks and decoding for batch N+1 report their errors only after
+/// batch N is published, and at most two decoded batches are held at once.
+fn publish_overlapped<B: Sync, D: Send>(
+    first: B,
+    next: impl Fn(&B) -> Option<Result<B, PipelineError>>,
+    decode: impl Fn(&B) -> Result<D, PipelineError> + Sync,
+    mut publish: impl FnMut(&B, &D) -> Result<(), PipelineError>,
+) -> Result<(), PipelineError> {
+    let mut batch = first;
+    let mut decoded = decode(&batch)?;
+    loop {
+        let upcoming = next(&batch);
+        let (published, upcoming_decoded) = std::thread::scope(|scope| {
+            let decoding = match &upcoming {
+                Some(Ok(upcoming)) => Some(scope.spawn(|| decode(upcoming))),
+                _ => None,
+            };
+            let published = publish(&batch, &decoded);
             let upcoming_decoded = decoding.map(|handle| {
                 handle
                     .join()
@@ -2666,8 +2688,8 @@ fn process_nfcapd_tree_day(
         let Some(upcoming) = upcoming else {
             return Ok(());
         };
-        decoded = upcoming_decoded.expect("upcoming batch was decoded")?;
-        verify_nfdump_revision(first_pipeline)?;
+        let upcoming = upcoming?;
+        decoded = upcoming_decoded.expect("a planned batch is decoded")?;
         batch = upcoming;
     }
 }
@@ -3641,6 +3663,72 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn overlapped_publishing_finishes_a_batch_before_a_later_batch_fails() {
+        let requests_per_batch = NFCAPD_DECODE_BATCH_SIZE + 1;
+        let batches = 3;
+        let published = std::sync::Mutex::new(Vec::new());
+        let decoded = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |&batch| (batch + 1 < batches).then_some(Ok(batch + 1)),
+            |&batch| {
+                let requests = (0..requests_per_batch)
+                    .map(|request| batch * requests_per_batch + request)
+                    .collect::<Vec<_>>();
+                decoded.lock().unwrap().push(batch);
+                if batch == 1 {
+                    return Err(PipelineError::InvalidConfig(format!(
+                        "corrupt capture in batch {batch}"
+                    )));
+                }
+                Ok(requests)
+            },
+            |&batch, requests| {
+                assert_eq!(requests.len(), requests_per_batch);
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("corrupt capture in batch 1")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
+        assert_eq!(*decoded.lock().unwrap(), [0, 1]);
+    }
+
+    #[test]
+    fn overlapped_publishing_reports_a_planning_error_after_the_current_batch() {
+        let published = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |_| {
+                Some(Err(PipelineError::InvalidConfig(
+                    "unplannable batch".into(),
+                )))
+            },
+            |&batch| Ok(batch),
+            |&batch, _| {
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unplannable batch")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
     }
 
     fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
