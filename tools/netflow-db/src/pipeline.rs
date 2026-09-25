@@ -2561,9 +2561,7 @@ fn process_nfcapd_tree_day(
             .collect::<Vec<_>>()
     });
     let decode_pool = build_nfcapd_decode_pool()?;
-    let mut next = start;
-
-    while next < end {
+    let plan_batch = |next: i64| -> Result<NfcapdTreeBatch, PipelineError> {
         let batch_starts = nfcapd_batch_starts(
             next,
             end,
@@ -2573,7 +2571,7 @@ fn process_nfcapd_tree_day(
             &tree.member_bounds,
             tree.extend_gaps_to_window,
         )?;
-        next = batch_starts
+        let following = batch_starts
             .last()
             .copied()
             .map(|last| next_local_five_minute_start(last, &timezone))
@@ -2595,8 +2593,14 @@ fn process_nfcapd_tree_day(
             .collect::<BTreeMap<_, _>>()
             .into_iter()
             .collect::<Vec<_>>();
-        verify_nfdump_revision(first_pipeline)?;
-        let decoded = decode_pool.install(|| {
+        Ok(NfcapdTreeBatch {
+            following,
+            prepared,
+            requests,
+        })
+    };
+    let decode_batch = |requests: &[NfcapdTreeRequest]| {
+        decode_pool.install(|| {
             requests
                 .par_iter()
                 .map(|((member, bucket_start), path)| {
@@ -2619,49 +2623,110 @@ fn process_nfcapd_tree_day(
                     Ok::<_, PipelineError>(((member.clone(), *bucket_start), buckets))
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()
-        })?;
-        verify_nfdump_revision(first_pipeline)?;
+        })
+    };
 
-        for (selection_index, sink_index) in pending.iter().copied().enumerate() {
-            let aggregate = aggregates[sink_index]
-                .as_mut()
-                .expect("pending output has aggregate state");
-            for timestamp in &prepared {
-                for job in &timestamp.jobs {
-                    let member_buckets = job
-                        .present
-                        .iter()
-                        .map(|(member, _)| {
-                            &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
-                        })
-                        .collect::<Vec<_>>();
-                    let logical = logical_source_bucket(
-                        &job.source_id,
-                        timestamp.bucket_start,
-                        job.expected_units,
-                        &member_buckets,
-                    )?;
-                    aggregate.reject_persisted_siblings(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &timezone,
-                    )?;
-                    publish_nfcapd_bucket(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &job.owners,
-                        &job.absences,
-                        &job.evidence,
-                        true,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    aggregate.include(&logical, &timezone)?;
-                    sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
-                        sinks[sink_index].connection,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    sinks[sink_index].report.five_minute_buckets += 1;
-                }
+    if start >= end {
+        return Ok(());
+    }
+    let mut batch = plan_batch(start)?;
+    verify_nfdump_revision(first_pipeline)?;
+    let mut decoded = decode_batch(&batch.requests)?;
+    verify_nfdump_revision(first_pipeline)?;
+    // Decoding the next batch overlaps publishing the current one, so decode
+    // workers keep running while MAAD and SQLite writes for this batch proceed.
+    // At most two decoded batches are held at once.
+    loop {
+        let upcoming = if batch.following < end {
+            verify_nfdump_revision(first_pipeline)?;
+            Some(plan_batch(batch.following)?)
+        } else {
+            None
+        };
+        let (published, upcoming_decoded) = std::thread::scope(|scope| {
+            let decoding = upcoming
+                .as_ref()
+                .map(|upcoming| scope.spawn(|| decode_batch(&upcoming.requests)));
+            let published = publish_nfcapd_tree_batch(
+                &batch.prepared,
+                &decoded,
+                sinks,
+                pending,
+                aggregates,
+                &timezone,
+            );
+            let upcoming_decoded = decoding.map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            });
+            (published, upcoming_decoded)
+        });
+        published?;
+        let Some(upcoming) = upcoming else {
+            return Ok(());
+        };
+        decoded = upcoming_decoded.expect("upcoming batch was decoded")?;
+        verify_nfdump_revision(first_pipeline)?;
+        batch = upcoming;
+    }
+}
+
+type NfcapdTreeRequest = ((String, i64), PathBuf);
+
+struct NfcapdTreeBatch {
+    following: i64,
+    prepared: Vec<PreparedTreeTimestamp>,
+    requests: Vec<NfcapdTreeRequest>,
+}
+
+fn publish_nfcapd_tree_batch(
+    prepared: &[PreparedTreeTimestamp],
+    decoded: &BTreeMap<(String, i64), Vec<CanonicalBucket>>,
+    sinks: &mut [ProductSink<'_>],
+    pending: &[usize],
+    aggregates: &mut [Option<AggregateBuckets>],
+    timezone: &str,
+) -> Result<(), PipelineError> {
+    for (selection_index, sink_index) in pending.iter().copied().enumerate() {
+        let aggregate = aggregates[sink_index]
+            .as_mut()
+            .expect("pending output has aggregate state");
+        for timestamp in prepared {
+            for job in &timestamp.jobs {
+                let member_buckets = job
+                    .present
+                    .iter()
+                    .map(|(member, _)| {
+                        &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
+                    })
+                    .collect::<Vec<_>>();
+                let logical = logical_source_bucket(
+                    &job.source_id,
+                    timestamp.bucket_start,
+                    job.expected_units,
+                    &member_buckets,
+                )?;
+                aggregate.reject_persisted_siblings(
+                    sinks[sink_index].connection,
+                    &logical,
+                    timezone,
+                )?;
+                publish_nfcapd_bucket(
+                    sinks[sink_index].connection,
+                    &logical,
+                    &job.owners,
+                    &job.absences,
+                    &job.evidence,
+                    true,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                aggregate.include(&logical, timezone)?;
+                sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
+                    sinks[sink_index].connection,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                sinks[sink_index].report.five_minute_buckets += 1;
             }
         }
     }
