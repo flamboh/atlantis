@@ -37,13 +37,13 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
 /// Versioned product schema bound into every pipeline database identity.
 pub fn product_schema() -> serde_json::Value {
     serde_json::json!({
-        "version": 5,
+        "version": 6,
         "tables": [
             {"name": "traffic_stats", "version": 4},
             {"name": "protocol_stats", "version": 3},
             {"name": "address_count_stats", "version": 3},
             {"name": "port_count_stats", "version": 3},
-            {"name": "address_structure_stats", "version": 3},
+            {"name": "address_structure_stats", "version": 4},
             {"name": "bucket_coverage", "version": 2}
         ]
     })
@@ -1511,18 +1511,20 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
             dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
+            measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
             structure_kind TEXT NOT NULL CHECK (structure_kind IN ('structure', 'spectrum', 'dimension')),
             values_json TEXT NOT NULL,
             metadata_json TEXT NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side, structure_kind)
+            CHECK (measure = 'addresses' OR structure_kind <> 'spectrum'),
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side, measure, structure_kind)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
-        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side, structure_kind);
+        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side, measure, structure_kind);
         CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
         ON address_structure_stats (
             source_id, granularity, src_locality, dst_locality,
-            ip_version, structure_kind, bucket_start
+            ip_version, measure, structure_kind, bucket_start
         );
 
         DROP INDEX IF EXISTS idx_protocol_stats_query;
@@ -1920,6 +1922,7 @@ pub struct PortCountStatsRow {
 pub struct AddressStructureStatsRow {
     pub dimensions: StatsDimensions,
     pub address_side: String,
+    pub measure: String,
     pub structure_kind: String,
     pub values_json: String,
     pub metadata_json: String,
@@ -2078,9 +2081,9 @@ pub fn insert_address_structure_stats_rows(
         "
         INSERT OR REPLACE INTO address_structure_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_locality, dst_locality, address_side, structure_kind,
+            src_locality, dst_locality, address_side, measure, structure_kind,
             values_json, metadata_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ",
     )?;
     for row in rows {
@@ -2094,6 +2097,7 @@ pub fn insert_address_structure_stats_rows(
             d.src_locality,
             d.dst_locality,
             row.address_side,
+            row.measure,
             row.structure_kind,
             row.values_json,
             row.metadata_json
@@ -2336,6 +2340,7 @@ impl AddressStructureStatsRow {
         Self {
             dimensions: StatsDimensions::example(),
             address_side: "source".into(),
+            measure: "addresses".into(),
             structure_kind: "structure".into(),
             values_json: "[]".into(),
             metadata_json: "{}".into(),
@@ -3298,6 +3303,7 @@ mod tests {
                     "src_locality",
                     "dst_locality",
                     "ip_version",
+                    "measure",
                     "structure_kind",
                     "bucket_start",
                 ]

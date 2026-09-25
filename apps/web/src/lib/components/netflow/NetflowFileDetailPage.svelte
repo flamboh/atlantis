@@ -6,11 +6,15 @@
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
+	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
 	import {
 		DEFAULT_MAAD_IP_VERSION,
+		DEFAULT_MAAD_MEASURE,
 		MAAD_IP_VERSION_OPTIONS,
+		maadMeasureHasSpectrum,
 		type FlowDirection,
-		type MaadIpVersion
+		type MaadIpVersion,
+		type MaadMeasure
 	} from '$lib/types/types';
 	import {
 		createDateFromPSTComponents,
@@ -36,6 +40,8 @@
 	let { data }: { data: NetflowFileDetailData } = $props();
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
 	let maadIpVersion = $state<MaadIpVersion>(DEFAULT_MAAD_IP_VERSION);
+	let maadMeasure = $state<MaadMeasure>(DEFAULT_MAAD_MEASURE);
+	const showSpectrum = $derived(maadMeasureHasSpectrum(maadMeasure));
 
 	const formatCount = (value: number | null | undefined) =>
 		typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'N/A';
@@ -59,7 +65,13 @@
 	const nextSlug = $derived(getNextSlug(data.slug));
 
 	function syncLoader() {
-		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction, maadIpVersion);
+		loader = getNetflowFileDetailLoader(
+			data.dataset,
+			data.slug,
+			data.direction,
+			maadIpVersion,
+			maadMeasure
+		);
 		loader.refresh();
 	}
 
@@ -72,6 +84,14 @@
 			return;
 		}
 		maadIpVersion = nextIpVersion;
+		syncLoader();
+	}
+
+	function handleMaadMeasureChange({ measure }: { measure: MaadMeasure }) {
+		if (measure === maadMeasure) {
+			return;
+		}
+		maadMeasure = measure;
 		syncLoader();
 	}
 
@@ -102,18 +122,24 @@
 				: 'N/A'}
 	/>
 
-	<div class="mb-2 flex items-center gap-2">
-		<span class="text-foreground text-sm font-medium">MAAD address family:</span>
-		<SegmentedControl
-			options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
-				value: String(option.value),
-				label: option.label
-			}))}
-			value={String(maadIpVersion)}
-			onValueChange={(value) => handleMaadIpVersionChange(Number(value) as MaadIpVersion)}
-			ariaLabel="Select MAAD IP address family"
-			buttonClass="sm:min-w-32"
-		/>
+	<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+		<div class="flex items-center gap-2">
+			<span class="text-foreground text-sm font-medium">MAAD address family:</span>
+			<SegmentedControl
+				options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
+					value: String(option.value),
+					label: option.label
+				}))}
+				value={String(maadIpVersion)}
+				onValueChange={(value) => handleMaadIpVersionChange(Number(value) as MaadIpVersion)}
+				ariaLabel="Select MAAD IP address family"
+				buttonClass="sm:min-w-32"
+			/>
+		</div>
+		<div class="flex items-center gap-2">
+			<span class="text-foreground text-sm font-medium">MAAD measure:</span>
+			<MaadMeasureFilter measure={maadMeasure} onMeasureChange={handleMaadMeasureChange} />
+		</div>
 	</div>
 
 	{#if loader?.error && !loader.hasRows}
@@ -140,7 +166,7 @@
 				/>
 			{/if}
 			{#each loader.rows as row (row.key)}
-				<NetflowFileRouterCard {row} {formatCount} {formatTimestampAsPST} />
+				<NetflowFileRouterCard {row} {showSpectrum} {formatCount} {formatTimestampAsPST} />
 			{/each}
 		</div>
 	{/if}

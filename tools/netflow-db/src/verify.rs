@@ -94,10 +94,8 @@ pub fn verify_database(
             ));
         }
     }
-    if options.require_maad_data && row_counts["address_structure_stats"] == 0 {
-        return Err(VerifyError::Incompatible(
-            "address_structure_stats has no rows".into(),
-        ));
+    if options.require_maad_data {
+        assert_maad_measures_present(&connection)?;
     }
     if options.require_processed {
         assert_processed_inputs_complete(&connection)?;
@@ -337,6 +335,7 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "src_locality",
             "dst_locality",
             "address_side",
+            "measure",
             "structure_kind",
             "values_json",
             "metadata_json",
@@ -511,6 +510,34 @@ fn ipv4_literal(value: &str) -> Option<&str> {
         })
 }
 
+/// Every scope must carry a structure row for each MAAD measure.
+fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyError> {
+    let counts = connection
+        .prepare(
+            "SELECT measure, COUNT(*) FROM address_structure_stats
+             WHERE structure_kind = 'structure' GROUP BY measure",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let expected = counts.get("addresses").copied().unwrap_or_default();
+    if expected == 0 {
+        return Err(VerifyError::Incompatible(
+            "address_structure_stats has no addresses structure rows".into(),
+        ));
+    }
+    for measure in ["packets", "bytes"] {
+        let actual = counts.get(measure).copied().unwrap_or_default();
+        if actual != expected {
+            return Err(VerifyError::Incompatible(format!(
+                "address_structure_stats has {actual} {measure} structure rows; expected {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn assert_processed_inputs_complete(connection: &Connection) -> Result<(), VerifyError> {
     let pending: i64 = connection.query_row(
         "SELECT COUNT(*) FROM processed_inputs WHERE status != 'processed'",
@@ -614,7 +641,7 @@ fn assert_ipv6_maad_rows(
             SELECT 1 FROM address_structure_stats
             WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
               AND src_locality = 'all' AND dst_locality = 'all'
-              AND structure_kind = 'structure'
+              AND measure = 'addresses' AND structure_kind = 'structure'
               AND bucket_start >= ?2 AND bucket_start < ?3
         )",
         params![source_id, bucket_start, bucket_end],
@@ -704,7 +731,7 @@ const STRUCTURE_QUERY: &str = "
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
       AND src_locality = 'all' AND dst_locality = 'all'
-      AND structure_kind = 'structure'
+      AND measure = 'addresses' AND structure_kind = 'structure'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
 const SPECTRUM_QUERY: &str = "
@@ -715,7 +742,7 @@ const SPECTRUM_QUERY: &str = "
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
       AND src_locality = 'all' AND dst_locality = 'all'
-      AND structure_kind = 'spectrum'
+      AND measure = 'addresses' AND structure_kind = 'spectrum'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
 const FILE_DETAILS_QUERY: &str = "
@@ -820,14 +847,60 @@ mod tests {
             .execute(
                 "INSERT INTO address_structure_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_locality, dst_locality, address_side, structure_kind,
+                    src_locality, dst_locality, address_side, measure, structure_kind,
                     values_json, metadata_json
-                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 'source', 'structure',
-                    '[]', '{}')",
+                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 'source', 'addresses',
+                    'structure', '[]', '{}')",
                 [],
             )
             .unwrap();
         assert!(assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).is_ok());
+    }
+
+    #[test]
+    fn maad_data_requires_a_structure_row_for_every_measure() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let insert = |measure: &str, bucket_start: i64| {
+            connection
+                .execute(
+                    "INSERT INTO address_structure_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, structure_kind,
+                        values_json, metadata_json
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', 'source', ?1,
+                              'structure', '[]', '{}')",
+                    params![measure, bucket_start],
+                )
+                .unwrap();
+        };
+
+        assert!(assert_maad_measures_present(&connection).is_err());
+        for measure in ["addresses", "packets", "bytes"] {
+            insert(measure, 0);
+        }
+        assert!(assert_maad_measures_present(&connection).is_ok());
+        insert("addresses", 300);
+        insert("packets", 300);
+        let error = assert_maad_measures_present(&connection).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("1 bytes structure rows; expected 2")
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO address_structure_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, structure_kind,
+                        values_json, metadata_json
+                    ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all', 'source', 'packets',
+                              'spectrum', '[]', '{}')",
+                    [],
+                )
+                .is_err()
+        );
     }
 
     #[test]

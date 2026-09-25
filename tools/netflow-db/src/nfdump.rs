@@ -11,10 +11,10 @@ use fixedbitset::FixedBitSet;
 use crate::{
     coverage::BucketCoverage,
     domain::{
-        AddressSet, AddressSide, BucketKey, CanonicalBucket, DAILY_ACTIVE_MIN_BYTES,
-        DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, EndpointLocality, FlowSelection,
-        Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols,
-        ScopedTraffic, TrafficMetrics, ZERO_FILL_LOCALITY_PAIRS,
+        AddressSet, AddressSide, AddressTotals, AddressTraffic, BucketKey, CanonicalBucket,
+        DAILY_ACTIVE_MIN_BYTES, DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, EndpointLocality,
+        FlowSelection, Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts,
+        ScopedProtocols, ScopedTraffic, TrafficMetrics, ZERO_FILL_LOCALITY_PAIRS,
     },
 };
 
@@ -276,8 +276,8 @@ impl std::error::Error for NfdumpError {
 struct ScopeAccumulator {
     metrics: [i64; METRIC_COUNT],
     protocols: [u64; 4],
-    source_addresses: AddressSet,
-    destination_addresses: AddressSet,
+    source_addresses: AddressTotals,
+    destination_addresses: AddressTotals,
     source_ports: FixedBitSet,
     destination_ports: FixedBitSet,
 }
@@ -331,8 +331,10 @@ impl ScopeAccumulator {
         }
         self.protocols[usize::from(flow.protocol) / 64] |=
             1_u64 << (usize::from(flow.protocol) % 64);
-        self.source_addresses.insert(flow.source_address);
-        self.destination_addresses.insert(flow.destination_address);
+        let traffic = AddressTraffic::new(flow.packets.unsigned_abs(), flow.bytes.unsigned_abs());
+        self.source_addresses.add(flow.source_address, traffic);
+        self.destination_addresses
+            .add(flow.destination_address, traffic);
         insert_port(&mut self.source_ports, flow.source_port);
         insert_port(&mut self.destination_ports, flow.destination_port);
     }
@@ -1131,6 +1133,10 @@ mod tests {
     use crate::domain::{Granularity, Locality, Scope};
     use crate::locality::{LocalityRuleConfig, LocalityRules};
 
+    fn address_keys(totals: &AddressTotals) -> AddressSet {
+        totals.iter().map(|(address, _)| address).collect()
+    }
+
     fn rules(configs: &[LocalityRuleConfig]) -> Arc<LocalityRules> {
         Arc::new(LocalityRules::from_config(configs, std::path::Path::new("/")).unwrap())
     }
@@ -1231,13 +1237,19 @@ mod tests {
             assert_eq!(bucket.protocols[index].protocols, ["6"]);
         }
         assert_eq!(
-            bucket.addresses[0].addresses,
+            address_keys(&bucket.addresses[0].addresses),
             [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))]
                 .into_iter()
                 .collect::<AddressSet>()
         );
         assert_eq!(
-            bucket.addresses[1].addresses,
+            bucket.addresses[0]
+                .addresses
+                .get(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))),
+            Some(AddressTraffic::new(2, 128))
+        );
+        assert_eq!(
+            address_keys(&bucket.addresses[1].addresses),
             [IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
                 .into_iter()
                 .collect::<AddressSet>()
@@ -1303,7 +1315,7 @@ mod tests {
             assert_eq!(bucket.protocols[index].protocols, ["58"]);
         }
         assert_eq!(
-            bucket.addresses[10].addresses,
+            address_keys(&bucket.addresses[10].addresses),
             [IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2))]
                 .into_iter()
                 .collect::<AddressSet>()
@@ -1487,11 +1499,11 @@ mod tests {
         };
         assert_eq!(buckets.iter().map(all_v4).collect::<Vec<_>>(), [3, 0, 3, 4]);
         assert_eq!(
-            buckets[0].addresses[1].addresses,
+            address_keys(&buckets[0].addresses[1].addresses),
             [source_a].into_iter().collect::<AddressSet>()
         );
         assert_eq!(
-            buckets[3].addresses[1].addresses,
+            address_keys(&buckets[3].addresses[1].addresses),
             [source_b].into_iter().collect::<AddressSet>()
         );
     }
@@ -1794,7 +1806,7 @@ mod tests {
         assert_eq!(bucket.traffic[3].metrics.flows, 2);
         assert_eq!(bucket.protocols[0].protocols, ["17", "6"]);
         assert_eq!(
-            bucket.addresses[1].addresses,
+            address_keys(&bucket.addresses[1].addresses),
             [
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),

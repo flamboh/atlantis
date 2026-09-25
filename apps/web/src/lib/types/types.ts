@@ -379,6 +379,22 @@ export const MAAD_IP_VERSION_OPTIONS: MaadIpVersionOption[] = [
 	{ value: 6, label: 'IPv6 (/23–/64)' }
 ];
 
+export const MAAD_MEASURES = ['addresses', 'packets', 'bytes'] as const;
+
+export type MaadMeasure = (typeof MAAD_MEASURES)[number];
+
+export const DEFAULT_MAAD_MEASURE: MaadMeasure = 'addresses';
+
+export const MAAD_MEASURE_OPTIONS: { value: MaadMeasure; label: string }[] = [
+	{ value: 'addresses', label: 'Addresses' },
+	{ value: 'packets', label: 'Packets' },
+	{ value: 'bytes', label: 'Bytes' }
+];
+
+export function maadMeasureHasSpectrum(measure: MaadMeasure): boolean {
+	return measure === 'addresses';
+}
+
 export interface SpectrumPoint {
 	alpha: number;
 	f: number;

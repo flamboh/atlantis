@@ -9,6 +9,8 @@ import {
 	parseFlowDirection,
 	parseFlowDirectionParams,
 	parseMaadIpVersion,
+	parseMaadMeasure,
+	parseMaadStatsParams,
 	parseSourceIds,
 	parseTimestamp,
 	resolveSourceIds
@@ -167,6 +169,50 @@ describe('netflow v3 helpers', () => {
 				status: 400
 			});
 		}
+	});
+
+	it('parses the MAAD measure with an addresses default', () => {
+		expect(parseMaadMeasure(new URL('http://localhost/api/test'))).toBe('addresses');
+		for (const measure of ['addresses', 'packets', 'bytes']) {
+			expect(parseMaadMeasure(new URL(`http://localhost/api/test?measure=${measure}`))).toBe(
+				measure
+			);
+		}
+		expect(parseMaadMeasure(new URL('http://localhost/api/test?measure=Packets'))).toEqual({
+			error: 'Invalid measure. Expected one of: addresses, packets, bytes',
+			status: 400
+		});
+	});
+
+	it('extends aggregate stats params with the MAAD ip version and measure', () => {
+		expect(
+			parseMaadStatsParams(
+				new URL(
+					'http://localhost/api/test?routers=r1&startDate=100&endDate=200&direction=egress&ipVersion=6&measure=bytes'
+				)
+			)
+		).toEqual({
+			routers: ['r1'],
+			granularity: '1h',
+			start: 100,
+			end: 200,
+			direction: 'egress',
+			srcLocality: 'internal',
+			dstLocality: 'external',
+			ipVersion: 6,
+			measure: 'bytes'
+		});
+		expect(
+			parseMaadStatsParams(
+				new URL('http://localhost/api/test?routers=r1&startDate=100&endDate=200&measure=flows')
+			)
+		).toEqual({
+			error: 'Invalid measure. Expected one of: addresses, packets, bytes',
+			status: 400
+		});
+		expect(
+			parseMaadStatsParams(new URL('http://localhost/api/test?startDate=100&endDate=200'))
+		).toEqual({ error: 'No routers selected', status: 400 });
 	});
 
 	it('normalizes structure points from MAAD variants', () => {

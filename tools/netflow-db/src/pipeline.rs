@@ -1500,7 +1500,7 @@ fn bind_identity(
         })
     });
     let result_config = json!({
-        "version": 5,
+        "version": 6,
         "timezone": pipeline.timezone,
         "locality": pipeline
             .selection
@@ -1518,8 +1518,9 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 4,
-            "config": maad_config
+            "contract_version": 5,
+            "config": maad_config,
+            "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
         }
     });
     let identity = ProductIdentity::create(
@@ -2560,9 +2561,7 @@ fn process_nfcapd_tree_day(
             .collect::<Vec<_>>()
     });
     let decode_pool = build_nfcapd_decode_pool()?;
-    let mut next = start;
-
-    while next < end {
+    let plan_batch = |next: i64| -> Result<NfcapdTreeBatch, PipelineError> {
         let batch_starts = nfcapd_batch_starts(
             next,
             end,
@@ -2572,7 +2571,7 @@ fn process_nfcapd_tree_day(
             &tree.member_bounds,
             tree.extend_gaps_to_window,
         )?;
-        next = batch_starts
+        let following = batch_starts
             .last()
             .copied()
             .map(|last| next_local_five_minute_start(last, &timezone))
@@ -2594,8 +2593,14 @@ fn process_nfcapd_tree_day(
             .collect::<BTreeMap<_, _>>()
             .into_iter()
             .collect::<Vec<_>>();
-        verify_nfdump_revision(first_pipeline)?;
-        let decoded = decode_pool.install(|| {
+        Ok(NfcapdTreeBatch {
+            following,
+            prepared,
+            requests,
+        })
+    };
+    let decode_batch = |requests: &[NfcapdTreeRequest]| {
+        decode_pool.install(|| {
             requests
                 .par_iter()
                 .map(|((member, bucket_start), path)| {
@@ -2618,49 +2623,132 @@ fn process_nfcapd_tree_day(
                     Ok::<_, PipelineError>(((member.clone(), *bucket_start), buckets))
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()
-        })?;
-        verify_nfdump_revision(first_pipeline)?;
+        })
+    };
 
-        for (selection_index, sink_index) in pending.iter().copied().enumerate() {
-            let aggregate = aggregates[sink_index]
-                .as_mut()
-                .expect("pending output has aggregate state");
-            for timestamp in &prepared {
-                for job in &timestamp.jobs {
-                    let member_buckets = job
-                        .present
-                        .iter()
-                        .map(|(member, _)| {
-                            &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
-                        })
-                        .collect::<Vec<_>>();
-                    let logical = logical_source_bucket(
-                        &job.source_id,
-                        timestamp.bucket_start,
-                        job.expected_units,
-                        &member_buckets,
-                    )?;
-                    aggregate.reject_persisted_siblings(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &timezone,
-                    )?;
-                    publish_nfcapd_bucket(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &job.owners,
-                        &job.absences,
-                        &job.evidence,
-                        true,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    aggregate.include(&logical, &timezone)?;
-                    sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
-                        sinks[sink_index].connection,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    sinks[sink_index].report.five_minute_buckets += 1;
-                }
+    if start >= end {
+        return Ok(());
+    }
+    let first = plan_batch(start)?;
+    verify_nfdump_revision(first_pipeline)?;
+    publish_overlapped(
+        first,
+        |batch| {
+            (batch.following < end).then(|| {
+                verify_nfdump_revision(first_pipeline)?;
+                plan_batch(batch.following)
+            })
+        },
+        |batch| {
+            let decoded = decode_batch(&batch.requests)?;
+            verify_nfdump_revision(first_pipeline)?;
+            Ok(decoded)
+        },
+        |batch, decoded| {
+            publish_nfcapd_tree_batch(
+                &batch.prepared,
+                decoded,
+                sinks,
+                pending,
+                aggregates,
+                &timezone,
+            )
+        },
+    )
+}
+
+/// Publish batches in order while the following batch decodes on a scoped thread.
+///
+/// Planning, revision checks and decoding for batch N+1 report their errors only after
+/// batch N is published, and at most two decoded batches are held at once.
+fn publish_overlapped<B: Sync, D: Send>(
+    first: B,
+    next: impl Fn(&B) -> Option<Result<B, PipelineError>>,
+    decode: impl Fn(&B) -> Result<D, PipelineError> + Sync,
+    mut publish: impl FnMut(&B, &D) -> Result<(), PipelineError>,
+) -> Result<(), PipelineError> {
+    let mut batch = first;
+    let mut decoded = decode(&batch)?;
+    loop {
+        let upcoming = next(&batch);
+        let (published, upcoming_decoded) = std::thread::scope(|scope| {
+            let decoding = match &upcoming {
+                Some(Ok(upcoming)) => Some(scope.spawn(|| decode(upcoming))),
+                _ => None,
+            };
+            let published = publish(&batch, &decoded);
+            let upcoming_decoded = decoding.map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            });
+            (published, upcoming_decoded)
+        });
+        published?;
+        let Some(upcoming) = upcoming else {
+            return Ok(());
+        };
+        let upcoming = upcoming?;
+        decoded = upcoming_decoded.expect("a planned batch is decoded")?;
+        batch = upcoming;
+    }
+}
+
+type NfcapdTreeRequest = ((String, i64), PathBuf);
+
+struct NfcapdTreeBatch {
+    following: i64,
+    prepared: Vec<PreparedTreeTimestamp>,
+    requests: Vec<NfcapdTreeRequest>,
+}
+
+fn publish_nfcapd_tree_batch(
+    prepared: &[PreparedTreeTimestamp],
+    decoded: &BTreeMap<(String, i64), Vec<CanonicalBucket>>,
+    sinks: &mut [ProductSink<'_>],
+    pending: &[usize],
+    aggregates: &mut [Option<AggregateBuckets>],
+    timezone: &str,
+) -> Result<(), PipelineError> {
+    for (selection_index, sink_index) in pending.iter().copied().enumerate() {
+        let aggregate = aggregates[sink_index]
+            .as_mut()
+            .expect("pending output has aggregate state");
+        for timestamp in prepared {
+            for job in &timestamp.jobs {
+                let member_buckets = job
+                    .present
+                    .iter()
+                    .map(|(member, _)| {
+                        &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
+                    })
+                    .collect::<Vec<_>>();
+                let logical = logical_source_bucket(
+                    &job.source_id,
+                    timestamp.bucket_start,
+                    job.expected_units,
+                    &member_buckets,
+                )?;
+                aggregate.reject_persisted_siblings(
+                    sinks[sink_index].connection,
+                    &logical,
+                    timezone,
+                )?;
+                publish_nfcapd_bucket(
+                    sinks[sink_index].connection,
+                    &logical,
+                    &job.owners,
+                    &job.absences,
+                    &job.evidence,
+                    true,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                aggregate.include(&logical, timezone)?;
+                sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
+                    sinks[sink_index].connection,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                sinks[sink_index].report.five_minute_buckets += 1;
             }
         }
     }
@@ -3575,6 +3663,72 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn overlapped_publishing_finishes_a_batch_before_a_later_batch_fails() {
+        let requests_per_batch = NFCAPD_DECODE_BATCH_SIZE + 1;
+        let batches = 3;
+        let published = std::sync::Mutex::new(Vec::new());
+        let decoded = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |&batch| (batch + 1 < batches).then_some(Ok(batch + 1)),
+            |&batch| {
+                let requests = (0..requests_per_batch)
+                    .map(|request| batch * requests_per_batch + request)
+                    .collect::<Vec<_>>();
+                decoded.lock().unwrap().push(batch);
+                if batch == 1 {
+                    return Err(PipelineError::InvalidConfig(format!(
+                        "corrupt capture in batch {batch}"
+                    )));
+                }
+                Ok(requests)
+            },
+            |&batch, requests| {
+                assert_eq!(requests.len(), requests_per_batch);
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("corrupt capture in batch 1")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
+        assert_eq!(*decoded.lock().unwrap(), [0, 1]);
+    }
+
+    #[test]
+    fn overlapped_publishing_reports_a_planning_error_after_the_current_batch() {
+        let published = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |_| {
+                Some(Err(PipelineError::InvalidConfig(
+                    "unplannable batch".into(),
+                )))
+            },
+            |&batch| Ok(batch),
+            |&batch, _| {
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unplannable batch")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
     }
 
     fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
