@@ -160,10 +160,8 @@ pub fn merge_shards(request: &MergeRequest) -> Result<MergeReport, MergeError> {
     let table_rows = match result {
         Ok(table_rows) => table_rows,
         Err(error) => {
-            for path in database_related_paths(&temporary_path)? {
-                if path.extension().is_none_or(|extension| extension != "lock") {
-                    let _ = std::fs::remove_file(path);
-                }
+            for path in database_related_paths(&temporary_path).unwrap_or_default() {
+                let _ = std::fs::remove_file(path);
             }
             return Err(error);
         }
