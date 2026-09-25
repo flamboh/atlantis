@@ -22,9 +22,18 @@ describe('chart granularity policy', () => {
 	});
 
 	it('disables 5 minute granularity once the range exceeds the adaptive cutoff', () => {
-		expect(getMaxAllowedGranularityForDateRange('2026-03-01', '2026-03-05')).toBe('30min');
+		expect(getMaxAllowedGranularityForDateRange('2026-03-01', '2026-03-05')).toBe('10min');
 		expect(isGranularityAllowedForDateRange('5min', '2026-03-01', '2026-03-05')).toBe(false);
+		expect(isGranularityAllowedForDateRange('10min', '2026-03-01', '2026-03-05')).toBe(true);
 		expect(isGranularityAllowedForDateRange('30min', '2026-03-01', '2026-03-05')).toBe(true);
+	});
+
+	it('allows 10 minute granularity up to eight days', () => {
+		expect(getMaxAllowedGranularityForDateRange('2026-03-01', '2026-03-08')).toBe('10min');
+		expect(isGranularityAllowedForDateRange('10min', '2026-03-01', '2026-03-08')).toBe(true);
+		expect(getMaxAllowedGranularityForDateRange('2026-03-01', '2026-03-09')).toBe('30min');
+		expect(isGranularityAllowedForDateRange('10min', '2026-03-01', '2026-03-09')).toBe(false);
+		expect(clampGroupByToDateRange('10min', '2026-03-01', '2026-03-09')).toBe('30min');
 	});
 
 	it('clamps an invalid selection to the finest allowed granularity', () => {

@@ -108,7 +108,7 @@ requested five-minute coverage is incomplete, leaving the database available for
 
 ## Time and aggregation
 
-The canonical input granularity is five minutes. The pipeline also creates 30-minute, one-hour, and one-day rows.
+The canonical input granularity is five minutes. The pipeline also creates 10-minute, 30-minute, one-hour, and one-day rows. Every rollup is a local-time-aligned, half-open window built from its five-minute children; a 10-minute row covers exactly two of them.
 
 Time windows use the configured pipeline timezone. The default timezone is `America/Los_Angeles`.
 

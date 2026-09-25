@@ -36,7 +36,7 @@ export function formatIpGranularityTick(
 		return hours === 0 ? `${weekday} ${pst.month}/${pst.day}` : '';
 	}
 
-	if (granularity === '30m') {
+	if (granularity === '30m' || granularity === '10m') {
 		if (minutes === 0 && (hours === 0 || hours === 12)) {
 			return `${weekday} ${pst.month}/${pst.day} ${hours.toString().padStart(2, '0')}:00`;
 		}
@@ -67,7 +67,7 @@ export function shouldHighlightIpGranularityGrid(
 	if (granularity === '1h') {
 		return hours === 0;
 	}
-	if (granularity === '30m') {
+	if (granularity === '30m' || granularity === '10m') {
 		return minutes === 0 && (hours === 0 || hours === 12);
 	}
 	if (granularity === '5m') {

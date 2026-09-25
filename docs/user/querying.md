@@ -33,7 +33,7 @@ Show a table schema:
 | `address_structure_stats` | MAAD structure, spectrum, and dimension values       |
 | `processed_inputs`        | Input processing state and provenance                |
 
-The `granularity` value is `5m`, `30m`, `1h`, or `1d`.
+The `granularity` value is `5m`, `10m`, `30m`, `1h`, or `1d`.
 
 Visibility values are `all`, `literal`, or `anonymized`.
 

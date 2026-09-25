@@ -251,7 +251,7 @@ describe('/api/netflow/characteristics GET', () => {
 
 		expect(response.status).toBe(400);
 		await expect(response.json()).resolves.toEqual({
-			error: 'Invalid granularity. Expected one of: 5m, 30m, 1h, 1d'
+			error: 'Invalid granularity. Expected one of: 5m, 10m, 30m, 1h, 1d'
 		});
 	});
 });

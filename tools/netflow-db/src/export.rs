@@ -263,16 +263,14 @@ fn validate_request(request: &ExtractRequest) -> Result<(), ExportError> {
             ));
         }
     }
-    if let Some(granularities) = &request.granularities {
-        let supported = ["5m", "30m", "1h", "1d"];
-        if granularities
+    if let Some(granularities) = &request.granularities
+        && granularities
             .iter()
-            .any(|value| !supported.contains(&value.as_str()))
-        {
-            return Err(ExportError::InvalidRequest(
-                "unsupported granularity filter".into(),
-            ));
-        }
+            .any(|value| !crate::storage::STATS_GRANULARITIES.contains(&value.as_str()))
+    {
+        return Err(ExportError::InvalidRequest(
+            "unsupported granularity filter".into(),
+        ));
     }
     Ok(())
 }
@@ -743,14 +741,7 @@ fn read_pipeline_product(connection: &Connection) -> Result<PipelineProduct, Exp
         .map_err(|error| ExportError::InvalidProduct(error.to_string()))?
         .normalized_payload();
     let config: Value = serde_json::from_str(&row.5)?;
-    let expected_schema = json!({"version": 2, "tables": [
-        {"name": "traffic_stats", "version": 2},
-        {"name": "protocol_stats", "version": 1},
-        {"name": "address_count_stats", "version": 1},
-        {"name": "port_count_stats", "version": 1},
-        {"name": "address_structure_stats", "version": 1},
-        {"name": "bucket_coverage", "version": 1}
-    ]});
+    let expected_schema = crate::storage::product_schema();
     if schema != expected_schema {
         return Err(ExportError::InvalidProduct(
             "unsupported observation-metrics schema".into(),
@@ -1024,14 +1015,7 @@ mod tests {
         let source_connection = Connection::open(&source).unwrap();
         init_stats_tables(&source_connection).unwrap();
         let product = ProductIdentity::create(
-            &serde_json::json!({"version": 2, "tables": [
-                {"name": "traffic_stats", "version": 2},
-                {"name": "protocol_stats", "version": 1},
-                {"name": "address_count_stats", "version": 1},
-                {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1},
-                {"name": "bucket_coverage", "version": 1}
-            ]}),
+            &crate::storage::product_schema(),
             &serde_json::json!({"version": 1, "kind": "all"}),
             &serde_json::json!({"version": 2}),
         )
@@ -1153,14 +1137,7 @@ mod tests {
         let connection = Connection::open(&source).unwrap();
         init_stats_tables(&connection).unwrap();
         let product = ProductIdentity::create(
-            &serde_json::json!({"version": 2, "tables": [
-                {"name": "traffic_stats", "version": 2},
-                {"name": "protocol_stats", "version": 1},
-                {"name": "address_count_stats", "version": 1},
-                {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1},
-                {"name": "bucket_coverage", "version": 1}
-            ]}),
+            &crate::storage::product_schema(),
             &FlowSelection::from_payload(Some(&serde_json::json!({
                 "version":1,
                 "kind":"flows",

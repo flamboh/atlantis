@@ -232,7 +232,7 @@ export interface NetflowFileDetailsResponse {
 	routers: NetflowFileDetailsRouter[];
 }
 
-export const IP_GRANULARITIES = ['5m', '30m', '1h', '1d'] as const;
+export const IP_GRANULARITIES = ['5m', '10m', '30m', '1h', '1d'] as const;
 
 export type IpGranularity = (typeof IP_GRANULARITIES)[number];
 export const FLOW_VISIBILITIES = ['all', 'literal', 'anonymized'] as const;

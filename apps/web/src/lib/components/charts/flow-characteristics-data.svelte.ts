@@ -46,6 +46,7 @@ const GROUP_BY_TO_GRANULARITY: Record<GroupByOption, IpGranularity> = {
 	date: '1d',
 	hour: '1h',
 	'30min': '30m',
+	'10min': '10m',
 	'5min': '5m'
 };
 

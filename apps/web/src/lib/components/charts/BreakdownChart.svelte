@@ -68,13 +68,15 @@
 		'1d': 'date',
 		'1h': 'hour',
 		'30m': '30min',
+		'10m': '10min',
 		'5m': '5min'
 	};
 
 	const GROUP_BY_TRANSITIONS: Record<GroupByOption, GroupByOption | null> = {
 		date: 'hour',
-		hour: '30min',
+		hour: '10min',
 		'30min': '5min',
+		'10min': '5min',
 		'5min': null
 	};
 
@@ -665,7 +667,7 @@
 			const rangeStart = new Date(clickedDate.getTime() - 3 * 24 * 60 * 60 * 1000);
 			const rangeEnd = new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000);
 			emitDrilldown(nextGroupBy, rangeStart, rangeEnd);
-		} else if (groupBy === '30min') {
+		} else if (groupBy === '30min' || groupBy === '10min') {
 			const rangeEnd = new Date(clickedDate.getTime() + 24 * 60 * 60 * 1000);
 			emitDrilldown(nextGroupBy, clickedDate, rangeEnd);
 		}

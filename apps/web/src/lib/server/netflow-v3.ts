@@ -283,17 +283,8 @@ export function groupByToGranularity(groupBy: string): IpGranularity {
 	if (groupBy === 'date') return '1d';
 	if (groupBy === 'hour') return '1h';
 	if (groupBy === '30min') return '30m';
+	if (groupBy === '10min') return '10m';
 	return FIVE_MINUTE_GRANULARITY;
-}
-
-export function getBucketStartQuery(columnName: string, groupBy: string): string {
-	const granularity = groupByToGranularity(groupBy);
-	if (granularity === '5m') {
-		return columnName;
-	}
-
-	const bucketSize = granularity === '30m' ? 1800 : granularity === '1h' ? 3600 : 86400;
-	return `(CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day', 'utc', printf('+%d seconds', ((CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime')) AS integer) - CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day')) AS integer)) / ${bucketSize}) * ${bucketSize}))) AS integer))`;
 }
 
 export function normalizeStructurePoints(

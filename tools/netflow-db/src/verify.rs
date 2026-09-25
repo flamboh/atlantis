@@ -721,7 +721,7 @@ const ROLLUP_PARITY_QUERY: &str = "
                     ELSE CAST(SUM(ts.max_ttl_sum) AS REAL) / SUM(ts.max_ttl_count) END
         FROM (
             SELECT source_id, granularity, bucket_start, bucket_end
-            FROM address_count_stats WHERE granularity IN ('30m', '1h', '1d')
+            FROM address_count_stats WHERE granularity IN ('10m', '30m', '1h', '1d')
             GROUP BY source_id, granularity, bucket_start, bucket_end
         ) calendar
         JOIN traffic_stats ts
@@ -738,7 +738,7 @@ const ROLLUP_PARITY_QUERY: &str = "
                bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, duration_sum_ms,
                duration_count, average_duration_ms, min_ttl_sum, min_ttl_count,
                average_min_ttl, max_ttl_sum, max_ttl_count, average_max_ttl
-        FROM traffic_stats WHERE granularity IN ('30m', '1h', '1d')
+        FROM traffic_stats WHERE granularity IN ('10m', '30m', '1h', '1d')
     ), missing_or_changed AS (SELECT * FROM expected EXCEPT SELECT * FROM actual),
        extra_or_changed AS (SELECT * FROM actual EXCEPT SELECT * FROM expected)
     SELECT (SELECT COUNT(*) FROM missing_or_changed)

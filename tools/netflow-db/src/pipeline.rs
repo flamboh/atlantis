@@ -1458,17 +1458,7 @@ fn bind_identity(
 ) -> Result<(), PipelineError> {
     verify_nfdump_revision(pipeline)?;
     let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
-    let schema = json!({
-        "version": 3,
-        "tables": [
-            {"name":"traffic_stats","version":2},
-            {"name":"protocol_stats","version":1},
-            {"name":"address_count_stats","version":1},
-            {"name":"port_count_stats","version":1},
-            {"name":"address_structure_stats","version":1},
-            {"name":"bucket_coverage","version":1}
-        ]
-    });
+    let schema = crate::storage::product_schema();
     let nfdump_executable = pipeline.nfdump_revision.as_ref().map(|revision| {
         json!({
             "locator": revision.locator,
@@ -3230,6 +3220,7 @@ impl AggregateBuckets {
             )));
         }
         for granularity in [
+            Granularity::TenMinutes,
             Granularity::ThirtyMinutes,
             Granularity::OneHour,
             Granularity::OneDay,
@@ -3299,6 +3290,16 @@ fn aggregate_bounds(
         .in_tz(timezone)
         .map_err(|error| PipelineError::Time(error.to_string()))?;
     let start = match granularity {
+        Granularity::TenMinutes => zoned
+            .round(
+                ZonedRound::new()
+                    .smallest(Unit::Minute)
+                    .increment(10)
+                    .mode(RoundMode::Trunc),
+            )
+            .map_err(|error| PipelineError::Time(error.to_string()))?
+            .timestamp()
+            .as_second(),
         Granularity::ThirtyMinutes => zoned
             .round(
                 ZonedRound::new()
@@ -3331,6 +3332,7 @@ fn aggregate_bounds(
         }
     };
     let end = match granularity {
+        Granularity::TenMinutes => start + 600,
         Granularity::ThirtyMinutes => start + 1_800,
         Granularity::OneHour => start + 3_600,
         Granularity::OneDay => zoned
@@ -3902,6 +3904,35 @@ mod tests {
             }
             assert_eq!(count, expected, "{date}");
             assert_eq!(bucket_start, end, "{date}");
+        }
+    }
+
+    #[test]
+    fn ten_minute_bounds_pair_local_five_minute_buckets_across_dst_transitions() {
+        for (date, expected) in [("2025-03-09", 138), ("2025-11-02", 144)] {
+            let start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
+            let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
+            let mut children = BTreeMap::<(i64, i64), Vec<i64>>::new();
+            let mut bucket_start = start;
+            while bucket_start < end {
+                let bounds =
+                    aggregate_bounds(bucket_start, Granularity::TenMinutes, DEFAULT_TIMEZONE)
+                        .unwrap();
+                children.entry(bounds).or_default().push(bucket_start);
+                bucket_start =
+                    next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
+            }
+            assert_eq!(children.len(), expected, "{date}");
+            for ((bucket_start, bucket_end), members) in &children {
+                assert_eq!(bucket_end - bucket_start, 600, "{date} {bucket_start}");
+                assert_eq!(members, &vec![*bucket_start, bucket_start + 300], "{date}");
+                let (thirty_start, thirty_end) =
+                    aggregate_bounds(*bucket_start, Granularity::ThirtyMinutes, DEFAULT_TIMEZONE)
+                        .unwrap();
+                assert!(thirty_start <= *bucket_start && *bucket_end <= thirty_end);
+            }
+            assert_eq!(children.keys().next().unwrap().0, start, "{date}");
+            assert_eq!(children.keys().last().unwrap().1, end, "{date}");
         }
     }
 }
