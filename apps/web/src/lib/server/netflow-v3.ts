@@ -41,7 +41,6 @@ export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
 const VALID_FLOW_DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
-const VALID_MAAD_IP_VERSIONS = new Set<number>(MAAD_IP_VERSIONS);
 
 export function assertNetflowV3Database(): void {
 	return;
@@ -107,15 +106,15 @@ export function parseMaadIpVersion(url: URL): MaadIpVersion | RequestValidationE
 		return DEFAULT_MAAD_IP_VERSION;
 	}
 
-	const value = Number(param);
-	if (!VALID_MAAD_IP_VERSIONS.has(value)) {
+	const version = MAAD_IP_VERSIONS.find((candidate) => String(candidate) === param);
+	if (version === undefined) {
 		return {
 			error: `Invalid ipVersion. Expected one of: ${MAAD_IP_VERSIONS.join(', ')}`,
 			status: 400
 		};
 	}
 
-	return value as MaadIpVersion;
+	return version;
 }
 
 export function parseFlowDirectionParams(

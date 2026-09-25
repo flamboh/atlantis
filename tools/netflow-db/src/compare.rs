@@ -99,7 +99,7 @@ const TABLES: &[TableSpec] = &[
         ],
         &["processed_at"],
         &["values_json", "metadata_json"],
-        CandidateOnlyPolicy::MissingReferenceBucket,
+        CandidateOnlyPolicy::MissingReferenceBucketOrIpVersion,
     ),
     TableSpec::new(
         "processed_inputs",
@@ -485,7 +485,7 @@ fn load_reference_coverage(
 ) -> Result<ReferenceCoverage, rusqlite::Error> {
     if !matches!(
         spec.candidate_only_policy,
-        CandidateOnlyPolicy::MissingReferenceBucket
+        CandidateOnlyPolicy::MissingReferenceBucketOrIpVersion
             | CandidateOnlyPolicy::MissingReferenceBucketOrDenseZero
     ) {
         return Ok(ReferenceCoverage::default());
@@ -514,9 +514,27 @@ fn load_reference_coverage(
             Ok(KeyValue::from(row.get::<_, SqlValue>(0)?))
         })?
         .collect::<Result<BTreeSet<_>, _>>()?;
+    let ip_versions = if matches!(
+        spec.candidate_only_policy,
+        CandidateOnlyPolicy::MissingReferenceBucketOrIpVersion
+    ) {
+        let mut statement = reference.prepare(&format!(
+            "SELECT DISTINCT ip_version FROM {} \
+             WHERE bucket_start >= ?1 AND bucket_start < ?2",
+            quote(spec.name)
+        ))?;
+        statement
+            .query_map(params![options.start_ts, options.end_exclusive_ts], |row| {
+                Ok(KeyValue::from(row.get::<_, SqlValue>(0)?))
+            })?
+            .collect::<Result<BTreeSet<_>, _>>()?
+    } else {
+        BTreeSet::new()
+    };
     Ok(ReferenceCoverage {
         bucket_keys,
         known_sources,
+        ip_versions,
     })
 }
 
@@ -528,8 +546,11 @@ fn candidate_only_allowed(
     match spec.candidate_only_policy {
         CandidateOnlyPolicy::Always => true,
         CandidateOnlyPolicy::Never => false,
-        CandidateOnlyPolicy::MissingReferenceBucket => {
+        CandidateOnlyPolicy::MissingReferenceBucketOrIpVersion => {
             reference_bucket_missing(spec, candidate, reference)
+                || !reference
+                    .ip_versions
+                    .contains(key_component(spec, candidate, "ip_version"))
         }
         CandidateOnlyPolicy::MissingReferenceBucketOrDenseZero => {
             reference_bucket_missing(spec, candidate, reference)
@@ -687,7 +708,7 @@ impl TableSpec {
 #[derive(Clone, Copy)]
 enum CandidateOnlyPolicy {
     Always,
-    MissingReferenceBucket,
+    MissingReferenceBucketOrIpVersion,
     MissingReferenceBucketOrDenseZero,
     Never,
 }
@@ -696,6 +717,7 @@ enum CandidateOnlyPolicy {
 struct ReferenceCoverage {
     bucket_keys: BTreeSet<Vec<KeyValue>>,
     known_sources: BTreeSet<KeyValue>,
+    ip_versions: BTreeSet<KeyValue>,
 }
 
 struct ComparableRow {

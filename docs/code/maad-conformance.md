@@ -71,12 +71,17 @@ f > 0)` to `q_max = max(1, max q >= 1 with f > 0)`. Inside it, the alpha run
   must be non-increasing (upstream `a1 >= a2`) instead of strictly decreasing.
   Structure and dimensions are unchanged.
 
-The new head also adds IPv6 input (`--ipv6`), which Rust ports with the same
+The new pin also adds IPv6 input (`--ipv6`), which Rust ports with the same
 defaults: prefix lengths `/23`--`/64`, 128-bit prefixes, and a nearly-full
 test of `log2(count) / (128 - pl)`. The IPv6 `q` grid and `full_threshold`
 match IPv4. Upstream picked `/23` as the smallest RIR allocation size, and it
 stops at `/64` because interface identifiers below `/64` are usually SLAAC or
 privacy-random bits.
+
+At the default `/23`--`/64` range the IPv6 nearly-full test is effectively
+inert: a prefix at `/64` or shorter would need more than `2^60` addresses to
+reach the threshold. Only the Rust unit test exercises IPv6 nearly-full pruning,
+with a custom prefix range; the IPv6 goldens do not.
 
 It also adds changes that Atlantis does not port:
 

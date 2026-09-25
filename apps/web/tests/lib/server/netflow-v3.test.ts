@@ -156,10 +156,17 @@ describe('netflow v3 helpers', () => {
 			error: 'Invalid ipVersion. Expected one of: 4, 6',
 			status: 400
 		});
-		expect(parseMaadIpVersion(new URL('http://localhost/api/test?ipVersion=abc'))).toEqual({
-			error: 'Invalid ipVersion. Expected one of: 4, 6',
-			status: 400
-		});
+		for (const param of ['abc', '0x6', '6.0', '6e0', ' 6', '']) {
+			expect(
+				parseMaadIpVersion(
+					new URL(`http://localhost/api/test?ipVersion=${encodeURIComponent(param)}`)
+				),
+				param
+			).toEqual({
+				error: 'Invalid ipVersion. Expected one of: 4, 6',
+				status: 400
+			});
+		}
 	});
 
 	it('normalizes structure points from MAAD variants', () => {
