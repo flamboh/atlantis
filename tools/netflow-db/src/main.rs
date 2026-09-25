@@ -198,8 +198,12 @@ struct MergeShardsArgs {
     /// New product database to create; it must not exist yet.
     #[arg(long)]
     output: PathBuf,
+    /// Move the first shard into the output and delete every other shard once its rows are
+    /// committed, so peak disk stays near the output size plus one shard.
+    #[arg(long)]
+    consume: bool,
     /// Shard databases, each built by `pipeline` over a disjoint local-day range.
-    #[arg(required = true, num_args = 2..)]
+    #[arg(required = true, num_args = 1..)]
     shards: Vec<PathBuf>,
 }
 
@@ -518,6 +522,7 @@ fn run_merge_shards(args: MergeShardsArgs) -> Result<()> {
     let report = merge_shards(&MergeRequest {
         output: args.output.clone(),
         shards: args.shards,
+        consume: args.consume,
     })?;
     println!(
         "Merged {} shards into {}: {} completed days, window {}..{}",

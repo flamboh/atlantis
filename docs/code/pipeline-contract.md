@@ -154,6 +154,14 @@ when the merge is complete. An inferred dataset `default_start_date` becomes the
 date. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
 product is itself a valid shard.
 
+`--consume` keeps peak disk near the output size plus one shard. After every check passes, the
+merge renames the first shard into the temporary output (or copies it across filesystems), then
+commits each remaining shard with a rollback journal and `synchronous=FULL`. Only after that
+commit returns does it delete the shard and its sidecars. A failure therefore never loses data:
+each shard is either untouched or durably inside the temporary output, whose completed days are
+exactly the consumed shards. The merge keeps that partial product and reports it, and merging the
+partial with the remaining shards resumes the job.
+
 ## Native decoder contract
 
 Native nfcapd input uses the pinned Atlantis nfdump fork in `vendor/nfdump`. The pipeline invokes the fork with `-o atlantis`.
