@@ -11,7 +11,7 @@ Split an inclusive local-date range into contiguous day shards, build each shard
 
 Required:
   --hosts LIST         Comma-separated ssh hosts. Append :N for N concurrent shards on a host
-                       (e.g. nodeA:2,nodeB,nodeC). Total shards are capped by merge-shards.
+                       (e.g. nodeA:2,nodeB,nodeC). At most 11 slots in total.
   --dataset ID         Dataset ID in the remote registry.
   --start-date DATE    First local day (YYYY-MM-DD).
   --end-date DATE      Last local day, inclusive.
@@ -116,6 +116,10 @@ if [[ ${#days[@]} -eq 0 ]]; then
   exit 2
 fi
 shard_count=${#slots[@]}
+if ((shard_count > 11)); then
+  echo "merge-shards accepts at most 11 shards; use at most 11 slots in --hosts" >&2
+  exit 2
+fi
 if ((shard_count > ${#days[@]})); then
   shard_count=${#days[@]}
 fi
@@ -128,16 +132,23 @@ unique_hosts=()
 for spec in "${host_specs[@]}"; do
   unique_hosts+=("${spec%%:*}")
 done
+deploy() {
+  local host=$1 source=$2 target=$3
+  local staged="$target.deploy.$$"
+  scp -q -p -- "$source" "$host:$staged"
+  ssh -o BatchMode=yes -- "$host" "mv -f $(remote_quote "$staged") $(remote_quote "$target")"
+}
+
 for host in "${unique_hosts[@]}"; do
   ssh -o BatchMode=yes -- "$host" "mkdir -p $(remote_quote "$remote_dir")/bin $(remote_quote "$remote_dir")/nfdump/libexec $(remote_quote "$remote_dir")/work"
   if [[ -n "$deploy_bin" ]]; then
-    scp -q -- "$deploy_bin" "$host:$remote_dir/bin/netflow-db"
+    deploy "$host" "$deploy_bin" "$remote_dir/bin/netflow-db"
   fi
   if [[ -n "$deploy_nfdump" ]]; then
-    scp -q -- "$deploy_nfdump" "$host:$remote_dir/nfdump/libexec/nfdump"
+    deploy "$host" "$deploy_nfdump" "$remote_dir/nfdump/libexec/nfdump"
   fi
   if [[ -n "$deploy_datasets" ]]; then
-    scp -q -- "$deploy_datasets" "$host:$remote_dir/datasets.json"
+    deploy "$host" "$deploy_datasets" "$remote_dir/datasets.json"
   fi
 done
 

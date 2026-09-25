@@ -245,7 +245,9 @@ snapshots back, merges them, and runs `verify`:
 
 `host:N` runs N shards on that host at once. Hosts install into `$HOME/atlantis-cluster` unless
 you set `--remote-dir` or `NETFLOW_CLUSTER_REMOTE_DIR`; the directory holds `bin/`, `nfdump/`,
-`datasets.json`, and the shard databases in `work/`. Pipeline flags after `--` apply to every
+`datasets.json`, and the shard databases in `work/`. The `--deploy-*` options replace files atomically. Do not
+replace nfdump while a shard is running on that host: the running pipeline detects the change and
+stops, and a different nfdump build produces an incompatible product. Pipeline flags after `--` apply to every
 shard. If a shard fails, rerun the same command: the split is deterministic, and every shard
 resumes after its last completed day. The script deletes the snapshots it copies back, but leaves
 the remote shard databases in place so a later run can resume from them. Delete `work/` on each
