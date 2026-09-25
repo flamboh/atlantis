@@ -122,8 +122,14 @@ Every stored row belongs to exactly one local day. The coarsest rollup is `1d`, 
 bucket (`30m`, `1h`, `1d`) is computed from the local wall clock, so it never crosses local
 midnight. nfcapd-tree windows must start and end on local-day boundaries, and the pipeline
 processes and commits one local day at a time together with its `daily_product_completion`
-markers. Coverage bounds come from the whole capture tree, not the requested window, so a day
-publishes the same rows whether it runs alone or inside a longer range.
+markers.
+
+Zero-fill depends on the requested window, which is not part of the product identity. Each
+member's first and last capture in the whole tree bound its coverage. With an explicit end date,
+the pipeline also publishes coverage for every five-minute bucket of the requested window. Without
+one, days outside a member's capture bounds get no coverage rows for that member, yet still receive
+completion markers. A day therefore publishes the same rows alone or inside a longer range only
+when every run names an explicit end date.
 
 `netflow-db merge-shards` relies on this. It combines pipeline products built over disjoint
 local-day ranges into a new product and refuses before it writes anything unless:
@@ -132,20 +138,21 @@ local-day ranges into a new product and refuses before it writes anything unless
   identity (schema, selection, and result configuration, including the nfdump path and digest),
   the same nfcapd source layout, and the same dataset metadata;
 - every shard is an nfcapd-tree product without CSV inputs;
-- every completion marker names the shard's product identity, and markers agree on MAAD;
+- every completion marker names the shard's product identity;
+- every completion marker has one five-minute `bucket_coverage` row for each local five-minute
+  bucket of its source and day, which rejects shards built without an explicit end date;
 - completed days do not overlap across shards;
 - every row of every day-owned table (stats, `bucket_coverage`, `input_evidence`,
   `processed_inputs`) lies inside one of its own shard's completed days.
 
-The last two checks together prove that shard keys are disjoint. The merge copies the first shard
-with the SQLite backup API, attaches the others, and inserts every day-owned table and the
-completion markers in one transaction. Plain inserts would also fail on any primary-key conflict.
-It writes a temporary file beside the output and renames it into place only after row counts and
-`PRAGMA quick_check` pass. An inferred dataset `default_start_date` becomes the earliest shard
-date. The copied markers make a later `pipeline` run over the merged days a no-op.
-
-The merge attaches at most 10 shards beside the first, so one merge accepts up to 11 shards. A
-merged product is itself a valid shard.
+The last two checks together prove that shard keys are disjoint. Plain inserts would also fail on
+any primary-key conflict. The merge writes a private temporary file beside the output: it copies
+the first shard with the SQLite backup API, then attaches, inserts, commits, and detaches each
+remaining shard in turn, with journaling and synchronous writes off. It checks each insert's row
+count against validation, syncs the file, and renames it into place, so the output appears only
+when the merge is complete. An inferred dataset `default_start_date` becomes the earliest shard
+date. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
+product is itself a valid shard.
 
 ## Native decoder contract
 

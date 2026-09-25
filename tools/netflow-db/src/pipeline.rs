@@ -3349,7 +3349,10 @@ fn aggregate_bounds(
     Ok((start, end))
 }
 
-fn next_local_five_minute_start(bucket_start: i64, timezone: &str) -> Result<i64, PipelineError> {
+pub(crate) fn next_local_five_minute_start(
+    bucket_start: i64,
+    timezone: &str,
+) -> Result<i64, PipelineError> {
     let current = Timestamp::from_second(bucket_start)
         .and_then(|timestamp| timestamp.in_tz(timezone))
         .map_err(|error| PipelineError::Time(error.to_string()))?;
