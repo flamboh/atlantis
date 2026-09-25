@@ -338,6 +338,45 @@ fn analyze_measures<A: MaadAddress, const K: usize>(
     Ok((analyze(&addresses, &columns, &totals, config), q_values))
 }
 
+/// The uniform q grid on which a family's default configuration evaluates the structure function.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QGrid {
+    pub q_min: f64,
+    pub q_step: f64,
+    pub q_count: usize,
+}
+
+/// The default q grid for one address family; structure row `i` is at `q_min + i * q_step`.
+pub fn default_q_grid<A: MaadAddress>() -> QGrid {
+    let config = A::default_config();
+    let q_values = validate_config(&config, A::Bits::WIDTH)
+        .expect("the default MAAD configuration must be valid");
+    QGrid {
+        q_min: config.q_min,
+        q_step: config.q_step,
+        q_count: q_values.len(),
+    }
+}
+
+/// Encode values as little-endian f32, rounding each to the nearest f32 and nothing else.
+pub fn encode_f32(values: impl IntoIterator<Item = f64>) -> Vec<u8> {
+    values
+        .into_iter()
+        .flat_map(|value| (value as f32).to_le_bytes())
+        .collect()
+}
+
+/// Decode a little-endian f32 array, or `None` when the length is not a multiple of four.
+pub fn decode_f32(bytes: &[u8]) -> Option<Vec<f32>> {
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    remainder.is_empty().then(|| {
+        chunks
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect()
+    })
+}
+
 /// Serialize a computed MAAD result using the established JSON field names.
 pub fn write_json<W: Write>(result: &MaadResult, mut output: W) -> Result<(), serde_json::Error> {
     serde_json::to_writer(&mut output, result)?;

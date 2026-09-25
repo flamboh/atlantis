@@ -116,16 +116,11 @@ pub fn select_web_verification_window(
             "
             SELECT ts.bucket_start
             FROM traffic_stats ts
-            JOIN address_structure_stats st
-              ON st.source_id = ts.source_id AND st.granularity = '5m'
-             AND st.bucket_start = ts.bucket_start AND st.ip_version = 4
-             AND st.src_locality = 'all' AND st.dst_locality = 'all'
-             AND st.measure = 'addresses' AND st.structure_kind = 'structure'
-            JOIN address_structure_stats sp
-              ON sp.source_id = ts.source_id AND sp.granularity = '5m'
-             AND sp.bucket_start = ts.bucket_start AND sp.ip_version = 4
-             AND sp.src_locality = 'all' AND sp.dst_locality = 'all'
-             AND sp.measure = 'addresses' AND sp.structure_kind = 'spectrum'
+            JOIN address_maad_stats maad
+              ON maad.source_id = ts.source_id AND maad.granularity = '5m'
+             AND maad.bucket_start = ts.bucket_start AND maad.ip_version = 4
+             AND maad.src_locality = 'all' AND maad.dst_locality = 'all'
+             AND maad.measure = 'addresses'
             WHERE ts.source_id = ?1 AND ts.granularity = '5m'
               AND ts.src_locality = 'all' AND ts.dst_locality = 'all'
             ORDER BY ts.bucket_start LIMIT 1
