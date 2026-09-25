@@ -2,12 +2,13 @@
 	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
+	import DirectionFilter from '$lib/components/filters/DirectionFilter.svelte';
 	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '$lib/types/types';
+	import type { FlowDirection } from '$lib/types/types';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;
@@ -27,13 +28,14 @@
 		endDate: string;
 		groupBy: GroupByOption;
 		routers: RouterConfig;
-		flowScope: FlowScopeKey;
+		direction: FlowDirection;
+		showDirection?: boolean;
 		groupByOptions?: GroupBySelectOption[];
 		onStartDateChange?: (payload: { startDate: string }) => void;
 		onEndDateChange?: (payload: { endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
-		onScopeChange?: (payload: { scope: FlowScopeKey }) => void;
+		onDirectionChange?: (payload: { direction: FlowDirection }) => void;
 		onResetView?: () => void;
 	}>();
 
@@ -49,9 +51,8 @@
 		props.onRoutersChange?.({ routers: nextRouters });
 	}
 
-	function handleScopeChange(event: Event) {
-		const target = event.currentTarget as HTMLSelectElement;
-		props.onScopeChange?.({ scope: target.value as FlowScopeKey });
+	function handleDirectionChange(payload: { direction: FlowDirection }) {
+		props.onDirectionChange?.(payload);
 	}
 
 	function handleResetView() {
@@ -129,18 +130,12 @@
 
 		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
 
-		<label class="text-foreground flex items-center gap-2">
-			<span class="text-sm font-medium">Scope:</span>
-			<select
-				value={props.flowScope}
-				onchange={handleScopeChange}
-				class="border-input bg-background text-foreground focus-visible:ring-ring rounded border px-2 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
-			>
-				{#each FLOW_SCOPE_OPTIONS as option (option.key)}
-					<option value={option.key}>{option.label}</option>
-				{/each}
-			</select>
-		</label>
+		{#if props.showDirection ?? true}
+			<div class="text-foreground flex items-center gap-2">
+				<span class="text-sm font-medium">Direction:</span>
+				<DirectionFilter direction={props.direction} onDirectionChange={handleDirectionChange} />
+			</div>
+		{/if}
 
 		<Button onclick={handleResetView} size="sm" class="h-7 px-4 sm:ml-auto">Reset View</Button>
 	</CardContent>

@@ -5,7 +5,7 @@
 	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import type { FlowVisibility } from '$lib/types/types';
+	import type { FlowDirection } from '$lib/types/types';
 	import {
 		createDateFromPSTComponents,
 		epochToPSTComponents,
@@ -16,8 +16,7 @@
 	type NetflowFileDetailData = {
 		dataset: string;
 		slug: string;
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -51,13 +50,9 @@
 	}
 
 	const nextSlug = $derived(getNextSlug(data.slug));
-	const flowScope = $derived({
-		srcVisibility: data.srcVisibility,
-		dstVisibility: data.dstVisibility
-	});
 
 	function syncLoader() {
-		loader = getNetflowFileDetailLoader(data.dataset, data.slug, flowScope);
+		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction);
 		loader.refresh();
 	}
 
@@ -78,7 +73,7 @@
 	<NetflowFileHeader
 		dataset={data.dataset}
 		{nextSlug}
-		{flowScope}
+		direction={data.direction}
 		filename={data.fileInfo.filename}
 		year={data.fileInfo.year}
 		month={data.fileInfo.month}

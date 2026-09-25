@@ -140,27 +140,27 @@ describe('D1 migrations', () => {
 			const expectedTimeseriesIndexes = new Map([
 				[
 					'idx_traffic_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_protocol_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_address_count_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_port_count_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_address_structure_stats_timeseries',
 					[
 						'source_id',
 						'granularity',
-						'src_visibility',
-						'dst_visibility',
+						'src_locality',
+						'dst_locality',
 						'ip_version',
 						'structure_kind',
 						'bucket_start'
@@ -254,6 +254,89 @@ describe('D1 migrations', () => {
 
 			for (const indexName of timeseriesIndexes) {
 				expect(statisticsByIndex.get(indexName), indexName).toEqual(expect.any(String));
+			}
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keeps only locality-independent rollup rows when renaming visibility to locality', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const localityMigration = migrations.findIndex((fileName) =>
+			fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes('src_locality')
+		);
+		try {
+			for (const migration of migrations.slice(0, localityMigration)) {
+				applyMigration(database, migration);
+			}
+			const insert = database.prepare(`
+				INSERT INTO protocol_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_visibility, dst_visibility, unique_protocols_count, protocols_list
+				) VALUES ('edge', '5m', 0, 300, 4, ?, ?, 1, '6')
+			`);
+			insert.run('all', 'all');
+			insert.run('literal', 'anonymized');
+
+			for (const migration of migrations.slice(localityMigration)) {
+				applyMigration(database, migration);
+			}
+
+			expect(
+				database.prepare('SELECT src_locality, dst_locality FROM protocol_stats').all()
+			).toEqual([{ src_locality: 'all', dst_locality: 'all' }]);
+			expect(() =>
+				database
+					.prepare(
+						`INSERT INTO protocol_stats (
+							source_id, granularity, bucket_start, bucket_end, ip_version,
+							src_locality, dst_locality, unique_protocols_count, protocols_list
+						) VALUES ('edge', '5m', 0, 300, 4, 'literal', 'all', 1, '6')`
+					)
+					.run()
+			).toThrow(/CHECK constraint failed/);
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keeps only locality-independent rows in every stats table', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const localityMigration = migrations.findIndex((fileName) =>
+			fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes('src_locality')
+		);
+		const tables = [
+			'traffic_stats',
+			'protocol_stats',
+			'address_count_stats',
+			'port_count_stats',
+			'address_structure_stats'
+		];
+		try {
+			for (const migration of migrations.slice(0, localityMigration)) {
+				applyMigration(database, migration);
+			}
+			seedPlannerStatistics(database);
+			for (const table of tables) {
+				database
+					.prepare(
+						`UPDATE ${table} SET src_visibility = 'all', dst_visibility = 'all'
+						 WHERE source_id = 'stats-source-0'`
+					)
+					.run();
+			}
+
+			for (const migration of migrations.slice(localityMigration)) {
+				applyMigration(database, migration);
+			}
+
+			for (const table of tables) {
+				expect(
+					database.prepare(`SELECT source_id, src_locality, dst_locality FROM ${table}`).all(),
+					table
+				).toEqual([{ source_id: 'stats-source-0', src_locality: 'all', dst_locality: 'all' }]);
 			}
 		} finally {
 			database.close();

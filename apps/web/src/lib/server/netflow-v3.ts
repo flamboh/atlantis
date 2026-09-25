@@ -1,8 +1,10 @@
 import {
-	FLOW_VISIBILITIES,
+	FLOW_DIRECTIONS,
+	flowDirectionLocalities,
 	IP_GRANULARITIES,
-	type FlowScope,
-	type FlowVisibility,
+	type FlowDirection,
+	type FlowLocality,
+	type FlowLocalityPair,
 	type IpGranularity
 } from '$lib/types/types';
 import type { SourceDefinition } from '$lib/server/datasets';
@@ -20,8 +22,9 @@ export interface AggregateStatsParams {
 	granularity: IpGranularity;
 	start: number;
 	end: number;
-	srcVisibility: FlowVisibility;
-	dstVisibility: FlowVisibility;
+	direction: FlowDirection;
+	srcLocality: FlowLocality;
+	dstLocality: FlowLocality;
 }
 
 export interface RequestValidationError {
@@ -34,7 +37,7 @@ export const DEFAULT_IP_GRANULARITY: IpGranularity = '1h';
 export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
-const VALID_FLOW_VISIBILITIES = new Set<string>(FLOW_VISIBILITIES);
+const VALID_FLOW_DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
 
 export function assertNetflowV3Database(): void {
 	return;
@@ -70,52 +73,40 @@ export function parseIpGranularityOrDefault(param: string | null): IpGranularity
 	return parseIpGranularity(param) ?? DEFAULT_IP_GRANULARITY;
 }
 
-export function parseFlowVisibility(param: string | null): FlowVisibility | null {
+export function parseFlowDirection(param: string | null): FlowDirection | null {
 	if (!param) {
 		return null;
 	}
 
-	return VALID_FLOW_VISIBILITIES.has(param) ? (param as FlowVisibility) : null;
+	return VALID_FLOW_DIRECTIONS.has(param) ? (param as FlowDirection) : null;
 }
 
-export function parseFlowVisibilityParam(
-	param: string | null,
-	name: 'srcVisibility' | 'dstVisibility'
-): FlowVisibility | RequestValidationError {
-	const visibility = parseFlowVisibility(param);
-	if (visibility) {
-		return visibility;
-	}
-
+export function parseDirectionParam(param: string | null): FlowDirection | RequestValidationError {
 	if (!param) {
 		return 'all';
 	}
 
+	const direction = parseFlowDirection(param);
+	if (direction) {
+		return direction;
+	}
+
 	return {
-		error: `Invalid ${name}. Expected one of: ${FLOW_VISIBILITIES.join(', ')}`,
+		error: `Invalid direction. Expected one of: ${FLOW_DIRECTIONS.join(', ')}`,
 		status: 400
 	};
 }
 
-export function parseFlowScopeParams(url: URL): FlowScope | RequestValidationError {
-	const srcVisibility = parseFlowVisibilityParam(
-		url.searchParams.get('srcVisibility'),
-		'srcVisibility'
-	);
-	const dstVisibility = parseFlowVisibilityParam(
-		url.searchParams.get('dstVisibility'),
-		'dstVisibility'
-	);
+export function parseFlowDirectionParams(
+	url: URL
+): ({ direction: FlowDirection } & FlowLocalityPair) | RequestValidationError {
+	const direction = parseDirectionParam(url.searchParams.get('direction'));
 
-	if (typeof srcVisibility !== 'string') {
-		return srcVisibility;
+	if (typeof direction !== 'string') {
+		return direction;
 	}
 
-	if (typeof dstVisibility !== 'string') {
-		return dstVisibility;
-	}
-
-	return { srcVisibility, dstVisibility };
+	return { direction, ...flowDirectionLocalities(direction) };
 }
 
 export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
@@ -125,7 +116,7 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 	const granularity = parsedGranularity ?? DEFAULT_IP_GRANULARITY;
 	const start = parseTimestamp(url.searchParams.get('startDate'));
 	const end = parseTimestamp(url.searchParams.get('endDate'));
-	const flowScope = parseFlowScopeParams(url);
+	const flowDirection = parseFlowDirectionParams(url);
 
 	if (routers.length === 0) {
 		return { error: 'No routers selected', status: 400 };
@@ -138,8 +129,8 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		};
 	}
 
-	if ('error' in flowScope) {
-		return flowScope;
+	if ('error' in flowDirection) {
+		return flowDirection;
 	}
 
 	if (start === null || end === null) {
@@ -155,8 +146,9 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		granularity,
 		start,
 		end,
-		srcVisibility: flowScope.srcVisibility,
-		dstVisibility: flowScope.dstVisibility
+		direction: flowDirection.direction,
+		srcLocality: flowDirection.srcLocality,
+		dstLocality: flowDirection.dstLocality
 	};
 }
 

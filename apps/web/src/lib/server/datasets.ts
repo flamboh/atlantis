@@ -10,6 +10,7 @@ type DatasetRow = {
 	defaultStartDate: string;
 	discoveryMode: string;
 	sortOrder: number;
+	hasLocality: number;
 };
 
 type LocalDatasetRow = DatasetRow & {
@@ -369,7 +370,8 @@ async function readDatasetRowsFromEntry(
 				label,
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
-				sort_order AS sortOrder
+				sort_order AS sortOrder,
+				has_locality AS hasLocality
 			FROM datasets
 			ORDER BY sort_order ASC, id ASC
 		`
@@ -451,7 +453,8 @@ async function listD1DatasetRows(platform: App.Platform): Promise<DatasetRow[]> 
 				label,
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
-				sort_order AS sortOrder
+				sort_order AS sortOrder,
+				has_locality AS hasLocality
 			FROM datasets
 			ORDER BY sort_order ASC, id ASC
 		`
@@ -467,7 +470,8 @@ async function getD1DatasetRow(datasetId: string, platform: App.Platform): Promi
 				label,
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
-				sort_order AS sortOrder
+				sort_order AS sortOrder,
+				has_locality AS hasLocality
 			FROM datasets
 			WHERE id = ?
 			LIMIT 1
@@ -774,6 +778,7 @@ export async function listDatasetSummaries(platform?: App.Platform): Promise<Dat
 		label: dataset.label,
 		defaultStartDate: dataset.defaultStartDate,
 		discoveryMode: dataset.discoveryMode,
+		hasLocality: dataset.hasLocality === 1,
 		isDefault: dataset.id === defaultDatasetId
 	}));
 }

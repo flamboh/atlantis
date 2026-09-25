@@ -142,8 +142,8 @@ fn ten_minute_rollups_match_their_five_minute_children() {
                    WHERE child.granularity = '5m'
                      AND child.source_id = parent.source_id
                      AND child.ip_version = parent.ip_version
-                     AND child.src_visibility = parent.src_visibility
-                     AND child.dst_visibility = parent.dst_visibility
+                     AND child.src_locality = parent.src_locality
+                     AND child.dst_locality = parent.dst_locality
                      AND child.bucket_start >= parent.bucket_start
                      AND child.bucket_start < parent.bucket_end
                )",
@@ -158,7 +158,7 @@ fn ten_minute_rollups_match_their_five_minute_children() {
             .query_row(
                 "SELECT unique_address_count FROM address_count_stats
                  WHERE source_id = 'edge' AND granularity = ?1 AND bucket_start = ?2
-                   AND ip_version = 4 AND src_visibility = 'all' AND dst_visibility = 'all'
+                   AND ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'
                    AND address_side = 'source'",
                 params![granularity, bucket_start],
                 |row| row.get(0),
@@ -175,7 +175,7 @@ fn ten_minute_rollups_match_their_five_minute_children() {
             .query_row(
                 "SELECT json_extract(metadata_json, '$.totalAddrs') FROM address_structure_stats
                  WHERE source_id = 'edge' AND granularity = ?1 AND bucket_start = ?2
-                   AND ip_version = 4 AND src_visibility = 'all' AND dst_visibility = 'all'
+                   AND ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'
                    AND address_side = 'source' AND structure_kind = 'structure'",
                 params![granularity, bucket_start],
                 |row| row.get(0),

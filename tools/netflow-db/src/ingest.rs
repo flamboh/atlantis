@@ -25,8 +25,8 @@ use crate::{
     config::{CsvSourceConfig, InputOrder},
     coverage::BucketCoverage,
     domain::{
-        AddressSet, BucketKey, CanonicalBucket, DomainError, FlowObservation, FlowSelection,
-        Granularity, StatisticalBucket,
+        AddressSet, BucketKey, CanonicalBucket, DomainError, EndpointLocality, FlowObservation,
+        FlowSelection, Granularity, StatisticalBucket,
     },
     nfdump,
     normalize::{NormalizeError, field_indexes, normalize_csv_values},
@@ -394,8 +394,19 @@ fn scan_csv_reader<E, S: CsvScanAccumulator>(
         match normalize_csv_values(&values, config, &indexes) {
             Ok(row) => {
                 state.mark_valid(&row.source_id, row.bucket_start)?;
-                if selection.matches_qualifying_flow(&row.observation) {
-                    state.accept(row)?;
+                let crate::normalize::NormalizedRow {
+                    source_id,
+                    bucket_start,
+                    bucket_end,
+                    observation,
+                } = row;
+                if let Some(observation) = selection.classify_qualifying(observation) {
+                    state.accept(crate::normalize::NormalizedRow {
+                        source_id,
+                        bucket_start,
+                        bucket_end,
+                        observation,
+                    })?;
                 }
             }
             Err(error) => {
@@ -712,7 +723,9 @@ CREATE TABLE accepted_rows (
     duration_ms INTEGER,
     min_ttl INTEGER,
     max_ttl INTEGER,
-    flow_count INTEGER NOT NULL
+    flow_count INTEGER NOT NULL,
+    src_internal INTEGER NOT NULL CHECK (src_internal IN (0, 1)),
+    dst_internal INTEGER NOT NULL CHECK (dst_internal IN (0, 1))
 );
 CREATE INDEX accepted_rows_bucket
     ON accepted_rows (source_id, bucket_start, id);
@@ -763,7 +776,8 @@ impl UnsortedCsvScanState {
                 .prepare(
                     "SELECT src_ip, dst_ip, protocol, packets, bytes, src_tos, \
                  time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, \
-                 dst_tos, duration_ms, min_ttl, max_ttl, flow_count \
+                 dst_tos, duration_ms, min_ttl, max_ttl, flow_count, src_internal, \
+                 dst_internal \
                  FROM accepted_rows \
                  WHERE source_id = ?1 AND bucket_start = ?2 \
                  ORDER BY id",
@@ -895,13 +909,17 @@ impl CsvScanAccumulator for UnsortedCsvScanState {
             observation,
             ..
         } = row;
+        let (source, destination) = observation.locality.ok_or_else(|| {
+            IngestError::from(crate::domain::DomainError::UnclassifiedObservation)
+        })?;
         self.connection.execute(
             "INSERT INTO accepted_rows (\
                  source_id, bucket_start, src_ip, dst_ip, protocol, packets, bytes, src_tos, \
                  time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, dst_tos, \
-                 duration_ms, min_ttl, max_ttl, flow_count\
+                 duration_ms, min_ttl, max_ttl, flow_count, src_internal, dst_internal\
              ) VALUES (\
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18\
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
+                 ?19, ?20\
              )",
             params![
                 source_id,
@@ -922,6 +940,8 @@ impl CsvScanAccumulator for UnsortedCsvScanState {
                 observation.min_ttl.map(i64::from),
                 observation.max_ttl.map(i64::from),
                 observation.flow_count,
+                source == EndpointLocality::Internal,
+                destination == EndpointLocality::Internal,
             ],
         )?;
         Ok(())
@@ -960,6 +980,14 @@ fn staged_observation(row: &rusqlite::Row<'_>) -> Result<FlowObservation, Ingest
     let min_ttl = staged_optional_u8(row.get(13)?, "min_ttl")?;
     let max_ttl = staged_optional_u8(row.get(14)?, "max_ttl")?;
     let flow_count = row.get(15)?;
+    let staged_locality = |internal: bool| {
+        if internal {
+            EndpointLocality::Internal
+        } else {
+            EndpointLocality::External
+        }
+    };
+    let locality = Some((staged_locality(row.get(16)?), staged_locality(row.get(17)?)));
     Ok(FlowObservation {
         src_ip,
         dst_ip,
@@ -977,6 +1005,7 @@ fn staged_observation(row: &rusqlite::Row<'_>) -> Result<FlowObservation, Ingest
         min_ttl,
         max_ttl,
         flow_count,
+        locality,
     })
 }
 
@@ -1562,7 +1591,15 @@ mod tests {
     use super::*;
     use crate::config::{CsvSourceConfig, InputOrder};
     use crate::coverage::CoverageState;
-    use crate::domain::{IpVersion, Scope, Visibility};
+    use crate::domain::{IpVersion, Locality, Scope};
+    use crate::locality::{LocalityRuleConfig, LocalityRules};
+
+    fn tos_rules() -> Arc<LocalityRules> {
+        Arc::new(
+            LocalityRules::from_config(&[LocalityRuleConfig::TosAnonymized {}], Path::new("/"))
+                .unwrap(),
+        )
+    }
 
     const ONE_V4_BINARY_STREAM: [u8; 92] = [
         // Stream header and one-record block count.
@@ -1571,7 +1608,8 @@ mod tests {
         192, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 198, 51, 100, 1, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, // packets=2, bytes=128, flows=3, duration=999ms.
         2, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 231, 3, 0, 0, 0,
-        0, 0, 0, // src port=443, dst port=55000, TCP, IPv4 literal/literal, TTL 32..64.
+        0, 0,
+        0, // src port=443, dst port=55000, TCP, IPv4 without anonymization flags, TTL 32..64.
         187, 1, 216, 214, 6, 0, 32, 64, // Successful end marker.
         0, 0, 0, 0,
     ];
@@ -1677,7 +1715,7 @@ mod tests {
         assert_eq!(buckets[3].bucket.coverage.state(), CoverageState::Complete);
         assert!(buckets[1].bucket.traffic.is_empty());
         assert!(buckets[2].bucket.traffic.is_empty());
-        let scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+        let scope = Scope::new(IpVersion::V4, Locality::All, Locality::All);
         assert_eq!(
             buckets[0]
                 .bucket
@@ -1723,7 +1761,16 @@ mod tests {
             "kind": "flows",
             "ip_prefix": "192.0.2.0/24",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(std::sync::Arc::new(
+            crate::locality::LocalityRules::from_config(
+                &[crate::locality::LocalityRuleConfig::Prefixes {
+                    prefixes: vec!["192.0.2.0/24".into()],
+                }],
+                Path::new("/"),
+            )
+            .unwrap(),
+        ));
         let mut config = config();
         config.input_order = InputOrder::Unsorted;
         let mut buckets = Vec::new();
@@ -1751,7 +1798,7 @@ mod tests {
         assert_eq!(buckets[3].traffic.len(), 0);
         assert_eq!(buckets[6].coverage.state(), CoverageState::Complete);
         assert_eq!(buckets[12].coverage.state(), CoverageState::Complete);
-        let scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+        let scope = Scope::new(IpVersion::V4, Locality::All, Locality::All);
         assert_eq!(
             buckets[12]
                 .traffic
@@ -1762,6 +1809,20 @@ mod tests {
                 .flows,
             0
         );
+        let egress = Scope::new(IpVersion::V4, Locality::Internal, Locality::External);
+        for index in [0, 6] {
+            assert_eq!(
+                buckets[index]
+                    .traffic
+                    .iter()
+                    .find(|entry| entry.scope == egress)
+                    .unwrap()
+                    .metrics
+                    .flows,
+                1,
+                "staged rows keep their classified locality"
+            );
+        }
     }
 
     #[test]
@@ -1890,17 +1951,20 @@ mod tests {
                 "kind": "daily_active_sources",
                 "ip_prefix": "198.51.0.0/16",
             })))
-            .unwrap(),
+            .unwrap()
+            .with_locality(tos_rules()),
             FlowSelection::from_payload(Some(&json!({
                 "kind": "daily_active_sources",
                 "ip_prefix": "192.0.0.0/16",
             })))
-            .unwrap(),
+            .unwrap()
+            .with_locality(tos_rules()),
             FlowSelection::from_payload(Some(&json!({
                 "kind": "daily_active_sources",
                 "ip_prefix": "192.0.0.0/16",
             })))
-            .unwrap(),
+            .unwrap()
+            .with_locality(tos_rules()),
         ];
         let command =
             build_nfdump_command_for_selections("capture", &selections, "nfdump").unwrap();
@@ -1956,7 +2020,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "192.0.0.0/16",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
         let pairs = [
             (
@@ -1985,7 +2050,7 @@ mod tests {
                     .traffic
                     .iter()
                     .find(|entry| {
-                        entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                        entry.scope == Scope::new(IpVersion::V4, Locality::All, Locality::All)
                     })
                     .unwrap()
                     .metrics
@@ -2024,7 +2089,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "192.0.0.0/16",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let source = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
         let active_sources = Arc::new([source].into_iter().collect::<AddressSet>());
 
@@ -2043,7 +2109,7 @@ mod tests {
                 .traffic
                 .iter()
                 .find(|entry| {
-                    entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                    entry.scope == Scope::new(IpVersion::V4, Locality::All, Locality::All)
                 })
                 .unwrap()
                 .metrics
@@ -2086,12 +2152,14 @@ mod tests {
                 "kind": "daily_active_sources",
                 "ip_prefix": "192.0.0.0/16",
             })))
-            .unwrap(),
+            .unwrap()
+            .with_locality(tos_rules()),
             FlowSelection::from_payload(Some(&json!({
                 "kind": "daily_active_sources",
                 "ip_prefix": "198.51.0.0/16",
             })))
-            .unwrap(),
+            .unwrap()
+            .with_locality(tos_rules()),
         ];
 
         let activities = read_nfcapd_daily_source_activities(
@@ -2174,7 +2242,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "192.0.0.0/16",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let mut activities = read_nfcapd_daily_source_activities(
             &[first.clone(), second.clone()],
             std::slice::from_ref(&selection),
@@ -2249,7 +2318,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "10.0.0.0/16",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
 
         let mut activities = read_nfcapd_daily_source_activities(
             std::slice::from_ref(&capture),
@@ -2283,9 +2353,7 @@ mod tests {
         let metrics = &bucket
             .traffic
             .iter()
-            .find(|entry| {
-                entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
-            })
+            .find(|entry| entry.scope == Scope::new(IpVersion::V4, Locality::All, Locality::All))
             .unwrap()
             .metrics;
         assert_eq!(metrics.flows, 1);
@@ -2323,7 +2391,7 @@ mod tests {
             "America/Los_Angeles",
         )
         .unwrap();
-        let scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+        let scope = Scope::new(IpVersion::V4, Locality::All, Locality::All);
         assert_eq!(bucket.key.bucket_start, 1_744_743_600);
         assert_eq!(
             bucket

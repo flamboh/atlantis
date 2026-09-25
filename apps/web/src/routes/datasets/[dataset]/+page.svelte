@@ -9,5 +9,6 @@
 	dataset={data.datasetId}
 	title={data.title}
 	defaultStartDate={data.defaultStartDate}
+	hasLocality={data.hasLocality}
 	routers={data.routers}
 />

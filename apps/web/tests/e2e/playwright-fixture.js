@@ -22,8 +22,8 @@ export function seedPlaywrightDatabase() {
 			bucket_start INTEGER NOT NULL,
 			bucket_end INTEGER NOT NULL,
 			ip_version INTEGER NOT NULL,
-			src_visibility TEXT NOT NULL,
-			dst_visibility TEXT NOT NULL,
+			src_locality TEXT NOT NULL,
+			dst_locality TEXT NOT NULL,
 			flows INTEGER NOT NULL DEFAULT 0,
 			flows_tcp INTEGER NOT NULL DEFAULT 0,
 			flows_udp INTEGER NOT NULL DEFAULT 0,
@@ -56,8 +56,8 @@ export function seedPlaywrightDatabase() {
 			bucket_start INTEGER NOT NULL,
 			bucket_end INTEGER NOT NULL,
 			ip_version INTEGER NOT NULL,
-			src_visibility TEXT NOT NULL,
-			dst_visibility TEXT NOT NULL,
+			src_locality TEXT NOT NULL,
+			dst_locality TEXT NOT NULL,
 			unique_protocols_count INTEGER NOT NULL,
 			protocols_list TEXT NOT NULL,
 			processed_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -68,8 +68,8 @@ export function seedPlaywrightDatabase() {
 			bucket_start INTEGER NOT NULL,
 			bucket_end INTEGER NOT NULL,
 			ip_version INTEGER NOT NULL,
-			src_visibility TEXT NOT NULL,
-			dst_visibility TEXT NOT NULL,
+			src_locality TEXT NOT NULL,
+			dst_locality TEXT NOT NULL,
 			address_side TEXT NOT NULL,
 			unique_address_count INTEGER NOT NULL,
 			processed_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -80,8 +80,8 @@ export function seedPlaywrightDatabase() {
 			bucket_start INTEGER NOT NULL,
 			bucket_end INTEGER NOT NULL,
 			ip_version INTEGER NOT NULL,
-			src_visibility TEXT NOT NULL,
-			dst_visibility TEXT NOT NULL,
+			src_locality TEXT NOT NULL,
+			dst_locality TEXT NOT NULL,
 			address_side TEXT NOT NULL,
 			structure_kind TEXT NOT NULL,
 			values_json TEXT NOT NULL,
@@ -94,8 +94,8 @@ export function seedPlaywrightDatabase() {
 			bucket_start INTEGER NOT NULL,
 			bucket_end INTEGER NOT NULL,
 			ip_version INTEGER NOT NULL,
-			src_visibility TEXT NOT NULL,
-			dst_visibility TEXT NOT NULL,
+			src_locality TEXT NOT NULL,
+			dst_locality TEXT NOT NULL,
 			port_side TEXT NOT NULL,
 			port_range TEXT NOT NULL,
 			unique_port_count INTEGER NOT NULL,
@@ -117,7 +117,7 @@ export function seedPlaywrightDatabase() {
 		) VALUES ('playwright', 'Playwright Fixture', '2025-03-01', 'static', 'static', 0);
 		INSERT INTO traffic_stats (
 			source_id, granularity, bucket_start, bucket_end,
-			ip_version, src_visibility, dst_visibility
+			ip_version, src_locality, dst_locality
 		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all');
 		INSERT INTO bucket_coverage (
 			source_id, granularity, bucket_start, bucket_end,

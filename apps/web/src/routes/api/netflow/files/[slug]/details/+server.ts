@@ -11,7 +11,7 @@ import type {
 	StructureFunctionPoint
 } from '$lib/types/types';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
-import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
+import { normalizeStructurePoints, parseFlowDirectionParams } from '$lib/server/netflow-v3';
 
 const FIVE_MINUTES = '5m';
 
@@ -123,10 +123,10 @@ function buildIpCounts(ipv4Count: number | null, ipv6Count: number | null): File
 export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const { slug } = params;
 	const dataset = await getDatasetFromRequest(url, platform);
-	const flowScope = parseFlowScopeParams(url);
+	const flowDirection = parseFlowDirectionParams(url);
 
-	if ('error' in flowScope) {
-		return json({ error: flowScope.error }, { status: flowScope.status });
+	if ('error' in flowDirection) {
+		return json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
@@ -170,8 +170,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				FROM traffic_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 				GROUP BY source_id, bucket_start
 			),
 			ip AS (
@@ -185,8 +185,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				FROM address_count_stats
 				WHERE granularity = ?
 					AND bucket_start = ?
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 				GROUP BY source_id, bucket_start
 			),
 			st AS (
@@ -199,8 +199,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND ip_version = 4
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 					AND structure_kind = 'structure'
 				GROUP BY source_id, bucket_start
 			),
@@ -214,8 +214,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				WHERE granularity = ?
 					AND bucket_start = ?
 					AND ip_version = 4
-					AND src_visibility = ?
-					AND dst_visibility = ?
+					AND src_locality = ?
+					AND dst_locality = ?
 					AND structure_kind = 'spectrum'
 				GROUP BY source_id, bucket_start
 			)
@@ -264,20 +264,20 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				[
 					FIVE_MINUTES,
 					bucketStart,
-					flowScope.srcVisibility,
-					flowScope.dstVisibility,
+					flowDirection.srcLocality,
+					flowDirection.dstLocality,
 					FIVE_MINUTES,
 					bucketStart,
-					flowScope.srcVisibility,
-					flowScope.dstVisibility,
+					flowDirection.srcLocality,
+					flowDirection.dstLocality,
 					FIVE_MINUTES,
 					bucketStart,
-					flowScope.srcVisibility,
-					flowScope.dstVisibility,
+					flowDirection.srcLocality,
+					flowDirection.dstLocality,
 					FIVE_MINUTES,
 					bucketStart,
-					flowScope.srcVisibility,
-					flowScope.dstVisibility,
+					flowDirection.srcLocality,
+					flowDirection.dstLocality,
 					bucketStart
 				]
 			);

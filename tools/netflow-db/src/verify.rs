@@ -196,6 +196,7 @@ const DATASET_REQUIRED_COLUMNS: &[(&str, &[&str])] = &[(
         "source_mode",
         "discovery_mode",
         "sort_order",
+        "has_locality",
     ],
 )];
 
@@ -247,8 +248,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "flows",
             "flows_tcp",
             "flows_udp",
@@ -284,8 +285,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "unique_protocols_count",
             "protocols_list",
             "processed_at",
@@ -299,8 +300,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
             "unique_address_count",
             "processed_at",
@@ -314,8 +315,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "port_side",
             "port_range",
             "unique_port_count",
@@ -330,8 +331,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
             "structure_kind",
             "values_json",
@@ -614,7 +615,7 @@ const NETFLOW_QUERY: &str = "
            SUM(CASE WHEN ip_version = 6 THEN flows ELSE 0 END)
     FROM traffic_stats
     WHERE source_id IN (?) AND granularity = '1h'
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY bucket_start ORDER BY bucket_start LIMIT 1";
 
@@ -639,7 +640,7 @@ const ADDRESS_QUERY: &str = "
            MAX(processed_at)
     FROM address_count_stats
     WHERE granularity = '1h' AND source_id IN (?)
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY source_id, bucket_start, bucket_end, granularity
     ORDER BY source_id, bucket_start LIMIT 1";
@@ -651,7 +652,7 @@ const PROTOCOL_QUERY: &str = "
            MAX(processed_at)
     FROM protocol_stats
     WHERE granularity = '1h' AND source_id IN (?)
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY source_id, bucket_start, bucket_end, granularity
     ORDER BY source_id, bucket_start LIMIT 1";
@@ -663,7 +664,7 @@ const STRUCTURE_QUERY: &str = "
     FROM address_structure_stats
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND structure_kind = 'structure'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
@@ -674,7 +675,7 @@ const SPECTRUM_QUERY: &str = "
     FROM address_structure_stats
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND structure_kind = 'spectrum'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
@@ -684,7 +685,7 @@ const FILE_DETAILS_QUERY: &str = "
         SELECT source_id AS router, bucket_start, SUM(flows) AS flows
         FROM traffic_stats
         WHERE granularity = '5m' AND bucket_start = ?
-          AND src_visibility = 'all' AND dst_visibility = 'all'
+          AND src_locality = 'all' AND dst_locality = 'all'
         GROUP BY source_id, bucket_start
     ) ns
     LEFT JOIN (
@@ -697,7 +698,7 @@ const FILE_DETAILS_QUERY: &str = "
                         THEN unique_address_count ELSE 0 END) AS address_count
         FROM address_count_stats
         WHERE granularity = '5m' AND bucket_start = ?
-          AND src_visibility = 'all' AND dst_visibility = 'all'
+          AND src_locality = 'all' AND dst_locality = 'all'
         GROUP BY source_id, bucket_start
     ) ip ON ip.source_id = ns.router AND ip.bucket_start = ns.bucket_start
     ORDER BY ns.router LIMIT 1";
@@ -705,7 +706,7 @@ const FILE_DETAILS_QUERY: &str = "
 const ROLLUP_PARITY_QUERY: &str = "
     WITH expected AS (
         SELECT calendar.source_id, calendar.granularity, calendar.bucket_start,
-               calendar.bucket_end, ts.ip_version, ts.src_visibility, ts.dst_visibility,
+               calendar.bucket_end, ts.ip_version, ts.src_locality, ts.dst_locality,
                SUM(ts.flows), SUM(ts.flows_tcp), SUM(ts.flows_udp), SUM(ts.flows_icmp),
                SUM(ts.flows_other), SUM(ts.packets), SUM(ts.packets_tcp),
                SUM(ts.packets_udp), SUM(ts.packets_icmp), SUM(ts.packets_other),
@@ -730,10 +731,10 @@ const ROLLUP_PARITY_QUERY: &str = "
          AND ts.bucket_start < calendar.bucket_end
          AND ts.granularity = '5m'
         GROUP BY calendar.source_id, calendar.granularity, calendar.bucket_start,
-                 calendar.bucket_end, ts.ip_version, ts.src_visibility, ts.dst_visibility
+                 calendar.bucket_end, ts.ip_version, ts.src_locality, ts.dst_locality
     ), actual AS (
         SELECT source_id, granularity, bucket_start, bucket_end, ip_version,
-               src_visibility, dst_visibility, flows, flows_tcp, flows_udp, flows_icmp,
+               src_locality, dst_locality, flows, flows_tcp, flows_udp, flows_icmp,
                flows_other, packets, packets_tcp, packets_udp, packets_icmp, packets_other,
                bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, duration_sum_ms,
                duration_count, average_duration_ms, min_ttl_sum, min_ttl_count,
@@ -767,7 +768,7 @@ mod tests {
                 .execute(
                     "INSERT INTO traffic_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, flows, flows_tcp, flows_udp,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
                     flows_icmp, flows_other, packets, packets_tcp, packets_udp,
                     packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
                     bytes_icmp, bytes_other, duration_sum_ms, duration_count,
@@ -792,7 +793,7 @@ mod tests {
                 .execute(
                     "INSERT INTO protocol_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, unique_protocols_count, protocols_list
+                    src_locality, dst_locality, unique_protocols_count, protocols_list
                  ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', 1, '6')",
                     params![granularity, end],
                 )
@@ -802,7 +803,7 @@ mod tests {
                     .execute(
                         "INSERT INTO address_count_stats (
                         source_id, granularity, bucket_start, bucket_end, ip_version,
-                        src_visibility, dst_visibility, address_side, unique_address_count
+                        src_locality, dst_locality, address_side, unique_address_count
                      ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', ?3, 1)",
                         params![granularity, end, side],
                     )
@@ -812,7 +813,7 @@ mod tests {
                 .execute(
                     "INSERT INTO port_count_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, port_side, port_range, unique_port_count
+                    src_locality, dst_locality, port_side, port_range, unique_port_count
                  ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', 'source', 'low', 1)",
                     params![granularity, end],
                 )
@@ -885,7 +886,7 @@ mod tests {
             .execute(
                 "INSERT INTO protocol_stats (
                 source_id, granularity, bucket_start, bucket_end, ip_version,
-                src_visibility, dst_visibility, unique_protocols_count, protocols_list, trace
+                src_locality, dst_locality, unique_protocols_count, protocols_list, trace
              ) VALUES ('r1', '5m', 100, 400, 4, 'all', 'all', 1, '6', 'peer=192.0.2.8')",
                 [],
             )

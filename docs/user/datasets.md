@@ -61,6 +61,58 @@ A logical source combines the captures from more than one collector directory. E
 }
 ```
 
+## Classify internal and external endpoints
+
+`locality` decides which flow endpoints belong to your network. The pipeline marks an endpoint
+`internal` when any rule matches it. Every other endpoint is `external`. Rule order does not matter.
+
+```json
+{
+  "dataset_id": "campus",
+  "root_path": "/data/netflow/campus",
+  "sources": [{ "source_id": "router-a", "members": ["router-a"] }],
+  "locality": [
+    { "type": "prefixes", "prefixes": ["192.0.2.0/24", "2001:db8::/32"] },
+    { "type": "addresses", "addresses": ["198.51.100.53"] },
+    { "type": "addresses", "path": "data/private/internal-addresses.txt" }
+  ]
+}
+```
+
+| Rule type        | Fields                | Matches                                                                                                             |
+| ---------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `prefixes`       | `prefixes`            | Endpoints inside any listed IPv4 or IPv6 CIDR. Host bits must be zero.                                              |
+| `addresses`      | `addresses` or `path` | Exact IPv4 or IPv6 addresses. Use exactly one field.                                                                |
+| `tos_anonymized` | None                  | Endpoints that the UOregon anonymizer flagged in the two low source-ToS bits. Other networks do not set these bits. |
+
+An address file lists one address per line. Blank lines and text after `#` are ignored. A relative
+`path` uses the repository root. Keep private address lists under the gitignored `data/` directory,
+which the Docker setup also mounts. The registry checks rule syntax when it loads, and the pipeline
+reads address files only for the datasets it runs. IPv4-mapped IPv6 values such as
+`::ffff:192.0.2.53` match as the IPv4 address they carry.
+
+Validation is strict. The pipeline rejects unknown rule types, unknown fields, empty lists, and values
+that do not parse.
+
+Each flow gets a direction from its source and destination localities:
+
+| Source   | Destination | Direction |
+| -------- | ----------- | --------- |
+| internal | external    | Egress    |
+| external | internal    | Ingress   |
+| internal | internal    | Lateral   |
+| external | external    | Transit   |
+
+Transit traffic should be rare for a border collector. A large transit share usually means the rules
+miss part of your address space.
+
+Without `locality`, every endpoint is external and all traffic is transit. Selections that filter on
+locality, including `daily_active_sources`, require rules.
+
+The rules are part of the product identity. Adding, removing, or editing a rule, including the
+contents of an address file, requires a new database. The identity stores only a count and digest of
+each address and prefix list, so the lists do not appear in the database.
+
 ## Define coordinated subsets
 
 Give each subset its own registry entry. Repeat those dataset IDs in one pipeline command. Each entry
@@ -72,9 +124,12 @@ defines its own logical sources and `daily_active_sources` selection.
     "dataset_id": "campus-a",
     "root_path": "/data/netflow/campus",
     "source_ids": ["router-a"],
+    "locality": [
+      { "type": "prefixes", "prefixes": ["198.18.0.0/16", "198.19.0.0/16"] }
+    ],
     "selection": {
       "kind": "daily_active_sources",
-      "ip_prefix": "0.220.0.0/16"
+      "ip_prefix": "198.18.0.0/16"
     },
     "db_path": "data/campus-a/netflow.sqlite"
   },
@@ -82,9 +137,12 @@ defines its own logical sources and `daily_active_sources` selection.
     "dataset_id": "campus-b",
     "root_path": "/data/netflow/campus",
     "source_ids": ["router-a"],
+    "locality": [
+      { "type": "prefixes", "prefixes": ["198.18.0.0/16", "198.19.0.0/16"] }
+    ],
     "selection": {
       "kind": "daily_active_sources",
-      "ip_prefix": "0.221.0.0/16"
+      "ip_prefix": "198.19.0.0/16"
     },
     "db_path": "data/campus-b/netflow.sqlite"
   }
@@ -105,17 +163,18 @@ uses each entry's `db_path`.
 
 ## Optional fields
 
-| Field                | Default                            | Purpose                                                                                              |
-| -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `label`              | A title from `dataset_id`          | The user-visible name in the dashboard.                                                              |
-| `db_path`            | `data/<dataset-id>/netflow.sqlite` | The SQLite output path.                                                                              |
-| `default_start_date` | The earliest day that has data     | The first date that the dashboard shows.                                                             |
-| `source_mode`        | `subdirs`                          | `subdirs` reads member directories under `root_path`. `static` declares sources without directories. |
-| `sources`            | None                               | Logical sources and their physical member directories.                                               |
-| `source_ids`         | None                               | Simple source names for datasets without member directories.                                         |
-| `discovery_mode`     | `static`                           | `live` marks a dataset that continues to receive new captures. `static` marks a complete dataset.    |
-| `sort_order`         | `0`                                | The dataset order in the dashboard. Lower values sort first.                                         |
-| `selection`          | All flows                          | A normalized flow-selection object applied automatically by dataset-mode pipeline runs.              |
+| Field                | Default                            | Purpose                                                                                                                        |
+| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `label`              | A title from `dataset_id`          | The user-visible name in the dashboard.                                                                                        |
+| `db_path`            | `data/<dataset-id>/netflow.sqlite` | The SQLite output path.                                                                                                        |
+| `default_start_date` | The earliest day that has data     | The first date that the dashboard shows.                                                                                       |
+| `source_mode`        | `subdirs`                          | `subdirs` reads member directories under `root_path`. `static` declares sources without directories.                           |
+| `sources`            | None                               | Logical sources and their physical member directories.                                                                         |
+| `source_ids`         | None                               | Simple source names for datasets without member directories.                                                                   |
+| `discovery_mode`     | `static`                           | `live` marks a dataset that continues to receive new captures. `static` marks a complete dataset.                              |
+| `sort_order`         | `0`                                | The dataset order in the dashboard. Lower values sort first.                                                                   |
+| `selection`          | All flows                          | A normalized flow-selection object applied automatically by dataset-mode pipeline runs.                                        |
+| `locality`           | No rules; every endpoint external  | Rules that mark endpoints internal. See [Classify internal and external endpoints](#classify-internal-and-external-endpoints). |
 
 Set `db_path` only for a database that must stay separate, such as a [flow selection](setup-pipeline.md#select-flows) product.
 Persist `selection` with a dedicated `db_path` when the dataset is itself a selected product. Command-line

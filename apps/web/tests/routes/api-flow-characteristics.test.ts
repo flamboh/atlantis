@@ -229,16 +229,16 @@ describe('/api/netflow/characteristics GET', () => {
 		]);
 	});
 
-	it('validates the shared flow scope', async () => {
+	it('validates the shared flow direction', async () => {
 		const response = await GET({
 			url: new URL(
-				'http://localhost/api/netflow/characteristics?routers=r1&startDate=1&endDate=2&srcVisibility=private'
+				'http://localhost/api/netflow/characteristics?routers=r1&startDate=1&endDate=2&direction=bogus'
 			)
 		} as never);
 
 		expect(response.status).toBe(400);
 		await expect(response.json()).resolves.toEqual({
-			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized'
+			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 		});
 	});
 

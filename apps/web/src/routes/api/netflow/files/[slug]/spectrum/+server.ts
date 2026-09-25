@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { SpectrumData, SpectrumPoint } from '$lib/types/types';
-import { parseFlowScopeParams } from '$lib/server/netflow-v3';
+import { parseFlowDirectionParams } from '$lib/server/netflow-v3';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 
 const FIVE_MINUTES = '5m';
@@ -15,10 +15,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	const dataset = await getDatasetFromRequest(url, platform);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
-	const flowScope = parseFlowScopeParams(url);
+	const flowDirection = parseFlowDirectionParams(url);
 
-	if ('error' in flowScope) {
-		return json({ error: flowScope.error }, { status: flowScope.status });
+	if ('error' in flowDirection) {
+		return json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
@@ -53,8 +53,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				AND granularity = ?
 				AND bucket_start = ?
 				AND ip_version = 4
-				AND src_visibility = ?
-				AND dst_visibility = ?
+				AND src_locality = ?
+				AND dst_locality = ?
 				AND address_side = ?
 				AND structure_kind = 'spectrum'
 			LIMIT 1`,
@@ -62,8 +62,8 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 					router,
 					FIVE_MINUTES,
 					bucketStart,
-					flowScope.srcVisibility,
-					flowScope.dstVisibility,
+					flowDirection.srcLocality,
+					flowDirection.dstLocality,
 					isSource ? 'source' : 'destination'
 				]
 			);

@@ -3,6 +3,7 @@ export interface DatasetSummary {
 	label: string;
 	defaultStartDate: string;
 	discoveryMode: string;
+	hasLocality: boolean;
 	isDefault: boolean;
 }
 
@@ -235,53 +236,71 @@ export interface NetflowFileDetailsResponse {
 export const IP_GRANULARITIES = ['5m', '10m', '30m', '1h', '1d'] as const;
 
 export type IpGranularity = (typeof IP_GRANULARITIES)[number];
-export const FLOW_VISIBILITIES = ['all', 'literal', 'anonymized'] as const;
-export type FlowVisibility = (typeof FLOW_VISIBILITIES)[number];
 
-export interface FlowScope {
-	srcVisibility: FlowVisibility;
-	dstVisibility: FlowVisibility;
+export const FLOW_DIRECTIONS = ['all', 'ingress', 'egress', 'lateral', 'transit'] as const;
+export type FlowDirection = (typeof FLOW_DIRECTIONS)[number];
+
+export type FlowLocality = 'all' | 'internal' | 'external';
+
+export interface FlowLocalityPair {
+	srcLocality: FlowLocality;
+	dstLocality: FlowLocality;
 }
 
-export type FlowScopeKey =
-	| 'all'
-	| 'literal_to_literal'
-	| 'literal_to_anonymized'
-	| 'anonymized_to_literal'
-	| 'anonymized_to_anonymized';
-
-export interface FlowScopeOption extends FlowScope {
-	key: FlowScopeKey;
+export interface FlowDirectionOption extends FlowLocalityPair {
+	value: FlowDirection;
 	label: string;
+	description: string;
 }
 
-export const FLOW_SCOPE_OPTIONS: FlowScopeOption[] = [
-	{ key: 'all', label: 'all', srcVisibility: 'all', dstVisibility: 'all' },
+export const FLOW_DIRECTION_OPTIONS: FlowDirectionOption[] = [
 	{
-		key: 'literal_to_literal',
-		label: 'literal to literal',
-		srcVisibility: 'literal',
-		dstVisibility: 'literal'
+		value: 'all',
+		label: 'All',
+		description: 'All traffic',
+		srcLocality: 'all',
+		dstLocality: 'all'
 	},
 	{
-		key: 'literal_to_anonymized',
-		label: 'literal to anonymized',
-		srcVisibility: 'literal',
-		dstVisibility: 'anonymized'
+		value: 'ingress',
+		label: 'Ingress',
+		description: 'Ingress: external → internal',
+		srcLocality: 'external',
+		dstLocality: 'internal'
 	},
 	{
-		key: 'anonymized_to_literal',
-		label: 'anonymized to literal',
-		srcVisibility: 'anonymized',
-		dstVisibility: 'literal'
+		value: 'egress',
+		label: 'Egress',
+		description: 'Egress: internal → external',
+		srcLocality: 'internal',
+		dstLocality: 'external'
 	},
 	{
-		key: 'anonymized_to_anonymized',
-		label: 'anonymized to anonymized',
-		srcVisibility: 'anonymized',
-		dstVisibility: 'anonymized'
+		value: 'lateral',
+		label: 'Lateral',
+		description: 'Lateral: internal → internal',
+		srcLocality: 'internal',
+		dstLocality: 'internal'
+	},
+	{
+		value: 'transit',
+		label: 'Transit',
+		description: 'Transit: external → external',
+		srcLocality: 'external',
+		dstLocality: 'external'
 	}
 ];
+
+const FLOW_DIRECTION_LOCALITIES: Record<FlowDirection, FlowLocalityPair> = Object.fromEntries(
+	FLOW_DIRECTION_OPTIONS.map((option) => [
+		option.value,
+		{ srcLocality: option.srcLocality, dstLocality: option.dstLocality }
+	])
+) as Record<FlowDirection, FlowLocalityPair>;
+
+export function flowDirectionLocalities(direction: FlowDirection): FlowLocalityPair {
+	return FLOW_DIRECTION_LOCALITIES[direction];
+}
 
 export type IpMetricKey = 'saIpv4Count' | 'daIpv4Count' | 'saIpv6Count' | 'daIpv6Count';
 

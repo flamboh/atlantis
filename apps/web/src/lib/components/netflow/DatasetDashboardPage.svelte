@@ -16,10 +16,8 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
-		FLOW_SCOPE_OPTIONS,
-		type FlowVisibility,
+		type FlowDirection,
 		IP_METRIC_OPTIONS,
-		type FlowScopeKey,
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
@@ -32,6 +30,7 @@
 	const props = $props<{
 		dataset: string;
 		defaultStartDate: string;
+		hasLocality?: boolean;
 		routers?: string[];
 		title?: string;
 	}>();
@@ -142,22 +141,10 @@
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
-	function getFlowScopeKey(
-		srcVisibility: FlowVisibility,
-		dstVisibility: FlowVisibility
-	): FlowScopeKey {
-		return (
-			FLOW_SCOPE_OPTIONS.find(
-				(option) => option.srcVisibility === srcVisibility && option.dstVisibility === dstVisibility
-			)?.key ?? 'all'
-		);
-	}
-
-	const flowScopeKey = $derived(
-		getFlowScopeKey(params.srcVisibility as FlowVisibility, params.dstVisibility as FlowVisibility)
+	const hasLocality = $derived(props.hasLocality ?? true);
+	const direction = $derived<FlowDirection>(
+		hasLocality ? (params.direction as FlowDirection) : 'all'
 	);
-	const srcVisibility = $derived(params.srcVisibility as FlowVisibility);
-	const dstVisibility = $derived(params.dstVisibility as FlowVisibility);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -170,8 +157,7 @@
 		groupBy: selectedGroupBy,
 		routers: selectedRouters,
 		routersLoaded,
-		srcVisibility,
-		dstVisibility
+		direction
 	}));
 
 	function isValidChartOrder(value: unknown): value is ChartCardId[] {
@@ -412,7 +398,7 @@
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, { srcVisibility, dstVisibility });
+		void navigateToNetflowFile(goto, slug, props.dataset, direction);
 	}
 
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
@@ -432,15 +418,11 @@
 		ipMetrics = payload.metrics;
 	}
 
-	function handleScopeChange(payload: { scope: FlowScopeKey }) {
-		const flowScope = FLOW_SCOPE_OPTIONS.find((option) => option.key === payload.scope);
-		if (!flowScope) {
+	function handleDirectionChange(payload: { direction: FlowDirection }) {
+		if (payload.direction === params.direction) {
 			return;
 		}
-		params.update({
-			srcVisibility: flowScope.srcVisibility,
-			dstVisibility: flowScope.dstVisibility
-		});
+		params.direction = payload.direction;
 	}
 
 	function handleResetView() {
@@ -452,8 +434,7 @@
 			groupBy: selectedGroupBy,
 			startDate,
 			endDate,
-			srcVisibility: 'all',
-			dstVisibility: 'all'
+			direction: 'all'
 		});
 	}
 </script>
@@ -474,12 +455,13 @@
 		{endDate}
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
-		flowScope={flowScopeKey}
+		{direction}
+		showDirection={hasLocality}
 		onStartDateChange={handleStartDateChange}
 		onEndDateChange={handleEndDateChange}
 		onGroupByChange={handleGroupByChange}
 		onRoutersChange={handleRoutersChange}
-		onScopeChange={handleScopeChange}
+		onDirectionChange={handleDirectionChange}
 		onResetView={handleResetView}
 	/>
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
@@ -547,8 +529,7 @@
 						routers={selectedRouters}
 						{routersLoaded}
 						{dataOptions}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onDataOptionsChange={handleDataOptionsChange}
@@ -580,8 +561,7 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={ipMetrics}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={handleIpMetricsChange}
@@ -595,8 +575,7 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={protocolMetrics}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={(payload) => {
@@ -613,8 +592,7 @@
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
 						availableRouters={availableSpectrumRouters}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onRouterChange={(payload) => {

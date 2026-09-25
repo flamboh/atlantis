@@ -20,7 +20,8 @@ export const datasets = sqliteTable('datasets', {
 	discoveryMode: text('discovery_mode', { enum: ['static', 'live'] })
 		.notNull()
 		.default('static'),
-	sortOrder: integer('sort_order').notNull().default(0)
+	sortOrder: integer('sort_order').notNull().default(0),
+	hasLocality: integer('has_locality', { mode: 'boolean' }).notNull().default(false)
 });
 
 export const sourceMembers = sqliteTable(
@@ -131,8 +132,8 @@ export const trafficStats = sqliteTable(
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		...netflowMetricColumns(),
 		processedAt: text('processed_at').default(currentTimestamp)
 	},
@@ -143,8 +144,8 @@ export const trafficStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility
+				table.srcLocality,
+				table.dstLocality
 			]
 		}),
 		index('idx_traffic_stats_query').on(
@@ -152,17 +153,25 @@ export const trafficStats = sqliteTable(
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility
+			table.srcLocality,
+			table.dstLocality
 		),
 		index('idx_traffic_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'traffic_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'traffic_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -174,8 +183,8 @@ export const protocolStats = sqliteTable(
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		uniqueProtocolsCount: integer('unique_protocols_count').notNull(),
 		protocolsList: text('protocols_list').notNull(),
 		processedAt: text('processed_at').default(currentTimestamp)
@@ -187,18 +196,26 @@ export const protocolStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility
+				table.srcLocality,
+				table.dstLocality
 			]
 		}),
 		index('idx_protocol_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'protocol_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'protocol_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -210,8 +227,8 @@ export const addressCountStats = sqliteTable(
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
 		uniqueAddressCount: integer('unique_address_count').notNull(),
 		processedAt: text('processed_at').default(currentTimestamp)
@@ -223,8 +240,8 @@ export const addressCountStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
+				table.srcLocality,
+				table.dstLocality,
 				table.addressSide
 			]
 		}),
@@ -233,18 +250,26 @@ export const addressCountStats = sqliteTable(
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.addressSide
 		),
 		index('idx_address_count_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'address_count_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_count_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -256,8 +281,8 @@ export const portCountStats = sqliteTable(
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		portSide: text('port_side', { enum: ['source', 'destination'] }).notNull(),
 		portRange: text('port_range', { enum: ['low', 'high'] }).notNull(),
 		uniquePortCount: integer('unique_port_count').notNull(),
@@ -270,8 +295,8 @@ export const portCountStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
+				table.srcLocality,
+				table.dstLocality,
 				table.portSide,
 				table.portRange
 			]
@@ -279,11 +304,19 @@ export const portCountStats = sqliteTable(
 		index('idx_port_count_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'port_count_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'port_count_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -295,8 +328,8 @@ export const addressStructureStats = sqliteTable(
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
 		structureKind: text('structure_kind', {
 			enum: ['structure', 'spectrum', 'dimension']
@@ -312,8 +345,8 @@ export const addressStructureStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
+				table.srcLocality,
+				table.dstLocality,
 				table.addressSide,
 				table.structureKind
 			]
@@ -323,20 +356,28 @@ export const addressStructureStats = sqliteTable(
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.addressSide,
 			table.structureKind
 		),
 		index('idx_address_structure_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.ipVersion,
 			table.structureKind,
 			table.bucketStart
 		),
-		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'address_structure_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_structure_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );

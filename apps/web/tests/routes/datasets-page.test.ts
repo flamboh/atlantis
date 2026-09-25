@@ -15,6 +15,7 @@ describe('/datasets/[dataset] load', () => {
 							label: 'UONet-in',
 							defaultStartDate: '2025-02-11',
 							discoveryMode: 'live',
+							hasLocality: false,
 							isDefault: true
 						}
 					],
@@ -38,6 +39,7 @@ describe('/datasets/[dataset] load', () => {
 			datasetId: 'uoregon',
 			title: 'UONet-in',
 			defaultStartDate: '2025-02-11',
+			hasLocality: false,
 			routers: ['router-a', 'router-b']
 		});
 	});

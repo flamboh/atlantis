@@ -12,16 +12,16 @@ use crate::{
     coverage::BucketCoverage,
     domain::{
         AddressSet, AddressSide, BucketKey, CanonicalBucket, DAILY_ACTIVE_MIN_BYTES,
-        DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, ExactVisibility, FlowSelection,
+        DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, EndpointLocality, FlowSelection,
         Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols,
-        ScopedTraffic, TrafficMetrics, Visibility,
+        ScopedTraffic, TrafficMetrics, ZERO_FILL_LOCALITY_PAIRS,
     },
 };
 
 pub(crate) const OUTPUT_MODE: &str = "atlantis";
 pub(crate) const CONTRACT_VERSION: u32 = 1;
 pub(crate) const INPUT_CONTRACT: &str = "atlantis-flow-stream-v1";
-pub(crate) const OUTPUT_CONTRACT: &str = "canonical-scopes-v1";
+pub(crate) const OUTPUT_CONTRACT: &str = "canonical-locality-scopes-v1";
 
 const MAGIC: &[u8; 8] = b"ATLNFLOW";
 const RECORD_LEN: usize = 72;
@@ -444,7 +444,7 @@ pub(crate) fn reduce_to_daily_source_activities<R: Read>(
         .collect::<Vec<_>>();
     let result = visit_stream(&mut input, |flow, _, _| {
         for (selection, activity) in selections.iter().zip(&mut activities) {
-            if !matches_selection(flow, selection) {
+            if classify_selected(flow, selection).is_none() {
                 continue;
             }
             let entry = activity.entry(flow.source_address).or_default();
@@ -477,11 +477,13 @@ fn reduce_stream_for_active_sources(
         for ((selection, active_sources), scopes) in
             selections_and_active_sources.iter().zip(&mut scopes)
         {
-            if !matches_selection(flow, selection) || !active_sources.contains(&flow.source_address)
-            {
+            let Some(locality) = classify_selected(flow, selection) else {
+                continue;
+            };
+            if !active_sources.contains(&flow.source_address) {
                 continue;
             }
-            add_flow_to_scopes(scopes, flow, block_index, record_ordinal)?;
+            add_flow_to_scopes(scopes, flow, locality, block_index, record_ordinal)?;
         }
         Ok(())
     })?;
@@ -546,12 +548,13 @@ fn reduce_stream<R: Read>(
     }
     let mut scopes = std::array::from_fn(|_| ScopeAccumulator::default());
     visit_stream(input, |flow, block_index, record_ordinal| {
-        if !matches_selection(flow, selection)
-            || active_sources.is_some_and(|sources| !sources.contains(&flow.source_address))
-        {
+        let Some(locality) = classify_selected(flow, selection) else {
+            return Ok(());
+        };
+        if active_sources.is_some_and(|sources| !sources.contains(&flow.source_address)) {
             return Ok(());
         }
-        add_flow_to_scopes(&mut scopes, flow, block_index, record_ordinal)
+        add_flow_to_scopes(&mut scopes, flow, locality, block_index, record_ordinal)
     })?;
     Ok(scopes)
 }
@@ -559,6 +562,7 @@ fn reduce_stream<R: Read>(
 fn add_flow_to_scopes(
     scopes: &mut [ScopeAccumulator; 10],
     flow: &Flow,
+    (source, destination): (EndpointLocality, EndpointLocality),
     block_index: u64,
     record_ordinal: u64,
 ) -> Result<(), NfdumpError> {
@@ -567,8 +571,7 @@ fn add_flow_to_scopes(
     } else {
         5
     };
-    let exact_index =
-        family_base + exact_scope_index(flow.source_anonymized, flow.destination_anonymized);
+    let exact_index = family_base + exact_scope_index(source, destination);
     for index in [family_base, exact_index] {
         scopes[index].validate_add(flow).map_err(|field| {
             NfdumpError::new(Phase::Aggregate, field, ErrorReason::AggregateOverflow)
@@ -901,31 +904,34 @@ where
     i64::try_from(value).map_err(|_| error(field, ErrorReason::NumericOverflow(value)))
 }
 
-fn matches_selection(flow: &Flow, selection: &FlowSelection) -> bool {
-    selection.matches_flow_fields(
+fn classify_selected(
+    flow: &Flow,
+    selection: &FlowSelection,
+) -> Option<(EndpointLocality, EndpointLocality)> {
+    let (source, destination) = selection.locality().classify_flow(
         flow.source_address,
         flow.destination_address,
-        flow.protocol,
-        Some(flow.source_port),
-        if flow.source_anonymized {
-            ExactVisibility::Anonymized
-        } else {
-            ExactVisibility::Literal
-        },
-        if flow.destination_anonymized {
-            ExactVisibility::Anonymized
-        } else {
-            ExactVisibility::Literal
-        },
-    )
+        flow.source_anonymized,
+        flow.destination_anonymized,
+    );
+    selection
+        .matches_flow_fields(
+            flow.source_address,
+            flow.destination_address,
+            flow.protocol,
+            Some(flow.source_port),
+            source,
+            destination,
+        )
+        .then_some((source, destination))
 }
 
-const fn exact_scope_index(source_anonymized: bool, destination_anonymized: bool) -> usize {
-    match (source_anonymized, destination_anonymized) {
-        (true, true) => 1,
-        (true, false) => 2,
-        (false, true) => 3,
-        (false, false) => 4,
+const fn exact_scope_index(source: EndpointLocality, destination: EndpointLocality) -> usize {
+    match (source, destination) {
+        (EndpointLocality::Internal, EndpointLocality::Internal) => 1,
+        (EndpointLocality::Internal, EndpointLocality::External) => 2,
+        (EndpointLocality::External, EndpointLocality::Internal) => 3,
+        (EndpointLocality::External, EndpointLocality::External) => 4,
     }
 }
 
@@ -1030,13 +1036,6 @@ const fn record_field_at(offset: usize) -> Field {
 }
 
 fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBucket {
-    const VISIBILITIES: [(Visibility, Visibility); 5] = [
-        (Visibility::All, Visibility::All),
-        (Visibility::Anonymized, Visibility::Anonymized),
-        (Visibility::Anonymized, Visibility::Literal),
-        (Visibility::Literal, Visibility::Anonymized),
-        (Visibility::Literal, Visibility::Literal),
-    ];
     let mut traffic = Vec::with_capacity(10);
     let mut protocols = Vec::with_capacity(10);
     let mut addresses = Vec::with_capacity(20);
@@ -1048,8 +1047,8 @@ fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBuc
             } else {
                 IpVersion::V6
             },
-            VISIBILITIES[index % 5].0,
-            VISIBILITIES[index % 5].1,
+            ZERO_FILL_LOCALITY_PAIRS[index % 5].0,
+            ZERO_FILL_LOCALITY_PAIRS[index % 5].1,
         );
         let (scope_traffic, scope_protocols, scope_addresses, scope_ports) =
             accumulator.finish(scope);
@@ -1129,7 +1128,16 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::domain::{Granularity, Scope};
+    use crate::domain::{Granularity, Locality, Scope};
+    use crate::locality::{LocalityRuleConfig, LocalityRules};
+
+    fn rules(configs: &[LocalityRuleConfig]) -> Arc<LocalityRules> {
+        Arc::new(LocalityRules::from_config(configs, std::path::Path::new("/")).unwrap())
+    }
+
+    fn tos_rules() -> Arc<LocalityRules> {
+        rules(&[LocalityRuleConfig::TosAnonymized {}])
+    }
 
     fn key() -> BucketKey {
         BucketKey::new(
@@ -1152,6 +1160,7 @@ mod tests {
             "ip_prefix": prefix,
         })))
         .unwrap()
+        .with_locality(tos_rules())
     }
 
     fn daily_record(
@@ -1258,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_visibility_prefix_and_weighted_missing_ttl_reduce_correctly() {
+    fn ipv6_locality_prefix_and_weighted_missing_ttl_reduce_correctly() {
         let mut record = base_record();
         record[..16].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         record[16..32]
@@ -1274,10 +1283,11 @@ mod tests {
             "version": 1,
             "kind": "flows",
             "ip_prefix": "2001:db8::/32",
-            "src_visibility": "anonymized",
-            "dst_visibility": "literal",
+            "src_locality": "internal",
+            "dst_locality": "external",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
 
         let bucket = reduce_to_bucket(Cursor::new(stream(&[record])), key(), &selection).unwrap();
 
@@ -1343,7 +1353,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "192.0.0.0/16"
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let mut first = base_record();
         first[32..40].copy_from_slice(&5_u64.to_le_bytes());
         first[40..48].copy_from_slice(&500_u64.to_le_bytes());
@@ -1468,7 +1479,7 @@ mod tests {
                 .traffic
                 .iter()
                 .find(|entry| {
-                    entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                    entry.scope == Scope::new(IpVersion::V4, Locality::All, Locality::All)
                 })
                 .unwrap()
                 .metrics
@@ -1515,9 +1526,10 @@ mod tests {
         let selection = FlowSelection::from_payload(Some(&serde_json::json!({
             "version": 1,
             "kind": "flows",
-            "src_visibility": "anonymized",
+            "src_locality": "internal",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let mut input = Cursor::new(bytes);
 
         let error = reduce_to_bucket(&mut input, key(), &selection).unwrap_err();
@@ -1771,14 +1783,15 @@ mod tests {
         let bucket = reduce_to_bucket(
             Cursor::new(stream(&[udp, tcp])),
             key(),
-            &FlowSelection::default(),
+            &FlowSelection::default().with_locality(tos_rules()),
         )
         .unwrap();
 
         assert_eq!(
             bucket.traffic[3].scope,
-            Scope::new(IpVersion::V4, Visibility::Literal, Visibility::Anonymized)
+            Scope::new(IpVersion::V4, Locality::External, Locality::Internal)
         );
+        assert_eq!(bucket.traffic[3].metrics.flows, 2);
         assert_eq!(bucket.protocols[0].protocols, ["17", "6"]);
         assert_eq!(
             bucket.addresses[1].addresses,
@@ -1789,5 +1802,52 @@ mod tests {
             .into_iter()
             .collect::<AddressSet>()
         );
+    }
+
+    #[test]
+    fn address_and_prefix_rules_classify_literal_endpoints_into_direction_scopes() {
+        let mut egress = base_record();
+        egress[0..4].copy_from_slice(&[192, 0, 2, 53]);
+        egress[16..20].copy_from_slice(&[203, 0, 113, 9]);
+        let mut ingress = base_record();
+        ingress[0..4].copy_from_slice(&[203, 0, 113, 9]);
+        ingress[16..20].copy_from_slice(&[198, 51, 100, 77]);
+        let mut anonymized_lateral = base_record();
+        anonymized_lateral[0..4].copy_from_slice(&[10, 1, 1, 1]);
+        anonymized_lateral[16..20].copy_from_slice(&[10, 2, 2, 2]);
+        anonymized_lateral[69] = 0b110;
+        let transit = base_record();
+        let selection = FlowSelection::default().with_locality(rules(&[
+            LocalityRuleConfig::TosAnonymized {},
+            LocalityRuleConfig::Addresses {
+                addresses: Some(vec!["192.0.2.53".into()]),
+                path: None,
+            },
+            LocalityRuleConfig::Prefixes {
+                prefixes: vec!["198.51.100.64/26".into()],
+            },
+        ]));
+
+        let bucket = reduce_to_bucket(
+            Cursor::new(stream(&[egress, ingress, anonymized_lateral, transit])),
+            key(),
+            &selection,
+        )
+        .unwrap();
+
+        let flows = |source, destination| {
+            bucket
+                .traffic
+                .iter()
+                .find(|entry| entry.scope == Scope::new(IpVersion::V4, source, destination))
+                .unwrap()
+                .metrics
+                .flows
+        };
+        assert_eq!(flows(Locality::All, Locality::All), 4);
+        assert_eq!(flows(Locality::Internal, Locality::External), 1);
+        assert_eq!(flows(Locality::External, Locality::Internal), 1);
+        assert_eq!(flows(Locality::Internal, Locality::Internal), 1);
+        assert_eq!(flows(Locality::External, Locality::External), 1);
     }
 }

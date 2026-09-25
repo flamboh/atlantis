@@ -35,7 +35,15 @@ Show a table schema:
 
 The `granularity` value is `5m`, `10m`, `30m`, `1h`, or `1d`.
 
-Visibility values are `all`, `literal`, or `anonymized`.
+Each stats table stores an endpoint locality pair per bucket: `src_locality` and `dst_locality`, each `all`, `internal`, or `external`. Only five pairs are ever stored — mixed pairs with `all` on only one side never occur:
+
+| Direction | `src_locality` | `dst_locality` | Meaning                                                              |
+| --------- | -------------- | -------------- | -------------------------------------------------------------------- |
+| `all`     | `all`          | `all`          | All traffic                                                          |
+| `ingress` | `external`     | `internal`     | external → internal                                                  |
+| `egress`  | `internal`     | `external`     | internal → external                                                  |
+| `lateral` | `internal`     | `internal`     | internal → internal                                                  |
+| `transit` | `external`     | `external`     | external → external (kept for visibility into misclassified records) |
 
 ## Query traffic totals
 
@@ -50,8 +58,8 @@ SELECT
     SUM(bytes) AS bytes
 FROM traffic_stats
 WHERE granularity = '1d'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
   AND bucket_start >= strftime('%s', '<YYYY-MM-DD>')
   AND bucket_start < strftime('%s', '<YYYY-MM-DD>')
 GROUP BY bucket_start, source_id
@@ -71,8 +79,8 @@ SELECT
 FROM protocol_stats
 WHERE granularity = '30m'
   AND ip_version = 4
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY bucket_start, source_id;
 ```
 
@@ -87,8 +95,8 @@ SELECT
     unique_address_count
 FROM address_count_stats
 WHERE granularity = '1h'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start, ip_version, address_side;
 ```
 
@@ -104,8 +112,8 @@ SELECT
     unique_port_count
 FROM port_count_stats
 WHERE granularity = '1h'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start, ip_version, port_side, port_range;
 ```
 
@@ -123,7 +131,7 @@ SELECT
 FROM traffic_stats
 WHERE granularity = '1h'
   AND ip_version = 4
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start;
 ```

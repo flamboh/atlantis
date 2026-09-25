@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::{config::CsvSourceConfig, nfdump};
 
 pub const CSV_DECODER_VERSION: u32 = 1;
-pub const NFCAPD_DECODER_VERSION: u32 = 4;
+pub const NFCAPD_DECODER_VERSION: u32 = 5;
 pub const GAP_DECODER_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
@@ -322,7 +322,7 @@ pub fn nfcapd_decoder_fingerprint() -> Result<String, ProvenanceError> {
         "tunnel_expansion": "synthetic-before-outer",
         "icmp_destination_port": "zero",
         "fields": [
-            "addresses", "ports", "protocol", "packets", "bytes", "visibility",
+            "addresses", "ports", "protocol", "packets", "bytes", "tos-anonymized-flags",
             "flow-count", "duration-ms", "min-ttl", "max-ttl"
         ],
     }))
@@ -512,7 +512,7 @@ mod tests {
         assert_ne!(first.decoder_fingerprint, csv.decoder_fingerprint);
         assert_eq!(
             nfcapd_decoder_fingerprint().unwrap(),
-            "9449009ebd7893d33301ebe87d1a6865847044da15c67ee09849835ff5df4e69"
+            "809ed1ea2d15a7ab6972c8d034da81023ce6d6b5160ea84fe7f515649441b7a7"
         );
         assert_eq!(
             first.fingerprint,

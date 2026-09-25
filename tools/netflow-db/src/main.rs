@@ -82,13 +82,13 @@ struct PipelineArgs {
     #[arg(
         long,
         requires = "ip_prefix",
-        conflicts_with_all = ["src_visibility", "dst_visibility"]
+        conflicts_with_all = ["src_locality", "dst_locality"]
     )]
     daily_active_sources: bool,
     #[arg(long, value_enum)]
-    src_visibility: Option<VisibilityArg>,
+    src_locality: Option<LocalityArg>,
     #[arg(long, value_enum)]
-    dst_visibility: Option<VisibilityArg>,
+    dst_locality: Option<LocalityArg>,
     #[arg(long, default_value = "nfdump")]
     nfdump: String,
     #[arg(long)]
@@ -101,16 +101,16 @@ struct PipelineArgs {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum VisibilityArg {
-    Literal,
-    Anonymized,
+enum LocalityArg {
+    Internal,
+    External,
 }
 
-impl VisibilityArg {
+impl LocalityArg {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Literal => "literal",
-            Self::Anonymized => "anonymized",
+            Self::Internal => "internal",
+            Self::External => "external",
         }
     }
 }
@@ -342,12 +342,12 @@ fn run_pipeline(args: PipelineArgs) -> Result<()> {
     }
     selection.insert("ip_prefix".into(), serde_json::json!(args.ip_prefix));
     selection.insert(
-        "src_visibility".into(),
-        serde_json::json!(args.src_visibility.map(VisibilityArg::as_str)),
+        "src_locality".into(),
+        serde_json::json!(args.src_locality.map(LocalityArg::as_str)),
     );
     selection.insert(
-        "dst_visibility".into(),
-        serde_json::json!(args.dst_visibility.map(VisibilityArg::as_str)),
+        "dst_locality".into(),
+        serde_json::json!(args.dst_locality.map(LocalityArg::as_str)),
     );
     let selection = serde_json::Value::Object(selection);
     let dataset_ids = args.dataset;

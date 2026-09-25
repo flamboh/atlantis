@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::locality::{LocalityError, LocalityRuleConfig, LocalityRules};
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("unable to read dataset registry: {0}")]
@@ -18,6 +20,12 @@ pub enum RegistryError {
     Json(#[from] serde_json::Error),
     #[error("invalid dataset registry: {0}")]
     Invalid(String),
+    #[error("invalid locality for dataset {dataset_id:?}: {source}")]
+    Locality {
+        dataset_id: String,
+        #[source]
+        source: LocalityError,
+    },
     #[error("unknown dataset {requested:?}; available datasets: {available}")]
     UnknownDataset {
         requested: String,
@@ -57,6 +65,8 @@ pub struct Dataset {
     /// Optional product selection applied automatically by dataset-mode pipeline runs.
     #[serde(default)]
     pub selection: Value,
+    #[serde(default)]
+    pub locality: Vec<LocalityRuleConfig>,
 }
 
 impl Dataset {
@@ -107,7 +117,27 @@ impl Dataset {
             unique_nonempty(&source.members, "source members")?;
             validate_path_components(&source.members, "source members")?;
         }
-        Ok(())
+        for rule in &mut self.locality {
+            if let LocalityRuleConfig::Addresses {
+                path: Some(path), ..
+            } = rule
+            {
+                *path = expand_path(path, repository_root)?;
+            }
+        }
+        LocalityRules::check_config(&self.locality).map_err(|source| RegistryError::Locality {
+            dataset_id: self.dataset_id.clone(),
+            source,
+        })
+    }
+
+    pub fn locality_rules(&self) -> Result<LocalityRules, RegistryError> {
+        LocalityRules::from_config(&self.locality, Path::new("/")).map_err(|source| {
+            RegistryError::Locality {
+                dataset_id: self.dataset_id.clone(),
+                source,
+            }
+        })
     }
 
     pub fn logical_sources(&self) -> Result<Vec<DatasetSource>, RegistryError> {
@@ -407,5 +437,125 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn registry_parses_locality_rules_and_resolves_address_files() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("private")).unwrap();
+        fs::write(root.path().join("private/internal.txt"), "192.0.2.9\n").unwrap();
+        let list = root.path().join("datasets.json");
+        fs::write(
+            &list,
+            serde_json::json!([{
+                "dataset_id": "campus",
+                "root_path": "/captures",
+                "locality": [
+                    {"type": "tos_anonymized"},
+                    {"type": "prefixes", "prefixes": ["2001:db8::/32"]},
+                    {"type": "addresses", "addresses": ["192.0.2.1"]},
+                    {"type": "addresses", "path": "private/internal.txt"}
+                ]
+            }])
+            .to_string(),
+        )
+        .unwrap();
+
+        let registry = DatasetRegistry::load(&list, root.path()).unwrap();
+        let dataset = registry.get("campus").unwrap();
+        let rules = dataset.locality_rules().unwrap();
+
+        assert_eq!(
+            dataset.locality[3],
+            LocalityRuleConfig::Addresses {
+                addresses: None,
+                path: Some(root.path().join("private/internal.txt")),
+            }
+        );
+        for address in ["192.0.2.1", "192.0.2.9", "2001:db8::1"] {
+            assert_eq!(
+                rules.classify(address.parse().unwrap(), false),
+                crate::domain::EndpointLocality::Internal
+            );
+        }
+        assert_eq!(
+            rules.classify("192.0.2.2".parse().unwrap(), false),
+            crate::domain::EndpointLocality::External
+        );
+    }
+
+    #[test]
+    fn registry_rejects_invalid_locality_rules() {
+        for (locality, expected) in [
+            (
+                serde_json::json!([{"type": "prefixes", "prefixes": ["192.0.2.0/24"], "extra": 1}]),
+                "unknown field `extra`",
+            ),
+            (
+                serde_json::json!([{"type": "internal_asns", "asns": [64496]}]),
+                "unknown variant `internal_asns`",
+            ),
+            (
+                serde_json::json!([{"type": "addresses", "addresses": ["192.0.2.300"]}]),
+                "invalid locality for dataset \"sample\": locality rule 1: invalid IP address",
+            ),
+            (
+                serde_json::json!([{"type": "tos_anonymized"}, {"type": "prefixes", "prefixes": ["2001:db8::1/32"]}]),
+                "locality rule 2: CIDR prefix \"2001:db8::1/32\" has host bits set",
+            ),
+            (
+                serde_json::json!({"type": "tos_anonymized"}),
+                "invalid type: map, expected a sequence",
+            ),
+        ] {
+            let root = tempdir().unwrap();
+            let list = root.path().join("datasets.json");
+            fs::write(
+                &list,
+                serde_json::json!([{
+                    "dataset_id": "sample",
+                    "root_path": "/captures",
+                    "locality": locality
+                }])
+                .to_string(),
+            )
+            .unwrap();
+
+            let error = DatasetRegistry::load(&list, root.path()).unwrap_err();
+
+            assert!(
+                error.to_string().contains(expected),
+                "{locality}: unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_loads_without_reading_address_files() {
+        let root = tempdir().unwrap();
+        let list = root.path().join("datasets.json");
+        fs::write(
+            &list,
+            serde_json::json!([
+                {
+                    "dataset_id": "broken",
+                    "root_path": "/captures",
+                    "locality": [{"type": "addresses", "path": "missing.txt"}]
+                },
+                {"dataset_id": "healthy", "root_path": "/captures"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let registry = DatasetRegistry::load(&list, root.path()).unwrap();
+
+        assert!(registry.get("healthy").unwrap().locality_rules().is_ok());
+        let error = registry
+            .get("broken")
+            .unwrap()
+            .locality_rules()
+            .unwrap_err();
+        assert!(error.to_string().contains("unable to read address file"));
     }
 }

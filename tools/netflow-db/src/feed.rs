@@ -23,7 +23,7 @@ use jiff::Timestamp;
 use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::{
-    domain::{AddressSide, CanonicalBucket, FlowSelection, IpVersion, Scope, Visibility},
+    domain::{AddressSide, CanonicalBucket, FlowSelection, IpVersion, Locality, Scope},
     ingest,
     registry::{self, DatasetRegistry},
     singularity,
@@ -404,7 +404,7 @@ fn process_pass(
 }
 
 fn collect_total_ipv4_addresses(bucket: CanonicalBucket, addresses: &mut BTreeSet<Ipv4Addr>) {
-    let total_ipv4_scope = Scope::new(IpVersion::V4, Visibility::All, Visibility::All);
+    let total_ipv4_scope = Scope::new(IpVersion::V4, Locality::All, Locality::All);
     for scoped in bucket.addresses {
         if scoped.scope != total_ipv4_scope
             || !matches!(

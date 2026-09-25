@@ -6,7 +6,8 @@ import {
 	parseAggregateStatsParams,
 	parseIpGranularity,
 	parseIpGranularityOrDefault,
-	parseFlowVisibility,
+	parseFlowDirection,
+	parseFlowDirectionParams,
 	parseSourceIds,
 	parseTimestamp,
 	resolveSourceIds
@@ -40,11 +41,13 @@ describe('netflow v3 helpers', () => {
 		expect(parseIpGranularityOrDefault('bad')).toBe('1h');
 	});
 
-	it('parses flow visibility request values without coercing invalid values', () => {
-		expect(parseFlowVisibility('literal')).toBe('literal');
-		expect(parseFlowVisibility('anonymized')).toBe('anonymized');
-		expect(parseFlowVisibility(null)).toBeNull();
-		expect(parseFlowVisibility('bad')).toBeNull();
+	it('parses flow direction request values without coercing invalid values', () => {
+		expect(parseFlowDirection('ingress')).toBe('ingress');
+		expect(parseFlowDirection('egress')).toBe('egress');
+		expect(parseFlowDirection('lateral')).toBe('lateral');
+		expect(parseFlowDirection('transit')).toBe('transit');
+		expect(parseFlowDirection(null)).toBeNull();
+		expect(parseFlowDirection('bad')).toBeNull();
 	});
 
 	it('validates aggregate stats request params', () => {
@@ -57,8 +60,25 @@ describe('netflow v3 helpers', () => {
 			granularity: '30m',
 			start: 100,
 			end: 200,
-			srcVisibility: 'all',
-			dstVisibility: 'all'
+			direction: 'all',
+			srcLocality: 'all',
+			dstLocality: 'all'
+		});
+
+		expect(
+			parseAggregateStatsParams(
+				new URL(
+					'http://localhost/api/test?routers=r1,r2&granularity=30m&startDate=100&endDate=200&direction=ingress'
+				)
+			)
+		).toEqual({
+			routers: ['r1', 'r2'],
+			granularity: '30m',
+			start: 100,
+			end: 200,
+			direction: 'ingress',
+			srcLocality: 'external',
+			dstLocality: 'internal'
 		});
 
 		expect(
@@ -90,10 +110,39 @@ describe('netflow v3 helpers', () => {
 		});
 		expect(
 			parseAggregateStatsParams(
-				new URL('http://localhost/api/test?routers=r1&startDate=100&endDate=200&srcVisibility=bad')
+				new URL('http://localhost/api/test?routers=r1&startDate=100&endDate=200&direction=bad')
 			)
 		).toEqual({
-			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized',
+			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit',
+			status: 400
+		});
+	});
+
+	it('defaults direction to all and maps each direction to its locality pair', () => {
+		expect(parseFlowDirectionParams(new URL('http://localhost/api/test'))).toEqual({
+			direction: 'all',
+			srcLocality: 'all',
+			dstLocality: 'all'
+		});
+		expect(parseFlowDirectionParams(new URL('http://localhost/api/test?direction=all'))).toEqual({
+			direction: 'all',
+			srcLocality: 'all',
+			dstLocality: 'all'
+		});
+		expect(
+			parseFlowDirectionParams(new URL('http://localhost/api/test?direction=ingress'))
+		).toEqual({ direction: 'ingress', srcLocality: 'external', dstLocality: 'internal' });
+		expect(parseFlowDirectionParams(new URL('http://localhost/api/test?direction=egress'))).toEqual(
+			{ direction: 'egress', srcLocality: 'internal', dstLocality: 'external' }
+		);
+		expect(
+			parseFlowDirectionParams(new URL('http://localhost/api/test?direction=lateral'))
+		).toEqual({ direction: 'lateral', srcLocality: 'internal', dstLocality: 'internal' });
+		expect(
+			parseFlowDirectionParams(new URL('http://localhost/api/test?direction=transit'))
+		).toEqual({ direction: 'transit', srcLocality: 'external', dstLocality: 'external' });
+		expect(parseFlowDirectionParams(new URL('http://localhost/api/test?direction=bogus'))).toEqual({
+			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit',
 			status: 400
 		});
 	});

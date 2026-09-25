@@ -74,19 +74,19 @@ describe('netflow file helpers and routes', () => {
 		const ipResponse = await getIpCounts({
 			params: { slug: '202503010005' },
 			url: new URL(
-				'http://localhost/api/netflow/files/x/ip-counts?router=r1&source=true&srcVisibility=literal&dstVisibility=anonymized'
+				'http://localhost/api/netflow/files/x/ip-counts?router=r1&source=true&direction=egress'
 			)
 		} as never);
 		const spectrumResponse = await getSpectrum({
 			params: { slug: '202503010005' },
 			url: new URL(
-				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=false&srcVisibility=literal&dstVisibility=anonymized'
+				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=false&direction=egress'
 			)
 		} as never);
 		const structureResponse = await getStructure({
 			params: { slug: '202503010005' },
 			url: new URL(
-				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&srcVisibility=literal&dstVisibility=anonymized'
+				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&direction=egress'
 			)
 		} as never);
 		const bucketStart = slugToBucketStart('202503010005');
@@ -96,23 +96,23 @@ describe('netflow file helpers and routes', () => {
 			'r1',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized'
+			'internal',
+			'external'
 		]);
 		expect(get).toHaveBeenNthCalledWith(2, expect.any(String), [
 			'r1',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			'destination'
 		]);
 		expect(get).toHaveBeenNthCalledWith(3, expect.any(String), [
 			'r1',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			'source'
 		]);
 		await expect(ipResponse.json()).resolves.toEqual({ ipv4Count: 1, ipv6Count: 3 });
@@ -192,9 +192,7 @@ describe('netflow file helpers and routes', () => {
 
 		const response = await getDetails({
 			params: { slug: '202503010005' },
-			url: new URL(
-				'http://localhost/api/netflow/files/x/details?dataset=alpha&srcVisibility=literal&dstVisibility=anonymized'
-			)
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&direction=egress')
 		} as never);
 		const bucketStart = slugToBucketStart('202503010005');
 
@@ -202,20 +200,20 @@ describe('netflow file helpers and routes', () => {
 		expect(all).toHaveBeenCalledWith(expect.any(String), [
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			'5m',
 			bucketStart,
-			'literal',
-			'anonymized',
+			'internal',
+			'external',
 			bucketStart
 		]);
 		await expect(response.json()).resolves.toEqual({
@@ -287,18 +285,18 @@ describe('netflow file helpers and routes', () => {
 		});
 	});
 
-	it('rejects invalid file detail visibility params', async () => {
+	it('rejects invalid file detail direction params', async () => {
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		vi.mocked(withDatasetDb).mockClear();
 
 		const response = await getDetails({
 			params: { slug: '202503010005' },
-			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&srcVisibility=bogus')
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&direction=bogus')
 		} as never);
 
 		expect(response.status).toBe(400);
 		await expect(response.json()).resolves.toEqual({
-			error: 'Invalid srcVisibility. Expected one of: all, literal, anonymized'
+			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 		});
 		expect(withDatasetDb).not.toHaveBeenCalledWith('alpha', undefined, expect.any(Function));
 	});
