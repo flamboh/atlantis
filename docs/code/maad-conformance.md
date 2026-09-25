@@ -115,6 +115,15 @@ Add `--ipv6` to compare IPv6 files. Add another file as another positional
 different tolerance. A passing case prints one compact summary; command,
 input, JSON, row-count, metadata, or numeric mismatches return nonzero.
 
+Pass `--weighted` to compare measure-weighted MAAD. Each case is then an
+`ADDR,MEASURE` CSV with one row per distinct address and a finite, positive
+measure: the oracle keeps only the first row for a repeated address, while Rust
+sums them, so the validator rejects duplicates. Rust runs `netflow-db maad
+--weighted` and the oracle runs with `--csv --meas-col 1`. Only structure and
+dimensions are compared, because the weighted estimator does not emit a
+spectrum. Combine it with `--ipv6` for IPv6 CSVs. Every summary line reports
+`max_abs_dtau` and `max_abs_ddim`.
+
 ## Known edge cases
 
 The Haskell executable cannot produce JSON for an empty set, a singleton, or a

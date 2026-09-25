@@ -249,6 +249,9 @@ struct MaadArgs {
     /// Read IPv6 addresses and use the IPv6 prefix range (/23-/64).
     #[arg(short = '6', long)]
     ipv6: bool,
+    /// Read `ADDR,MEASURE` rows and emit measure-weighted structure and dimensions.
+    #[arg(long)]
+    weighted: bool,
 }
 
 #[derive(Debug, Args)]
@@ -604,14 +607,50 @@ fn run_web_verify(args: WebVerifyArgs) -> Result<()> {
 }
 
 fn run_maad(args: MaadArgs) -> Result<()> {
-    let result = if args.ipv6 {
-        maad::compute(read_address_lines::<Ipv6Addr>(args.input, "IPv6")?)
-    } else {
-        maad::compute(read_address_lines::<Ipv4Addr>(args.input, "IPv4")?)
+    let result = match (args.ipv6, args.weighted) {
+        (false, false) => maad::compute(read_address_lines::<Ipv4Addr>(args.input, "IPv4")?),
+        (true, false) => maad::compute(read_address_lines::<Ipv6Addr>(args.input, "IPv6")?),
+        (false, true) => {
+            maad::compute_weighted(read_weighted_lines::<Ipv4Addr>(args.input, "IPv4")?)?
+        }
+        (true, true) => {
+            maad::compute_weighted(read_weighted_lines::<Ipv6Addr>(args.input, "IPv6")?)?
+        }
     };
     maad::write_json(&result, io::stdout().lock())?;
     io::stdout().flush()?;
     Ok(())
+}
+
+/// Read one address family's `ADDR,MEASURE` rows from a file or standard input.
+fn read_weighted_lines<A>(input: Option<PathBuf>, family: &str) -> Result<Vec<(A, f64)>>
+where
+    A: std::str::FromStr,
+    A::Err: std::error::Error + Send + Sync + 'static,
+{
+    let input = open_input(input)?;
+    let mut entries = Vec::new();
+    for line in input.lines() {
+        let line = line?;
+        let value = line.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let (address, measure) = value
+            .split_once(',')
+            .with_context(|| format!("expected ADDR,MEASURE, got {value:?}"))?;
+        entries.push((
+            address
+                .trim()
+                .parse::<A>()
+                .with_context(|| format!("invalid {family} address {address:?}"))?,
+            measure
+                .trim()
+                .parse::<f64>()
+                .with_context(|| format!("invalid measure {measure:?}"))?,
+        ));
+    }
+    Ok(entries)
 }
 
 fn run_singularity(args: SingularityArgs) -> Result<()> {
@@ -621,18 +660,22 @@ fn run_singularity(args: SingularityArgs) -> Result<()> {
     Ok(())
 }
 
+fn open_input(input: Option<PathBuf>) -> Result<Box<dyn BufRead>> {
+    Ok(match input {
+        Some(path) => Box::new(BufReader::new(
+            File::open(&path).with_context(|| format!("unable to open {}", path.display()))?,
+        )),
+        None => Box::new(BufReader::new(io::stdin())),
+    })
+}
+
 /// Read one address family's addresses, one per line, from a file or standard input.
 fn read_address_lines<A>(input: Option<PathBuf>, family: &str) -> Result<Vec<A>>
 where
     A: std::str::FromStr,
     A::Err: std::error::Error + Send + Sync + 'static,
 {
-    let input: Box<dyn BufRead> = match input {
-        Some(path) => Box::new(BufReader::new(
-            File::open(&path).with_context(|| format!("unable to open {}", path.display()))?,
-        )),
-        None => Box::new(BufReader::new(io::stdin())),
-    };
+    let input = open_input(input)?;
     let mut addresses = Vec::new();
     for line in input.lines() {
         let line = line?;
