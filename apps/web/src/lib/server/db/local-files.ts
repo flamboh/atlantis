@@ -1,4 +1,4 @@
-import { DATABASE_PATH, LOCAL_SQLITE_PATH } from '$app/env/private';
+import { DATABASE_PATH, LOCAL_DATA_DIR, LOCAL_SQLITE_PATH } from '$app/env/private';
 
 async function resolvePath(value: string): Promise<string> {
 	if (value === ':memory:') {
@@ -17,7 +17,9 @@ export async function discoverLocalSqlitePaths(): Promise<string[]> {
 
 	const fs = await import('node:fs/promises');
 	const path = await import('node:path');
-	const roots = [path.resolve(process.cwd(), 'data'), path.resolve(process.cwd(), '../../data')];
+	const roots = LOCAL_DATA_DIR
+		? [await resolvePath(LOCAL_DATA_DIR)]
+		: [path.resolve(process.cwd(), 'data'), path.resolve(process.cwd(), '../../data')];
 	const dbPaths = new Set<string>();
 
 	for (const root of roots) {

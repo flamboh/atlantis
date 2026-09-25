@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import adapterNode from '@sveltejs/adapter-node';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
@@ -52,6 +53,7 @@ function databaseDriver(driver: DatabaseDriver): Plugin {
 
 export default defineConfig(({ command, mode }) => {
 	const driver = resolveDatabaseDriver(command, mode);
+	const nodeBuild = command === 'build' && driver === 'sqlite';
 
 	return {
 		plugins: [
@@ -59,6 +61,7 @@ export default defineConfig(({ command, mode }) => {
 			databaseDriver(driver),
 			sveltekit({
 				preprocess: vitePreprocess(),
+				adapter: nodeBuild ? adapterNode() : undefined,
 				env: {
 					dir: '../..'
 				}
