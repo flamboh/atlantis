@@ -8,10 +8,12 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, Rows, params, types::Value as SqlValue};
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-use crate::storage::{StorageError, connect_readonly};
+use crate::{
+    maad::decode_f32,
+    storage::{StorageError, connect_readonly},
+};
 
 const TABLES: &[TableSpec] = &[
     TableSpec::new(
@@ -85,7 +87,7 @@ const TABLES: &[TableSpec] = &[
         CandidateOnlyPolicy::Always,
     ),
     TableSpec::new(
-        "address_structure_stats",
+        "address_maad_stats",
         &[
             "granularity",
             "bucket_start",
@@ -95,11 +97,10 @@ const TABLES: &[TableSpec] = &[
             "dst_locality",
             "address_side",
             "measure",
-            "structure_kind",
             "bucket_end",
         ],
-        &["processed_at"],
-        &["values_json", "metadata_json"],
+        &[],
+        &["d0", "d1", "d2", "tau", "tau_sd", "spectrum"],
         CandidateOnlyPolicy::MissingReferenceBucketOrIpVersion,
     ),
     TableSpec::new(
@@ -147,7 +148,7 @@ pub struct TableComparison {
     pub unexpected_candidate_only_rows: i64,
     pub reference_only_rows: i64,
     pub mismatched_rows: i64,
-    pub max_json_absolute_delta: f64,
+    pub max_maad_absolute_delta: f64,
 }
 
 #[derive(Debug, Error)]
@@ -165,12 +166,6 @@ pub enum CompareError {
         table: &'static str,
         column: &'static str,
         database: &'static str,
-    },
-    #[error("{table}.{column} contains invalid JSON: {source}")]
-    InvalidJson {
-        table: &'static str,
-        column: String,
-        source: serde_json::Error,
     },
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
@@ -344,8 +339,8 @@ fn compare_shared_rows(
                             spec,
                             columns,
                             options.maad_absolute_tolerance,
-                            &mut report.max_json_absolute_delta,
-                        )? {
+                            &mut report.max_maad_absolute_delta,
+                        ) {
                             report.mismatched_rows += 1;
                         }
                         candidate_row =
@@ -385,8 +380,7 @@ fn rows_match(
     columns: &[String],
     tolerance: f64,
     max_delta: &mut f64,
-) -> Result<bool, CompareError> {
-    let json_columns = spec.json_columns.iter().copied().collect::<BTreeSet<_>>();
+) -> bool {
     let mut matches = true;
     for ((column, candidate_value), reference_value) in
         columns.iter().zip(&candidate.values).zip(&reference.values)
@@ -394,67 +388,40 @@ fn rows_match(
         if candidate_value == reference_value {
             continue;
         }
-        if json_columns.contains(column.as_str()) {
-            let candidate_json = parse_json_cell(spec.name, column, candidate_value)?;
-            let reference_json = parse_json_cell(spec.name, column, reference_value)?;
-            matches &= json_matches(&candidate_json, &reference_json, tolerance, max_delta);
-        } else {
-            matches &= candidate_value == reference_value;
-        }
+        matches &= spec.maad_columns.contains(&column.as_str())
+            && maad_values_match(candidate_value, reference_value, tolerance, max_delta);
     }
-    Ok(matches)
+    matches
 }
 
-fn parse_json_cell(
-    table: &'static str,
-    column: &str,
-    value: &SqlValue,
-) -> Result<JsonValue, CompareError> {
-    let SqlValue::Text(value) = value else {
-        return Ok(JsonValue::Null);
-    };
-    serde_json::from_str(value).map_err(|source| CompareError::InvalidJson {
-        table,
-        column: column.to_owned(),
-        source,
-    })
-}
-
-fn json_matches(
-    candidate: &JsonValue,
-    reference: &JsonValue,
+/// Compare MAAD REAL values, or f32 BLOB arrays element-wise, within the absolute tolerance.
+fn maad_values_match(
+    candidate: &SqlValue,
+    reference: &SqlValue,
     tolerance: f64,
     max_delta: &mut f64,
 ) -> bool {
+    let mut within = |candidate: f64, reference: f64| {
+        let delta = (candidate - reference).abs();
+        *max_delta = max_delta.max(delta);
+        delta <= tolerance
+    };
     match (candidate, reference) {
-        (JsonValue::Number(candidate), JsonValue::Number(reference)) => {
-            match (candidate.as_f64(), reference.as_f64()) {
-                (Some(candidate), Some(reference)) => {
-                    let delta = (candidate - reference).abs();
-                    *max_delta = max_delta.max(delta);
-                    delta <= tolerance
+        (SqlValue::Real(candidate), SqlValue::Real(reference)) => within(*candidate, *reference),
+        (SqlValue::Blob(candidate), SqlValue::Blob(reference)) => {
+            match (decode_f32(candidate), decode_f32(reference)) {
+                (Some(candidate), Some(reference)) if candidate.len() == reference.len() => {
+                    candidate.iter().zip(&reference).fold(
+                        true,
+                        |matches, (candidate, reference)| {
+                            within(f64::from(*candidate), f64::from(*reference)) && matches
+                        },
+                    )
                 }
-                _ => candidate == reference,
+                _ => false,
             }
         }
-        (JsonValue::Array(candidate), JsonValue::Array(reference)) => {
-            candidate.len() == reference.len()
-                && candidate
-                    .iter()
-                    .zip(reference)
-                    .all(|(candidate, reference)| {
-                        json_matches(candidate, reference, tolerance, max_delta)
-                    })
-        }
-        (JsonValue::Object(candidate), JsonValue::Object(reference)) => {
-            candidate.len() == reference.len()
-                && candidate.iter().all(|(key, candidate)| {
-                    reference.get(key).is_some_and(|reference| {
-                        json_matches(candidate, reference, tolerance, max_delta)
-                    })
-                })
-        }
-        _ => candidate == reference,
+        _ => false,
     }
 }
 
@@ -684,7 +651,7 @@ struct TableSpec {
     name: &'static str,
     key_columns: &'static [&'static str],
     ignored_columns: &'static [&'static str],
-    json_columns: &'static [&'static str],
+    maad_columns: &'static [&'static str],
     candidate_only_policy: CandidateOnlyPolicy,
 }
 
@@ -693,14 +660,14 @@ impl TableSpec {
         name: &'static str,
         key_columns: &'static [&'static str],
         ignored_columns: &'static [&'static str],
-        json_columns: &'static [&'static str],
+        maad_columns: &'static [&'static str],
         candidate_only_policy: CandidateOnlyPolicy,
     ) -> Self {
         Self {
             name,
             key_columns,
             ignored_columns,
-            json_columns,
+            maad_columns,
             candidate_only_policy,
         }
     }

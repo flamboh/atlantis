@@ -23,6 +23,10 @@ function mockDatasetSession(db: object): void {
 	);
 }
 
+function f32(values: number[]): Buffer {
+	return Buffer.from(Float32Array.from(values).buffer);
+}
+
 describe('netflow file helpers and routes', () => {
 	it('parses slugs and resolves dataset from requests', async () => {
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
@@ -57,11 +61,13 @@ describe('netflow file helpers and routes', () => {
 				daIpv6Count: 4
 			})
 			.mockResolvedValueOnce({
-				valuesJson: '[{"alpha":3,"f":4}]'
+				spectrum: f32([3, 4])
 			})
 			.mockResolvedValueOnce({
-				valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]'
-			});
+				tau: f32([2]),
+				tauSd: f32([0.5])
+			})
+			.mockResolvedValueOnce({ ipVersion: 4, qMin: 1, qStep: 1, qCount: 1 });
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		mockDatasetSession({
 			get
@@ -119,6 +125,7 @@ describe('netflow file helpers and routes', () => {
 			'source',
 			'addresses'
 		]);
+		expect(get).toHaveBeenNthCalledWith(4, expect.any(String), [4]);
 		await expect(ipResponse.json()).resolves.toEqual({ ipv4Count: 1, ipv6Count: 3 });
 		await expect(spectrumResponse.json()).resolves.toEqual({
 			slug: '202503010005',
@@ -183,15 +190,19 @@ describe('netflow file helpers and routes', () => {
 				daIpv4Count: 3,
 				saIpv6Count: 4,
 				daIpv6Count: 5,
-				structureJsonSa: '[{"q":2,"tauTilde":8,"sd":0.25}]',
-				structureJsonDa: null,
-				spectrumJsonSa: '[{"alpha":1.5,"f":2}]',
-				spectrumJsonDa: null
+				saTau: f32([8]),
+				saTauSd: f32([0.25]),
+				daTau: null,
+				daTauSd: null,
+				saSpectrum: f32([1.5, 2]),
+				daSpectrum: null
 			}
 		]);
+		const get = vi.fn().mockResolvedValue({ ipVersion: 4, qMin: 2, qStep: 1, qCount: 1 });
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		mockDatasetSession({
-			all
+			all,
+			get
 		});
 
 		const response = await getDetails({
@@ -210,12 +221,6 @@ describe('netflow file helpers and routes', () => {
 			bucketStart,
 			'internal',
 			'external',
-			'5m',
-			bucketStart,
-			4,
-			'internal',
-			'external',
-			'addresses',
 			'5m',
 			bucketStart,
 			4,
@@ -312,8 +317,9 @@ describe('netflow file helpers and routes', () => {
 	it('binds the requested MAAD ip version for the per-file spectrum and structure routes', async () => {
 		const get = vi
 			.fn()
-			.mockResolvedValueOnce({ valuesJson: '[{"alpha":3,"f":4}]' })
-			.mockResolvedValueOnce({ valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]' });
+			.mockResolvedValueOnce({ spectrum: f32([3, 4]) })
+			.mockResolvedValueOnce({ tau: f32([2]), tauSd: f32([0.5]) })
+			.mockResolvedValueOnce({ ipVersion: 6, qMin: 1, qStep: 1, qCount: 1 });
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		mockDatasetSession({ get });
 
@@ -352,6 +358,7 @@ describe('netflow file helpers and routes', () => {
 			'source',
 			'addresses'
 		]);
+		expect(get).toHaveBeenNthCalledWith(3, expect.any(String), [6]);
 	});
 
 	it('rejects an invalid MAAD ip version for the per-file spectrum, structure, and details routes', async () => {
@@ -383,7 +390,11 @@ describe('netflow file helpers and routes', () => {
 	});
 
 	it('binds the requested MAAD measure into the per-file and details MAAD queries', async () => {
-		const get = vi.fn().mockResolvedValue({ valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]' });
+		const get = vi
+			.fn()
+			.mockResolvedValueOnce({ tau: f32([2]), tauSd: f32([0.5]) })
+			.mockResolvedValueOnce({ ipVersion: 4, qMin: 1, qStep: 1, qCount: 1 })
+			.mockResolvedValue({ ipVersion: 4, qMin: 1, qStep: 1, qCount: 1 });
 		const all = vi.fn().mockResolvedValue([]);
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 		mockDatasetSession({ get, all });
@@ -415,21 +426,22 @@ describe('netflow file helpers and routes', () => {
 			)
 		} as never);
 		expect(spectrumResponse.status).toBe(400);
-		expect(get).toHaveBeenCalledTimes(1);
+		expect(get).toHaveBeenCalledTimes(2);
 
 		await getDetails({
 			params: { slug: '202503010005' },
 			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&measure=bytes')
 		} as never);
 		const [detailsQuery, detailsParams] = all.mock.calls[0] as [string, unknown[]];
-		expect(detailsQuery.match(/AND measure = \?/g)).toHaveLength(2);
-		expect(detailsParams.filter((value) => value === 'bytes')).toHaveLength(2);
+		expect(detailsQuery.match(/AND measure = \?/g)).toHaveLength(1);
+		expect(detailsParams.filter((value) => value === 'bytes')).toHaveLength(1);
 	});
 
 	it('binds the requested MAAD ip version into the file details MAAD query', async () => {
 		const all = vi.fn().mockResolvedValue([]);
+		const get = vi.fn().mockResolvedValue({ ipVersion: 6, qMin: -0.5, qStep: 0.125, qCount: 33 });
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-		mockDatasetSession({ all });
+		mockDatasetSession({ all, get });
 
 		const bucketStart = slugToBucketStart('202503010005');
 
@@ -448,12 +460,6 @@ describe('netflow file helpers and routes', () => {
 			bucketStart,
 			'all',
 			'all',
-			'5m',
-			bucketStart,
-			6,
-			'all',
-			'all',
-			'addresses',
 			'5m',
 			bucketStart,
 			6,

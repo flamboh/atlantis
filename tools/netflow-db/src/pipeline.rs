@@ -1518,7 +1518,7 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 5,
+            "contract_version": 6,
             "config": maad_config,
             "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
         }

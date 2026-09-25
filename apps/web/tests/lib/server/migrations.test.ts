@@ -20,6 +20,12 @@ function migrationFiles(): string[] {
 		.sort();
 }
 
+function migrationIndexContaining(migrations: string[], needle: string): number {
+	return migrations.findIndex((fileName) =>
+		fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes(needle)
+	);
+}
+
 function applyMigration(database: Database.Database, fileName: string): void {
 	database.exec(fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8'));
 }
@@ -155,7 +161,7 @@ describe('D1 migrations', () => {
 					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
-					'idx_address_structure_stats_timeseries',
+					'idx_address_maad_stats_key',
 					[
 						'source_id',
 						'granularity',
@@ -163,8 +169,8 @@ describe('D1 migrations', () => {
 						'dst_locality',
 						'ip_version',
 						'measure',
-						'structure_kind',
-						'bucket_start'
+						'bucket_start',
+						'address_side'
 					]
 				]
 			]);
@@ -184,12 +190,46 @@ describe('D1 migrations', () => {
 			for (const indexName of [
 				'idx_traffic_stats_query',
 				'idx_address_count_stats_query',
-				'idx_address_structure_stats_query'
+				'idx_address_maad_stats_bucket'
 			]) {
 				expect(indexColumns(database, indexName), indexName).not.toHaveLength(0);
 			}
 			expect(indexColumns(database, 'idx_protocol_stats_query')).toHaveLength(0);
 			expect(indexColumns(database, 'idx_port_count_stats_query')).toHaveLength(0);
+
+			const maadColumns = database
+				.prepare('PRAGMA table_info(address_maad_stats)')
+				.all()
+				.map((column) => (column as { name: string }).name);
+			expect(maadColumns).toEqual(
+				expect.arrayContaining([
+					'total_addrs',
+					'zero_weight_addrs',
+					'min_prefix_length',
+					'max_prefix_length',
+					'd0',
+					'd1',
+					'd2',
+					'tau',
+					'tau_sd',
+					'spectrum'
+				])
+			);
+			expect(maadColumns).not.toEqual(
+				expect.arrayContaining(['values_json', 'metadata_json', 'structure_kind', 'processed_at'])
+			);
+
+			const qGridColumns = database
+				.prepare('PRAGMA table_info(maad_q_grid)')
+				.all()
+				.map((column) => (column as { name: string }).name);
+			expect(qGridColumns).toEqual(['ip_version', 'q_min', 'q_step', 'q_count']);
+
+			expect(
+				database
+					.prepare("SELECT name FROM sqlite_master WHERE name = 'address_structure_stats'")
+					.all()
+			).toHaveLength(0);
 		} finally {
 			database.close();
 		}
@@ -264,9 +304,7 @@ describe('D1 migrations', () => {
 	it('keeps only locality-independent rollup rows when renaming visibility to locality', () => {
 		const database = new Database(':memory:');
 		const migrations = migrationFiles();
-		const localityMigration = migrations.findIndex((fileName) =>
-			fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes('src_locality')
-		);
+		const localityMigration = migrationIndexContaining(migrations, 'src_locality');
 		try {
 			for (const migration of migrations.slice(0, localityMigration)) {
 				applyMigration(database, migration);
@@ -305,9 +343,8 @@ describe('D1 migrations', () => {
 	it('keeps only locality-independent rows in every stats table', () => {
 		const database = new Database(':memory:');
 		const migrations = migrationFiles();
-		const localityMigration = migrations.findIndex((fileName) =>
-			fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes('src_locality')
-		);
+		const localityMigration = migrationIndexContaining(migrations, 'src_locality');
+		const maadMigration = migrationIndexContaining(migrations, 'address_maad_stats');
 		const tables = [
 			'traffic_stats',
 			'protocol_stats',
@@ -329,7 +366,7 @@ describe('D1 migrations', () => {
 					.run();
 			}
 
-			for (const migration of migrations.slice(localityMigration)) {
+			for (const migration of migrations.slice(localityMigration, maadMigration)) {
 				applyMigration(database, migration);
 			}
 
@@ -347,11 +384,11 @@ describe('D1 migrations', () => {
 	it('keys MAAD rows by measure and keeps existing rows as the addresses measure', () => {
 		const database = new Database(':memory:');
 		const migrations = migrationFiles();
-		const measureMigration = migrations.findIndex((fileName) =>
-			fs
-				.readFileSync(path.join(migrationsDirectory, fileName), 'utf8')
-				.includes('address_structure_stats_measure_check')
+		const measureMigration = migrationIndexContaining(
+			migrations,
+			'address_structure_stats_measure_check'
 		);
+		const maadMigration = migrationIndexContaining(migrations, 'address_maad_stats');
 		try {
 			for (const migration of migrations.slice(0, measureMigration)) {
 				applyMigration(database, migration);
@@ -366,7 +403,7 @@ describe('D1 migrations', () => {
 				)
 				.run();
 
-			for (const migration of migrations.slice(measureMigration)) {
+			for (const migration of migrations.slice(measureMigration, maadMigration)) {
 				applyMigration(database, migration);
 			}
 

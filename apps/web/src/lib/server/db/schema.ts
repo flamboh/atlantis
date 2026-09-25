@@ -1,12 +1,14 @@
 import { sql } from 'drizzle-orm';
 import {
+	blob,
 	check,
 	index,
 	integer,
 	primaryKey,
 	real,
 	sqliteTable,
-	text
+	text,
+	uniqueIndex
 } from 'drizzle-orm/sqlite-core';
 
 const currentTimestamp = sql`CURRENT_TIMESTAMP`;
@@ -320,8 +322,8 @@ export const portCountStats = sqliteTable(
 	]
 );
 
-export const addressStructureStats = sqliteTable(
-	'address_structure_stats',
+export const addressMaadStats = sqliteTable(
+	'address_maad_stats',
 	{
 		sourceId: text('source_id').notNull(),
 		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
@@ -332,64 +334,73 @@ export const addressStructureStats = sqliteTable(
 		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
 		measure: text('measure', { enum: ['addresses', 'packets', 'bytes'] }).notNull(),
-		structureKind: text('structure_kind', {
-			enum: ['structure', 'spectrum', 'dimension']
-		}).notNull(),
-		valuesJson: text('values_json').notNull(),
-		metadataJson: text('metadata_json').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
+		totalAddrs: integer('total_addrs').notNull(),
+		zeroWeightAddrs: integer('zero_weight_addrs').notNull().default(0),
+		minPrefixLength: integer('min_prefix_length'),
+		maxPrefixLength: integer('max_prefix_length'),
+		d0: real('d0'),
+		d1: real('d1'),
+		d2: real('d2'),
+		tau: blob('tau', { mode: 'buffer' }),
+		tauSd: blob('tau_sd', { mode: 'buffer' }),
+		spectrum: blob('spectrum', { mode: 'buffer' })
 	},
 	(table) => [
-		primaryKey({
-			columns: [
-				table.sourceId,
-				table.granularity,
-				table.bucketStart,
-				table.ipVersion,
-				table.srcLocality,
-				table.dstLocality,
-				table.addressSide,
-				table.measure,
-				table.structureKind
-			]
-		}),
-		index('idx_address_structure_stats_query').on(
+		uniqueIndex('idx_address_maad_stats_key').on(
+			table.sourceId,
 			table.granularity,
+			table.srcLocality,
+			table.dstLocality,
+			table.ipVersion,
+			table.measure,
 			table.bucketStart,
-			table.sourceId,
-			table.ipVersion,
-			table.srcLocality,
-			table.dstLocality,
-			table.addressSide,
-			table.measure,
-			table.structureKind
+			table.addressSide
 		),
-		index('idx_address_structure_stats_timeseries').on(
-			table.sourceId,
-			table.granularity,
-			table.srcLocality,
-			table.dstLocality,
-			table.ipVersion,
-			table.measure,
-			table.structureKind,
-			table.bucketStart
-		),
-		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		index('idx_address_maad_stats_bucket').on(table.granularity, table.bucketStart),
+		check('address_maad_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
 		check(
-			'address_structure_stats_src_locality_check',
+			'address_maad_stats_src_locality_check',
 			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
 		),
 		check(
-			'address_structure_stats_dst_locality_check',
+			'address_maad_stats_dst_locality_check',
 			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
 		),
 		check(
-			'address_structure_stats_measure_check',
+			'address_maad_stats_measure_check',
 			sql`${table.measure} IN ('addresses', 'packets', 'bytes')`
 		),
+		check('address_maad_stats_bucket_check', sql`${table.bucketEnd} > ${table.bucketStart}`),
+		check('address_maad_stats_total_addrs_check', sql`${table.totalAddrs} >= 0`),
 		check(
-			'address_structure_stats_measure_spectrum_check',
-			sql`${table.measure} = 'addresses' OR ${table.structureKind} <> 'spectrum'`
-		)
+			'address_maad_stats_zero_weight_addrs_check',
+			sql`${table.zeroWeightAddrs} >= 0 AND (${table.measure} <> 'addresses' OR ${table.zeroWeightAddrs} = 0)`
+		),
+		check(
+			'address_maad_stats_prefix_length_check',
+			sql`${table.maxPrefixLength} >= ${table.minPrefixLength}`
+		),
+		check('address_maad_stats_tau_sd_check', sql`length(${table.tauSd}) IS length(${table.tau})`),
+		check('address_maad_stats_spectrum_check', sql`length(${table.spectrum}) % 8 = 0`),
+		check(
+			'address_maad_stats_measure_spectrum_check',
+			sql`${table.measure} = 'addresses' OR ${table.spectrum} IS NULL`
+		),
+		check('address_maad_stats_tau_d0_check', sql`(${table.tau} IS NULL) = (${table.d0} IS NULL)`)
+	]
+);
+
+export const maadQGrid = sqliteTable(
+	'maad_q_grid',
+	{
+		ipVersion: integer('ip_version').primaryKey(),
+		qMin: real('q_min').notNull(),
+		qStep: real('q_step').notNull(),
+		qCount: integer('q_count').notNull()
+	},
+	(table) => [
+		check('maad_q_grid_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check('maad_q_grid_q_step_check', sql`${table.qStep} > 0`),
+		check('maad_q_grid_q_count_check', sql`${table.qCount} > 0`)
 	]
 );

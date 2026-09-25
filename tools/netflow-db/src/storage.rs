@@ -31,19 +31,20 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
-    "address_structure_stats",
+    "address_maad_stats",
     "bucket_coverage",
 ];
 /// Versioned product schema bound into every pipeline database identity.
 pub fn product_schema() -> serde_json::Value {
     serde_json::json!({
-        "version": 6,
+        "version": 7,
         "tables": [
             {"name": "traffic_stats", "version": 4},
             {"name": "protocol_stats", "version": 3},
             {"name": "address_count_stats", "version": 3},
             {"name": "port_count_stats", "version": 3},
-            {"name": "address_structure_stats", "version": 4},
+            {"name": "address_maad_stats", "version": 1},
+            {"name": "maad_q_grid", "version": 1},
             {"name": "bucket_coverage", "version": 2}
         ]
     })
@@ -1502,29 +1503,43 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
         ON port_count_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
-        CREATE TABLE IF NOT EXISTS address_structure_stats (
+        CREATE TABLE IF NOT EXISTS address_maad_stats (
             source_id TEXT NOT NULL,
             granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
             src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
             dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
             measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
-            structure_kind TEXT NOT NULL CHECK (structure_kind IN ('structure', 'spectrum', 'dimension')),
-            values_json TEXT NOT NULL,
-            metadata_json TEXT NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            CHECK (measure = 'addresses' OR structure_kind <> 'spectrum'),
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side, measure, structure_kind)
-        ) WITHOUT ROWID;
-        CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
-        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side, measure, structure_kind);
-        CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
-        ON address_structure_stats (
+            total_addrs INTEGER NOT NULL CHECK (total_addrs >= 0),
+            zero_weight_addrs INTEGER NOT NULL DEFAULT 0
+                CHECK (zero_weight_addrs >= 0 AND (measure <> 'addresses' OR zero_weight_addrs = 0)),
+            min_prefix_length INTEGER,
+            max_prefix_length INTEGER CHECK (max_prefix_length >= min_prefix_length),
+            d0 REAL,
+            d1 REAL,
+            d2 REAL,
+            tau BLOB,
+            tau_sd BLOB CHECK (length(tau_sd) IS length(tau)),
+            spectrum BLOB CHECK (length(spectrum) % 8 = 0),
+            CHECK (measure = 'addresses' OR spectrum IS NULL),
+            CHECK ((tau IS NULL) = (d0 IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_address_maad_stats_key
+        ON address_maad_stats (
             source_id, granularity, src_locality, dst_locality,
-            ip_version, measure, structure_kind, bucket_start
+            ip_version, measure, bucket_start, address_side
+        );
+        CREATE INDEX IF NOT EXISTS idx_address_maad_stats_bucket
+        ON address_maad_stats (granularity, bucket_start);
+
+        CREATE TABLE IF NOT EXISTS maad_q_grid (
+            ip_version INTEGER PRIMARY KEY CHECK (ip_version IN (4, 6)),
+            q_min REAL NOT NULL,
+            q_step REAL NOT NULL CHECK (q_step > 0),
+            q_count INTEGER NOT NULL CHECK (q_count > 0)
         );
 
         DROP INDEX IF EXISTS idx_protocol_stats_query;
@@ -1918,14 +1933,37 @@ pub struct PortCountStatsRow {
     pub unique_port_count: i64,
 }
 
+/// One scope, side and measure's MAAD result with every curve value stored as little-endian f32.
 #[derive(Clone, Debug, PartialEq)]
-pub struct AddressStructureStatsRow {
+pub struct AddressMaadStatsRow {
     pub dimensions: StatsDimensions,
     pub address_side: String,
     pub measure: String,
-    pub structure_kind: String,
-    pub values_json: String,
-    pub metadata_json: String,
+    pub total_addrs: i64,
+    pub zero_weight_addrs: i64,
+    pub min_prefix_length: Option<u8>,
+    pub max_prefix_length: Option<u8>,
+    pub curve: Option<MaadCurve>,
+    pub spectrum: Option<Vec<u8>>,
+}
+
+/// The dimensions and structure function of a non-empty MAAD result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaadCurve {
+    pub d0: f64,
+    pub d1: f64,
+    pub d2: f64,
+    pub tau: Vec<u8>,
+    pub tau_sd: Vec<u8>,
+}
+
+/// The q grid every tau and tau_sd array of one IP version is evaluated on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaadQGridRow {
+    pub ip_version: i64,
+    pub q_min: f64,
+    pub q_step: f64,
+    pub q_count: i64,
 }
 
 pub fn insert_traffic_stats_rows(
@@ -2073,21 +2111,23 @@ pub fn insert_port_count_stats_rows(
     Ok(())
 }
 
-pub fn insert_address_structure_stats_rows(
+pub fn insert_address_maad_stats_rows(
     connection: &Connection,
-    rows: &[AddressStructureStatsRow],
+    rows: &[AddressMaadStatsRow],
 ) -> Result<(), StorageError> {
     let mut statement = connection.prepare_cached(
         "
-        INSERT OR REPLACE INTO address_structure_stats (
+        INSERT OR REPLACE INTO address_maad_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_locality, dst_locality, address_side, measure, structure_kind,
-            values_json, metadata_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            src_locality, dst_locality, address_side, measure,
+            total_addrs, zero_weight_addrs, min_prefix_length, max_prefix_length,
+            d0, d1, d2, tau, tau_sd, spectrum
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ",
     )?;
     for row in rows {
         let d = &row.dimensions;
+        let curve = row.curve.as_ref();
         statement.execute(params![
             d.source_id,
             d.granularity,
@@ -2098,10 +2138,31 @@ pub fn insert_address_structure_stats_rows(
             d.dst_locality,
             row.address_side,
             row.measure,
-            row.structure_kind,
-            row.values_json,
-            row.metadata_json
+            row.total_addrs,
+            row.zero_weight_addrs,
+            row.min_prefix_length,
+            row.max_prefix_length,
+            curve.map(|curve| curve.d0),
+            curve.map(|curve| curve.d1),
+            curve.map(|curve| curve.d2),
+            curve.map(|curve| curve.tau.as_slice()),
+            curve.map(|curve| curve.tau_sd.as_slice()),
+            row.spectrum.as_deref()
         ])?;
+    }
+    Ok(())
+}
+
+pub fn insert_maad_q_grid_rows(
+    connection: &Connection,
+    rows: &[MaadQGridRow],
+) -> Result<(), StorageError> {
+    let mut statement = connection.prepare_cached(
+        "INSERT OR REPLACE INTO maad_q_grid (ip_version, q_min, q_step, q_count)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for row in rows {
+        statement.execute(params![row.ip_version, row.q_min, row.q_step, row.q_count])?;
     }
     Ok(())
 }
@@ -2112,7 +2173,7 @@ pub struct StatsPayload {
     pub protocol_rows: Vec<ProtocolStatsRow>,
     pub address_count_rows: Vec<AddressCountStatsRow>,
     pub port_count_rows: Vec<PortCountStatsRow>,
-    pub address_structure_rows: Vec<AddressStructureStatsRow>,
+    pub address_maad_rows: Vec<AddressMaadStatsRow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2121,7 +2182,7 @@ pub enum StatsTable {
     Protocol,
     AddressCount,
     PortCount,
-    AddressStructure,
+    AddressMaad,
 }
 
 impl StatsTable {
@@ -2130,7 +2191,7 @@ impl StatsTable {
         Self::Protocol,
         Self::AddressCount,
         Self::PortCount,
-        Self::AddressStructure,
+        Self::AddressMaad,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -2139,7 +2200,7 @@ impl StatsTable {
             Self::Protocol => "protocol_stats",
             Self::AddressCount => "address_count_stats",
             Self::PortCount => "port_count_stats",
-            Self::AddressStructure => "address_structure_stats",
+            Self::AddressMaad => "address_maad_stats",
         }
     }
 }
@@ -2160,8 +2221,8 @@ pub fn insert_stats_payload(
             StatsTable::PortCount => {
                 insert_port_count_stats_rows(connection, &payload.port_count_rows)?
             }
-            StatsTable::AddressStructure => {
-                insert_address_structure_stats_rows(connection, &payload.address_structure_rows)?
+            StatsTable::AddressMaad => {
+                insert_address_maad_stats_rows(connection, &payload.address_maad_rows)?
             }
         }
     }
@@ -2335,15 +2396,18 @@ impl PortCountStatsRow {
 }
 
 #[cfg(test)]
-impl AddressStructureStatsRow {
+impl AddressMaadStatsRow {
     fn example() -> Self {
         Self {
             dimensions: StatsDimensions::example(),
             address_side: "source".into(),
             measure: "addresses".into(),
-            structure_kind: "structure".into(),
-            values_json: "[]".into(),
-            metadata_json: "{}".into(),
+            total_addrs: 0,
+            zero_weight_addrs: 0,
+            min_prefix_length: None,
+            max_prefix_length: None,
+            curve: None,
+            spectrum: Some(Vec::new()),
         }
     }
 }
@@ -2944,8 +3008,7 @@ mod tests {
         insert_protocol_stats_rows(&connection, &[ProtocolStatsRow::example()]).unwrap();
         insert_address_count_stats_rows(&connection, &[AddressCountStatsRow::example()]).unwrap();
         insert_port_count_stats_rows(&connection, &[PortCountStatsRow::example()]).unwrap();
-        insert_address_structure_stats_rows(&connection, &[AddressStructureStatsRow::example()])
-            .unwrap();
+        insert_address_maad_stats_rows(&connection, &[AddressMaadStatsRow::example()]).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT flows_tcp FROM traffic_stats", [], |row| row
@@ -3020,16 +3083,28 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap()
                 .join("\n");
-            for clause in [
-                "USING PRIMARY KEY",
-                "source_id=?",
-                "granularity=?",
-                "bucket_start>?",
-                "bucket_start<?",
-            ] {
+            let bounded_range = if table == "address_maad_stats" {
+                [
+                    "USING INDEX idx_address_maad_stats_bucket",
+                    "granularity=?",
+                    "bucket_start>?",
+                    "bucket_start<?",
+                ]
+                .as_slice()
+            } else {
+                [
+                    "USING PRIMARY KEY",
+                    "source_id=?",
+                    "granularity=?",
+                    "bucket_start>?",
+                    "bucket_start<?",
+                ]
+                .as_slice()
+            };
+            for clause in bounded_range {
                 assert!(
                     plan.contains(clause),
-                    "{table} delete plan should use the bounded primary-key range: {plan}"
+                    "{table} delete plan should use a bounded bucket range: {plan}"
                 );
             }
         }
@@ -3059,9 +3134,9 @@ mod tests {
                 let mut port_count = PortCountStatsRow::example();
                 port_count.dimensions = dimensions.clone();
                 insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
-                let mut address_structure = AddressStructureStatsRow::example();
-                address_structure.dimensions = dimensions;
-                insert_address_structure_stats_rows(&connection, &[address_structure]).unwrap();
+                let mut address_maad = AddressMaadStatsRow::example();
+                address_maad.dimensions = dimensions;
+                insert_address_maad_stats_rows(&connection, &[address_maad]).unwrap();
 
                 let coverage = BucketCoverageRow::new(
                     source_id,
@@ -3296,7 +3371,7 @@ mod tests {
                 .as_slice(),
             ),
             (
-                "idx_address_structure_stats_timeseries",
+                "idx_address_maad_stats_key",
                 [
                     "source_id",
                     "granularity",
@@ -3304,10 +3379,14 @@ mod tests {
                     "dst_locality",
                     "ip_version",
                     "measure",
-                    "structure_kind",
                     "bucket_start",
+                    "address_side",
                 ]
                 .as_slice(),
+            ),
+            (
+                "idx_address_maad_stats_bucket",
+                ["granularity", "bucket_start"].as_slice(),
             ),
         ];
         for (index, expected_columns) in expected_indexes {
@@ -3344,7 +3423,7 @@ mod tests {
         for index in [
             "idx_traffic_stats_query",
             "idx_address_count_stats_query",
-            "idx_address_structure_stats_query",
+            "idx_address_maad_stats_bucket",
         ] {
             assert!(
                 connection
