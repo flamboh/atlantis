@@ -259,9 +259,14 @@ shard back, merges the snapshots, and runs `verify`:
 - If a shard fails or you interrupt the script, rerun the same command. A shard that is still
   running is reattached instead of started twice, and a restarted shard resumes after its last
   completed day. Ctrl-C stops only the local script; remote shards keep running.
-- After `verify` passes, the script deletes the local shard copies in `<output>.shards` unless you
-  pass `--keep-shards`; the logs and layout stay there. It leaves the remote shard databases in
-  place. Delete `work/` on each host when you are finished.
+- The script merges with `merge-shards --consume`, which deletes each local shard copy in
+  `<output>.shards` as soon as its rows are committed, so local disk peaks near the output size
+  plus one shard. Pass `--keep-shards` to merge without consuming and keep the copies. The logs
+  and layout stay in `<output>.shards` either way.
+- If the merge fails, rerun the same command. The remote shard databases are the source of truth:
+  the rerun copies every shard back again and deletes the partial merge from the failed run
+  first. The script leaves the remote shard databases in place, so delete `work/` on each host
+  when you are finished.
 
 To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
 `--end-date` over a different day range, then run:
@@ -276,6 +281,15 @@ refuses rows outside a shard's completed days, and completed days without full f
 coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
 again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
 path publishes zero buckets.
+
+When disk is tight, add `--consume`. The command still runs every check on every shard before it
+changes anything. It then moves the first shard into the temporary output, or copies it if the
+output is on another filesystem, and deletes each other shard with its SQLite sidecars once that
+shard's rows are durably committed. Peak disk is about the output size plus one shard. If a
+consuming merge fails after it has consumed a shard, it keeps the temporary output: a valid
+partial product that holds exactly the consumed shards. The error names the consumed shards and
+the partial file, and prints the command that resumes the merge from the partial and the
+remaining shards, which are left untouched.
 
 ## Verify the output
 

@@ -24,7 +24,9 @@ Options (defaults may also come from the environment):
                        nfdump/libexec/nfdump, datasets.json and work/.
   --work-dir DIR       Local directory for shard copies, logs and the recorded layout
                        [NETFLOW_CLUSTER_WORK_DIR, default: <output>.shards].
-  --keep-shards        Keep the local shard copies after verify passes.
+  --keep-shards        Merge without consuming the local shard copies and keep them. By default
+                       merge-shards --consume deletes each copy once its rows are committed,
+                       so peak local disk stays near the output size plus one shard.
   --deploy-bin PATH    Copy this netflow-db binary to every host first.
   --deploy-nfdump PATH Copy this nfdump executable to every host first.
   --deploy-datasets PATH
@@ -35,7 +37,9 @@ Options (defaults may also come from the environment):
 Every shard uses identical flags, an explicit end date, and the same nfdump path, so every shard
 records the same product identity. Remote shard databases stay on host-local disk under
 <remote-dir>/work, named by dataset and day range. Rerun the same command to resume: running
-shards are reattached and completed days are skipped. A rerun with a different layout is refused.
+shards are reattached, completed days are skipped, every shard is copied back again, and a
+partial merge left by an earlier failed run is deleted first. A rerun with a different layout is
+refused.
 EOF
 }
 
@@ -275,19 +279,20 @@ if ((failed)); then
   exit 1
 fi
 
-if ((${#shard_paths[@]} == 1)); then
-  cp -- "${shard_paths[0]}" "$output"
-else
-  "$local_bin" merge-shards --output "$output" "${shard_paths[@]}"
+merge_flags=(--output "$output")
+if ((!keep_shards)); then
+  merge_flags+=(--consume)
 fi
+shopt -s nullglob
+for stale in "$(dirname "$output")/.$(basename "$output")."*.merge.tmp; do
+  echo "removing partial merge from an earlier run: $stale"
+  rm -f -- "$stale" "$stale-journal" "$stale-wal" "$stale-shm"
+done
+shopt -u nullglob
+"$local_bin" merge-shards "${merge_flags[@]}" "${shard_paths[@]}"
 verify_flags=(--require-data --require-processed --require-rollup-parity --require-no-raw-ip)
 if [[ " ${extra[*]} " != *" --no-maad "* ]]; then
   verify_flags+=(--require-maad-data)
 fi
 "$local_bin" verify "$output" --dataset-id "$dataset" "${verify_flags[@]}"
-if ((!keep_shards)); then
-  for path in "${shard_paths[@]}"; do
-    rm -f -- "$path" "$path-wal" "$path-shm" "$path-journal"
-  done
-fi
 echo "merged product: $output"
