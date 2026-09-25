@@ -158,6 +158,9 @@ pub fn verify_database(
             options.require_maad_data,
             "web spectrum stats query returned no rows",
         )?;
+        if options.require_maad_data {
+            assert_ipv6_maad_rows(&connection, &source_id, bucket_start, bucket_end)?;
+        }
         let file_bucket_start = connection.query_row(
             "SELECT MIN(bucket_start) FROM traffic_stats
              WHERE source_id = ?1 AND granularity = '5m'
@@ -589,6 +592,42 @@ fn assert_optional_maad_query(
     Ok(())
 }
 
+/// IPv6 traffic in the window must have IPv6 MAAD rows.
+fn assert_ipv6_maad_rows(
+    connection: &Connection,
+    source_id: &str,
+    bucket_start: i64,
+    bucket_end: i64,
+) -> Result<(), VerifyError> {
+    let has_traffic = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM traffic_stats
+            WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
+              AND src_locality = 'all' AND dst_locality = 'all' AND flows > 0
+              AND bucket_start >= ?2 AND bucket_start < ?3
+        )",
+        params![source_id, bucket_start, bucket_end],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let has_maad = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM address_structure_stats
+            WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
+              AND src_locality = 'all' AND dst_locality = 'all'
+              AND structure_kind = 'structure'
+              AND bucket_start >= ?2 AND bucket_start < ?3
+        )",
+        params![source_id, bucket_start, bucket_end],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if has_traffic && !has_maad {
+        return Err(VerifyError::Incompatible(
+            "IPv6 traffic has no IPv6 MAAD structure rows".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -751,6 +790,45 @@ mod tests {
 
     use super::*;
     use crate::storage::init_schema;
+
+    #[test]
+    fn ipv6_traffic_requires_ipv6_maad_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        assert!(assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).is_ok());
+        connection
+            .execute(
+                "INSERT INTO traffic_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
+                    flows_icmp, flows_other, packets, packets_tcp, packets_udp,
+                    packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
+                    bytes_icmp, bytes_other, duration_sum_ms, duration_count,
+                    average_duration_ms, min_ttl_sum, min_ttl_count, average_min_ttl,
+                    max_ttl_sum, max_ttl_count, average_max_ttl
+                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 2, 2, 0, 0, 0,
+                    3, 3, 0, 0, 0, 4, 4, 0, 0, 0, 10, 2, 5.0, 62, 2, 31.0,
+                    128, 2, 64.0)",
+                [],
+            )
+            .unwrap();
+
+        let error = assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).unwrap_err();
+        assert!(error.to_string().contains("IPv6 traffic has no IPv6 MAAD"));
+
+        connection
+            .execute(
+                "INSERT INTO address_structure_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, address_side, structure_kind,
+                    values_json, metadata_json
+                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 'source', 'structure',
+                    '[]', '{}')",
+                [],
+            )
+            .unwrap();
+        assert!(assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).is_ok());
+    }
 
     #[test]
     fn canonical_database_satisfies_web_query_contract() {
