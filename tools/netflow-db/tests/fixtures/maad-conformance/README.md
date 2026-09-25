@@ -13,3 +13,10 @@ The cases cover a clustered set, deterministic random addresses, a mixed set,
 one-sided nearly-full-prefix pruning with ancestor propagation, and balanced
 branching. Empty/sparse inputs and the 1024-address uniform-rounding case are
 intentionally excluded.
+
+The `ipv6-*` cases are synthetic IPv6 sets: `ipv6-clustered` nests random
+subnets inside random sites and allocations, and `ipv6-mixed` combines
+low-numbered hosts in a few `/64`s with scattered random addresses. Their
+goldens add `--ipv6` to the oracle invocation, and the integration test runs
+`netflow-db maad --ipv6`. Inputs are written as eight hexadecimal groups
+because the oracle misreads embedded IPv4 notation such as `::ffff:192.0.2.1`.

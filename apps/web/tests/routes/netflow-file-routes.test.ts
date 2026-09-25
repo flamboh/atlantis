@@ -103,6 +103,7 @@ describe('netflow file helpers and routes', () => {
 			'r1',
 			'5m',
 			bucketStart,
+			4,
 			'internal',
 			'external',
 			'destination'
@@ -111,6 +112,7 @@ describe('netflow file helpers and routes', () => {
 			'r1',
 			'5m',
 			bucketStart,
+			4,
 			'internal',
 			'external',
 			'source'
@@ -208,10 +210,12 @@ describe('netflow file helpers and routes', () => {
 			'external',
 			'5m',
 			bucketStart,
+			4,
 			'internal',
 			'external',
 			'5m',
 			bucketStart,
+			4,
 			'internal',
 			'external',
 			bucketStart
@@ -299,5 +303,112 @@ describe('netflow file helpers and routes', () => {
 			error: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 		});
 		expect(withDatasetDb).not.toHaveBeenCalledWith('alpha', undefined, expect.any(Function));
+	});
+
+	it('binds the requested MAAD ip version for the per-file spectrum and structure routes', async () => {
+		const get = vi
+			.fn()
+			.mockResolvedValueOnce({ valuesJson: '[{"alpha":3,"f":4}]' })
+			.mockResolvedValueOnce({ valuesJson: '[{"q":1,"tauTilde":2,"sd":0.5}]' });
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ get });
+
+		const bucketStart = slugToBucketStart('202503010005');
+
+		await getSpectrum({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=false&ipVersion=6'
+			)
+		} as never);
+		await getStructure({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&ipVersion=6'
+			)
+		} as never);
+
+		expect(get).toHaveBeenNthCalledWith(1, expect.any(String), [
+			'r1',
+			'5m',
+			bucketStart,
+			6,
+			'all',
+			'all',
+			'destination'
+		]);
+		expect(get).toHaveBeenNthCalledWith(2, expect.any(String), [
+			'r1',
+			'5m',
+			bucketStart,
+			6,
+			'all',
+			'all',
+			'source'
+		]);
+	});
+
+	it('rejects an invalid MAAD ip version for the per-file spectrum, structure, and details routes', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+
+		const spectrumResponse = await getSpectrum({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/spectrum?router=r1&source=false&ipVersion=5'
+			)
+		} as never);
+		const structureResponse = await getStructure({
+			params: { slug: '202503010005' },
+			url: new URL(
+				'http://localhost/api/netflow/files/x/structure?router=r1&source=true&ipVersion=5'
+			)
+		} as never);
+		const detailsResponse = await getDetails({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&ipVersion=5')
+		} as never);
+
+		for (const response of [spectrumResponse, structureResponse, detailsResponse]) {
+			expect(response.status).toBe(400);
+			await expect(response.json()).resolves.toEqual({
+				error: 'Invalid ipVersion. Expected one of: 4, 6'
+			});
+		}
+	});
+
+	it('binds the requested MAAD ip version into the file details MAAD query', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const bucketStart = slugToBucketStart('202503010005');
+
+		const response = await getDetails({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/api/netflow/files/x/details?dataset=alpha&ipVersion=6')
+		} as never);
+
+		expect(response.status).toBe(404);
+		expect(all).toHaveBeenCalledWith(expect.any(String), [
+			'5m',
+			bucketStart,
+			'all',
+			'all',
+			'5m',
+			bucketStart,
+			'all',
+			'all',
+			'5m',
+			bucketStart,
+			6,
+			'all',
+			'all',
+			'5m',
+			bucketStart,
+			6,
+			'all',
+			'all',
+			bucketStart
+		]);
 	});
 });

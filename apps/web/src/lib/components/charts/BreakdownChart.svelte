@@ -9,14 +9,18 @@
 	import ChartCard from './ChartCard.svelte';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
-	import type {
-		FlowDirection,
-		IpGranularity,
-		IpMetricKey,
-		ProtocolMetricKey,
-		SpectrumPoint,
-		TimeBucket
+	import {
+		DEFAULT_MAAD_IP_VERSION,
+		MAAD_IP_VERSION_OPTIONS,
+		type FlowDirection,
+		type IpGranularity,
+		type IpMetricKey,
+		type MaadIpVersion,
+		type ProtocolMetricKey,
+		type SpectrumPoint,
+		type TimeBucket
 	} from '$lib/types/types';
 	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
 	import {
@@ -94,6 +98,7 @@
 		granularity?: IpGranularity;
 		router?: string;
 		addressType?: 'sa' | 'da';
+		ipVersion?: MaadIpVersion;
 		availableRouters?: string[];
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
@@ -102,6 +107,7 @@
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
 		onAddressTypeChange?: (payload: { addressType: 'sa' | 'da' }) => void;
+		onIpVersionChange?: (payload: { ipVersion: MaadIpVersion }) => void;
 		onMetricsChange?: (payload: { metrics: MetricsForKind<Kind> }) => void;
 	}>();
 	function getConfig(kind: BreakdownChartKind): BreakdownChartConfig {
@@ -136,6 +142,7 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
+	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
@@ -488,6 +495,13 @@
 			renderChart();
 		}
 		props.onAddressTypeChange?.({ addressType: nextAddressType });
+	}
+
+	function handleIpVersionChange(nextIpVersion: MaadIpVersion) {
+		if (nextIpVersion === ipVersion) {
+			return;
+		}
+		props.onIpVersionChange?.({ ipVersion: nextIpVersion });
 	}
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
@@ -1178,6 +1192,7 @@
 		granularity: IpGranularity;
 		routers: string[];
 		direction: FlowDirection;
+		ipVersion?: MaadIpVersion;
 	};
 
 	let lastFiltersKey = '';
@@ -1198,7 +1213,8 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers,
-			direction: filters.direction
+			direction: filters.direction,
+			ipVersion: filters.ipVersion ?? null
 		});
 	}
 
@@ -1218,7 +1234,8 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers.join(','),
-			direction: filters.direction
+			direction: filters.direction,
+			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {})
 		});
 
 		try {
@@ -1369,6 +1386,7 @@
 		const endDateProp = props.endDate;
 		const granularityProp = props.granularity;
 		const nextAddressType = props.addressType ?? 'sa';
+		const nextIpVersion = props.ipVersion ?? DEFAULT_MAAD_IP_VERSION;
 		const direction = props.direction ?? 'all';
 
 		if (nextAddressType !== addressType) {
@@ -1391,7 +1409,8 @@
 			// The spectrum card displays one source at a time. Fetching every available source
 			// multiplied its SQL work and response size while the client discarded all but this one.
 			routers: nextRouter ? [nextRouter] : [],
-			direction
+			direction,
+			ipVersion: nextIpVersion
 		};
 
 		currentGranularity = filters.granularity;
@@ -1469,7 +1488,7 @@
 					{/if}
 				</div>
 				<div class="flex flex-wrap items-center gap-4">
-					{#each [['sa', 'Source IPv4'], ['da', 'Destination IPv4']] as const as addressOption (addressOption[0])}
+					{#each [['sa', 'Source'], ['da', 'Destination']] as const as addressOption (addressOption[0])}
 						<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
 							<input
 								type="radio"
@@ -1482,6 +1501,16 @@
 						</label>
 					{/each}
 				</div>
+				<SegmentedControl
+					options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
+						value: String(option.value),
+						label: option.label
+					}))}
+					value={String(ipVersion)}
+					onValueChange={(value) => handleIpVersionChange(Number(value) as MaadIpVersion)}
+					ariaLabel="Select MAAD IP address family"
+					buttonClass="sm:min-w-32"
+				/>
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center gap-4">

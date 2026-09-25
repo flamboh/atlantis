@@ -1,11 +1,14 @@
 import {
+	DEFAULT_MAAD_IP_VERSION,
 	FLOW_DIRECTIONS,
 	flowDirectionLocalities,
 	IP_GRANULARITIES,
+	MAAD_IP_VERSIONS,
 	type FlowDirection,
 	type FlowLocality,
 	type FlowLocalityPair,
-	type IpGranularity
+	type IpGranularity,
+	type MaadIpVersion
 } from '$lib/types/types';
 import type { SourceDefinition } from '$lib/server/datasets';
 import type { StructureFunctionPoint } from '$lib/types/types';
@@ -95,6 +98,23 @@ export function parseDirectionParam(param: string | null): FlowDirection | Reque
 		error: `Invalid direction. Expected one of: ${FLOW_DIRECTIONS.join(', ')}`,
 		status: 400
 	};
+}
+
+export function parseMaadIpVersion(url: URL): MaadIpVersion | RequestValidationError {
+	const param = url.searchParams.get('ipVersion');
+	if (param === null) {
+		return DEFAULT_MAAD_IP_VERSION;
+	}
+
+	const version = MAAD_IP_VERSIONS.find((candidate) => String(candidate) === param);
+	if (version === undefined) {
+		return {
+			error: `Invalid ipVersion. Expected one of: ${MAAD_IP_VERSIONS.join(', ')}`,
+			status: 400
+		};
+	}
+
+	return version;
 }
 
 export function parseFlowDirectionParams(

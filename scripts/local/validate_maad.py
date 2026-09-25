@@ -47,24 +47,34 @@ def parse_case_spec(raw: str) -> Case:
     return Case(name=name, path=path)
 
 
-def validate_input(path: str) -> None:
+def validate_input(path: str, ipv6: bool) -> None:
     """Check each non-empty line without rewriting or materializing the file."""
 
+    family = "IPv6" if ipv6 else "IPv4"
+    expected_type = ipaddress.IPv6Address if ipv6 else ipaddress.IPv4Address
     try:
         with open(path, "r", encoding="ascii", errors="strict", newline="") as stream:
             for line_number, raw_line in enumerate(stream, start=1):
                 value = raw_line.strip()
                 if not value:
-                    raise CaseError(f"{path}: line {line_number}: expected an IPv4 address")
+                    raise CaseError(f"{path}: line {line_number}: expected an {family} address")
                 try:
                     address = ipaddress.ip_address(value)
                 except ValueError as error:
                     raise CaseError(
-                        f"{path}: line {line_number}: invalid IPv4 address {value!r}"
+                        f"{path}: line {line_number}: invalid {family} address {value!r}"
                     ) from error
-                if not isinstance(address, ipaddress.IPv4Address):
+                if not isinstance(address, expected_type):
                     raise CaseError(
-                        f"{path}: line {line_number}: expected IPv4, got {value!r}"
+                        f"{path}: line {line_number}: expected {family}, got {value!r}"
+                    )
+                if ipv6 and "." in value:
+                    hextets = ":".join(
+                        f"{(int(address) >> shift) & 0xFFFF:x}" for shift in range(112, -1, -16)
+                    )
+                    raise CaseError(
+                        f"{path}: line {line_number}: the oracle misreads embedded IPv4 "
+                        f"notation; write {value!r} as {hextets!r}"
                     )
     except CaseError:
         raise
@@ -268,7 +278,7 @@ def case_specs(parser: argparse.ArgumentParser, args: argparse.Namespace) -> lis
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Compare Rust and Haskell MAAD JSON for local IPv4 address files.",
+        description="Compare Rust and Haskell MAAD JSON for local IPv4 or IPv6 address files.",
         epilog=(
             "Cases are NAME=PATH; paths are passed unchanged to both binaries. "
             "Example: %(prog)s --rust target/release/netflow-db "
@@ -277,6 +287,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rust", required=True, help="Rust netflow-db binary")
     parser.add_argument("--haskell", required=True, help="Haskell MAAD binary")
+    parser.add_argument(
+        "-6",
+        "--ipv6",
+        action="store_true",
+        help="every case contains IPv6 addresses (default: IPv4)",
+    )
     parser.add_argument(
         "--abs-tol",
         "--absolute-tolerance",
@@ -311,13 +327,16 @@ def run_case(
     haskell_binary: str,
     absolute: float,
     relative: float,
+    ipv6: bool,
 ) -> bool:
+    family_args = ["--ipv6"] if ipv6 else []
     try:
-        validate_input(case.path)
-        rust = run_json([rust_binary, "maad", case.path], "Rust")
+        validate_input(case.path, ipv6)
+        rust = run_json([rust_binary, "maad", *family_args, case.path], "Rust")
         haskell = run_json(
             [
                 haskell_binary,
+                *family_args,
                 "--input",
                 case.path,
                 "--output",
@@ -362,6 +381,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.haskell,
             args.absolute_tolerance,
             args.relative_tolerance,
+            args.ipv6,
         ) and all_passed
     return 0 if all_passed else 1
 

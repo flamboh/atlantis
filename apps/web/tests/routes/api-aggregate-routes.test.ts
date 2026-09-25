@@ -455,7 +455,8 @@ describe('aggregate API routes', () => {
 			'all',
 			'all',
 			100,
-			200
+			200,
+			4
 		]);
 		await expect(response.json()).resolves.toEqual({
 			timelines: [
@@ -494,6 +495,68 @@ describe('aggregate API routes', () => {
 				}
 			],
 			requestedRouters: ['cc_ir1_gw', 'oh_ir1_gw', 'uoregon_all']
+		});
+	});
+
+	it('binds the requested MAAD ip version for structure and spectrum stats', async () => {
+		const all = vi.fn().mockResolvedValue([]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({ all });
+
+		const structureResponse = await getStructureStats({
+			url: new URL(
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&ipVersion=6'
+			)
+		} as never);
+		expect(structureResponse.status).toBe(200);
+		expect(all).toHaveBeenNthCalledWith(1, expect.stringContaining('AND ip_version = ?'), [
+			'1h',
+			'r1',
+			'all',
+			'all',
+			100,
+			200,
+			6
+		]);
+
+		const spectrumResponse = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&ipVersion=6'
+			)
+		} as never);
+		expect(spectrumResponse.status).toBe(200);
+		expect(all).toHaveBeenNthCalledWith(3, expect.stringContaining('AND ip_version = ?'), [
+			'1h',
+			'r1',
+			'all',
+			'all',
+			100,
+			200,
+			6
+		]);
+	});
+
+	it('rejects an invalid MAAD ip version for structure and spectrum stats', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+
+		const structureResponse = await getStructureStats({
+			url: new URL(
+				'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200&ipVersion=5'
+			)
+		} as never);
+		expect(structureResponse.status).toBe(400);
+		await expect(structureResponse.json()).resolves.toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6'
+		});
+
+		const spectrumResponse = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200&ipVersion=5'
+			)
+		} as never);
+		expect(spectrumResponse.status).toBe(400);
+		await expect(spectrumResponse.json()).resolves.toEqual({
+			error: 'Invalid ipVersion. Expected one of: 4, 6'
 		});
 	});
 });

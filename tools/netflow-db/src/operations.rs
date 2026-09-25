@@ -208,6 +208,11 @@ pub fn verify_web_routes(
             "buckets",
             route,
         )?;
+        let ipv6 = common
+            .into_iter()
+            .chain([("granularity", "5m"), ("ipVersion", "6")])
+            .collect::<Vec<_>>();
+        assert_no_error(request_json(&client, &base, route, &ipv6)?, route)?;
     }
     let slug = jiff::Timestamp::new(window.detail_bucket, 0)
         .and_then(|timestamp| timestamp.in_tz("America/Los_Angeles"))
@@ -224,7 +229,25 @@ pub fn verify_web_routes(
         "routers",
         "/api/netflow/files/[slug]/details",
     )?;
+    assert_no_error(
+        request_json(
+            &client,
+            &base,
+            &format!("/api/netflow/files/{slug}/details"),
+            &[("dataset", dataset), ("ipVersion", "6")],
+        )?,
+        "/api/netflow/files/[slug]/details",
+    )?;
     Ok(())
+}
+
+fn assert_no_error(payload: Value, route: &str) -> Result<(), OperationsError> {
+    match payload.get("error") {
+        Some(error) => Err(OperationsError::Invalid(format!(
+            "{route} returned error: {error}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn request_json(
