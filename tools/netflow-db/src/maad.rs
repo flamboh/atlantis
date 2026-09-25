@@ -5,7 +5,7 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 
 const MIN_MAAD_ADDRESSES: usize = 2;
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const DEFAULT_FULL_THRESHOLD: f64 = 0.05;
 const DEFAULT_Q_STEP: f64 = 1.0 / 8.0;
 const DEFAULT_Q_MIN: f64 = -0.5;
@@ -110,6 +110,7 @@ pub struct SpectrumRow {
 pub struct DimensionRow {
     pub q: f64,
     pub dim: f64,
+    pub sd: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -458,26 +459,58 @@ fn compute_structure(prepared: &[PreparedMoment], q_values: &[f64]) -> Vec<Struc
         .collect()
 }
 
-fn compute_spectrum(structure: &[StructureRow], q_step: f64) -> Vec<SpectrumRow> {
-    let alphas: Vec<_> = structure
+/// Central-difference `(q, alpha, f)` estimates for every interior structure row.
+fn spectrum_estimates(structure: &[StructureRow], q_step: f64) -> Vec<(f64, SpectrumRow)> {
+    structure
         .windows(3)
         .map(|rows| {
             let row = rows[1];
             let alpha = (rows[2].tau_tilde - rows[0].tau_tilde) / (2.0 * q_step);
-            SpectrumRow {
-                alpha,
-                f: row.q * alpha - row.tau_tilde,
-            }
+            (
+                row.q,
+                SpectrumRow {
+                    alpha,
+                    f: row.q * alpha - row.tau_tilde,
+                },
+            )
         })
+        .collect()
+}
+
+/// The `(q_max, q_min)` critical region: the widest q range with a positive `f` estimate,
+/// always covering `0..=1`.
+fn compute_critical_region(structure: &[StructureRow], q_step: f64) -> (f64, f64) {
+    let estimates = spectrum_estimates(structure, q_step);
+    let positive = |keep: fn(f64) -> bool| {
+        estimates
+            .iter()
+            .filter(move |(q, row)| keep(*q) && row.f > 0.0)
+            .map(|(q, _)| *q)
+    };
+    (
+        positive(|q| q >= 1.0).fold(1.0, f64::max),
+        positive(|q| q <= 0.0).fold(0.0, f64::min),
+    )
+}
+
+/// Spectrum rows from the critical region where alpha is non-increasing.
+///
+/// Alphas closer than `GRID_EPSILON` count as ties, which upstream's `a1 >= a2` keeps.
+fn compute_spectrum(structure: &[StructureRow], q_step: f64) -> Vec<SpectrumRow> {
+    let (q_max, q_min) = compute_critical_region(structure, q_step);
+    let alphas: Vec<_> = spectrum_estimates(structure, q_step)
+        .into_iter()
+        .filter(|(q, _)| q_min <= *q && *q <= q_max)
+        .map(|(_, row)| row)
         .collect();
     let mut rows = Vec::new();
     let mut started = false;
     for pair in alphas.windows(2) {
-        let decreasing = pair[0].alpha - pair[1].alpha > GRID_EPSILON;
-        if !started && !decreasing {
+        let non_increasing = pair[0].alpha - pair[1].alpha >= -GRID_EPSILON;
+        if !started && !non_increasing {
             continue;
         }
-        if !decreasing {
+        if !non_increasing {
             break;
         }
         started = true;
@@ -495,20 +528,33 @@ fn compute_dimensions(
     if prefix_lengths.is_empty() || structure.is_empty() {
         return Vec::new();
     }
-    let mut rows = vec![DimensionRow {
-        q: 1.0,
-        dim: info_dimension(counts, prefix_lengths, total_addresses),
-    }];
-    rows.extend(
+    dimension_rows(
+        structure,
+        info_dimension(counts, prefix_lengths, total_addresses),
+    )
+}
+
+fn dimension_rows(structure: &[StructureRow], information_dimension: f64) -> Vec<DimensionRow> {
+    let from_structure = |q: f64| {
         structure
             .iter()
-            .filter(|row| row.q.abs() < 1e-12 || (row.q - 2.0).abs() < 1e-12)
+            .find(|row| row.q == q)
             .map(|row| DimensionRow {
-                q: row.q,
-                dim: row.tau_tilde / (row.q - 1.0),
-            }),
-    );
-    rows
+                q,
+                dim: row.tau_tilde / (q - 1.0),
+                sd: row.sd,
+            })
+            .expect("validated q grids contain q=0 and q=2")
+    };
+    vec![
+        from_structure(0.0),
+        DimensionRow {
+            q: 1.0,
+            dim: information_dimension,
+            sd: 0.0,
+        },
+        from_structure(2.0),
+    ]
 }
 
 fn info_dimension(
@@ -770,17 +816,31 @@ mod tests {
                 .sum::<f64>()
                 / denominator
         };
-        let mut rows = vec![DimensionRow { q: 1.0, dim: info }];
-        rows.extend(
+        let at = |q: f64| {
             structure
                 .iter()
-                .filter(|row| row.q.abs() < 1e-12 || (row.q - 2.0).abs() < 1e-12)
-                .map(|row| DimensionRow {
-                    q: row.q,
-                    dim: row.tau_tilde / (row.q - 1.0),
-                }),
-        );
-        rows
+                .find(|row| row.q == q)
+                .copied()
+                .expect("reference q grids contain q=0 and q=2")
+        };
+        let (q0, q2) = (at(0.0), at(2.0));
+        vec![
+            DimensionRow {
+                q: 0.0,
+                dim: -q0.tau_tilde,
+                sd: q0.sd,
+            },
+            DimensionRow {
+                q: 1.0,
+                dim: info,
+                sd: 0.0,
+            },
+            DimensionRow {
+                q: 2.0,
+                dim: q2.tau_tilde,
+                sd: q2.sd,
+            },
+        ]
     }
 
     fn assert_matches_reference(addresses: Vec<Ipv4Addr>) {
@@ -803,6 +863,7 @@ mod tests {
         for (actual, expected) in result.dimensions.iter().zip(reference.dimensions) {
             close(actual.q, expected.q);
             close(actual.dim, expected.dim);
+            close(actual.sd, expected.sd);
         }
     }
 
@@ -869,23 +930,71 @@ mod tests {
         close(result.structure[0].tau_tilde, 0.0);
         close(result.structure[16].q, 1.5);
         close(result.structure[32].tau_tilde, 0.0);
-        assert!(result.spectrum.is_empty());
+        assert_eq!(result.spectrum.len(), 8);
+        for row in &result.spectrum {
+            close(row.alpha, 0.0);
+            close(row.f, 0.0);
+        }
         assert_eq!(result.dimensions.len(), 3);
-        close(result.dimensions[0].q, 1.0);
+        close(result.dimensions[0].q, 0.0);
         close(result.dimensions[0].dim, 0.0);
-        close(result.dimensions[1].q, 0.0);
+        close(result.dimensions[1].q, 1.0);
         close(result.dimensions[1].dim, 0.0);
+        close(result.dimensions[1].sd, 0.0);
         close(result.dimensions[2].q, 2.0);
         close(result.dimensions[2].dim, 0.0);
     }
 
     #[test]
-    fn linear_structure_curve_has_no_spectrum_rows() {
+    fn linear_structure_curve_collapses_to_one_spectrum_point() {
         let addresses = (0..1024).map(|index| Ipv4Addr::from(index << 22));
 
         let result = compute(addresses);
 
-        assert!(result.spectrum.is_empty());
+        assert!(!result.spectrum.is_empty());
+        for row in &result.spectrum {
+            assert!((row.alpha - 1.0).abs() < 1e-9, "{row:?}");
+            assert!((row.f - 1.0).abs() < 1e-9, "{row:?}");
+        }
+    }
+
+    fn structure_curve(tau: impl Fn(f64) -> f64) -> Vec<StructureRow> {
+        (0..=32)
+            .map(|index| {
+                let q = -0.5 + f64::from(index) * 0.125;
+                StructureRow {
+                    q,
+                    tau_tilde: tau(q),
+                    sd: 0.0,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exactly_tied_alphas_stay_in_the_spectrum() {
+        let structure = structure_curve(|q| q - 1.0);
+
+        let spectrum = compute_spectrum(&structure, 0.125);
+
+        assert_eq!(compute_critical_region(&structure, 0.125), (3.375, -0.375));
+        assert_eq!(spectrum.len(), 30);
+        assert!(
+            spectrum
+                .iter()
+                .all(|row| *row == SpectrumRow { alpha: 1.0, f: 1.0 })
+        );
+    }
+
+    #[test]
+    fn spectrum_stops_at_the_critical_region_q_max() {
+        let structure = structure_curve(|q| if q <= 2.0 { q - 1.0 } else { 1.0 });
+
+        let spectrum = compute_spectrum(&structure, 0.125);
+
+        assert_eq!(compute_critical_region(&structure, 0.125), (1.875, -0.375));
+        assert_eq!(spectrum.len(), 18);
+        assert_eq!(spectrum.last(), Some(&SpectrumRow { alpha: 1.0, f: 1.0 }));
     }
 
     #[test]
@@ -912,7 +1021,7 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "{\"schemaVersion\":2,\"metadata\":{\"input\":\"-\",\"prefixLengths\":[],\"minPrefixLength\":null,\"maxPrefixLength\":null,\"totalAddrs\":0},\"structure\":[],\"spectrum\":[],\"dimensions\":[]}\n"
+            "{\"schemaVersion\":3,\"metadata\":{\"input\":\"-\",\"prefixLengths\":[],\"minPrefixLength\":null,\"maxPrefixLength\":null,\"totalAddrs\":0},\"structure\":[],\"spectrum\":[],\"dimensions\":[]}\n"
         );
     }
 
@@ -952,8 +1061,12 @@ mod tests {
                 .iter()
                 .map(|row| row.q)
                 .collect::<Vec<_>>(),
-            vec![1.0, 0.0, 2.0]
+            vec![0.0, 1.0, 2.0]
         );
+        let structure_sd = |q: f64| result.structure.iter().find(|row| row.q == q).unwrap().sd;
+        assert_eq!(result.dimensions[0].sd, structure_sd(0.0));
+        assert_eq!(result.dimensions[1].sd, 0.0);
+        assert_eq!(result.dimensions[2].sd, structure_sd(2.0));
     }
 
     #[test]

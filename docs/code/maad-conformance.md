@@ -17,21 +17,23 @@ tolerances, both defaulting to `1e-10`.
 ## Pinned oracle
 
 The Haskell oracle is pinned to
-`chris-misa/maad@3ae75363d44e08faacdee186d4ff8906c6ccd06a`. The only source
-change made to that oracle checkout is `deltaQ`: Atlantis uses `1/8` instead
-of the upstream `1/16`. The unpatched checkout is not comparable.
+`chris-misa/maad@b7bbb7dd119f9e050cb74239b89e472ad58ec5db` on `main` ("filter for critical region when
+estimating spectrum"). `main` carries the merged `atomic-full-sortout` branch.
+The only source change made to that oracle checkout is `deltaQ`: Atlantis uses
+`1/8` instead of the upstream `1/16`. The unpatched checkout is not comparable.
+The goldens are generated from this patched checkout.
 
 Build the oracle from that checkout by applying exactly that one-line change,
 then run its build script in the supplied Nix shell:
 
 ```sh
 git clone https://github.com/chris-misa/maad.git /tmp/maad
-git -C /tmp/maad checkout 3ae75363d44e08faacdee186d4ff8906c6ccd06a
+git -C /tmp/maad checkout b7bbb7dd119f9e050cb74239b89e472ad58ec5db
 (cd /tmp/maad && git apply --unidiff-zero <<'PATCH'
 diff --git a/MAAD.hs b/MAAD.hs
 --- a/MAAD.hs
 +++ b/MAAD.hs
-@@ -66 +66 @@ deltaQ :: Double
+@@ -93 +93 @@ deltaQ :: Double
 -deltaQ = 1.0 / 16.0
 +deltaQ = 1.0 / 8.0
 PATCH
@@ -39,8 +41,39 @@ PATCH
 (cd /tmp/maad && nix-shell shell.nix --run './compile.sh')
 ```
 
-If the checkout's GHC dependencies are already installed, `./compile.sh` can
-be run directly instead.
+If the checkout's GHC dependencies (including `wide-word`) are already
+installed, `./compile.sh` can be run directly instead.
+
+### Changes from the previous pin
+
+The previous pin was `3ae75363d44e08faacdee186d4ff8906c6ccd06a`. For IPv4
+address sets, the new pin produces the same prefix levels, structure rows,
+and spectrum rows. The only estimator difference is in the last bits of some
+floating-point sums, from a different summation order. The observable IPv4
+changes are in the dimensions output, and Rust ports both:
+
+- Dimension rows are ordered by `q` (`0`, `1`, `2`) instead of `1`, `0`, `2`.
+- Each dimension row carries `sd`. For `q = 0` and `q = 2` it is the structure
+  row's `sd` at that `q`; no rescaling is needed because `|q - 1| = 1`. For
+  `q = 1` upstream emits `0`, because `D1` comes from an entropy regression
+  with no variance estimate. Treat that `0` as "not estimated", not as a
+  certain value.
+- The spectrum keeps only rows from the critical region. With central
+  differences `alpha = (tau[i+1] - tau[i-1]) / (2 q_step)` and
+  `f = q alpha - tau`, the region runs from `q_min = min(0, min q <= 0 with
+f > 0)` to `q_max = max(1, max q >= 1 with f > 0)`. Inside it, the alpha run
+  must be non-increasing (upstream `a1 >= a2`) instead of strictly decreasing.
+  Structure and dimensions are unchanged.
+
+The new head also adds changes that Atlantis does not port here:
+
+- IPv6 input (`--ipv6`), with default prefix lengths `/23`--`/64`, 128-bit
+  prefixes, and a nearly-full test of `log2(count) / (128 - pl)`.
+- `--test` now runs a Hotelling T² test against a linear interpolation of the
+  structure function, and `--compare-structure` compares against a
+  precomputed structure CSV. Atlantis does not run hypothesis tests.
+- Partition-function `q` values and the `UniformSet` generator changed. Neither
+  is part of the compared output.
 
 Build the Rust release binary from this repository:
 
@@ -68,17 +101,20 @@ input, JSON, row-count, metadata, or numeric mismatches return nonzero.
 ## Known edge cases
 
 The Haskell executable cannot produce JSON for an empty set, a singleton, or a
-set whose every prefix is filtered at the default `/8`--`/24` range: after
-filtering, it calls `foldl1` on an empty list and exits nonzero. Rust returns an
+set whose every prefix is filtered at the default `/8`--`/24` range. An empty
+set fails when the oracle reads its address family; the other cases call
+`foldl1` on an empty list after filtering. All exit nonzero. Rust returns an
 empty result for these inputs. The validator reports the Haskell command
 failure, so omit such cases from a passing conformance run or treat that
 failure as the expected oracle limitation.
 
-Rust also intentionally treats alpha decreases at or below its `1e-12` grid
-epsilon as non-decreasing when building the spectrum. Consequently, a
-sub-epsilon spectrum turn can produce fewer Rust rows than Haskell; row counts
-remain exact in the validator, so use cases with meaningful spectrum curvature
-when expecting a pass.
+Rust treats alphas within its `1e-12` grid epsilon as ties, so a sub-epsilon
+increase keeps the spectrum run going where upstream's exact `a1 >= a2` stops.
+Upstream's exact test reacts to last-bit noise in `tau`: on a perfectly linear
+structure curve, Haskell stops after 19 rows and Rust keeps all 30 tied rows.
+The goldens and 20 real windows match exactly with this tolerance, and so do
+tests with an exact comparison. Row counts remain exact in the validator, so
+use cases with meaningful spectrum curvature when expecting a pass.
 
 There is intentionally no synthetic-data generator, scheduled CI job, or
 persisted report format. Keep sensitive and private address sets local.
