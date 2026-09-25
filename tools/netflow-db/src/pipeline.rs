@@ -1515,7 +1515,7 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 2,
+            "contract_version": 3,
             "config": maad_config
         }
     });

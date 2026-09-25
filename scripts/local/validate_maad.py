@@ -230,7 +230,7 @@ def compare_results(
     section_fields = {
         "structure": ("q", "tauTilde", "sd"),
         "spectrum": ("alpha", "f"),
-        "dimensions": ("q", "dim"),
+        "dimensions": ("q", "dim", "sd"),
     }
     for section, fields in section_fields.items():
         errors.extend(compare_rows(rust, haskell, section, fields, absolute, relative))
