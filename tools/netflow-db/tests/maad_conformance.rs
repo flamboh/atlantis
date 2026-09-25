@@ -58,7 +58,7 @@ fn assert_fixture_matches_golden(name: &str) {
         &["q", "tauTilde", "sd"],
     );
     assert_numeric_rows(name, "spectrum", &actual, &expected, &["alpha", "f"]);
-    assert_numeric_rows(name, "dimensions", &actual, &expected, &["q", "dim"]);
+    assert_numeric_rows(name, "dimensions", &actual, &expected, &["q", "dim", "sd"]);
 }
 
 fn assert_metadata_matches(name: &str, actual: &Value, expected: &Value) {
