@@ -1,5 +1,6 @@
 //! In-process MAAD-compatible multifractal analysis for IPv4 and IPv6 address sets.
 
+use rayon::prelude::*;
 use serde::Serialize;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -714,9 +715,8 @@ fn compute_structure(prepared: &[PreparedMoment<usize>], q_values: &[f64]) -> Ve
         .max()
         .unwrap_or_default();
     q_values
-        .iter()
-        .copied()
-        .map(|q| {
+        .par_iter()
+        .map(|&q| {
             let powers: Vec<_> = (0..=max_count)
                 .map(|count| (count as f64).powf(q))
                 .collect();
@@ -730,35 +730,45 @@ fn compute_structure(prepared: &[PreparedMoment<usize>], q_values: &[f64]) -> Ve
         .collect()
 }
 
-/// Weighted masses are sums of integral packet or byte counts, so most are small integers.
-/// A per-q table of `n.powf(q)` for those is exact and bounded by the number of masses.
-const MAX_WEIGHT_POWER_TABLE: usize = 1 << 16;
-
+/// Weighted masses repeat heavily, so each q raises only the distinct masses to the power
+/// and every moment looks its masses up by index.
 fn compute_weighted_structure(
     prepared: &[PreparedMoment<f64>],
     q_values: &[f64],
 ) -> Vec<StructureRow> {
-    let mass_count = prepared.iter().flat_map(moment_masses).count();
-    let table_len = prepared
+    let mut distinct: Vec<f64> = prepared.iter().flat_map(moment_masses).collect();
+    distinct.sort_unstable_by(f64::total_cmp);
+    distinct.dedup_by(|next, kept| next.total_cmp(kept).is_eq());
+    let index = |mass: f64| {
+        distinct
+            .binary_search_by(|probe| probe.total_cmp(&mass))
+            .expect("every mass is in the distinct table")
+    };
+    let indexed: Vec<PreparedMoment<usize>> = prepared
         .iter()
-        .flat_map(moment_masses)
-        .filter(|mass| mass.fract() == 0.0 && *mass < MAX_WEIGHT_POWER_TABLE as f64)
-        .fold(0.0_f64, f64::max) as usize
-        + 1;
-    let table_len = table_len.min(mass_count).min(MAX_WEIGHT_POWER_TABLE);
+        .map(|moment| PreparedMoment {
+            parent_masses: moment
+                .parent_masses
+                .iter()
+                .map(|&mass| index(mass))
+                .collect(),
+            child_masses: moment
+                .child_masses
+                .iter()
+                .map(|&(first, second)| (index(first), second.map(index)))
+                .collect(),
+        })
+        .collect();
     q_values
-        .iter()
-        .copied()
-        .map(|q| {
-            let powers: Vec<_> = (0..table_len).map(|mass| (mass as f64).powf(q)).collect();
-            let power = |weight: f64| {
-                if weight.fract() == 0.0 && weight < table_len as f64 {
-                    powers[weight as usize]
-                } else {
-                    weight.powf(q)
-                }
-            };
-            structure_row(q, prepared.iter().map(|moment| one_moment(moment, power)))
+        .par_iter()
+        .map(|&q| {
+            let powers: Vec<_> = distinct.iter().map(|mass| mass.powf(q)).collect();
+            structure_row(
+                q,
+                indexed
+                    .iter()
+                    .map(|moment| one_moment(moment, |index| powers[index])),
+            )
         })
         .collect()
 }
