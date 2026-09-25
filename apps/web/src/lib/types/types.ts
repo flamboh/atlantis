@@ -3,6 +3,7 @@ export interface DatasetSummary {
 	label: string;
 	defaultStartDate: string;
 	discoveryMode: string;
+	hasLocality: boolean;
 	isDefault: boolean;
 }
 

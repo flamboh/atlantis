@@ -196,6 +196,7 @@ const DATASET_REQUIRED_COLUMNS: &[(&str, &[&str])] = &[(
         "source_mode",
         "discovery_mode",
         "sort_order",
+        "has_locality",
     ],
 )];
 

@@ -2354,6 +2354,7 @@ pub struct DatasetMetadata {
     pub source_mode: String,
     pub discovery_mode: String,
     pub sort_order: i64,
+    pub has_locality: bool,
     pub sources: Vec<SourceDefinition>,
 }
 
@@ -2367,6 +2368,7 @@ impl DatasetMetadata {
             source_mode: "static".to_owned(),
             discovery_mode: "static".to_owned(),
             sort_order: 0,
+            has_locality: false,
             sources: Vec::new(),
         }
     }
@@ -2389,7 +2391,8 @@ pub fn init_datasets_table(connection: &Connection) -> Result<(), StorageError> 
             default_start_date TEXT NOT NULL,
             source_mode TEXT NOT NULL DEFAULT 'static',
             discovery_mode TEXT NOT NULL DEFAULT 'static',
-            sort_order INTEGER NOT NULL DEFAULT 0
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS source_members (
             dataset_id TEXT NOT NULL,
@@ -2430,16 +2433,27 @@ pub fn upsert_dataset_metadata(
     };
     connection.execute(
         "
-        INSERT INTO datasets (id, label, default_start_date, source_mode, discovery_mode, sort_order)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO datasets (
+            id, label, default_start_date, source_mode, discovery_mode, sort_order, has_locality
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(id) DO UPDATE SET
             label = excluded.label,
             default_start_date = excluded.default_start_date,
             source_mode = excluded.source_mode,
             discovery_mode = excluded.discovery_mode,
-            sort_order = excluded.sort_order
+            sort_order = excluded.sort_order,
+            has_locality = excluded.has_locality
         ",
-        params![dataset_id, label, default_start_date, source_mode, discovery_mode, dataset.sort_order],
+        params![
+            dataset_id,
+            label,
+            default_start_date,
+            source_mode,
+            discovery_mode,
+            dataset.sort_order,
+            dataset.has_locality
+        ],
     )?;
     upsert_source_members(connection, dataset_id, &dataset.sources)
 }
@@ -3470,6 +3484,26 @@ mod tests {
             query_input_evidence(&connection, "r1", 0).unwrap(),
             vec![rejected]
         );
+    }
+
+    #[test]
+    fn dataset_upsert_records_whether_locality_rules_exist() {
+        let connection = Connection::open_in_memory().unwrap();
+        let has_locality = |connection: &Connection| -> bool {
+            connection
+                .query_row(
+                    "SELECT has_locality FROM datasets WHERE id = 'd1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let mut dataset = DatasetMetadata::new("d1");
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(!has_locality(&connection));
+        dataset.has_locality = true;
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(has_locality(&connection));
     }
 
     #[test]

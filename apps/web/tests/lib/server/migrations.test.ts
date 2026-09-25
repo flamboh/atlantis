@@ -300,4 +300,46 @@ describe('D1 migrations', () => {
 			database.close();
 		}
 	});
+
+	it('keeps only locality-independent rows in every stats table', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const localityMigration = migrations.findIndex((fileName) =>
+			fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes('src_locality')
+		);
+		const tables = [
+			'traffic_stats',
+			'protocol_stats',
+			'address_count_stats',
+			'port_count_stats',
+			'address_structure_stats'
+		];
+		try {
+			for (const migration of migrations.slice(0, localityMigration)) {
+				applyMigration(database, migration);
+			}
+			seedPlannerStatistics(database);
+			for (const table of tables) {
+				database
+					.prepare(
+						`UPDATE ${table} SET src_visibility = 'all', dst_visibility = 'all'
+						 WHERE source_id = 'stats-source-0'`
+					)
+					.run();
+			}
+
+			for (const migration of migrations.slice(localityMigration)) {
+				applyMigration(database, migration);
+			}
+
+			for (const table of tables) {
+				expect(
+					database.prepare(`SELECT source_id, src_locality, dst_locality FROM ${table}`).all(),
+					table
+				).toEqual([{ source_id: 'stats-source-0', src_locality: 'all', dst_locality: 'all' }]);
+			}
+		} finally {
+			database.close();
+		}
+	});
 });

@@ -38,6 +38,7 @@ export const load: PageLoad = async ({ params, fetch }) => {
 		datasetId: selectedDataset.datasetId,
 		title: selectedDataset.label,
 		defaultStartDate: selectedDataset.defaultStartDate,
+		hasLocality: selectedDataset.hasLocality,
 		routers: routersPayload
 	};
 };

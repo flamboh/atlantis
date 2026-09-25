@@ -303,7 +303,7 @@ fn csv_pipeline_stores_locality_pairs_and_binds_rules_to_product_identity() {
     assert_eq!(flows(4, "internal", "internal"), 1, "lateral");
     assert_eq!(flows(4, "external", "external"), 1, "transit");
     assert_eq!(flows(6, "internal", "external"), 1);
-    for granularity in ["30m", "1h", "1d"] {
+    for granularity in ["10m", "30m", "1h", "1d"] {
         let (exact, all): (i64, i64) = connection
             .query_row(
                 "SELECT SUM(CASE WHEN src_locality <> 'all' THEN flows ELSE 0 END), \

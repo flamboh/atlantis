@@ -30,6 +30,7 @@
 	const props = $props<{
 		dataset: string;
 		defaultStartDate: string;
+		hasLocality?: boolean;
 		routers?: string[];
 		title?: string;
 	}>();
@@ -140,7 +141,10 @@
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
-	const direction = $derived(params.direction as FlowDirection);
+	const hasLocality = $derived(props.hasLocality ?? true);
+	const direction = $derived<FlowDirection>(
+		hasLocality ? (params.direction as FlowDirection) : 'all'
+	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -452,6 +456,7 @@
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
 		{direction}
+		showDirection={hasLocality}
 		onStartDateChange={handleStartDateChange}
 		onEndDateChange={handleEndDateChange}
 		onGroupByChange={handleGroupByChange}

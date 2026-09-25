@@ -103,7 +103,8 @@ function createSqliteFixture(): string {
 					default_start_date TEXT NOT NULL,
 					source_mode TEXT DEFAULT 'static' NOT NULL,
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
-					sort_order INTEGER DEFAULT 0 NOT NULL
+					sort_order INTEGER DEFAULT 0 NOT NULL,
+					has_locality INTEGER DEFAULT 0 NOT NULL
 				);
 				${coverageTableSql}
 				CREATE TABLE traffic_stats (
@@ -162,6 +163,7 @@ describe('dataset server helpers', () => {
 				label: 'Alpha Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: true
 			}
 		]);
@@ -187,6 +189,7 @@ describe('dataset server helpers', () => {
 				label: 'Alpha Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: true
 			}
 		]);
@@ -206,6 +209,7 @@ describe('dataset server helpers', () => {
 				label: 'Alpha Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: false
 			},
 			{
@@ -213,6 +217,7 @@ describe('dataset server helpers', () => {
 				label: 'Beta Label',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: true
 			}
 		]);
@@ -442,6 +447,7 @@ describe('dataset server helpers', () => {
 				label: 'Alpha',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: true
 			},
 			{
@@ -449,6 +455,7 @@ describe('dataset server helpers', () => {
 				label: 'Beta',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: false
 			}
 		]);
@@ -484,6 +491,7 @@ describe('dataset server helpers', () => {
 				label: 'Current UOregon',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
+				hasLocality: false,
 				isDefault: true
 			}
 		]);
@@ -679,7 +687,8 @@ function seedDatasetDb(
 					default_start_date TEXT NOT NULL,
 					source_mode TEXT DEFAULT 'static' NOT NULL,
 					discovery_mode TEXT DEFAULT 'static' NOT NULL,
-					sort_order INTEGER DEFAULT 0 NOT NULL
+					sort_order INTEGER DEFAULT 0 NOT NULL,
+					has_locality INTEGER DEFAULT 0 NOT NULL
 				);
 				CREATE TABLE traffic_stats (
 					source_id TEXT NOT NULL,

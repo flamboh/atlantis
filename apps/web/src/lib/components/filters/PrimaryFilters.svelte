@@ -29,6 +29,7 @@
 		groupBy: GroupByOption;
 		routers: RouterConfig;
 		direction: FlowDirection;
+		showDirection?: boolean;
 		groupByOptions?: GroupBySelectOption[];
 		onStartDateChange?: (payload: { startDate: string }) => void;
 		onEndDateChange?: (payload: { endDate: string }) => void;
@@ -129,10 +130,12 @@
 
 		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
 
-		<div class="text-foreground flex items-center gap-2">
-			<span class="text-sm font-medium">Direction:</span>
-			<DirectionFilter direction={props.direction} onDirectionChange={handleDirectionChange} />
-		</div>
+		{#if props.showDirection ?? true}
+			<div class="text-foreground flex items-center gap-2">
+				<span class="text-sm font-medium">Direction:</span>
+				<DirectionFilter direction={props.direction} onDirectionChange={handleDirectionChange} />
+			</div>
+		{/if}
 
 		<Button onclick={handleResetView} size="sm" class="h-7 px-4 sm:ml-auto">Reset View</Button>
 	</CardContent>

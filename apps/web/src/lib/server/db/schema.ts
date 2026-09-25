@@ -20,7 +20,8 @@ export const datasets = sqliteTable('datasets', {
 	discoveryMode: text('discovery_mode', { enum: ['static', 'live'] })
 		.notNull()
 		.default('static'),
-	sortOrder: integer('sort_order').notNull().default(0)
+	sortOrder: integer('sort_order').notNull().default(0),
+	hasLocality: integer('has_locality', { mode: 'boolean' }).notNull().default(false)
 });
 
 export const sourceMembers = sqliteTable(

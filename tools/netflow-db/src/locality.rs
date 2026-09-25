@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -59,7 +59,21 @@ pub struct LocalityRules {
 }
 
 impl LocalityRules {
+    /// Load the rules, reading any address files.
     pub fn from_config(rules: &[LocalityRuleConfig], base: &Path) -> Result<Self, LocalityError> {
+        Self::build(rules, base, true)
+    }
+
+    /// Check rule syntax without reading address files.
+    pub fn check_config(rules: &[LocalityRuleConfig]) -> Result<(), LocalityError> {
+        Self::build(rules, Path::new("/"), false).map(|_| ())
+    }
+
+    fn build(
+        rules: &[LocalityRuleConfig],
+        base: &Path,
+        read_files: bool,
+    ) -> Result<Self, LocalityError> {
         let mut tos_anonymized = false;
         let mut prefixes = Vec::new();
         let mut addresses = BTreeSet::new();
@@ -96,6 +110,7 @@ impl LocalityRules {
                             addresses.insert(parse_address(value).map_err(invalid)?);
                         }
                     }
+                    (None, Some(_)) if !read_files => {}
                     (None, Some(path)) => {
                         let path = if path.is_absolute() {
                             path.clone()
@@ -133,6 +148,7 @@ impl LocalityRules {
 
     #[must_use]
     pub fn classify(&self, address: IpAddr, tos_anonymized: bool) -> EndpointLocality {
+        let address = address.to_canonical();
         if (self.tos_anonymized && tos_anonymized)
             || self.addresses.contains(&address)
             || self.prefixes.iter().any(|prefix| prefix.contains(&address))
@@ -197,13 +213,26 @@ fn parse_prefix(value: &str) -> Result<IpNet, String> {
             prefix.trunc()
         ));
     }
-    Ok(prefix)
+    Ok(canonical_prefix(prefix))
+}
+
+/// IPv4-mapped IPv6 prefixes and addresses match as the IPv4 they carry.
+fn canonical_prefix(prefix: IpNet) -> IpNet {
+    match prefix {
+        IpNet::V6(net) if net.prefix_len() >= 96 => net
+            .network()
+            .to_ipv4_mapped()
+            .and_then(|network| Ipv4Net::new(network, net.prefix_len() - 96).ok())
+            .map_or(prefix, IpNet::V4),
+        _ => prefix,
+    }
 }
 
 fn parse_address(value: &str) -> Result<IpAddr, String> {
     value
         .trim()
         .parse::<IpAddr>()
+        .map(|address| address.to_canonical())
         .map_err(|_| format!("invalid IP address {value:?}"))
 }
 
@@ -227,7 +256,7 @@ fn read_address_file(path: &Path, rule: usize) -> Result<BTreeSet<IpAddr>, Local
                 line: index + 1,
                 value: value.to_owned(),
             })?;
-        addresses.insert(address);
+        addresses.insert(address.to_canonical());
     }
     Ok(addresses)
 }
@@ -246,6 +275,41 @@ mod tests {
 
     fn ip(value: &str) -> IpAddr {
         value.parse().unwrap()
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_rules_and_endpoints_match_as_ipv4() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("internal.txt");
+        fs::write(&path, "::ffff:192.0.2.77\n").unwrap();
+        let configs: Vec<LocalityRuleConfig> = serde_json::from_value(json!([
+            {"type": "prefixes", "prefixes": ["::ffff:198.51.100.0/120"]},
+            {"type": "addresses", "addresses": ["::ffff:192.0.2.53"]},
+            {"type": "addresses", "path": path}
+        ]))
+        .unwrap();
+        let mapped = LocalityRules::from_config(&configs, Path::new("/")).unwrap();
+        let plain = rules(json!([
+            {"type": "prefixes", "prefixes": ["198.51.100.0/24"]},
+            {"type": "addresses", "addresses": ["192.0.2.53", "192.0.2.77"]}
+        ]))
+        .unwrap();
+
+        assert_eq!(mapped, plain);
+        assert_eq!(
+            mapped.identity_payload().unwrap(),
+            plain.identity_payload().unwrap()
+        );
+        for address in [
+            "192.0.2.53",
+            "::ffff:192.0.2.53",
+            "192.0.2.77",
+            "198.51.100.9",
+            "::ffff:198.51.100.9",
+        ] {
+            assert_eq!(mapped.classify(ip(address), false), Internal, "{address}");
+        }
+        assert_eq!(mapped.classify(ip("::ffff:192.0.2.54"), false), External);
     }
 
     #[test]

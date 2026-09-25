@@ -8,6 +8,7 @@ const datasetSummarySchema = z.object({
 	label: z.string().min(1),
 	defaultStartDate: z.iso.date(),
 	discoveryMode: z.string().min(1),
+	hasLocality: z.boolean(),
 	isDefault: z.boolean()
 });
 

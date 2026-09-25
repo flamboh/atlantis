@@ -125,8 +125,10 @@ impl Dataset {
                 *path = expand_path(path, repository_root)?;
             }
         }
-        self.locality_rules()?;
-        Ok(())
+        LocalityRules::check_config(&self.locality).map_err(|source| RegistryError::Locality {
+            dataset_id: self.dataset_id.clone(),
+            source,
+        })
     }
 
     pub fn locality_rules(&self) -> Result<LocalityRules, RegistryError> {
@@ -502,10 +504,6 @@ mod tests {
                 "locality rule 2: CIDR prefix \"2001:db8::1/32\" has host bits set",
             ),
             (
-                serde_json::json!([{"type": "addresses", "path": "missing.txt"}]),
-                "unable to read address file",
-            ),
-            (
                 serde_json::json!({"type": "tos_anonymized"}),
                 "invalid type: map, expected a sequence",
             ),
@@ -530,5 +528,34 @@ mod tests {
                 "{locality}: unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn registry_loads_without_reading_address_files() {
+        let root = tempdir().unwrap();
+        let list = root.path().join("datasets.json");
+        fs::write(
+            &list,
+            serde_json::json!([
+                {
+                    "dataset_id": "broken",
+                    "root_path": "/captures",
+                    "locality": [{"type": "addresses", "path": "missing.txt"}]
+                },
+                {"dataset_id": "healthy", "root_path": "/captures"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let registry = DatasetRegistry::load(&list, root.path()).unwrap();
+
+        assert!(registry.get("healthy").unwrap().locality_rules().is_ok());
+        let error = registry
+            .get("broken")
+            .unwrap()
+            .locality_rules()
+            .unwrap_err();
+        assert!(error.to_string().contains("unable to read address file"));
     }
 }

@@ -1543,6 +1543,7 @@ fn upsert_dataset_with_sources(
     metadata.source_mode = dataset.source_mode.clone();
     metadata.discovery_mode = dataset.discovery_mode.clone();
     metadata.sort_order = dataset.sort_order;
+    metadata.has_locality = !dataset.locality.is_empty();
     metadata.sources = sources;
     upsert_dataset_metadata(connection, &metadata)?;
     Ok(())

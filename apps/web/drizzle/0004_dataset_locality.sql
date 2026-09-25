@@ -1,0 +1,1 @@
+ALTER TABLE `datasets` ADD `has_locality` integer DEFAULT false NOT NULL;

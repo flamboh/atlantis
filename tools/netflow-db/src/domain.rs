@@ -158,49 +158,6 @@ impl From<EndpointLocality> for Locality {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Direction {
-    Ingress,
-    Egress,
-    Lateral,
-    Transit,
-}
-
-impl Direction {
-    pub const ALL: [Self; 4] = [Self::Ingress, Self::Egress, Self::Lateral, Self::Transit];
-
-    #[must_use]
-    pub const fn of(source: EndpointLocality, destination: EndpointLocality) -> Self {
-        match (source, destination) {
-            (EndpointLocality::External, EndpointLocality::Internal) => Self::Ingress,
-            (EndpointLocality::Internal, EndpointLocality::External) => Self::Egress,
-            (EndpointLocality::Internal, EndpointLocality::Internal) => Self::Lateral,
-            (EndpointLocality::External, EndpointLocality::External) => Self::Transit,
-        }
-    }
-
-    #[must_use]
-    pub const fn endpoints(self) -> (EndpointLocality, EndpointLocality) {
-        match self {
-            Self::Ingress => (EndpointLocality::External, EndpointLocality::Internal),
-            Self::Egress => (EndpointLocality::Internal, EndpointLocality::External),
-            Self::Lateral => (EndpointLocality::Internal, EndpointLocality::Internal),
-            Self::Transit => (EndpointLocality::External, EndpointLocality::External),
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ingress => "ingress",
-            Self::Egress => "egress",
-            Self::Lateral => "lateral",
-            Self::Transit => "transit",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum AddressSide {
     Destination,
     Source,
@@ -1481,9 +1438,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AddressSet, AddressSide, BucketKey, Direction, DomainError, EndpointLocality,
-        FlowObservation, FlowSelection, Granularity, GroupedTrafficFact, IpVersion, Locality,
-        PortRange, Scope, ScopedAddressesFact, StatisticalBucket,
+        AddressSet, AddressSide, BucketKey, DomainError, EndpointLocality, FlowObservation,
+        FlowSelection, Granularity, GroupedTrafficFact, IpVersion, Locality, PortRange, Scope,
+        ScopedAddressesFact, StatisticalBucket,
     };
     use crate::coverage::{BucketCoverage, CoverageState};
     use crate::locality::{LocalityRuleConfig, LocalityRules};
@@ -1529,24 +1486,6 @@ mod tests {
 
         assert_eq!(forward, reverse);
         assert_eq!(forward.len(), 2);
-    }
-
-    #[test]
-    fn direction_is_derived_from_the_endpoint_pair() {
-        use EndpointLocality::{External, Internal};
-
-        assert_eq!(Direction::of(Internal, External), Direction::Egress);
-        assert_eq!(Direction::of(External, Internal), Direction::Ingress);
-        assert_eq!(Direction::of(Internal, Internal), Direction::Lateral);
-        assert_eq!(Direction::of(External, External), Direction::Transit);
-        for direction in Direction::ALL {
-            let (source, destination) = direction.endpoints();
-            assert_eq!(Direction::of(source, destination), direction);
-        }
-        assert_eq!(
-            Direction::ALL.map(Direction::as_str),
-            ["ingress", "egress", "lateral", "transit"]
-        );
     }
 
     #[test]

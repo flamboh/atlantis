@@ -74,7 +74,7 @@ A logical source combines the captures from more than one collector directory. E
   "locality": [
     { "type": "prefixes", "prefixes": ["192.0.2.0/24", "2001:db8::/32"] },
     { "type": "addresses", "addresses": ["198.51.100.53"] },
-    { "type": "addresses", "path": "~/private/internal-addresses.txt" }
+    { "type": "addresses", "path": "data/private/internal-addresses.txt" }
   ]
 }
 ```
@@ -86,7 +86,10 @@ A logical source combines the captures from more than one collector directory. E
 | `tos_anonymized` | None                  | Endpoints that the UOregon anonymizer flagged in the two low source-ToS bits. Other networks do not set these bits. |
 
 An address file lists one address per line. Blank lines and text after `#` are ignored. A relative
-`path` uses the repository root. Keep private address lists outside the repository.
+`path` uses the repository root. Keep private address lists under the gitignored `data/` directory,
+which the Docker setup also mounts. The registry checks rule syntax when it loads, and the pipeline
+reads address files only for the datasets it runs. IPv4-mapped IPv6 values such as
+`::ffff:192.0.2.53` match as the IPv4 address they carry.
 
 Validation is strict. The pipeline rejects unknown rule types, unknown fields, empty lists, and values
 that do not parse.
@@ -121,10 +124,12 @@ defines its own logical sources and `daily_active_sources` selection.
     "dataset_id": "campus-a",
     "root_path": "/data/netflow/campus",
     "source_ids": ["router-a"],
-    "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
+    "locality": [
+      { "type": "prefixes", "prefixes": ["198.18.0.0/16", "198.19.0.0/16"] }
+    ],
     "selection": {
       "kind": "daily_active_sources",
-      "ip_prefix": "192.0.2.0/25"
+      "ip_prefix": "198.18.0.0/16"
     },
     "db_path": "data/campus-a/netflow.sqlite"
   },
@@ -132,10 +137,12 @@ defines its own logical sources and `daily_active_sources` selection.
     "dataset_id": "campus-b",
     "root_path": "/data/netflow/campus",
     "source_ids": ["router-a"],
-    "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
+    "locality": [
+      { "type": "prefixes", "prefixes": ["198.18.0.0/16", "198.19.0.0/16"] }
+    ],
     "selection": {
       "kind": "daily_active_sources",
-      "ip_prefix": "192.0.2.128/25"
+      "ip_prefix": "198.19.0.0/16"
     },
     "db_path": "data/campus-b/netflow.sqlite"
   }
