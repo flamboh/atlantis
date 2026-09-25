@@ -1,5 +1,5 @@
-import type { IpGranularity } from '$lib/types/types';
-import { epochToPSTComponents, getWeekdayName } from '$lib/utils/timezone';
+import type { IpGranularity } from '#lib/types/types.ts';
+import { epochToPSTComponents, getWeekdayName } from '#lib/utils/timezone.ts';
 
 export function formatTemporalBucketLabel(bucketStart: number, granularity: IpGranularity): string {
 	const pst = epochToPSTComponents(bucketStart);

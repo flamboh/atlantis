@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import type { DatasetSummariesResponse, DatasetSummary } from '$lib/types/types';
+import type { DatasetSummariesResponse, DatasetSummary } from '#lib/types/types.ts';
 
-export type { DatasetSummariesResponse, DatasetSummary } from '$lib/types/types';
+export type { DatasetSummariesResponse, DatasetSummary } from '#lib/types/types.ts';
 
 const datasetSummarySchema = z.object({
 	datasetId: z.string().min(1),

@@ -4,16 +4,16 @@ import {
 	getRequestedDataset,
 	listDatasetSourceDefinitions,
 	withDatasetDb
-} from '$lib/server/datasets';
+} from '#lib/server/datasets.ts';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	getRequestedDataset: vi.fn(),
 	listDatasetSourceDefinitions: vi.fn(),
 	withDatasetDb: vi.fn()
 }));
 
 function mockDatasetSession(db: object): void {
-	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, run) =>
 		run({
 			db: db as never,
 			listSources: async () => [],

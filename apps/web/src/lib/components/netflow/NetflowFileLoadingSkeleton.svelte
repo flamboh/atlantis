@@ -1,6 +1,6 @@
 <script lang="ts">
-	import * as Card from '$lib/components/ui/card';
-	import { Skeleton } from '$lib/components/ui/skeleton';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
 
 	let { count }: { count: number } = $props();
 	const skeletons = $derived(Array.from({ length: count }, (_, index) => index));

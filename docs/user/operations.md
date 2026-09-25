@@ -82,13 +82,20 @@ Apply migrations to a local D1 database:
 bun run --cwd apps/web d1:migrations:apply:local
 ```
 
-To develop the dashboard against the local D1 database, export the driver before you start it:
+To develop the dashboard against the local D1 database, set the driver in the shell when you start it:
 
 ```bash
 ATLANTIS_DB_DRIVER=d1 bun run dev:web
 ```
 
-Without this variable, local development uses SQLite and does not start the Workers runtime.
+Without this variable, local development uses SQLite and does not start the Workers runtime. The dashboard ignores `ATLANTIS_DB_DRIVER` in `.env`.
+
+To test the built worker against the local D1 database, build it and start Wrangler:
+
+```bash
+bun run build:web
+cd apps/web && bunx wrangler dev
+```
 
 Apply migrations to the configured remote D1 database:
 
@@ -127,7 +134,7 @@ The restore command needs Cloudflare access and confirmation. Check the database
 
 ## Deploy the dashboard
 
-1. Build and check the worker package.
+1. Build and check the worker package. Do not set `ATLANTIS_DB_DRIVER` in the shell. The build uses D1 by default.
 
    ```bash
    bun run build:web

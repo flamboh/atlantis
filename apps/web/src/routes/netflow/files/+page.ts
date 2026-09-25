@@ -1,6 +1,6 @@
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
-import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '$lib/datasets';
+import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '#lib/datasets.ts';
 
 export const load: PageLoad = async ({ fetch, url }) => {
 	try {

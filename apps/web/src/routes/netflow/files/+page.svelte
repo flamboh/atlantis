@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();

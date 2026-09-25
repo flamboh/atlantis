@@ -1,13 +1,13 @@
 import type { Chart } from 'chart.js';
-import type { GroupByOption, NetflowDataPoint } from '$lib/components/netflow/types.ts';
-import type { RangeSelectionState } from '$lib/stores/rangeSelection.svelte';
+import type { GroupByOption, NetflowDataPoint } from '#lib/components/netflow/types.ts';
+import type { RangeSelectionState } from '#lib/stores/rangeSelection.svelte.ts';
 import {
 	parseLabelToPSTComponents,
 	parseLabelToDateForDrilldown,
 	epochToPSTComponents,
 	getWeekdayName,
 	type PSTDateComponents
-} from '$lib/utils/timezone';
+} from '#lib/utils/timezone.ts';
 
 /** Fixed y-axis width (px) for consistent chart alignment */
 export const Y_AXIS_WIDTH = 80;

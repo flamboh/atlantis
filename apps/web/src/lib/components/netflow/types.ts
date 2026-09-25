@@ -1,4 +1,4 @@
-import type { NetflowMetricTotals, TimeBucket } from '$lib/types/types';
+import type { NetflowMetricTotals, TimeBucket } from '#lib/types/types.ts';
 
 export type NetflowDataPoint = TimeBucket<NetflowMetricTotals>;
 

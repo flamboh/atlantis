@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/netflow/coverage/+server';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { dateStringToEpochPST } from '$lib/utils/timezone';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	getRequestedDataset: vi.fn(),
 	withDatasetDb: vi.fn()
 }));
 
 function mockDatasetSession(db: object): void {
-	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, run) =>
 		run({ db: db as never, listSources: async () => [], listSourceDefinitions: async () => [] })
 	);
 }

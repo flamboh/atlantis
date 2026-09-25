@@ -1,5 +1,5 @@
 <script module lang="ts">
-	import type { CoverageTimeline, CoverageTimelineBucket } from '$lib/types/types';
+	import type { CoverageTimeline, CoverageTimelineBucket } from '#lib/types/types.ts';
 	import { SvelteMap } from 'svelte/reactivity';
 
 	export type CachedCoverageRecord = {
@@ -35,18 +35,18 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { Plugin, TooltipItem } from 'chart.js';
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import type { BucketCoverage, CoverageState } from '$lib/types/types';
-	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
-	import { dateStringToEpochPST } from '$lib/utils/timezone';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import type { BucketCoverage, CoverageState } from '#lib/types/types.ts';
+	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
+	import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
-	} from '$lib/utils/window-cache';
-	import { crosshairStore } from '$lib/stores/crosshair';
-	import { theme } from '$lib/stores/theme.svelte';
+	} from '#lib/utils/window-cache.ts';
+	import { crosshairStore } from '#lib/stores/crosshair.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
 	import { Chart } from './chart-registry';
 	import { findTemporalDataBounds } from './chart-utils';
 	import {

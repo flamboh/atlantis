@@ -1,5 +1,5 @@
-import type { DataOption } from '$lib/components/netflow/types.ts';
-import type { NetflowMetricField } from '$lib/types/types';
+import type { DataOption } from '#lib/components/netflow/types.ts';
+import type { NetflowMetricField } from '#lib/types/types.ts';
 
 export const NETFLOW_DATA_OPTION_FIELDS: NetflowMetricField[] = [
 	'flows',

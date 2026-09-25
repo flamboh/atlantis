@@ -1,11 +1,11 @@
 import type { RequestHandler } from './$types';
-import { listDatasetSummaries } from '$lib/server/datasets';
-import type { DatasetSummariesResponse } from '$lib/types/types';
+import { listDatasetSummaries } from '#lib/server/datasets.ts';
+import type { DatasetSummariesResponse } from '#lib/types/types.ts';
 
-export const GET: RequestHandler = async ({ platform }) => {
+export const GET: RequestHandler = async () => {
 	try {
 		const response: DatasetSummariesResponse = {
-			data: await listDatasetSummaries(platform),
+			data: await listDatasetSummaries(),
 			error: null
 		};
 		return Response.json(response);

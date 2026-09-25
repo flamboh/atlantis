@@ -1,5 +1,5 @@
 import type { Chart, ChartArea, Plugin, ChartEvent } from 'chart.js';
-import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 import { findNearestValueIndex } from './chart-utils';
 
 interface CrosshairState {

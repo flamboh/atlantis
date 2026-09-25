@@ -25,6 +25,13 @@ async function loadDatasetsModule() {
 	return import('../../../src/lib/server/datasets');
 }
 
+async function loadD1DatasetsModule(fake: { database: unknown }) {
+	vi.resetModules();
+	vi.doMock('cloudflare:workers', () => ({ env: { DB: fake.database } }));
+	vi.doMock('#db', () => import('../../../src/lib/server/db/d1.ts'));
+	return import('../../../src/lib/server/datasets');
+}
+
 type FakeD1DatasetRow = {
 	id: string;
 	label: string;
@@ -33,7 +40,7 @@ type FakeD1DatasetRow = {
 	sortOrder: number;
 };
 
-function createD1Platform(initialRows: FakeD1DatasetRow[]) {
+function createD1Binding(initialRows: FakeD1DatasetRow[]) {
 	let datasetRows = initialRows;
 	const queries: Array<{ sql: string; params: unknown[] }> = [];
 	const sourceMemberRows = [
@@ -73,7 +80,7 @@ function createD1Platform(initialRows: FakeD1DatasetRow[]) {
 	};
 
 	return {
-		platform: { env: { DB: database } } as unknown as App.Platform,
+		database,
 		queries,
 		setDatasetRows(rows: FakeD1DatasetRow[]) {
 			datasetRows = rows;
@@ -148,6 +155,8 @@ describe('dataset server helpers', () => {
 		process.chdir(originalCwd);
 		vi.unstubAllEnvs();
 		vi.doUnmock('node:fs/promises');
+		vi.doUnmock('cloudflare:workers');
+		vi.doUnmock('#db');
 	});
 
 	it('lists dataset summaries from local sqlite metadata', async () => {
@@ -193,14 +202,14 @@ describe('dataset server helpers', () => {
 	});
 
 	it('loads the D1 catalog once when building summaries', async () => {
-		const fake = createD1Platform([
+		const fake = createD1Binding([
 			alphaD1Row,
 			{ ...alphaD1Row, id: 'beta', label: 'Beta Label', sortOrder: 1 }
 		]);
 		vi.stubEnv('DEFAULT_DATASET', 'beta');
-		const datasets = await loadDatasetsModule();
+		const datasets = await loadD1DatasetsModule(fake);
 
-		await expect(datasets.listDatasetSummaries(fake.platform)).resolves.toEqual([
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
 			{
 				datasetId: 'alpha',
 				label: 'Alpha Label',
@@ -222,14 +231,11 @@ describe('dataset server helpers', () => {
 	});
 
 	it('resolves an explicit D1 dataset with one targeted query', async () => {
-		const fake = createD1Platform([alphaD1Row]);
-		const datasets = await loadDatasetsModule();
+		const fake = createD1Binding([alphaD1Row]);
+		const datasets = await loadD1DatasetsModule(fake);
 
 		await expect(
-			datasets.getRequestedDataset(
-				new URL('http://localhost/api/netflow/stats?dataset=alpha'),
-				fake.platform
-			)
+			datasets.getRequestedDataset(new URL('http://localhost/api/netflow/stats?dataset=alpha'))
 		).resolves.toBe('alpha');
 		expect(fake.queries).toHaveLength(1);
 		expect(fake.queries[0]?.sql).toContain('WHERE id = ?');
@@ -237,21 +243,21 @@ describe('dataset server helpers', () => {
 	});
 
 	it('does not cache D1 dataset metadata across calls', async () => {
-		const fake = createD1Platform([alphaD1Row]);
-		const datasets = await loadDatasetsModule();
+		const fake = createD1Binding([alphaD1Row]);
+		const datasets = await loadD1DatasetsModule(fake);
 
-		await expect(datasets.getDatasetLabel('alpha', fake.platform)).resolves.toBe('Alpha Label');
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Alpha Label');
 		fake.setDatasetRows([{ ...alphaD1Row, label: 'Updated Alpha' }]);
-		await expect(datasets.getDatasetLabel('alpha', fake.platform)).resolves.toBe('Updated Alpha');
+		await expect(datasets.getDatasetLabel('alpha')).resolves.toBe('Updated Alpha');
 		expect(fake.queries).toHaveLength(2);
 		expect(fake.queries.every((query) => query.sql.includes('WHERE id = ?'))).toBe(true);
 	});
 
 	it('preserves available dataset details for an unknown D1 dataset', async () => {
-		const fake = createD1Platform([alphaD1Row]);
-		const datasets = await loadDatasetsModule();
+		const fake = createD1Binding([alphaD1Row]);
+		const datasets = await loadD1DatasetsModule(fake);
 
-		await expect(datasets.getDatasetConfig('missing', fake.platform)).rejects.toThrow(
+		await expect(datasets.getDatasetConfig('missing')).rejects.toThrow(
 			"Unknown dataset 'missing'. Available datasets: alpha"
 		);
 		expect(fake.queries).toHaveLength(2);
@@ -264,7 +270,7 @@ describe('dataset server helpers', () => {
 		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
 
 		const datasets = await loadDatasetsModule();
-		await datasets.withDatasetDb('alpha', undefined, async ({ db }) => {
+		await datasets.withDatasetDb('alpha', async ({ db }) => {
 			await expect(db.get('DELETE FROM datasets RETURNING id')).rejects.toThrow(/readonly/i);
 		});
 		await expect(datasets.getDatasetConfig('alpha')).resolves.toMatchObject({ id: 'alpha' });
@@ -350,10 +356,10 @@ describe('dataset server helpers', () => {
 	});
 
 	it('uses one D1 source-members query for configured definitions', async () => {
-		const fake = createD1Platform([alphaD1Row]);
-		const datasets = await loadDatasetsModule();
+		const fake = createD1Binding([alphaD1Row]);
+		const datasets = await loadD1DatasetsModule(fake);
 
-		await expect(datasets.listDatasetSourceDefinitions('alpha', fake.platform)).resolves.toEqual([
+		await expect(datasets.listDatasetSourceDefinitions('alpha')).resolves.toEqual([
 			{ sourceId: 'router-a', members: ['router-a'] },
 			{ sourceId: 'router-b', members: ['router-b'] }
 		]);
@@ -613,7 +619,7 @@ describe('dataset server helpers', () => {
 		const datasets = await loadDatasetsModule();
 		let retiredDb: ReadonlyDatasetDb | undefined;
 
-		await datasets.withDatasetDb('alpha', undefined, async ({ db: requestDb, listSources }) => {
+		await datasets.withDatasetDb('alpha', async ({ db: requestDb, listSources }) => {
 			retiredDb = requestDb;
 			fs.renameSync(replacementPath, dbPath);
 			await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-b']);

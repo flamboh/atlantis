@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
-	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
-	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
-	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
-	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
-	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '$lib/types/types';
+	import { isGranularityAllowedForDateRange } from '#lib/components/charts/chart-utils.ts';
+	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
+	import RouterFilter from '#lib/components/filters/RouterFilter.svelte';
+	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
+	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '#lib/types/types.ts';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;

@@ -8,9 +8,9 @@ import type {
 	SpectrumPoint,
 	StructureFunctionData,
 	StructureFunctionPoint
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
-import { normalizeStructurePoints, parseFlowScopeParams } from '$lib/server/netflow-v3';
+import { normalizeStructurePoints, parseFlowScopeParams } from '#lib/server/netflow-v3.ts';
 
 const FIVE_MINUTES = '5m';
 
@@ -119,9 +119,9 @@ function buildIpCounts(ipv4Count: number | null, ipv6Count: number | null): File
 	};
 }
 
-export const GET: RequestHandler = async ({ params, url, platform }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const { slug } = params;
-	const dataset = await getDatasetFromRequest(url, platform);
+	const dataset = await getDatasetFromRequest(url);
 	const flowScope = parseFlowScopeParams(url);
 
 	if ('error' in flowScope) {
@@ -138,7 +138,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		return await withDb(dataset, platform, async (db) => {
+		return await withDb(dataset, async (db) => {
 			const rows = await db.all<FileDetailsRow>(
 				`WITH ns AS (
 				SELECT

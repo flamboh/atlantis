@@ -3,10 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getRequestedDataset } from '$lib/server/datasets';
+import { getRequestedDataset } from '#lib/server/datasets.ts';
 import { GET } from '../../src/routes/api/alerts/+server';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	getRequestedDataset: vi.fn()
 }));
 
@@ -133,8 +133,7 @@ function seedAlerts(fixture: Fixture): void {
 
 function eventFor(query = '') {
 	return {
-		url: new URL(`http://localhost/api/alerts${query}`),
-		platform: undefined
+		url: new URL(`http://localhost/api/alerts${query}`)
 	} as never;
 }
 

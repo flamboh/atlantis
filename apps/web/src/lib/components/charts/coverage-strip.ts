@@ -1,6 +1,6 @@
-import type { BucketCoverage, CoverageTimeline, CoverageTimelineBucket } from '$lib/types/types';
-import type { GroupByOption } from '$lib/components/netflow/types';
-import { epochToPSTComponents } from '$lib/utils/timezone';
+import type { BucketCoverage, CoverageTimeline, CoverageTimelineBucket } from '#lib/types/types.ts';
+import type { GroupByOption } from '#lib/components/netflow/types.ts';
+import { epochToPSTComponents } from '#lib/utils/timezone.ts';
 
 export type CoverageStripBucket = CoverageTimelineBucket;
 export type CoverageStripTimeline = CoverageTimeline;

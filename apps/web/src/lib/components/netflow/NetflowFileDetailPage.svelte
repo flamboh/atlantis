@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { afterNavigate } from '$app/navigation';
-	import { getNetflowFileDetailLoader } from '$lib/components/netflow/file-detail-loader.svelte';
-	import NetflowFileHeader from '$lib/components/netflow/NetflowFileHeader.svelte';
-	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
-	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
-	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import type { FlowVisibility } from '$lib/types/types';
+	import { getNetflowFileDetailLoader } from '#lib/components/netflow/file-detail-loader.svelte.ts';
+	import NetflowFileHeader from '#lib/components/netflow/NetflowFileHeader.svelte';
+	import NetflowFileLoadingSkeleton from '#lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
+	import NetflowFileMessageCard from '#lib/components/netflow/NetflowFileMessageCard.svelte';
+	import NetflowFileRouterCard from '#lib/components/netflow/NetflowFileRouterCard.svelte';
+	import type { FlowVisibility } from '#lib/types/types.ts';
 	import {
 		createDateFromPSTComponents,
 		epochToPSTComponents,
 		formatTimestampAsPST
-	} from '$lib/utils/timezone';
+	} from '#lib/utils/timezone.ts';
 	import { onMount } from 'svelte';
 
 	type NetflowFileDetailData = {

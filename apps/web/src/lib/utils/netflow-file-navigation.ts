@@ -1,6 +1,6 @@
 import type { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import type { FlowScope } from '$lib/types/types';
+import type { FlowScope } from '#lib/types/types.ts';
 
 export function buildNetflowFileSearch(dataset?: string, flowScope?: Partial<FlowScope>): string {
 	const normalizedDataset = dataset?.trim();

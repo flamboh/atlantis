@@ -1,5 +1,5 @@
 import type { RequestHandler } from './$types';
-import { parseFlowScopeParams } from '$lib/server/netflow-v3';
+import { parseFlowScopeParams } from '#lib/server/netflow-v3.ts';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 
 const FIVE_MINUTES = '5m';
@@ -11,9 +11,9 @@ type IpCountRow = {
 	daIpv6Count: number;
 };
 
-export const GET: RequestHandler = async ({ params, url, platform }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const { slug } = params;
-	const dataset = await getDatasetFromRequest(url, platform);
+	const dataset = await getDatasetFromRequest(url);
 	const router = url.searchParams.get('router');
 	const sourceParam = url.searchParams.get('source');
 	const flowScope = parseFlowScopeParams(url);
@@ -45,7 +45,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 	}
 
 	try {
-		return await withDb(dataset, platform, async (db) => {
+		return await withDb(dataset, async (db) => {
 			const row = await db.get<IpCountRow>(
 				`SELECT
 				SUM(CASE WHEN address_side = 'source' AND ip_version = 4 THEN unique_address_count ELSE 0 END) AS saIpv4Count,

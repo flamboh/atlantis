@@ -5,10 +5,10 @@ import type {
 	NetflowSplitMetricField,
 	NetflowStatsResponse,
 	NetflowStatsResult
-} from '$lib/types/types';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { NETFLOW_DATA_OPTION_FIELDS } from '$lib/components/netflow/constants';
+} from '#lib/types/types.ts';
+import { buildCoverageTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import { NETFLOW_DATA_OPTION_FIELDS } from '#lib/components/netflow/constants.ts';
 import {
 	groupByToGranularity,
 	parseSourceIds,
@@ -16,7 +16,7 @@ import {
 	parseFlowScopeParams,
 	placeholders,
 	resolveSourceIds
-} from '$lib/server/netflow-v3';
+} from '#lib/server/netflow-v3.ts';
 
 const IP_VERSION_BY_FAMILY: Record<Exclude<NetflowIpFamily, 'all'>, 4 | 6> = {
 	ipv4: 4,
@@ -99,8 +99,8 @@ function normalizeRow(row: Record<string, number | null>): NetflowStatsResult {
 	};
 }
 
-export const GET: RequestHandler = async ({ url, platform }) => {
-	const dataset = await getRequestedDataset(url, platform);
+export const GET: RequestHandler = async ({ url }) => {
+	const dataset = await getRequestedDataset(url);
 	const startDate = url.searchParams.get('startDate') || '';
 	const endDate = url.searchParams.get('endDate') || '';
 	const groupBy = url.searchParams.get('groupBy') || 'date';
@@ -126,7 +126,7 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	}
 
 	try {
-		return await withDatasetDb(dataset, platform, async ({ db, listSourceDefinitions }) => {
+		return await withDatasetDb(dataset, async ({ db, listSourceDefinitions }) => {
 			const resolvedSources = resolveSourceIds(await listSourceDefinitions(), routers);
 			const granularity = groupByToGranularity(groupBy);
 			const timeColumn = 'bucket_start';

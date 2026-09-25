@@ -3,10 +3,14 @@ import type {
 	FlowCharacteristicsResponse,
 	ObservationStats,
 	PortCardinalityCounts
-} from '$lib/types/types';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders, resolveSourceIds } from '$lib/server/netflow-v3';
-import { buildCoverageTimelines, loadCoverageRows } from '$lib/server/db/coverage';
+} from '#lib/types/types.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import {
+	parseAggregateStatsParams,
+	placeholders,
+	resolveSourceIds
+} from '#lib/server/netflow-v3.ts';
+import { buildCoverageTimelines, loadCoverageRows } from '#lib/server/db/coverage.ts';
 
 type ObservationTotalsRow = {
 	bucketStart: number;
@@ -123,15 +127,15 @@ function groupPorts(rows: PortCardinalityRow[]): GroupedPortRow[] {
 	}));
 }
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
 		return Response.json({ error: params.error }, { status: params.status });
 	}
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db, listSourceDefinitions }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db, listSourceDefinitions }) => {
 			const resolvedSources = resolveSourceIds(await listSourceDefinitions(), params.routers);
 			const commonParams = [
 				...resolvedSources,

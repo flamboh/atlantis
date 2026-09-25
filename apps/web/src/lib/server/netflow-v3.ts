@@ -4,9 +4,9 @@ import {
 	type FlowScope,
 	type FlowVisibility,
 	type IpGranularity
-} from '$lib/types/types';
-import type { SourceDefinition } from '$lib/server/datasets';
-import type { StructureFunctionPoint } from '$lib/types/types';
+} from '#lib/types/types.ts';
+import type { SourceDefinition } from '#lib/server/datasets.ts';
+import type { StructureFunctionPoint } from '#lib/types/types.ts';
 type RawStructureFunctionPoint = {
 	q: number;
 	tau?: number;

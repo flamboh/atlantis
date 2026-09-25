@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '$lib/datasets';
-import { parseFlowScopeParams } from '$lib/server/netflow-v3';
+import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '#lib/datasets.ts';
+import { parseFlowScopeParams } from '#lib/server/netflow-v3.ts';
 
 export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	const { slug } = params;

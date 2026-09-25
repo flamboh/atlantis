@@ -1,20 +1,21 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
-	import PrimaryFilters from '$lib/components/filters/PrimaryFilters.svelte';
-	import NetflowDashboard from '$lib/components/netflow/NetflowDashboard.svelte';
-	import BreakdownChart from '$lib/components/charts/BreakdownChart.svelte';
-	import FlowCharacteristicsChart from '$lib/components/charts/FlowCharacteristicsChart.svelte';
-	import PortCardinalityChart from '$lib/components/charts/PortCardinalityChart.svelte';
-	import CoverageStrip from '$lib/components/charts/CoverageStrip.svelte';
-	import { createFlowCharacteristicsData } from '$lib/components/charts/flow-characteristics-data.svelte';
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import { DEFAULT_DATA_OPTIONS } from '$lib/components/netflow/constants';
-	import { createNearViewportAttachment } from '$lib/components/netflow/near-viewport';
-	import type { DataOption, GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
+	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
+	import BreakdownChart from '#lib/components/charts/BreakdownChart.svelte';
+	import FlowCharacteristicsChart from '#lib/components/charts/FlowCharacteristicsChart.svelte';
+	import PortCardinalityChart from '#lib/components/charts/PortCardinalityChart.svelte';
+	import CoverageStrip from '#lib/components/charts/CoverageStrip.svelte';
+	import { createFlowCharacteristicsData } from '#lib/components/charts/flow-characteristics-data.svelte.ts';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import { DEFAULT_DATA_OPTIONS } from '#lib/components/netflow/constants.ts';
+	import { createNearViewportAttachment } from '#lib/components/netflow/near-viewport.ts';
+	import type { DataOption, GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import type { Attachment } from 'svelte/attachments';
-	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
+	import { clampGroupByToDateRange } from '#lib/components/charts/chart-utils.ts';
 	import {
 		FLOW_SCOPE_OPTIONS,
 		type FlowVisibility,
@@ -23,11 +24,10 @@
 		type IpGranularity,
 		type IpMetricKey,
 		type ProtocolMetricKey
-	} from '$lib/types/types';
-	import { watch } from 'runed';
-	import { useSearchParams } from 'runed/kit';
-	import { createDateRangeSearchSchema } from '$lib/schemas';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	} from '#lib/types/types.ts';
+	import { createDateRangeSearch, type DateRangeSearch } from '#lib/schemas.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
+	import { navigateToSearchParams } from '#lib/utils/search-navigation.ts';
 
 	const props = $props<{
 		dataset: string;
@@ -36,13 +36,22 @@
 		title?: string;
 	}>();
 
-	const params = (() =>
-		useSearchParams(createDateRangeSearchSchema(props.defaultStartDate), {
-			noScroll: true
-		}))();
-	let startDate = $state(params.startDate);
-	let endDate = $state(params.endDate);
-	let selectedGroupBy = $state<GroupByOption>(params.groupBy as GroupByOption);
+	const dateRangeSearch = $derived(createDateRangeSearch(props.defaultStartDate));
+	let search = $derived(dateRangeSearch.parse(page.url.searchParams));
+	const startDate = $derived(search.startDate);
+	const endDate = $derived(search.endDate);
+	const selectedGroupBy = $derived(clampGroupByToDateRange(search.groupBy, startDate, endDate));
+	const srcVisibility = $derived(search.srcVisibility);
+	const dstVisibility = $derived(search.dstVisibility);
+
+	function updateSearch(patch: Partial<DateRangeSearch>) {
+		const next = { ...search, ...patch };
+		next.groupBy = clampGroupByToDateRange(next.groupBy, next.startDate, next.endDate);
+		if (dateRangeSearch.equals(search, next)) return;
+		search = next;
+		void navigateToSearchParams(goto, dateRangeSearch.serialize(page.url.searchParams, next));
+	}
+
 	function createRouterConfig(routers: string[]): RouterConfig {
 		const routerConfig: RouterConfig = {};
 		for (const router of routers) {
@@ -152,11 +161,7 @@
 		);
 	}
 
-	const flowScopeKey = $derived(
-		getFlowScopeKey(params.srcVisibility as FlowVisibility, params.dstVisibility as FlowVisibility)
-	);
-	const srcVisibility = $derived(params.srcVisibility as FlowVisibility);
-	const dstVisibility = $derived(params.dstVisibility as FlowVisibility);
+	const flowScopeKey = $derived(getFlowScopeKey(srcVisibility, dstVisibility));
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -311,44 +316,6 @@
 			.sort();
 	}
 
-	watch(
-		() => params.startDate,
-		(next) => {
-			if (next !== startDate) {
-				startDate = next;
-			}
-		}
-	);
-
-	watch(
-		() => params.endDate,
-		(next) => {
-			if (next !== endDate) {
-				endDate = next;
-			}
-		}
-	);
-
-	watch(
-		() => params.groupBy,
-		(next) => {
-			const value = next as GroupByOption;
-			if (value !== selectedGroupBy) {
-				selectedGroupBy = value;
-			}
-		}
-	);
-
-	$effect(() => {
-		const clampedGroupBy = clampGroupByToDateRange(selectedGroupBy, startDate, endDate);
-		if (clampedGroupBy !== selectedGroupBy) {
-			selectedGroupBy = clampedGroupBy;
-			if (params.groupBy !== clampedGroupBy) {
-				params.groupBy = clampedGroupBy;
-			}
-		}
-	});
-
 	onMount(() => {
 		loadChartOrder();
 		activateChart(chartOrder[0] ?? 'dashboard');
@@ -378,27 +345,19 @@
 	});
 
 	function handleStartDateChange(payload: { startDate: string }) {
-		startDate = payload.startDate;
-		params.startDate = startDate;
+		updateSearch({ startDate: payload.startDate });
 	}
 
 	function handleEndDateChange(payload: { endDate: string }) {
-		endDate = payload.endDate;
-		params.endDate = endDate;
+		updateSearch({ endDate: payload.endDate });
 	}
 
 	function handleDateChange(payload: { startDate: string; endDate: string }) {
-		startDate = payload.startDate;
-		endDate = payload.endDate;
-		params.update({ startDate, endDate });
+		updateSearch({ startDate: payload.startDate, endDate: payload.endDate });
 	}
 
 	function handleGroupByChange(payload: { groupBy: GroupByOption }) {
-		if (payload.groupBy === params.groupBy) {
-			return;
-		}
-		selectedGroupBy = payload.groupBy;
-		params.groupBy = selectedGroupBy;
+		updateSearch({ groupBy: payload.groupBy });
 	}
 
 	function handleMetricDrillDown(
@@ -406,8 +365,7 @@
 		nextStartDate: string,
 		nextEndDate: string
 	) {
-		handleGroupByChange({ groupBy });
-		handleDateChange({ startDate: nextStartDate, endDate: nextEndDate });
+		updateSearch({ groupBy, startDate: nextStartDate, endDate: nextEndDate });
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
@@ -436,23 +394,16 @@
 		if (!flowScope) {
 			return;
 		}
-		params.update({
+		updateSearch({
 			srcVisibility: flowScope.srcVisibility,
 			dstVisibility: flowScope.dstVisibility
 		});
 	}
 
 	function handleResetView() {
-		const today = new Date().toJSON().slice(0, 10);
-		selectedGroupBy = 'date';
-		startDate = props.defaultStartDate;
-		endDate = today;
-		params.update({
-			groupBy: selectedGroupBy,
-			startDate,
-			endDate,
-			srcVisibility: 'all',
-			dstVisibility: 'all'
+		updateSearch({
+			...dateRangeSearch.defaults,
+			endDate: new Date().toJSON().slice(0, 10)
 		});
 	}
 </script>

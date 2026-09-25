@@ -1,10 +1,10 @@
 import type { RequestHandler } from './$types';
-import { getRequestedDataset, listDatasetSources } from '$lib/server/datasets';
+import { getRequestedDataset, listDatasetSources } from '#lib/server/datasets.ts';
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		const routers = await listDatasetSources(dataset, platform);
+		const dataset = await getRequestedDataset(url);
+		const routers = await listDatasetSources(dataset);
 		if (routers.length === 0) {
 			return Response.json(
 				{ error: `No routers available for dataset '${dataset}'` },

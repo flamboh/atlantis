@@ -5,7 +5,7 @@ ATLANTIS turns NetFlow captures and CSV imports into queryable aggregate databas
 ## Repository Map
 
 - `tools/netflow-db`: Rust pipeline (`atlantis-netflow-db` crate) for ingestion, aggregation, verification, and analysis-window exports. Native `nfcapd` ingestion uses the pinned `nfdump` fork in `vendor/nfdump`.
-- `apps/web`: Svelte 5/SvelteKit 2 dashboard and API routes. It reads local SQLite during development and Cloudflare D1 in deployment.
+- `apps/web`: Svelte 5/SvelteKit 3 dashboard and API routes. It reads local SQLite during development and Cloudflare D1 in deployment.
 - `apps/landing`: Astro marketing and SEO site.
 - `vendor/*`: Third-party analysis submodules. Treat these as read-only; build repo-local binaries through the scripts in `vendor/scripts/`.
 - `data/`, `.env`, and `datasets.json`: Machine-local inputs and generated databases. Keep paths and dataset contents out of commits.

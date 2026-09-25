@@ -2,10 +2,10 @@
 	import { afterNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import type { PageProps } from './$types';
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
-	import DatasetTabs from '$lib/components/datasets/DatasetTabs.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
 	import {
 		Table,
 		TableBody,
@@ -13,8 +13,8 @@
 		TableHead,
 		TableHeader,
 		TableRow
-	} from '$lib/components/ui/table';
-	import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
+	} from '#lib/components/ui/table/index.ts';
+	import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '#lib/types/types.ts';
 
 	type TailSelection = AlertTail;
 	type ErrorResponse = { data: null; error: string };

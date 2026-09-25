@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import * as Card from '$lib/components/ui/card';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import * as Card from '#lib/components/ui/card/index.ts';
 	import { goto } from '$app/navigation';
-	import ChartContainer from '$lib/components/charts/ChartContainer.svelte';
-	import MetricSelector from '$lib/components/filters/MetricSelector.svelte';
-	import { dateStringToEpochPST } from '$lib/utils/timezone';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import ChartContainer from '#lib/components/charts/ChartContainer.svelte';
+	import MetricSelector from '#lib/components/filters/MetricSelector.svelte';
+	import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
-	} from '$lib/utils/window-cache';
+	} from '#lib/utils/window-cache.ts';
 	import type {
 		DataOption,
 		GroupByOption,
@@ -27,7 +27,7 @@
 		NetflowStatsResponse,
 		NetflowStatsResult,
 		TimeBucket
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 
 	const props = $props<{
 		dataset: string;
