@@ -227,9 +227,10 @@ Each host needs:
 - enough host-local disk for its shard database. Write shards to local disk, not to a shared
   network filesystem.
 
-`scripts/netflow-db-cluster.sh` runs the whole flow from one machine: it splits the inclusive date
-range into one contiguous shard per slot, runs `pipeline` on each host over ssh, copies consistent
-snapshots back, merges them, and runs `verify`:
+`scripts/netflow-db-cluster.sh` runs the whole flow from one machine. It splits the inclusive date
+range into one contiguous shard per slot and starts `pipeline` on each host as a detached job, so
+a dropped ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
+shard back, merges the snapshots, and runs `verify`:
 
 ```bash
 ./scripts/netflow-db-cluster.sh \
@@ -243,15 +244,24 @@ snapshots back, merges them, and runs `verify`:
   --deploy-datasets /path/to/datasets.json
 ```
 
-`host:N` runs N shards on that host at once. Hosts install into `$HOME/atlantis-cluster` unless
-you set `--remote-dir` or `NETFLOW_CLUSTER_REMOTE_DIR`; the directory holds `bin/`, `nfdump/`,
-`datasets.json`, and the shard databases in `work/`. The `--deploy-*` options replace files atomically. Do not
-replace nfdump while a shard is running on that host: the running pipeline detects the change and
-stops, and a different nfdump build produces an incompatible product. Pipeline flags after `--` apply to every
-shard. If a shard fails, rerun the same command: the split is deterministic, and every shard
-resumes after its last completed day. The script deletes the snapshots it copies back, but leaves
-the remote shard databases in place so a later run can resume from them. Delete `work/` on each
-host when you are finished.
+- `host:N` runs N shards on that host at once.
+- Hosts install into `--remote-dir` (or `NETFLOW_CLUSTER_REMOTE_DIR`). The default is
+  `$HOME/atlantis-cluster`, expanded with this machine's `$HOME`, so every host must be able to
+  use that absolute path. The directory holds `bin/`, `nfdump/`, `datasets.json`, and the shard
+  databases, logs, and exit-status files in `work/`.
+- The `--deploy-*` options replace files atomically. Do not replace nfdump while a shard is running
+  on that host: the running pipeline detects the change and stops, and a different nfdump build
+  produces an incompatible product.
+- Pipeline flags after `--` apply to every shard.
+- Each remote shard database is named after its dataset and day range. The script records the
+  host and day-range layout in `<output>.shards/layout` and refuses a rerun whose `--hosts`,
+  dates, or dataset differ. To start over with a different layout, delete that file.
+- If a shard fails or you interrupt the script, rerun the same command. A shard that is still
+  running is reattached instead of started twice, and a restarted shard resumes after its last
+  completed day. Ctrl-C stops only the local script; remote shards keep running.
+- After `verify` passes, the script deletes the local shard copies in `<output>.shards` unless you
+  pass `--keep-shards`; the logs and layout stay there. It leaves the remote shard databases in
+  place. Delete `work/` on each host when you are finished.
 
 To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
 `--end-date` over a different day range, then run:
@@ -262,9 +272,10 @@ To merge shards by hand, build each one with identical flags and an explicit `--
 
 The output must not exist yet. The command refuses shards with different product identities,
 schemas, source layouts, or dataset metadata, and shards whose completed days overlap. It also
-refuses rows outside a shard's completed days. One merge accepts up to 11 shards, and a merged
-product can be merged again. After the merge, rerunning `pipeline` over the merged days with the
-same flags and nfdump path publishes zero buckets.
+refuses rows outside a shard's completed days, and completed days without full five-minute
+coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
+again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
+path publishes zero buckets.
 
 ## Verify the output
 
