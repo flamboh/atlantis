@@ -20,3 +20,7 @@ export const isProduction = (stage: string) => stage === productionStage;
 
 export const stageName = (base: string, stage: string) =>
 	isProduction(stage) ? base : `${base}-${stage}`;
+
+export const repoRoot = '.';
+
+export const webDockerfile = `${webRoot}/Dockerfile`;

@@ -47,10 +47,10 @@ The root `dev` command starts both applications. It does not start the pipeline.
 
 The dashboard has two database drivers. Each build and each development server includes only one of them.
 
-| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Default for                         |
-| -------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | `vite dev`, `vite preview` (always) |
-| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `vite build`                        |
+| `ATLANTIS_DB_DRIVER` | Driver                                                                                                           | Default for                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite`, `LOCAL_DATA_DIR`, or `LOCAL_SQLITE_PATH` | `vite dev`, `vite preview` (always) |
+| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                                       | `vite build`                        |
 
 Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments and keeps `cloudflare:workers` external when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
 
@@ -59,11 +59,15 @@ Set `ATLANTIS_DB_DRIVER` in the shell. The value in `.env` does not select the d
 ```bash
 bun run dev:web                             # SQLite
 bun run build:web                           # D1 server bundle, no adapter
-ATLANTIS_DB_DRIVER=sqlite bun run build:web # SQLite server bundle, no adapter
+ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node server in apps/web/build
 bun run --cwd apps/web preview              # SQLite build, then vite preview
 ```
 
-The web app has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
+A D1 build has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
+
+A SQLite build uses `@sveltejs/adapter-node` and writes a Node server to `apps/web/build`. Start it with `node build` from `apps/web`. The campus deployment runs this build in a container. [Operations](../user/operations.md#deploy-the-campus-dashboard) describes it.
+
+The build leaves `paths.origin` unset. SvelteKit 3 replaced adapter-node's runtime `ORIGIN` variable with this build-time option, and a fixed origin would break SSH port forwarding, where each user picks a local port. Adapter-node then builds the request URL from the `Host` header and the `https` protocol, so a request to `http://localhost:8080` has the origin `https://localhost:8080`. The dashboard has no form actions, remote functions, or mutating endpoints, so SvelteKit's CSRF origin check never runs. Before you add a `POST` form, set `PROTOCOL_HEADER` or `paths.origin` so that the origin check sees the browser's real origin.
 
 `preview` always rebuilds with SQLite before it serves, because `vite preview` runs the server in Node and cannot load the D1 bundle.
 

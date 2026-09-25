@@ -11,6 +11,11 @@ export const variables = defineEnvVars({
 		description: 'Fallback for LOCAL_SQLITE_PATH',
 		schema: optional
 	},
+	LOCAL_DATA_DIR: {
+		description:
+			'Directory scanned for <dataset>/netflow.sqlite products; replaces the data/ and ../../data defaults',
+		schema: optional
+	},
 	DEFAULT_DATASET: {
 		description: 'Dataset ID selected when a request does not name one',
 		schema: optional

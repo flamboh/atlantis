@@ -7,7 +7,7 @@ ATLANTIS turns NetFlow captures and CSV imports into queryable aggregate databas
 - `tools/netflow-db`: Rust pipeline (`atlantis-netflow-db` crate) for ingestion, aggregation, verification, and analysis-window exports. Native `nfcapd` ingestion uses the pinned `nfdump` fork in `vendor/nfdump`.
 - `apps/web`: Svelte 5/SvelteKit 3 dashboard and API routes. It reads local SQLite during development and Cloudflare D1 in deployment.
 - `apps/landing`: Astro marketing and SEO site.
-- `infra`: Alchemy v2 stacks (Effect programs) that deploy the dashboard. `cloudflare.ts` deploys the worker and its D1 database; `shared.ts` holds names and paths common to all stacks.
+- `infra`: Alchemy v2 stacks (Effect programs) that deploy the dashboard. `cloudflare.ts` deploys the worker and its D1 database; `campus.ts` runs the SQLite dashboard as a Docker container on a self-hosted host that users reach through SSH port forwarding; `shared.ts` holds names and paths common to all stacks.
 - `vendor/*`: Third-party analysis submodules. Treat these as read-only; build repo-local binaries through the scripts in `vendor/scripts/`.
 - `data/`, `.env`, and `datasets.json`: Machine-local inputs and generated databases. Keep paths and dataset contents out of commits.
 - `docs/user`: User setup and operation documentation.
