@@ -47,20 +47,28 @@ The root `dev` command starts both applications. It does not start the pipeline.
 
 The dashboard has two database drivers. Each build and each development server includes only one of them.
 
-| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Adapter              | Default for  |
-| -------------------- | --------------------------------------------------------------------------------------------- | -------------------- | ------------ |
-| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | None (Node output)   | `vite dev`   |
-| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `adapter-cloudflare` | `vite build` |
+| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Default for  |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------ |
+| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | `vite dev`   |
+| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `vite build` |
 
-Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
+Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments and keeps `cloudflare:workers` external when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
 
 Set `ATLANTIS_DB_DRIVER` in the shell. The value in `.env` does not select the driver, so a deploy build cannot pick up a local SQLite setting.
 
 ```bash
-bun run dev:web                            # SQLite, no Workers runtime
-ATLANTIS_DB_DRIVER=d1 bun run dev:web      # local D1 through the Workers runtime
-bun run build:web                          # Cloudflare worker with D1
-ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node output with SQLite
+bun run dev:web                             # SQLite
+bun run build:web                           # D1 server bundle, no adapter
+ATLANTIS_DB_DRIVER=sqlite bun run build:web # SQLite server bundle, no adapter
+```
+
+The web app has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
+
+The D1 driver runs only in a deployed worker. `vite dev` and `vite preview` reject `ATLANTIS_DB_DRIVER=d1`. `alchemy dev` does not help here, because it runs SvelteKit's server code in Node and exposes bindings only on `platform.env`. It does not provide the `cloudflare:workers` module. To test D1 behavior, deploy a personal stage:
+
+```bash
+bun run deploy:cloudflare --stage <your-name>
+bun run destroy:cloudflare --stage <your-name>
 ```
 
 ## Configure the dashboard
@@ -129,15 +137,11 @@ The Drizzle schema is in `apps/web/src/lib/server/db/schema.ts`.
    bun run --cwd apps/web db:generate
    ```
 
-3. Review the generated SQL in `apps/web/drizzle`.
+3. Review the generated `migration.sql` in the new `apps/web/drizzle/<timestamp>_<name>/` directory.
 
-4. Apply the migration to a local D1 database.
+4. Run the schema and route tests. `tests/lib/server/migrations.test.ts` applies every migration to an empty SQLite database.
 
-   ```bash
-   bun run --cwd apps/web d1:migrations:apply:local
-   ```
-
-5. Run the schema and route tests.
+5. Deploy a personal stage to apply the migration to a D1 database. The next production deploy applies it to production.
 
 Before shared use, you can replace an unapplied greenfield baseline. After shared use, always add a new migration.
 

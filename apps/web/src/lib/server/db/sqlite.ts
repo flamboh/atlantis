@@ -68,16 +68,11 @@ function createReadonlyDb(client: SqliteClient): ReadonlyDatasetDb {
 }
 
 async function openLocalClient(dbPath: string): Promise<SqliteClient> {
-	const [{ drizzle }, betterSqlite3, schema] = await Promise.all([
-		import(/* @vite-ignore */ 'drizzle-orm/better-sqlite3'),
-		import(/* @vite-ignore */ 'better-sqlite3'),
-		import('#lib/server/db/schema.ts')
-	]);
+	const betterSqlite3 = await import(/* @vite-ignore */ 'better-sqlite3');
 	const sqlite = new betterSqlite3.default(dbPath, { readonly: true, fileMustExist: true });
 	sqlite.pragma('query_only = ON');
 	sqlite.pragma('busy_timeout = 60000');
-	const drizzleDb = drizzle(sqlite, { schema });
-	return drizzleDb.$client as SqliteClient;
+	return sqlite as SqliteClient;
 }
 
 async function localDbRevision(dbPath: string): Promise<LocalDbRevision> {
