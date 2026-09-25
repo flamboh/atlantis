@@ -31,6 +31,9 @@ export function seedPlaywrightDatabase() {
 			source_id, granularity, bucket_start, bucket_end,
 			coverage_state, observed_units, expected_units, rejected_units
 		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0);
+		INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
+			(4, -0.5, 0.125, 33),
+			(6, -0.5, 0.125, 33);
 	`);
 	database.close();
 	return { databasePath, fixtureDirectory };

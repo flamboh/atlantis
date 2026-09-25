@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { SpectrumData, SpectrumPoint } from '$lib/types/types';
+import type { SpectrumData } from '$lib/types/types';
 import {
+	buildSpectrumPoints,
 	parseFlowDirectionParams,
 	parseMaadParams,
 	spectrumMeasureError
@@ -11,7 +12,7 @@ import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 const FIVE_MINUTES = '5m';
 
 type SpectrumRow = {
-	valuesJson: string | null;
+	spectrum: Uint8Array | null;
 };
 
 export const GET: RequestHandler = async ({ params, url, platform }) => {
@@ -61,18 +62,17 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 		return await withDb(dataset, platform, async (db) => {
 			const row = await db.get<SpectrumRow>(
 				`SELECT
-				values_json AS valuesJson
-			FROM address_structure_stats
-			WHERE source_id = ?
-				AND granularity = ?
-				AND bucket_start = ?
-				AND ip_version = ?
-				AND src_locality = ?
-				AND dst_locality = ?
-				AND address_side = ?
-				AND measure = ?
-				AND structure_kind = 'spectrum'
-			LIMIT 1`,
+					spectrum AS spectrum
+				FROM address_maad_stats
+				WHERE source_id = ?
+					AND granularity = ?
+					AND bucket_start = ?
+					AND ip_version = ?
+					AND src_locality = ?
+					AND dst_locality = ?
+					AND address_side = ?
+					AND measure = ?
+				LIMIT 1`,
 				[
 					router,
 					FIVE_MINUTES,
@@ -92,23 +92,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				);
 			}
 
-			const rawSpectrum = row.valuesJson;
-			if (!rawSpectrum) {
-				return json(
-					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },
-					{ status: 404 }
-				);
-			}
-
-			let data: SpectrumPoint[] = [];
-
-			try {
-				data = JSON.parse(rawSpectrum) as SpectrumPoint[];
-			} catch (error) {
-				console.error('Failed to parse spectrum JSON from database:', error);
-				return json({ error: 'Failed to parse spectrum statistics' }, { status: 500 });
-			}
-
+			const data = buildSpectrumPoints(row.spectrum) ?? [];
 			if (data.length === 0) {
 				return json(
 					{ error: `Spectrum statistics not found for router ${router} at ${slug}` },

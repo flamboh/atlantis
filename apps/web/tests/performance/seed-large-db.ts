@@ -34,11 +34,15 @@ for (const index of [
 	'idx_protocol_stats_timeseries',
 	'idx_address_count_stats_query',
 	'idx_address_count_stats_timeseries',
-	'idx_address_structure_stats_query',
-	'idx_address_structure_stats_timeseries',
+	'idx_address_maad_stats_key',
+	'idx_address_maad_stats_bucket',
 	'idx_port_count_stats_timeseries'
 ]) {
 	db.exec(`DROP INDEX ${index}`);
+}
+
+function f32Buffer(values: number[]): Buffer {
+	return Buffer.from(Float32Array.from(values).buffer);
 }
 
 db.exec(`
@@ -193,24 +197,72 @@ db.exec(`
 	CROSS JOIN (SELECT 'low' AS port_range UNION ALL SELECT 'high')
 	WHERE bucket_start >= hourly_start AND bucket_start < hourly_end;
 
-	INSERT INTO address_structure_stats (
-		source_id, granularity, bucket_start, bucket_end, ip_version,
-		src_locality, dst_locality, address_side, measure, structure_kind,
-		values_json, metadata_json
-	)
-	SELECT source_id, '1h', bucket_start, bucket_start + 3600, 4,
-		src_locality, dst_locality, address_side, 'addresses', structure_kind,
-		CASE structure_kind
-			WHEN 'spectrum' THEN '[{"alpha":0.1,"f":0.2},{"alpha":0.2,"f":0.3},{"alpha":0.3,"f":0.4}]'
-			ELSE '[{"q":1,"tau":0.2,"sd":0.01},{"q":2,"tau":0.4,"sd":0.02}]'
-		END,
-		'{"uniqueAddressCount":1000}'
-	FROM perf_sources CROSS JOIN perf_hour_buckets CROSS JOIN perf_scopes
-	CROSS JOIN (SELECT 'source' AS address_side UNION ALL SELECT 'destination')
-	CROSS JOIN (SELECT 'spectrum' AS structure_kind UNION ALL SELECT 'structure')
-	WHERE ip_version = 4
-		AND bucket_start >= hourly_start AND bucket_start < hourly_end;
+	INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
+		(4, -0.5, 0.125, 33),
+		(6, -0.5, 0.125, 33);
 `);
+
+const maadRows = db
+	.prepare(
+		`
+		SELECT
+			perf_sources.source_id AS sourceId,
+			perf_hour_buckets.bucket_start AS bucketStart,
+			perf_scopes.src_locality AS srcLocality,
+			perf_scopes.dst_locality AS dstLocality,
+			address_side.value AS addressSide
+		FROM perf_sources
+		CROSS JOIN perf_hour_buckets
+		CROSS JOIN perf_scopes
+		CROSS JOIN (SELECT 'source' AS value UNION ALL SELECT 'destination') AS address_side
+		WHERE perf_scopes.ip_version = 4
+			AND perf_hour_buckets.bucket_start >= perf_scopes.hourly_start
+			AND perf_hour_buckets.bucket_start < perf_scopes.hourly_end
+	`
+	)
+	.all() as {
+	sourceId: string;
+	bucketStart: number;
+	srcLocality: string;
+	dstLocality: string;
+	addressSide: string;
+}[];
+
+const maadTau = f32Buffer(Array.from({ length: 33 }, (_, index) => 0.1 + index * 0.01));
+const maadTauSd = f32Buffer(Array.from({ length: 33 }, () => 0.01));
+const maadSpectrum = f32Buffer(
+	Array.from({ length: 66 }, (_, index) => (index % 2 === 0 ? 1 + index / 66 : 0.5))
+);
+
+const insertMaad = db.prepare(`
+	INSERT INTO address_maad_stats (
+		source_id, granularity, bucket_start, bucket_end, ip_version,
+		src_locality, dst_locality, address_side, measure,
+		total_addrs, zero_weight_addrs, min_prefix_length, max_prefix_length,
+		d0, d1, d2, tau, tau_sd, spectrum
+	) VALUES (
+		?, '1h', ?, ? + 3600, 4,
+		?, ?, ?, 'addresses',
+		1000, 0, 8, 24,
+		1.5, 1.2, 1.1, ?, ?, ?
+	)
+`);
+
+db.transaction((rows: typeof maadRows) => {
+	for (const row of rows) {
+		insertMaad.run(
+			row.sourceId,
+			row.bucketStart,
+			row.bucketStart,
+			row.srcLocality,
+			row.dstLocality,
+			row.addressSide,
+			maadTau,
+			maadTauSd,
+			maadSpectrum
+		);
+	}
+})(maadRows);
 
 db.exec(localSchemaSql);
 db.exec('ANALYZE; VACUUM;');
@@ -222,7 +274,7 @@ const tableCounts = Object.fromEntries(
 		'protocol_stats',
 		'address_count_stats',
 		'port_count_stats',
-		'address_structure_stats'
+		'address_maad_stats'
 	].map((table) => [table, db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()])
 );
 db.close();

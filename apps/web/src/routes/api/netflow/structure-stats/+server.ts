@@ -1,11 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { StructureFunctionPoint } from '$lib/types/types';
 import type { StructureStatsPayload, StructureStatsResponse } from '$lib/types/structure-stats';
 import { buildCoverageTimelines } from '$lib/server/db/coverage';
 import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
 import {
-	normalizeStructurePoints,
+	buildStructurePoints,
+	getMaadQGrid,
 	parseMaadStatsParams,
 	placeholders
 } from '$lib/server/netflow-v3';
@@ -20,47 +20,11 @@ type RawStructureStatsRow = {
 	router: string;
 	bucketStart: number;
 	bucketEnd: number;
-	structureSaJson: string | null;
-	structureDaJson: string | null;
+	saTau: Uint8Array | null;
+	saTauSd: Uint8Array | null;
+	daTau: Uint8Array | null;
+	daTauSd: Uint8Array | null;
 };
-
-type RawStructurePoint = {
-	q: number;
-	tau?: number;
-	tauTilde?: number;
-	sd?: number;
-	s?: number;
-};
-
-function isRawStructurePoint(value: unknown): value is RawStructurePoint {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		'q' in value &&
-		typeof value.q === 'number' &&
-		(!('tau' in value) || typeof value.tau === 'number') &&
-		(!('tauTilde' in value) || typeof value.tauTilde === 'number') &&
-		(!('sd' in value) || typeof value.sd === 'number') &&
-		(!('s' in value) || typeof value.s === 'number')
-	);
-}
-
-function parseStructurePoints(
-	valuesJson: string | null,
-	router: string,
-	bucketStart: number
-): StructureFunctionPoint[] | null {
-	if (valuesJson === null) return null;
-
-	try {
-		const values: unknown = JSON.parse(valuesJson);
-		if (!Array.isArray(values)) return null;
-		return normalizeStructurePoints(values.filter(isRawStructurePoint));
-	} catch (error) {
-		console.error('Failed to parse structure values_json:', { router, bucketStart, error });
-		return null;
-	}
-}
 
 export const GET: RequestHandler = async ({ url, platform }) => {
 	const params = parseMaadStatsParams(url);
@@ -72,7 +36,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	try {
 		const dataset = await getRequestedDataset(url, platform);
 		return await withDatasetDb(dataset, platform, async ({ db }) => {
-			const tableName = 'address_structure_stats';
+			const qGrid = await getMaadQGrid(db, ipVersion);
+
+			const tableName = 'address_maad_stats';
 			const sourceColumn = 'source_id';
 			const queryParams = [
 				granularity,
@@ -86,41 +52,34 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			];
 
 			const query = `
-			SELECT
-				${sourceColumn} AS router,
-				bucket_start AS bucketStart,
-				MAX(bucket_end) AS bucketEnd,
-				MAX(CASE WHEN address_side = 'source' THEN values_json END) AS structureSaJson,
-				MAX(CASE WHEN address_side = 'destination' THEN values_json END) AS structureDaJson
-			FROM ${tableName}
-			WHERE granularity = ?
-				AND ${sourceColumn} IN (${placeholders(routers)})
-				AND src_locality = ?
-				AND dst_locality = ?
-				AND bucket_start >= ?
-				AND bucket_start < ?
-				AND ip_version = ?
-				AND measure = ?
-				AND structure_kind = 'structure'
-			GROUP BY ${sourceColumn}, bucket_start
-		`;
+				SELECT
+					${sourceColumn} AS router,
+					bucket_start AS bucketStart,
+					MAX(bucket_end) AS bucketEnd,
+					MAX(CASE WHEN address_side = 'source' THEN tau END) AS saTau,
+					MAX(CASE WHEN address_side = 'source' THEN tau_sd END) AS saTauSd,
+					MAX(CASE WHEN address_side = 'destination' THEN tau END) AS daTau,
+					MAX(CASE WHEN address_side = 'destination' THEN tau_sd END) AS daTauSd
+				FROM ${tableName}
+				WHERE granularity = ?
+					AND ${sourceColumn} IN (${placeholders(routers)})
+					AND src_locality = ?
+					AND dst_locality = ?
+					AND bucket_start >= ?
+					AND bucket_start < ?
+					AND ip_version = ?
+					AND measure = ?
+				GROUP BY ${sourceColumn}, bucket_start
+			`;
 
 			const rawRows = await db.all<RawStructureStatsRow>(query, queryParams);
-			const rows: StructureStatsRow[] = rawRows.flatMap((row) => {
-				const structureSa = parseStructurePoints(row.structureSaJson, row.router, row.bucketStart);
-				const structureDa = parseStructurePoints(row.structureDaJson, row.router, row.bucketStart);
-				return structureSa === null && structureDa === null
-					? []
-					: [
-							{
-								router: row.router,
-								bucketStart: row.bucketStart,
-								bucketEnd: row.bucketEnd,
-								structureSa: structureSa ?? [],
-								structureDa: structureDa ?? []
-							}
-						];
-			});
+			const rows: StructureStatsRow[] = rawRows.map((row) => ({
+				router: row.router,
+				bucketStart: row.bucketStart,
+				bucketEnd: row.bucketEnd,
+				structureSa: buildStructurePoints(row.saTau, row.saTauSd, qGrid),
+				structureDa: buildStructurePoints(row.daTau, row.daTauSd, qGrid)
+			}));
 			const timelines = await buildCoverageTimelines({
 				db,
 				granularity,

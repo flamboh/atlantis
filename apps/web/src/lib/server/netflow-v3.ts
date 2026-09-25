@@ -13,15 +13,17 @@ import {
 	type MaadIpVersion,
 	type MaadMeasure
 } from '$lib/types/types';
-import type { SourceDefinition } from '$lib/server/datasets';
-import type { StructureFunctionPoint } from '$lib/types/types';
-type RawStructureFunctionPoint = {
-	q: number;
-	tau?: number;
-	tauTilde?: number;
-	sd?: number;
-	s?: number;
-};
+import type { ReadonlyDatasetDb, SourceDefinition } from '$lib/server/datasets';
+import type { SpectrumPoint, StructureFunctionPoint } from '$lib/types/types';
+
+export type MaadBlob = Uint8Array | ArrayBuffer | number[] | null;
+
+export interface MaadQGridRow {
+	ipVersion: MaadIpVersion;
+	qMin: number;
+	qStep: number;
+	qCount: number;
+}
 
 export interface AggregateStatsParams {
 	routers: string[];
@@ -360,12 +362,64 @@ export function groupByToGranularity(groupBy: string): IpGranularity {
 	return FIVE_MINUTE_GRANULARITY;
 }
 
-export function normalizeStructurePoints(
-	points: RawStructureFunctionPoint[]
+export function decodeF32(value: MaadBlob): Float32Array | null {
+	if (value === null) return null;
+	if (Array.isArray(value)) return decodeF32(Uint8Array.from(value));
+	if (value instanceof ArrayBuffer) return decodeF32(new Uint8Array(value));
+
+	const count = value.byteLength / 4;
+	const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+	const out = new Float32Array(count);
+	for (let i = 0; i < count; i++) {
+		out[i] = view.getFloat32(i * 4, true);
+	}
+	return out;
+}
+
+export async function getMaadQGrid(
+	db: ReadonlyDatasetDb,
+	ipVersion: MaadIpVersion
+): Promise<MaadQGridRow | null> {
+	const row = await db.get<MaadQGridRow>(
+		`SELECT
+			ip_version AS ipVersion,
+			q_min AS qMin,
+			q_step AS qStep,
+			q_count AS qCount
+		FROM maad_q_grid
+		WHERE ip_version = ?`,
+		[ipVersion]
+	);
+	return row ?? null;
+}
+
+export function buildStructurePoints(
+	tau: MaadBlob,
+	tauSd: MaadBlob,
+	qGrid: MaadQGridRow | null
 ): StructureFunctionPoint[] {
-	return points.map((point) => ({
-		q: point.q,
-		tau: point.tau ?? point.tauTilde ?? 0,
-		sd: point.sd ?? point.s ?? 0
-	}));
+	const tauValues = decodeF32(tau);
+	if (tauValues === null || qGrid === null) return [];
+
+	const sdValues = decodeF32(tauSd);
+	const points: StructureFunctionPoint[] = [];
+	for (let i = 0; i < tauValues.length; i++) {
+		points.push({
+			q: qGrid.qMin + i * qGrid.qStep,
+			tau: tauValues[i],
+			sd: sdValues?.[i] ?? 0
+		});
+	}
+	return points;
+}
+
+export function buildSpectrumPoints(spectrum: MaadBlob): SpectrumPoint[] | null {
+	const values = decodeF32(spectrum);
+	if (values === null) return null;
+
+	const points: SpectrumPoint[] = [];
+	for (let i = 0; i + 1 < values.length; i += 2) {
+		points.push({ alpha: values[i], f: values[i + 1] });
+	}
+	return points;
 }

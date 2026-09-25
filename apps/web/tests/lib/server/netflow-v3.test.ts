@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+	buildSpectrumPoints,
+	buildStructurePoints,
+	decodeF32,
 	getNetflowSchemaVersion,
 	groupByToGranularity,
-	normalizeStructurePoints,
 	parseAggregateStatsParams,
 	parseIpGranularity,
 	parseIpGranularityOrDefault,
@@ -15,6 +17,10 @@ import {
 	parseTimestamp,
 	resolveSourceIds
 } from '../../../src/lib/server/netflow-v3';
+
+function f32(values: number[]): Uint8Array {
+	return new Uint8Array(Float32Array.from(values).buffer);
+}
 
 describe('netflow v3 helpers', () => {
 	it('is v3-only', () => {
@@ -215,10 +221,41 @@ describe('netflow v3 helpers', () => {
 		).toEqual({ error: 'No routers selected', status: 400 });
 	});
 
-	it('normalizes structure points from MAAD variants', () => {
-		expect(normalizeStructurePoints([{ q: 1, tauTilde: 2, s: 3 }])).toEqual([
-			{ q: 1, tau: 2, sd: 3 }
+	it('decodes little-endian f32 blobs from every accepted input shape', () => {
+		expect(decodeF32(null)).toBeNull();
+		expect(decodeF32(f32([]))).toEqual(new Float32Array([]));
+		expect(decodeF32(f32([1, 2, 3]))).toEqual(new Float32Array([1, 2, 3]));
+		expect(decodeF32(new Float32Array([1.5, -2.25]).buffer as ArrayBuffer)).toEqual(
+			new Float32Array([1.5, -2.25])
+		);
+		expect(decodeF32([0, 0, 128, 63])).toEqual(new Float32Array([1]));
+
+		const padded = Buffer.concat([Buffer.from([0, 0, 0]), Buffer.from(f32([1, 2]))]);
+		const misaligned = padded.subarray(3);
+		expect(misaligned.byteOffset % 4).not.toBe(0);
+		expect(decodeF32(misaligned)).toEqual(new Float32Array([1, 2]));
+	});
+
+	it('builds structure points from tau/tau_sd blobs and a q grid, or an empty array for a null result', () => {
+		const qGrid = { ipVersion: 4 as const, qMin: -0.5, qStep: 0.5, qCount: 3 };
+		expect(buildStructurePoints(f32([0.2, 0.4]), f32([0.01, 0.02]), qGrid)).toEqual([
+			{ q: -0.5, tau: Math.fround(0.2), sd: Math.fround(0.01) },
+			{ q: 0, tau: Math.fround(0.4), sd: Math.fround(0.02) }
 		]);
+		expect(buildStructurePoints(f32([0.2]), null, qGrid)).toEqual([
+			{ q: -0.5, tau: Math.fround(0.2), sd: 0 }
+		]);
+		expect(buildStructurePoints(null, null, qGrid)).toEqual([]);
+		expect(buildStructurePoints(f32([0.25]), f32([0.5]), null)).toEqual([]);
+	});
+
+	it('builds spectrum points from interleaved alpha/f blobs, and distinguishes empty from not computed', () => {
+		expect(buildSpectrumPoints(f32([1, 2, 3, 4]))).toEqual([
+			{ alpha: 1, f: 2 },
+			{ alpha: 3, f: 4 }
+		]);
+		expect(buildSpectrumPoints(f32([]))).toEqual([]);
+		expect(buildSpectrumPoints(null)).toBeNull();
 	});
 
 	it('resolves additive sources to one disjoint physical cover', () => {
