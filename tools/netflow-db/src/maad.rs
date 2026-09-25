@@ -258,20 +258,21 @@ pub fn compute_weighted_with_config<A: MaadAddress>(
     entries: impl IntoIterator<Item = (A, f64)>,
     config: MaadConfig,
 ) -> Result<MaadResult, MaadError> {
-    let (_, [weighted]) = compute_measures_with_config(
+    let (analysis, q_values) = analyze_measures(
         entries
             .into_iter()
             .map(|(address, weight)| (address, [weight])),
-        config,
+        &config,
     )?;
-    Ok(weighted)
+    Ok(analysis.weighted_result(0, &q_values))
 }
 
 /// Compute the distinct-address result and one measure-weighted result per weight column.
 ///
 /// Every measure shares one sort and one walk over the prefix levels, because prefix validity
-/// and path pruning depend only on the distinct addresses. Each result equals the one
-/// [`compute`] or [`compute_weighted`] returns for the same addresses and weights.
+/// and path pruning depend only on the distinct addresses. Duplicate addresses sum their
+/// weights in input order. Each result equals the one [`compute`] or [`compute_weighted`]
+/// returns for the same addresses and weights in the same order.
 pub fn compute_measures<A: MaadAddress, const K: usize>(
     entries: impl IntoIterator<Item = (A, [f64; K])>,
 ) -> Result<(MaadResult, [MaadResult; K]), MaadError> {
@@ -283,7 +284,19 @@ pub fn compute_measures_with_config<A: MaadAddress, const K: usize>(
     entries: impl IntoIterator<Item = (A, [f64; K])>,
     config: MaadConfig,
 ) -> Result<(MaadResult, [MaadResult; K]), MaadError> {
-    let q_values = validate_config(&config, A::Bits::WIDTH)?;
+    let (analysis, q_values) = analyze_measures(entries, &config)?;
+    Ok((
+        analysis.address_result(&q_values, config.q_step),
+        std::array::from_fn(|k| analysis.weighted_result(k, &q_values)),
+    ))
+}
+
+/// Validate, sort and sum weighted entries, then walk their prefix levels once.
+fn analyze_measures<A: MaadAddress, const K: usize>(
+    entries: impl IntoIterator<Item = (A, [f64; K])>,
+    config: &MaadConfig,
+) -> Result<(Analysis, Vec<f64>), MaadError> {
+    let q_values = validate_config(config, A::Bits::WIDTH)?;
     let mut entries = entries
         .into_iter()
         .map(|(address, weights)| {
@@ -299,16 +312,7 @@ pub fn compute_measures_with_config<A: MaadAddress, const K: usize>(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    entries.sort_unstable_by(|left, right| {
-        left.0.cmp(&right.0).then_with(|| {
-            left.1
-                .iter()
-                .zip(&right.1)
-                .map(|(left, right)| left.total_cmp(right))
-                .find(|ordering| ordering.is_ne())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
+    entries.sort_by_key(|&(address, _)| address);
     entries.dedup_by(|next, kept| {
         let duplicate = next.0 == kept.0;
         if duplicate {
@@ -324,21 +328,14 @@ pub fn compute_measures_with_config<A: MaadAddress, const K: usize>(
         return Err(MaadError::NonFiniteTotalWeight { total });
     }
     if entries.len() < MIN_MAAD_ADDRESSES {
-        return Ok((
-            empty_result(entries.len()),
-            std::array::from_fn(|_| empty_result(entries.len())),
-        ));
+        return Ok((Analysis::empty(entries.len(), K), q_values));
     }
     let addresses: Vec<_> = entries.iter().map(|&(address, _)| address).collect();
     let columns: Vec<Vec<f64>> = (0..K)
         .map(|k| entries.iter().map(|(_, weights)| weights[k]).collect())
         .collect();
     drop(entries);
-    let analysis = analyze(&addresses, &columns, &totals, &config);
-    Ok((
-        analysis.address_result(&q_values, config.q_step),
-        std::array::from_fn(|k| analysis.weighted_result(k, &q_values)),
-    ))
+    Ok((analyze(&addresses, &columns, &totals, config), q_values))
 }
 
 /// Serialize a computed MAAD result using the established JSON field names.
@@ -371,6 +368,15 @@ struct Analysis {
 }
 
 impl Analysis {
+    fn empty(total_addrs: usize, measures: usize) -> Self {
+        Self {
+            total_addrs,
+            prefix_lengths: Vec::new(),
+            counts: MeasureAnalysis::new(),
+            weighted: (0..measures).map(|_| MeasureAnalysis::new()).collect(),
+        }
+    }
+
     fn address_result(&self, q_values: &[f64], q_step: f64) -> MaadResult {
         if self.prefix_lengths.is_empty() {
             return empty_result(self.total_addrs);
@@ -907,25 +913,90 @@ mod tests {
     where
         A::Bits: Into<u128>,
     {
-        let width = A::Bits::WIDTH;
-        let addresses: BTreeSet<u128> = addresses
+        let masses: BTreeMap<u128, f64> = addresses
             .into_iter()
-            .map(|address| address.bits().into())
+            .map(|address| (address.bits().into(), 1.0))
             .collect();
-        if addresses.len() < MIN_MAAD_ADDRESSES {
-            return empty_result(addresses.len());
+        reference_measure(&masses, A::Bits::WIDTH, config, true)
+    }
+
+    fn reference_weighted_compute<A: MaadAddress>(
+        entries: &[(A, f64)],
+        config: MaadConfig,
+    ) -> MaadResult
+    where
+        A::Bits: Into<u128>,
+    {
+        let mut masses = BTreeMap::<u128, f64>::new();
+        for &(address, weight) in entries {
+            *masses.entry(address.bits().into()).or_insert(0.0) += weight;
         }
+        reference_measure(&masses, A::Bits::WIDTH, config, false)
+    }
+
+    /// Ordered-map MAAD over per-address masses. Validity uses distinct counts;
+    /// moments and entropy use the summed masses.
+    fn reference_measure(
+        masses: &BTreeMap<u128, f64>,
+        width: u8,
+        config: MaadConfig,
+        with_spectrum: bool,
+    ) -> MaadResult {
+        if masses.len() < MIN_MAAD_ADDRESSES {
+            return empty_result(masses.len());
+        }
+        let addresses: BTreeSet<u128> = masses.keys().copied().collect();
         let counts = reference_prefix_counts(&addresses, width);
-        let prepared = reference_prepare_valid_moments(&counts, &config, width);
-        if prepared.is_empty() {
-            return empty_result(addresses.len());
+        let level_masses: Vec<BTreeMap<u128, f64>> = (0..=width)
+            .map(|prefix_length| {
+                let mut level = BTreeMap::new();
+                for (&address, &mass) in masses {
+                    let prefix = if prefix_length == 0 {
+                        0
+                    } else {
+                        address >> (width - prefix_length)
+                    };
+                    *level.entry(prefix).or_insert(0.0) += mass;
+                }
+                level
+            })
+            .collect();
+        let selected = reference_selected_parents(&counts, &config, width);
+        if selected.is_empty() {
+            return empty_result(masses.len());
         }
-        let (prefix_lengths, prepared): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+        let prefix_lengths: Vec<u8> = selected.iter().map(|(length, _)| *length).collect();
+        let prepared: Vec<PreparedMoment<f64>> = selected
+            .iter()
+            .map(|(prefix_length, parents)| {
+                let level = usize::from(*prefix_length);
+                PreparedMoment {
+                    parent_masses: parents
+                        .iter()
+                        .map(|parent| level_masses[level][parent])
+                        .collect(),
+                    child_masses: parents
+                        .iter()
+                        .map(|&parent| {
+                            let children: Vec<_> = [parent << 1, (parent << 1) | 1]
+                                .into_iter()
+                                .filter_map(|child| level_masses[level + 1].get(&child).copied())
+                                .collect();
+                            (children[0], children.get(1).copied())
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
         let q_values = reference_q_values(&config);
         let structure = reference_structure(&prepared, &q_values);
-        let spectrum = compute_spectrum(&structure, config.q_step);
-        let dimensions =
-            reference_dimensions(&counts, &prefix_lengths, &structure, addresses.len());
+        let spectrum = if with_spectrum {
+            compute_spectrum(&structure, config.q_step)
+        } else {
+            Vec::new()
+        };
+        let total = masses.values().sum::<f64>();
+        let dimensions = reference_dimensions(&level_masses, &prefix_lengths, &structure, total);
         MaadResult {
             schema_version: SCHEMA_VERSION,
             metadata: MaadMetadata {
@@ -933,7 +1004,7 @@ mod tests {
                 min_prefix_length: prefix_lengths.first().copied(),
                 max_prefix_length: prefix_lengths.last().copied(),
                 prefix_lengths,
-                total_addrs: addresses.len(),
+                total_addrs: masses.len(),
             },
             structure,
             spectrum,
@@ -961,12 +1032,12 @@ mod tests {
         counts
     }
 
-    fn reference_prepare_valid_moments(
+    fn reference_selected_parents(
         counts: &[BTreeMap<u128, usize>],
         config: &MaadConfig,
         width: u8,
-    ) -> Vec<(u8, PreparedMoment<usize>)> {
-        let mut prepared = Vec::new();
+    ) -> Vec<(u8, Vec<u128>)> {
+        let mut selected = Vec::new();
         let mut path_allowed = BTreeMap::from([(0, true)]);
 
         for prefix_length in 0..=config.max_prefix_length {
@@ -974,39 +1045,24 @@ mod tests {
             let children = &counts[usize::from(prefix_length) + 1];
 
             if prefix_length >= config.min_prefix_length {
-                let mut parent_counts = Vec::new();
-                let mut child_counts = Vec::new();
-                for (&prefix, &count) in parents {
-                    if !path_allowed[&prefix]
-                        || !reference_valid_parent(
-                            count,
-                            prefix_length,
-                            config.full_threshold,
-                            width,
-                        )
-                    {
-                        continue;
-                    }
-                    let child_counts_for_parent: Vec<_> = [prefix << 1, (prefix << 1) | 1]
-                        .into_iter()
-                        .filter_map(|child| children.get(&child).copied())
-                        .collect();
-                    if !child_counts_for_parent.is_empty() {
-                        parent_counts.push(count);
-                        child_counts.push(child_counts_for_parent);
-                    }
-                }
-                if !parent_counts.is_empty() {
-                    prepared.push((
-                        prefix_length,
-                        PreparedMoment {
-                            parent_masses: parent_counts,
-                            child_masses: child_counts
-                                .into_iter()
-                                .map(|children| (children[0], children.get(1).copied()))
-                                .collect(),
-                        },
-                    ));
+                let level: Vec<u128> = parents
+                    .iter()
+                    .filter(|&(prefix, &count)| {
+                        path_allowed[prefix]
+                            && reference_valid_parent(
+                                count,
+                                prefix_length,
+                                config.full_threshold,
+                                width,
+                            )
+                            && [prefix << 1, (prefix << 1) | 1]
+                                .iter()
+                                .any(|child| children.contains_key(child))
+                    })
+                    .map(|(&prefix, _)| prefix)
+                    .collect();
+                if !level.is_empty() {
+                    selected.push((prefix_length, level));
                 }
             }
 
@@ -1032,7 +1088,7 @@ mod tests {
             }
         }
 
-        prepared
+        selected
     }
 
     fn reference_valid_parent(
@@ -1061,7 +1117,7 @@ mod tests {
     }
 
     fn reference_structure(
-        prepared: &[PreparedMoment<usize>],
+        prepared: &[PreparedMoment<f64>],
         q_values: &[f64],
     ) -> Vec<StructureRow> {
         q_values
@@ -1074,7 +1130,7 @@ mod tests {
                         let parent_powers: Vec<_> = moment
                             .parent_masses
                             .iter()
-                            .map(|&count| (count as f64).powf(q))
+                            .map(|&mass| mass.powf(q))
                             .collect();
                         let child_power_sums: Vec<_> = moment
                             .child_masses
@@ -1082,7 +1138,7 @@ mod tests {
                             .map(|&(first, second)| {
                                 std::iter::once(first)
                                     .chain(second)
-                                    .map(|count| (count as f64).powf(q))
+                                    .map(|mass| mass.powf(q))
                                     .sum::<f64>()
                             })
                             .collect();
@@ -1112,19 +1168,18 @@ mod tests {
     }
 
     fn reference_dimensions(
-        counts: &[BTreeMap<u128, usize>],
+        level_masses: &[BTreeMap<u128, f64>],
         prefix_lengths: &[u8],
         structure: &[StructureRow],
-        total_addresses: usize,
+        total: f64,
     ) -> Vec<DimensionRow> {
-        let total = total_addresses as f64;
         let points: Vec<_> = prefix_lengths
             .iter()
             .map(|&prefix_length| {
-                let entropy = counts[usize::from(prefix_length)]
+                let entropy = level_masses[usize::from(prefix_length)]
                     .values()
-                    .map(|&count| {
-                        let probability = count as f64 / total;
+                    .map(|&mass| {
+                        let probability = mass / total;
                         probability * probability.log2()
                     })
                     .sum::<f64>();
@@ -1763,6 +1818,91 @@ mod tests {
             second,
             compute_weighted(v6.iter().map(|&(address, weights)| (address, weights[1]))).unwrap()
         );
+    }
+
+    fn assert_weighted_matches_reference<A: MaadAddress>(entries: &[(A, f64)])
+    where
+        A::Bits: Into<u128>,
+    {
+        let config = A::default_config();
+        let result = compute_weighted_with_config(entries.iter().copied(), config).unwrap();
+        let reference = reference_weighted_compute(entries, config);
+        assert!(!result.structure.is_empty());
+        assert_eq!(result.metadata, reference.metadata);
+        assert!(result.spectrum.is_empty() && reference.spectrum.is_empty());
+        assert_eq!(result.structure.len(), reference.structure.len());
+        assert_eq!(result.dimensions.len(), reference.dimensions.len());
+        for (actual, expected) in result.structure.iter().zip(&reference.structure) {
+            close(actual.q, expected.q);
+            close(actual.tau_tilde, expected.tau_tilde);
+            close(actual.sd, expected.sd);
+        }
+        for (actual, expected) in result.dimensions.iter().zip(&reference.dimensions) {
+            close(actual.q, expected.q);
+            close(actual.dim, expected.dim);
+            close(actual.sd, expected.sd);
+        }
+    }
+
+    #[test]
+    fn shared_measures_sum_repeated_addresses_like_separate_computations() {
+        let repeated = [
+            (Ipv4Addr::new(10, 0, 0, 1), [1e16, 1.0]),
+            (Ipv4Addr::new(10, 0, 0, 1), [1.0, 1e16]),
+            (Ipv4Addr::new(10, 0, 0, 1), [1.0, 3.0]),
+        ];
+        let entries: Vec<_> = pseudo_random_addresses(400)
+            .into_iter()
+            .map(|address| (address, [2.0, 5.0]))
+            .chain(repeated)
+            .collect();
+
+        let (_, [first, second]) = compute_measures(entries.iter().copied()).unwrap();
+
+        assert_eq!(
+            first,
+            compute_weighted(
+                entries
+                    .iter()
+                    .map(|&(address, weights)| (address, weights[0]))
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            second,
+            compute_weighted(
+                entries
+                    .iter()
+                    .map(|&(address, weights)| (address, weights[1]))
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn weighted_path_matches_the_ordered_map_reference() {
+        let v4: Vec<_> = pseudo_random_addresses(600)
+            .into_iter()
+            .chain((0..=255).map(|last| Ipv4Addr::new(198, 51, 100, last)))
+            .enumerate()
+            .map(|(index, address)| (address, f64::from((index % 11) as u32 * 37 + 1)))
+            .collect();
+        let duplicates: Vec<_> = v4
+            .iter()
+            .take(50)
+            .map(|&(address, weight)| (address, weight * 0.5 + 0.25))
+            .collect();
+        assert_weighted_matches_reference(&[v4, duplicates].concat());
+
+        let v6: Vec<_> = (0..1_024_u128)
+            .map(|index| {
+                (
+                    documentation_ipv6((index % 37) << 72 | (index * 7919) << 40),
+                    (index % 5 + 1) as f64 * 1_500.0,
+                )
+            })
+            .collect();
+        assert_weighted_matches_reference(&v6);
     }
 
     #[test]
