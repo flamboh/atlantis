@@ -746,7 +746,6 @@ impl AddressTotals {
 
     /// Sum another scope's totals into this one, keeping rollups additive.
     pub fn merge(&mut self, other: &Self) {
-        self.0.reserve(other.0.len());
         for (address, traffic) in other.iter() {
             self.add(address, traffic);
         }
