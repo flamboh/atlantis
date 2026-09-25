@@ -42,7 +42,7 @@ pub enum PublishError {
     IncompleteCoverage(BucketKey),
 }
 
-const MAAD_WORKERS: usize = 2;
+const MAX_MAAD_WORKERS: usize = 8;
 static MAAD_POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
 
 /// Aggregate timings and work counts for one or more `write_buckets` calls.
@@ -300,14 +300,11 @@ fn maad_rows(
         return Ok((Vec::new(), 0));
     }
 
-    let work = address_sets
-        .iter()
-        .flat_map(|addresses| MaadMeasure::ALL.map(|measure| (addresses, measure)))
-        .collect::<Vec<_>>();
     let pool = maad_pool()?;
     let measured = pool.install(|| {
-        work.par_iter()
-            .map(|&(addresses, measure)| measure_rows(addresses, measure))
+        address_sets
+            .par_iter()
+            .map(scope_rows)
             .collect::<Result<Vec<_>, _>>()
     })?;
     let zero_weight_addresses = measured.iter().map(|(_, excluded)| count(*excluded)).sum();
@@ -325,120 +322,138 @@ struct WeightedMetadata<'a> {
     zero_weight_addrs: usize,
 }
 
-fn measure_rows(
+/// One scope's MAAD results: distinct addresses, then packets and bytes with
+/// the number of zero-weight addresses each weighted measure excluded.
+struct ScopeResults {
+    addresses: maad::MaadResult,
+    weighted: [(maad::MaadResult, usize); 2],
+}
+
+fn scope_rows(
     addresses: &AddressSetRow<'_>,
-    measure: MaadMeasure,
 ) -> Result<(Vec<AddressStructureStatsRow>, usize), PublishError> {
-    let dimensions = dimensions(&addresses.key, addresses.scope);
-    let row =
-        |structure_kind: &str, values_json: String, metadata_json: &str| AddressStructureStatsRow {
-            dimensions: dimensions.clone(),
-            address_side: addresses.address_side.as_str().to_owned(),
-            measure: measure.as_str().to_owned(),
-            structure_kind: structure_kind.to_owned(),
-            values_json,
-            metadata_json: metadata_json.to_owned(),
-        };
-    let weight: fn(AddressTraffic) -> u64 = match measure {
-        MaadMeasure::Addresses => {
-            let result = address_maad_result(addresses);
-            let metadata_json = serde_json::to_string(&result.metadata)?;
-            return Ok((
-                vec![
-                    row(
-                        "structure",
-                        serde_json::to_string(&result.structure)?,
-                        &metadata_json,
-                    ),
-                    row(
-                        "spectrum",
-                        serde_json::to_string(&result.spectrum)?,
-                        &metadata_json,
-                    ),
-                    row(
-                        "dimension",
-                        serde_json::to_string(&result.dimensions)?,
-                        &metadata_json,
-                    ),
-                ],
-                0,
-            ));
-        }
-        MaadMeasure::Packets => |traffic| traffic.packets,
-        MaadMeasure::Bytes => |traffic| traffic.bytes,
-    };
-    let (result, zero_weight_addrs) = weighted_maad_result(addresses, weight)?;
-    let metadata_json = serde_json::to_string(&WeightedMetadata {
-        metadata: &result.metadata,
-        zero_weight_addrs,
-    })?;
-    Ok((
-        vec![
-            row(
-                "structure",
-                serde_json::to_string(&result.structure)?,
-                &metadata_json,
-            ),
-            row(
-                "dimension",
-                serde_json::to_string(&result.dimensions)?,
-                &metadata_json,
-            ),
-        ],
-        zero_weight_addrs,
-    ))
-}
-
-fn address_maad_result(addresses: &AddressSetRow<'_>) -> maad::MaadResult {
-    let family = addresses.addresses.iter().map(|(address, _)| address);
-    match addresses.scope.ip_version {
-        IpVersion::V4 => maad::compute(family.filter_map(|address| match address {
-            IpAddr::V4(address) => Some(address),
-            IpAddr::V6(_) => None,
-        })),
-        IpVersion::V6 => maad::compute(family.filter_map(|address| match address {
-            IpAddr::V6(address) => Some(address),
-            IpAddr::V4(_) => None,
-        })),
-    }
-}
-
-/// Weighted MAAD over addresses with a positive summed weight, and the count of
-/// same-family addresses excluded because their weight was zero.
-fn weighted_maad_result(
-    addresses: &AddressSetRow<'_>,
-    weight: fn(AddressTraffic) -> u64,
-) -> Result<(maad::MaadResult, usize), maad::MaadError> {
-    let mut zero_weight_addrs = 0;
-    let mut positive = |traffic| match weight(traffic) {
-        0 => {
-            zero_weight_addrs += 1;
-            None
-        }
-        value => Some(value as f64),
-    };
-    let entries = addresses.addresses.iter();
-    let result = match addresses.scope.ip_version {
-        IpVersion::V4 => {
-            maad::compute_weighted(entries.filter_map(|(address, traffic)| match address {
-                IpAddr::V4(address) => positive(traffic).map(|value| (address, value)),
+    let results = match addresses.scope.ip_version {
+        IpVersion::V4 => scope_results(addresses.addresses.iter().filter_map(
+            |(address, traffic)| match address {
+                IpAddr::V4(address) => Some((address, traffic)),
                 IpAddr::V6(_) => None,
-            }))?
-        }
-        IpVersion::V6 => {
-            maad::compute_weighted(entries.filter_map(|(address, traffic)| match address {
-                IpAddr::V6(address) => positive(traffic).map(|value| (address, value)),
+            },
+        ))?,
+        IpVersion::V6 => scope_results(addresses.addresses.iter().filter_map(
+            |(address, traffic)| match address {
+                IpAddr::V6(address) => Some((address, traffic)),
                 IpAddr::V4(_) => None,
-            }))?
-        }
+            },
+        ))?,
     };
-    Ok((result, zero_weight_addrs))
+    let dimensions = dimensions(&addresses.key, addresses.scope);
+    let row = |measure: MaadMeasure,
+               structure_kind: &str,
+               values_json: String,
+               metadata_json: &str| AddressStructureStatsRow {
+        dimensions: dimensions.clone(),
+        address_side: addresses.address_side.as_str().to_owned(),
+        measure: measure.as_str().to_owned(),
+        structure_kind: structure_kind.to_owned(),
+        values_json,
+        metadata_json: metadata_json.to_owned(),
+    };
+    let address_metadata = serde_json::to_string(&results.addresses.metadata)?;
+    let mut rows = vec![
+        row(
+            MaadMeasure::Addresses,
+            "structure",
+            serde_json::to_string(&results.addresses.structure)?,
+            &address_metadata,
+        ),
+        row(
+            MaadMeasure::Addresses,
+            "spectrum",
+            serde_json::to_string(&results.addresses.spectrum)?,
+            &address_metadata,
+        ),
+        row(
+            MaadMeasure::Addresses,
+            "dimension",
+            serde_json::to_string(&results.addresses.dimensions)?,
+            &address_metadata,
+        ),
+    ];
+    let mut zero_weight_addresses = 0;
+    for (measure, (result, zero_weight_addrs)) in [MaadMeasure::Packets, MaadMeasure::Bytes]
+        .into_iter()
+        .zip(&results.weighted)
+    {
+        let metadata_json = serde_json::to_string(&WeightedMetadata {
+            metadata: &result.metadata,
+            zero_weight_addrs: *zero_weight_addrs,
+        })?;
+        rows.push(row(
+            measure,
+            "structure",
+            serde_json::to_string(&result.structure)?,
+            &metadata_json,
+        ));
+        rows.push(row(
+            measure,
+            "dimension",
+            serde_json::to_string(&result.dimensions)?,
+            &metadata_json,
+        ));
+        zero_weight_addresses += zero_weight_addrs;
+    }
+    Ok((rows, zero_weight_addresses))
+}
+
+/// Compute all measures over one shared prefix walk. Weighted measures leave out
+/// zero-weight addresses, so a scope with any falls back to separate walks.
+fn scope_results<A: maad::MaadAddress>(
+    entries: impl Iterator<Item = (A, AddressTraffic)>,
+) -> Result<ScopeResults, maad::MaadError> {
+    let entries = entries.collect::<Vec<_>>();
+    let zero_packets = entries
+        .iter()
+        .filter(|(_, traffic)| traffic.packets == 0)
+        .count();
+    let zero_bytes = entries
+        .iter()
+        .filter(|(_, traffic)| traffic.bytes == 0)
+        .count();
+    if zero_packets == 0 && zero_bytes == 0 {
+        let (addresses, [packets, bytes]) =
+            maad::compute_measures(entries.iter().map(|&(address, traffic)| {
+                (address, [traffic.packets as f64, traffic.bytes as f64])
+            }))?;
+        return Ok(ScopeResults {
+            addresses,
+            weighted: [(packets, 0), (bytes, 0)],
+        });
+    }
+    let weighted = |weight: fn(AddressTraffic) -> u64| {
+        maad::compute_weighted(entries.iter().filter_map(|&(address, traffic)| {
+            match weight(traffic) {
+                0 => None,
+                value => Some((address, value as f64)),
+            }
+        }))
+    };
+    Ok(ScopeResults {
+        addresses: maad::compute(entries.iter().map(|&(address, _)| address)),
+        weighted: [
+            (weighted(|traffic| traffic.packets)?, zero_packets),
+            (weighted(|traffic| traffic.bytes)?, zero_bytes),
+        ],
+    })
 }
 
 fn maad_pool() -> Result<&'static rayon::ThreadPool, PublishError> {
     match MAAD_POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(MAAD_WORKERS)
+            .num_threads(
+                std::thread::available_parallelism()
+                    .map_or(1, std::num::NonZeroUsize::get)
+                    .min(MAX_MAAD_WORKERS),
+            )
             .thread_name(|index| format!("maad-{index}"))
             .build()
             .map_err(|error| error.to_string())
