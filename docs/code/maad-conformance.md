@@ -47,10 +47,10 @@ installed, `./compile.sh` can be run directly instead.
 ### Changes from the previous pin
 
 The previous pin was `3ae75363d44e08faacdee186d4ff8906c6ccd06a`. For IPv4
-address sets, the new pin produces the same prefix levels, structure rows,
-and spectrum rows. The only estimator difference is in the last bits of some
-floating-point sums, from a different summation order. The observable IPv4
-changes are in the dimensions output, and Rust ports both:
+address sets, prefix selection and the estimator formulas are unchanged; only
+the last bits of some floating-point sums differ, from a different summation
+order. Spectrum filtering and dimension serialization changed, and Rust ports
+all three changes (the `mixed` fixture drops from 25 to 16 spectrum rows):
 
 - Dimension rows are ordered by `q` (`0`, `1`, `2`) instead of `1`, `0`, `2`.
 - Each dimension row carries `sd`. For `q = 0` and `q = 2` it is the structure
@@ -63,7 +63,7 @@ changes are in the dimensions output, and Rust ports both:
   `f = q alpha - tau`, the region runs from `q_min = min(0, min q <= 0 with
 f > 0)` to `q_max = max(1, max q >= 1 with f > 0)`. Inside it, the alpha run
   must be non-increasing (upstream `a1 >= a2`) instead of strictly decreasing.
-  Structure and dimensions are unchanged.
+  Structure rows and dimension values are unchanged.
 
 The new head also adds changes that Atlantis does not port here:
 
