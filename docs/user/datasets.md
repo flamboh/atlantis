@@ -86,7 +86,8 @@ A logical source combines the captures from more than one collector directory. E
 | `tos_anonymized` | None                  | Endpoints that the UOregon anonymizer flagged in the two low source-ToS bits. Other networks do not set these bits. |
 
 An address file lists one address per line. Blank lines and text after `#` are ignored. A relative
-`path` uses the repository root. Keep private address lists under the gitignored `data/` directory,
+`path` in the dataset registry uses the repository root; in a pipeline configuration it uses the
+directory that contains the configuration file. Keep private address lists under the gitignored `data/` directory,
 which the Docker setup also mounts. The registry checks rule syntax when it loads, and the pipeline
 reads address files only for the datasets it runs. IPv4-mapped IPv6 values such as
 `::ffff:192.0.2.53` match as the IPv4 address they carry.

@@ -815,7 +815,11 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
                 dataset.dataset_id
             )));
         }
-        let locality = LocalityRules::from_config(&config.locality, &std::env::current_dir()?)
+        let config_directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(std::env::current_dir, |parent| Ok(parent.to_path_buf()))?;
+        let locality = LocalityRules::from_config(&config.locality, &config_directory)
             .map_err(|error| PipelineError::InvalidConfig(error.to_string()))?;
         let selection = bind_locality(selection, locality)?;
         validate_selection_inputs(&selection, &config.inputs)?;
@@ -1230,7 +1234,12 @@ fn initialize_metadata_in_transaction_with_layouts(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(connection, dataset, sources)?;
+        upsert_dataset_with_sources(
+            connection,
+            dataset,
+            sources,
+            !pipeline.selection.locality().is_empty(),
+        )?;
     }
     if !layouts.is_empty() {
         let layout = layouts
@@ -1256,7 +1265,12 @@ fn initialize_coordinated_metadata_in_transaction(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(connection, dataset, sources)?;
+        upsert_dataset_with_sources(
+            connection,
+            dataset,
+            sources,
+            !pipeline.selection.locality().is_empty(),
+        )?;
     }
     if !layout.is_empty() {
         let layout = layout
@@ -1532,6 +1546,7 @@ fn upsert_dataset_with_sources(
     connection: &Connection,
     dataset: &Dataset,
     logical_sources: &[DatasetSource],
+    has_locality: bool,
 ) -> Result<(), PipelineError> {
     let sources = logical_sources
         .iter()
@@ -1543,7 +1558,7 @@ fn upsert_dataset_with_sources(
     metadata.source_mode = dataset.source_mode.clone();
     metadata.discovery_mode = dataset.discovery_mode.clone();
     metadata.sort_order = dataset.sort_order;
-    metadata.has_locality = !dataset.locality.is_empty();
+    metadata.has_locality = has_locality;
     metadata.sources = sources;
     upsert_dataset_metadata(connection, &metadata)?;
     Ok(())

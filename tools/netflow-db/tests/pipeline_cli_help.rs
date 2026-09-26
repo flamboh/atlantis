@@ -342,3 +342,82 @@ fn csv_pipeline_stores_locality_pairs_and_binds_rules_to_product_identity() {
         "stderr={stderr}"
     );
 }
+
+#[test]
+fn config_pipeline_resolves_locality_files_from_config_directory_and_marks_datasets() {
+    let temporary = tempdir().unwrap();
+    let config_directory = temporary.path().join("config");
+    let working_directory = temporary.path().join("elsewhere");
+    fs::create_dir_all(&config_directory).unwrap();
+    fs::create_dir_all(&working_directory).unwrap();
+    let capture_root = temporary.path().join("captures");
+    fs::create_dir_all(capture_root.join("edge")).unwrap();
+    let database = temporary.path().join("native.sqlite");
+    let nfdump = temporary.path().join("nfdump");
+    let empty_stream = temporary.path().join("empty.stream");
+    fs::write(
+        &empty_stream,
+        [65_u8, 84, 76, 78, 70, 76, 79, 87, 1, 0, 72, 0, 0, 0, 0, 0],
+    )
+    .unwrap();
+    fs::write(
+        &nfdump,
+        format!("#!/bin/sh\ncat '{}'\n", empty_stream.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&nfdump, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(config_directory.join("internal.txt"), "198.51.100.53\n").unwrap();
+    let config = config_directory.join("pipeline.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "database_path": database,
+            "timezone": "UTC",
+            "run_maad": false,
+            "nfdump": nfdump,
+            "locality": [{"type": "addresses", "path": "internal.txt"}],
+            "inputs": [{
+                "input_kind": "nfcapd_tree",
+                "root_path": capture_root,
+                "source_ids": ["edge"],
+                "start_date": "2025-01-01",
+                "end_date": "2025-01-01"
+            }],
+            "datasets": [{
+                "dataset_id": "edge",
+                "root_path": capture_root,
+                "source_ids": ["edge"]
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args([
+            "pipeline",
+            "--config",
+            config.to_str().unwrap(),
+            "--no-maad",
+        ])
+        .current_dir(&working_directory)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let connection = Connection::open(&database).unwrap();
+    let has_locality: i64 = connection
+        .query_row(
+            "SELECT has_locality FROM datasets WHERE id = 'edge'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_locality, 1);
+}

@@ -128,7 +128,8 @@ Available selection options are:
 - `--dst-locality internal|external`
 
 Locality filters use the dataset's [locality rules](datasets.md#classify-internal-and-external-endpoints).
-A pipeline configuration declares its rules in a top-level `locality` array.
+A pipeline configuration declares its rules in a top-level `locality` array, and relative address-file
+paths resolve from the configuration file's directory.
 
 `--daily-active-sources` applies the fixed active-user definition used to choose the UOregon
 candidate subnets. It requires an IPv4 `/16` and locality rules, and it cannot be combined with the locality flags:
