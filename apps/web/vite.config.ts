@@ -12,8 +12,12 @@ const D1_CONDITION = 'atlantis-d1';
 
 type DatabaseDriver = 'd1' | 'sqlite';
 
-function resolveDatabaseDriver(command: 'build' | 'serve', mode: string): DatabaseDriver {
-	if (mode === 'test') {
+function resolveDatabaseDriver(
+	command: 'build' | 'serve',
+	mode: string,
+	isPreview: boolean
+): DatabaseDriver {
+	if (mode === 'test' || isPreview) {
 		return 'sqlite';
 	}
 	const configured =
@@ -40,8 +44,8 @@ function databaseDriver(driver: DatabaseDriver): Plugin {
 	};
 }
 
-export default defineConfig(({ command, mode }) => {
-	const driver = resolveDatabaseDriver(command, mode);
+export default defineConfig(({ command, mode, isPreview = false }) => {
+	const driver = resolveDatabaseDriver(command, mode, isPreview);
 
 	return {
 		plugins: [

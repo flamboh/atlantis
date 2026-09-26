@@ -47,10 +47,10 @@ The root `dev` command starts both applications. It does not start the pipeline.
 
 The dashboard has two database drivers. Each build and each development server includes only one of them.
 
-| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Adapter              | Default for  |
-| -------------------- | --------------------------------------------------------------------------------------------- | -------------------- | ------------ |
-| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | None (Node output)   | `vite dev`   |
-| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `adapter-cloudflare` | `vite build` |
+| `ATLANTIS_DB_DRIVER` | Driver                                                                                        | Adapter              | Default for                         |
+| -------------------- | --------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------- |
+| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite` or `LOCAL_SQLITE_PATH` | None (Node output)   | `vite dev`, `vite preview` (always) |
+| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                    | `adapter-cloudflare` | `vite build`                        |
 
 Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
 
@@ -61,7 +61,10 @@ bun run dev:web                            # SQLite, no Workers runtime
 ATLANTIS_DB_DRIVER=d1 bun run dev:web      # local D1 through the Workers runtime
 bun run build:web                          # Cloudflare worker with D1
 ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node output with SQLite
+bun run --cwd apps/web preview              # SQLite build, then vite preview
 ```
+
+`preview` always rebuilds with SQLite before it serves, because `vite preview` runs the server in Node and cannot load the D1 worker. Serve a D1 build with `bunx wrangler dev` instead, as described in [Operations](../user/operations.md).
 
 ## Configure the dashboard
 
@@ -104,7 +107,7 @@ Run the Playwright suite when a browser flow changes:
 bun run test:e2e
 ```
 
-The suite builds a SQLite bundle, serves it with `vite preview`, and runs against a seeded fixture database.
+The suite first builds the default D1 worker, then runs `preview`, which rebuilds with SQLite and serves it against a seeded fixture database. This checks that `preview` works after a deploy build.
 
 Always use `bun run test`. Do not use `bun test` in this repository.
 
