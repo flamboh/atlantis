@@ -587,10 +587,9 @@ fn select_moment<M: Copy>(
 
 fn level_entropy(masses: impl Iterator<Item = f64>, total: f64) -> f64 {
     masses
-        .map(|mass| {
-            let probability = mass / total;
-            probability * probability.log2()
-        })
+        .map(|mass| mass / total)
+        .filter(|&probability| probability > 0.0)
+        .map(|probability| probability * probability.log2())
         .sum::<f64>()
 }
 
@@ -672,21 +671,25 @@ fn is_valid_parent<B: PrefixBits>(count: usize, prefix_length: u8, full_threshol
     count > 1 && (count as f64).log2() / f64::from(B::WIDTH - prefix_length) < 1.0 - full_threshold
 }
 
-fn one_moment<M: Copy>(prepared: &PreparedMoment<M>, power: impl Fn(M) -> f64) -> (f64, f64) {
+fn one_moment<M: Copy>(
+    prepared: &PreparedMoment<M>,
+    parent_power: impl Fn(M) -> f64,
+    child_power: impl Fn(M) -> f64,
+) -> (f64, f64) {
     if prepared.parent_masses.is_empty() {
         return (0.0, 0.0);
     }
     let parent_powers: Vec<_> = prepared
         .parent_masses
         .iter()
-        .map(|&mass| power(mass))
+        .map(|&mass| parent_power(mass))
         .collect();
     let child_power_sums: Vec<_> = prepared
         .child_masses
         .iter()
         .map(|&(first, second)| match second {
-            Some(second) => power(first) + power(second),
-            None => power(first),
+            Some(second) => child_power(first) + child_power(second),
+            None => child_power(first),
         })
         .collect();
     let this_z: f64 = parent_powers.iter().sum();
@@ -730,14 +733,15 @@ fn compute_structure(prepared: &[PreparedMoment<usize>], q_values: &[f64]) -> Ve
                 q,
                 prepared
                     .iter()
-                    .map(|moment| one_moment(moment, |count| powers[count])),
+                    .map(|moment| one_moment(moment, |count| powers[count], |count| powers[count])),
             )
         })
         .collect()
 }
 
 /// Weighted masses repeat heavily, so each q raises only the distinct masses to the power
-/// and every moment looks its masses up by index.
+/// and every moment looks its masses up by index. A q whose raw powers leave the normal
+/// range recomputes each moment from masses rescaled within that moment.
 fn compute_weighted_structure(
     prepared: &[PreparedMoment<f64>],
     q_values: &[f64],
@@ -769,14 +773,48 @@ fn compute_weighted_structure(
         .par_iter()
         .map(|&q| {
             let powers: Vec<_> = distinct.iter().map(|mass| mass.powf(q)).collect();
+            let raw_powers_normal = powers.iter().all(|power| power.is_normal());
             structure_row(
                 q,
-                indexed
-                    .iter()
-                    .map(|moment| one_moment(moment, |index| powers[index])),
+                indexed.iter().zip(prepared).map(|(moment, masses)| {
+                    raw_powers_normal
+                        .then(|| one_moment(moment, |index| powers[index], |index| powers[index]))
+                        .filter(|(tau, d2)| tau.is_finite() && d2.is_finite())
+                        .unwrap_or_else(|| rescaled_moment(masses, q))
+                }),
             )
         })
         .collect()
+}
+
+/// One weighted moment with parent and child masses divided by the mass that dominates their
+/// partition sum at `q`, so the sums stay near one at any weight scale.
+fn rescaled_moment(prepared: &PreparedMoment<f64>, q: f64) -> (f64, f64) {
+    let dominant: fn(f64, f64) -> f64 = if q >= 0.0 { f64::max } else { f64::min };
+    let parent_scale = prepared
+        .parent_masses
+        .iter()
+        .copied()
+        .reduce(dominant)
+        .unwrap_or(1.0);
+    let child_scale = prepared
+        .child_masses
+        .iter()
+        .flat_map(|&(first, second)| std::iter::once(first).chain(second))
+        .reduce(dominant)
+        .unwrap_or(1.0);
+    let (tau, d2) = one_moment(
+        prepared,
+        |mass| (mass / parent_scale).powf(q),
+        |mass| (mass / child_scale).powf(q),
+    );
+    let scale_ratio = parent_scale / child_scale;
+    let log_scale_ratio = if scale_ratio.is_finite() {
+        scale_ratio.log2()
+    } else {
+        parent_scale.log2() - child_scale.log2()
+    };
+    (tau + q * log_scale_ratio, d2)
 }
 
 fn structure_row(q: f64, moments: impl ExactSizeIterator<Item = (f64, f64)>) -> StructureRow {
@@ -1971,6 +2009,63 @@ mod tests {
         close(dimensions[1].2, 0.0);
         close(dimensions[2].0, 2.0);
         close(dimensions[2].1, (5.0 - 10.0_f64.log2()) / 2.0);
+    }
+
+    #[test]
+    fn weighted_moments_are_invariant_to_the_weight_scale() {
+        let pair = [Ipv4Addr::new(10, 0, 0, 0), Ipv4Addr::new(10, 0, 0, 128)];
+        for scale in [1.0, 1e160, 1e-200] {
+            let result = compute_weighted(pair.map(|address| (address, scale))).unwrap();
+            let d2 = result.dimensions.iter().find(|row| row.q == 2.0).unwrap();
+            close(d2.dim, 1.0 / 17.0);
+            assert!(result.structure.iter().all(|row| row.tau_tilde.is_finite()));
+        }
+
+        let entries: Vec<_> = pseudo_random_addresses(600)
+            .into_iter()
+            .chain((0..=255).map(|last| Ipv4Addr::new(198, 51, 100, last)))
+            .enumerate()
+            .map(|(index, address)| (address, f64::from((index % 11) as u32 * 37 + 1)))
+            .collect();
+        let expected = compute_weighted(entries.iter().copied()).unwrap();
+        for scale in [1e300, 1e160, 1e-200, 1e-300] {
+            let scaled = compute_weighted(
+                entries
+                    .iter()
+                    .map(|&(address, weight)| (address, weight * scale)),
+            )
+            .unwrap();
+            assert_eq!(scaled.metadata, expected.metadata);
+            for (actual, expected) in scaled.structure.iter().zip(&expected.structure) {
+                close(actual.tau_tilde, expected.tau_tilde);
+                close(actual.sd, expected.sd);
+            }
+            for (actual, expected) in scaled.dimensions.iter().zip(&expected.dimensions) {
+                close(actual.dim, expected.dim);
+                close(actual.sd, expected.sd);
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_entropy_treats_masses_that_normalize_to_zero_as_absent() {
+        let entries = [
+            (Ipv4Addr::new(10, 0, 0, 0), 1e-300),
+            (Ipv4Addr::new(10, 0, 0, 128), 1e-300),
+            (Ipv4Addr::new(192, 0, 2, 1), 1e50),
+        ];
+
+        let result = compute_weighted(entries).unwrap();
+
+        let d1 = result.dimensions.iter().find(|row| row.q == 1.0).unwrap();
+        close(d1.dim, 0.0);
+        assert!(
+            result
+                .structure
+                .iter()
+                .all(|row| row.tau_tilde.is_finite() && row.sd.is_finite())
+        );
+        assert!(result.dimensions.iter().all(|row| row.dim.is_finite()));
     }
 
     #[test]
