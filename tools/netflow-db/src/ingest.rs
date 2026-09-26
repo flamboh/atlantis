@@ -713,6 +713,7 @@ CREATE TABLE accepted_rows (
     protocol INTEGER NOT NULL,
     packets INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
+    packets_reported INTEGER NOT NULL CHECK (packets_reported IN (0, 1)),
     src_tos INTEGER NOT NULL,
     time_received_ms INTEGER,
     time_end_ms INTEGER,
@@ -777,7 +778,7 @@ impl UnsortedCsvScanState {
                     "SELECT src_ip, dst_ip, protocol, packets, bytes, src_tos, \
                  time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, \
                  dst_tos, duration_ms, min_ttl, max_ttl, flow_count, src_internal, \
-                 dst_internal \
+                 dst_internal, packets_reported \
                  FROM accepted_rows \
                  WHERE source_id = ?1 AND bucket_start = ?2 \
                  ORDER BY id",
@@ -916,10 +917,11 @@ impl CsvScanAccumulator for UnsortedCsvScanState {
             "INSERT INTO accepted_rows (\
                  source_id, bucket_start, src_ip, dst_ip, protocol, packets, bytes, src_tos, \
                  time_received_ms, time_end_ms, time_start_ms, src_port, dst_port, dst_tos, \
-                 duration_ms, min_ttl, max_ttl, flow_count, src_internal, dst_internal\
+                 duration_ms, min_ttl, max_ttl, flow_count, src_internal, dst_internal, \
+                 packets_reported\
              ) VALUES (\
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, \
-                 ?19, ?20\
+                 ?19, ?20, ?21\
              )",
             params![
                 source_id,
@@ -942,6 +944,7 @@ impl CsvScanAccumulator for UnsortedCsvScanState {
                 observation.flow_count,
                 source == EndpointLocality::Internal,
                 destination == EndpointLocality::Internal,
+                observation.packets_reported,
             ],
         )?;
         Ok(())
@@ -994,6 +997,7 @@ fn staged_observation(row: &rusqlite::Row<'_>) -> Result<FlowObservation, Ingest
         protocol,
         packets,
         bytes,
+        packets_reported: row.get(18)?,
         src_tos,
         time_received_ms,
         time_end_ms,
@@ -1582,7 +1586,7 @@ fn read_tail(mut file: fs::File, limit: usize) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, io::Write, sync::Arc};
+    use std::{collections::BTreeMap, fs, io::Write, net::Ipv4Addr, sync::Arc};
 
     use flate2::{Compression, write::GzEncoder};
     use serde_json::json;
@@ -1591,7 +1595,9 @@ mod tests {
     use super::*;
     use crate::config::{CsvSourceConfig, InputOrder};
     use crate::coverage::CoverageState;
-    use crate::domain::{IpVersion, Locality, Scope};
+    use crate::domain::{
+        AddressSide, AddressTraffic, CanonicalBucket, IpVersion, Locality, Scope, TrafficMetrics,
+    };
     use crate::locality::{LocalityRuleConfig, LocalityRules};
 
     fn tos_rules() -> Arc<LocalityRules> {
@@ -1822,6 +1828,118 @@ mod tests {
                 1,
                 "staged rows keep their classified locality"
             );
+        }
+    }
+
+    #[test]
+    fn csv_scans_drop_zero_packet_flows_but_keep_observed_coverage() {
+        let directory = tempdir().unwrap();
+        let input = directory.path().join("zero-packets.csv");
+        fs::write(
+            &input,
+            concat!(
+                "received,src,dst,packets,bytes,protocol\n",
+                "0,192.0.2.1,198.51.100.1,2,128,TCP\n",
+                "10,192.0.2.1,198.51.100.9,0,0,TCP\n",
+                "300,192.0.2.2,198.51.100.3,0,40,UDP\n",
+            ),
+        )
+        .unwrap();
+        let selection = FlowSelection::from_payload(Some(&json!({
+            "version": 1,
+            "kind": "flows",
+            "ip_prefix": "192.0.2.0/24",
+        })))
+        .unwrap();
+        let scope = Scope::new(IpVersion::V4, Locality::All, Locality::All);
+        let source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        let addresses = |bucket: &CanonicalBucket, side: AddressSide| {
+            bucket
+                .addresses
+                .iter()
+                .find(|entry| entry.scope == scope && entry.address_side == side)
+                .unwrap()
+                .addresses
+                .clone()
+        };
+
+        for input_order in [InputOrder::TimestampAscending, InputOrder::Unsorted] {
+            let mut config = config();
+            config.input_order = input_order;
+            let mut buckets = Vec::new();
+            scan_csv(&input, &config, &selection, |ready| {
+                buckets.push(ready.bucket);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+            assert_eq!(buckets.len(), 2);
+            for bucket in &buckets {
+                assert_eq!(bucket.dropped_zero_packet_flows, 1);
+                assert_eq!(bucket.coverage.state(), CoverageState::Complete);
+            }
+            let metrics = |bucket: &CanonicalBucket| {
+                bucket
+                    .traffic
+                    .iter()
+                    .find(|entry| entry.scope == scope)
+                    .unwrap()
+                    .metrics
+                    .clone()
+            };
+            assert_eq!(metrics(&buckets[0]).flows, 1);
+            assert_eq!(metrics(&buckets[0]).packets, 2);
+            assert_eq!(metrics(&buckets[0]).bytes, 128);
+            let sources = addresses(&buckets[0], AddressSide::Source);
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources.get(&source), Some(AddressTraffic::new(2, 128)));
+            let destinations = addresses(&buckets[0], AddressSide::Destination);
+            assert_eq!(destinations.len(), 1);
+            assert!(
+                destinations
+                    .get(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)))
+                    .is_some()
+            );
+            assert_eq!(metrics(&buckets[1]), TrafficMetrics::default());
+            assert!(addresses(&buckets[1], AddressSide::Source).is_empty());
+            assert!(addresses(&buckets[1], AddressSide::Destination).is_empty());
+        }
+
+        let unreported = directory.path().join("no-packets.csv");
+        fs::write(
+            &unreported,
+            concat!(
+                "received,src,dst,bytes,protocol\n",
+                "0,192.0.2.1,198.51.100.1,128,TCP\n",
+                "10,192.0.2.1,198.51.100.9,,TCP\n",
+            ),
+        )
+        .unwrap();
+        for input_order in [InputOrder::TimestampAscending, InputOrder::Unsorted] {
+            let mut config = config();
+            config.columns.remove("packets");
+            config.input_order = input_order;
+            let mut buckets = Vec::new();
+            scan_csv(&unreported, &config, &selection, |ready| {
+                buckets.push(ready.bucket);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+            assert_eq!(buckets.len(), 1);
+            assert_eq!(buckets[0].dropped_zero_packet_flows, 0);
+            assert_eq!(
+                buckets[0]
+                    .traffic
+                    .iter()
+                    .find(|entry| entry.scope == scope)
+                    .unwrap()
+                    .metrics
+                    .flows,
+                2,
+                "a missing packet count is unknown, not a reported zero"
+            );
+            assert_eq!(addresses(&buckets[0], AddressSide::Destination).len(), 2);
         }
     }
 

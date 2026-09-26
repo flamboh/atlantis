@@ -421,3 +421,102 @@ fn config_pipeline_resolves_locality_files_from_config_directory_and_marks_datas
         .unwrap();
     assert_eq!(has_locality, 1);
 }
+
+#[test]
+fn csv_pipeline_drops_and_logs_zero_packet_flows_but_keeps_coverage() {
+    let temporary = tempdir().unwrap();
+    let csv = temporary.path().join("flows.csv");
+    let mapping = temporary.path().join("mapping.json");
+    let database = temporary.path().join("zero-packets.sqlite");
+    fs::write(
+        &csv,
+        concat!(
+            "received,src,dst,packets,bytes\n",
+            "0,192.0.2.1,198.51.100.1,4,400\n",
+            "10,192.0.2.1,198.51.100.9,0,0\n",
+            "300,192.0.2.3,198.51.100.3,0,40\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &mapping,
+        serde_json::to_vec(&serde_json::json!({
+            "timestamp_format": "unix",
+            "timestamp_timezone": "UTC",
+            "columns": {
+                "time_received": "received",
+                "src_ip": "src",
+                "dst_ip": "dst",
+                "packets": "packets",
+                "bytes": "bytes"
+            },
+            "source_id": {"value": "edge"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let config = temporary.path().join("csv-pipeline.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "database_path": database,
+            "timezone": "UTC",
+            "run_maad": false,
+            "inputs": [{
+                "input_kind": "csv",
+                "path": csv,
+                "mapping_path": mapping
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args([
+            "pipeline",
+            "--config",
+            config.to_str().unwrap(),
+            "--no-maad",
+        ])
+        .env("RUST_LOG", "info")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr={stderr}");
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.contains("dropped zero-packet flows")
+                && line.contains("dropped_zero_packet_flows=1"))
+            .count(),
+        2,
+        "stderr={stderr}"
+    );
+
+    let connection = Connection::open(&database).unwrap();
+    let rows = connection
+        .prepare(
+            "SELECT t.bucket_start, t.flows, t.packets, c.observed_units
+             FROM traffic_stats t JOIN bucket_coverage c
+               ON c.source_id = t.source_id AND c.granularity = t.granularity
+              AND c.bucket_start = t.bucket_start
+             WHERE t.granularity = '5m' AND t.ip_version = 4
+               AND t.src_locality = 'all' AND t.dst_locality = 'all'
+             ORDER BY t.bucket_start",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, [(0, 1, 4, 1), (300, 0, 0, 1)]);
+}

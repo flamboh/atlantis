@@ -200,6 +200,7 @@ pub struct FlowObservation {
     pub protocol: u8,
     pub packets: i64,
     pub bytes: i64,
+    pub packets_reported: bool,
     pub src_tos: u8,
     pub time_received_ms: Option<i64>,
     pub time_end_ms: Option<i64>,
@@ -234,6 +235,7 @@ impl FlowObservation {
             protocol,
             packets,
             bytes,
+            packets_reported: true,
             src_tos,
             time_received_ms: None,
             time_end_ms: None,
@@ -252,6 +254,12 @@ impl FlowObservation {
     #[must_use]
     pub const fn ip_version(&self) -> IpVersion {
         IpVersion::of(self.src_ip)
+    }
+
+    #[must_use]
+    pub const fn with_unreported_packets(mut self) -> Self {
+        self.packets_reported = false;
+        self
     }
 
     #[must_use]
@@ -1074,6 +1082,8 @@ pub struct CanonicalBucket {
     pub addresses: Vec<ScopedAddresses>,
     pub ports: Vec<ScopedPorts>,
     pub five_minute_starts: BTreeSet<i64>,
+    #[serde(default)]
+    pub dropped_zero_packet_flows: u64,
 }
 
 fn serialize_fixed_bitset<S>(ports: &FixedBitSet, serializer: S) -> Result<S::Ok, S::Error>
@@ -1254,6 +1264,7 @@ pub struct StatisticalBucket {
     addresses: BTreeMap<(Scope, AddressSide), AddressTotals>,
     ports: BTreeMap<(Scope, PortSide), FixedBitSet>,
     five_minute_starts: BTreeSet<i64>,
+    dropped_zero_packet_flows: u64,
 }
 
 impl StatisticalBucket {
@@ -1274,6 +1285,7 @@ impl StatisticalBucket {
             addresses: BTreeMap::new(),
             ports: BTreeMap::new(),
             five_minute_starts,
+            dropped_zero_packet_flows: 0,
         }
     }
 
@@ -1344,6 +1356,9 @@ impl StatisticalBucket {
         }
         self.five_minute_starts
             .extend(child.five_minute_starts.iter().copied());
+        self.dropped_zero_packet_flows = self
+            .dropped_zero_packet_flows
+            .saturating_add(child.dropped_zero_packet_flows);
         self.coverage.include(child.coverage)?;
         Ok(())
     }
@@ -1395,6 +1410,7 @@ impl StatisticalBucket {
                 })
                 .collect(),
             five_minute_starts: self.five_minute_starts.clone(),
+            dropped_zero_packet_flows: self.dropped_zero_packet_flows,
         }
     }
 
@@ -1410,6 +1426,7 @@ impl StatisticalBucket {
             addresses,
             ports,
             five_minute_starts,
+            dropped_zero_packet_flows,
         } = self;
 
         CanonicalBucket {
@@ -1443,6 +1460,7 @@ impl StatisticalBucket {
                 })
                 .collect(),
             five_minute_starts,
+            dropped_zero_packet_flows,
         }
     }
 
@@ -1459,6 +1477,12 @@ impl StatisticalBucket {
         let (source, destination) = observation
             .locality
             .ok_or(DomainError::UnclassifiedObservation)?;
+        if observation.packets_reported && observation.packets == 0 {
+            self.dropped_zero_packet_flows = self
+                .dropped_zero_packet_flows
+                .saturating_add(observation.flow_count.unsigned_abs());
+            return Ok(());
+        }
         let scopes = scopes_for(observation.ip_version(), source, destination);
         let traffic = AddressTraffic::new(
             observation.packets.unsigned_abs(),

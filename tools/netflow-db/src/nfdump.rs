@@ -396,7 +396,7 @@ pub(crate) fn reduce_to_bucket<R: Read>(
     selection: &FlowSelection,
 ) -> Result<CanonicalBucket, NfdumpError> {
     match reduce_stream(&mut input, selection, None) {
-        Ok(scopes) => Ok(finish_bucket(scopes, key)),
+        Ok(reduced) => Ok(finish_bucket(reduced, key)),
         Err(error) => {
             drain_to_eof(&mut input);
             Err(error)
@@ -411,7 +411,7 @@ pub(crate) fn reduce_to_bucket_with_active_sources<R: Read>(
     active_sources: &AddressSet,
 ) -> Result<CanonicalBucket, NfdumpError> {
     match reduce_stream(&mut input, selection, Some(active_sources)) {
-        Ok(scopes) => Ok(finish_bucket(scopes, key)),
+        Ok(reduced) => Ok(finish_bucket(reduced, key)),
         Err(error) => {
             drain_to_eof(&mut input);
             Err(error)
@@ -425,9 +425,9 @@ pub(crate) fn reduce_to_buckets_with_active_sources<R: Read>(
     selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
 ) -> Result<Vec<CanonicalBucket>, NfdumpError> {
     match reduce_stream_for_active_sources(&mut input, selections_and_active_sources) {
-        Ok(scopes) => Ok(scopes
+        Ok(reduced) => Ok(reduced
             .into_iter()
-            .map(|scopes| finish_bucket(scopes, key.clone()))
+            .map(|reduced| finish_bucket(reduced, key.clone()))
             .collect()),
         Err(error) => {
             drain_to_eof(&mut input);
@@ -445,6 +445,9 @@ pub(crate) fn reduce_to_daily_source_activities<R: Read>(
         .map(|_| HashMap::<IpAddr, SourceActivity>::new())
         .collect::<Vec<_>>();
     let result = visit_stream(&mut input, |flow, _, _| {
+        if flow.packets == 0 {
+            return Ok(());
+        }
         for (selection, activity) in selections.iter().zip(&mut activities) {
             if classify_selected(flow, selection).is_none() {
                 continue;
@@ -470,14 +473,14 @@ pub(crate) fn reduce_to_daily_source_activities<R: Read>(
 fn reduce_stream_for_active_sources(
     input: &mut impl Read,
     selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
-) -> Result<Vec<[ScopeAccumulator; 10]>, NfdumpError> {
+) -> Result<Vec<ReducedScopes>, NfdumpError> {
     validate_daily_active_selection_pairs(selections_and_active_sources)?;
-    let mut scopes = (0..selections_and_active_sources.len())
-        .map(|_| std::array::from_fn(|_| ScopeAccumulator::default()))
+    let mut reduced = (0..selections_and_active_sources.len())
+        .map(|_| ReducedScopes::default())
         .collect::<Vec<_>>();
     visit_stream(input, |flow, block_index, record_ordinal| {
-        for ((selection, active_sources), scopes) in
-            selections_and_active_sources.iter().zip(&mut scopes)
+        for ((selection, active_sources), reduced) in
+            selections_and_active_sources.iter().zip(&mut reduced)
         {
             let Some(locality) = classify_selected(flow, selection) else {
                 continue;
@@ -485,11 +488,11 @@ fn reduce_stream_for_active_sources(
             if !active_sources.contains(&flow.source_address) {
                 continue;
             }
-            add_flow_to_scopes(scopes, flow, locality, block_index, record_ordinal)?;
+            reduced.add(flow, locality, block_index, record_ordinal)?;
         }
         Ok(())
     })?;
-    Ok(scopes)
+    Ok(reduced)
 }
 
 fn validate_daily_active_selections(selections: &[FlowSelection]) -> Result<(), NfdumpError> {
@@ -540,7 +543,7 @@ fn reduce_stream<R: Read>(
     input: &mut R,
     selection: &FlowSelection,
     active_sources: Option<&AddressSet>,
-) -> Result<[ScopeAccumulator; 10], NfdumpError> {
+) -> Result<ReducedScopes, NfdumpError> {
     if selection.selects_daily_active_sources() && active_sources.is_none() {
         return Err(NfdumpError::new(
             Phase::Aggregate,
@@ -548,7 +551,7 @@ fn reduce_stream<R: Read>(
             ErrorReason::MissingDailyActiveSources,
         ));
     }
-    let mut scopes = std::array::from_fn(|_| ScopeAccumulator::default());
+    let mut reduced = ReducedScopes::default();
     visit_stream(input, |flow, block_index, record_ordinal| {
         let Some(locality) = classify_selected(flow, selection) else {
             return Ok(());
@@ -556,9 +559,47 @@ fn reduce_stream<R: Read>(
         if active_sources.is_some_and(|sources| !sources.contains(&flow.source_address)) {
             return Ok(());
         }
-        add_flow_to_scopes(&mut scopes, flow, locality, block_index, record_ordinal)
+        reduced.add(flow, locality, block_index, record_ordinal)
     })?;
-    Ok(scopes)
+    Ok(reduced)
+}
+
+struct ReducedScopes {
+    scopes: [ScopeAccumulator; 10],
+    dropped_zero_packet_flows: u64,
+}
+
+impl Default for ReducedScopes {
+    fn default() -> Self {
+        Self {
+            scopes: std::array::from_fn(|_| ScopeAccumulator::default()),
+            dropped_zero_packet_flows: 0,
+        }
+    }
+}
+
+impl ReducedScopes {
+    fn add(
+        &mut self,
+        flow: &Flow,
+        locality: (EndpointLocality, EndpointLocality),
+        block_index: u64,
+        record_ordinal: u64,
+    ) -> Result<(), NfdumpError> {
+        if flow.packets == 0 {
+            self.dropped_zero_packet_flows = self
+                .dropped_zero_packet_flows
+                .saturating_add(flow.flow_count.unsigned_abs());
+            return Ok(());
+        }
+        add_flow_to_scopes(
+            &mut self.scopes,
+            flow,
+            locality,
+            block_index,
+            record_ordinal,
+        )
+    }
 }
 
 fn add_flow_to_scopes(
@@ -1037,12 +1078,12 @@ const fn record_field_at(offset: usize) -> Field {
     }
 }
 
-fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBucket {
+fn finish_bucket(reduced: ReducedScopes, key: BucketKey) -> CanonicalBucket {
     let mut traffic = Vec::with_capacity(10);
     let mut protocols = Vec::with_capacity(10);
     let mut addresses = Vec::with_capacity(20);
     let mut ports = Vec::with_capacity(20);
-    for (index, accumulator) in scopes.into_iter().enumerate() {
+    for (index, accumulator) in reduced.scopes.into_iter().enumerate() {
         let scope = Scope::new(
             if index < 5 {
                 IpVersion::V4
@@ -1071,6 +1112,7 @@ fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBuc
         addresses,
         ports,
         five_minute_starts,
+        dropped_zero_packet_flows: reduced.dropped_zero_packet_flows,
     }
 }
 
@@ -1256,6 +1298,63 @@ mod tests {
         );
         assert!(bucket.ports[0].ports.contains(55_000));
         assert!(bucket.ports[1].ports.contains(443));
+    }
+
+    #[test]
+    fn zero_packet_flows_are_dropped_and_counted_while_the_bucket_stays_observed() {
+        let mut zero_packets = base_record();
+        zero_packets[16..20].copy_from_slice(&[198, 51, 100, 9]);
+        zero_packets[32..40].copy_from_slice(&0_u64.to_le_bytes());
+        zero_packets[48..56].copy_from_slice(&3_u64.to_le_bytes());
+
+        let zero_only = reduce_to_bucket(
+            Cursor::new(stream(&[zero_packets])),
+            key(),
+            &FlowSelection::default(),
+        )
+        .unwrap();
+        assert_eq!(zero_only.dropped_zero_packet_flows, 3);
+        assert_eq!(zero_only.coverage, BucketCoverage::complete_unit());
+        assert_eq!(zero_only.five_minute_starts, [1_700_000_000].into());
+        assert_eq!(zero_only.traffic.len(), 10);
+        assert!(
+            zero_only
+                .traffic
+                .iter()
+                .all(|traffic| traffic.metrics == TrafficMetrics::default())
+        );
+        assert!(
+            zero_only
+                .addresses
+                .iter()
+                .all(|addresses| addresses.addresses.is_empty())
+        );
+
+        let mixed = reduce_to_bucket(
+            Cursor::new(stream(&[base_record(), zero_packets])),
+            key(),
+            &FlowSelection::default(),
+        )
+        .unwrap();
+        assert_eq!(mixed.dropped_zero_packet_flows, 3);
+        assert_eq!(mixed.traffic[0].metrics.flows, 1);
+        assert_eq!(mixed.traffic[0].metrics.packets, 2);
+        assert_eq!(mixed.traffic[0].metrics.bytes, 128);
+        let source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        assert_eq!(
+            address_keys(&mixed.addresses[1].addresses),
+            [source].into_iter().collect::<AddressSet>()
+        );
+        assert_eq!(
+            mixed.addresses[1].addresses.get(&source),
+            Some(AddressTraffic::new(2, 128))
+        );
+        assert_eq!(
+            address_keys(&mixed.addresses[0].addresses),
+            [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))]
+                .into_iter()
+                .collect::<AddressSet>()
+        );
     }
 
     #[test]

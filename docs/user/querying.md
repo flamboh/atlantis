@@ -129,7 +129,8 @@ side, and `measure`:
 | `bytes`     | Bytes summed over the bucket and scope   | `structure`, `dimension`             |
 
 Weighted measures keep the address-count prefix tests and weight only the moments and the entropy.
-Addresses with zero summed packets or bytes are left out of that measure. Their count is stored in
+The pipeline drops flows that report 0 packets before aggregation. Addresses with zero summed
+packets or bytes, such as CSV rows without a packet count, are left out of that measure. Their count is stored in
 `metadata_json` as `zeroWeightAddrs`. Always filter on `measure`. Otherwise results for different
 measures mix:
 

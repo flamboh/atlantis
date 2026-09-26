@@ -90,6 +90,11 @@ dimensions only. Prefix validity always uses distinct-address counts. A weighted
 addresses whose counter sums to 0 and records the excluded count as `zeroWeightAddrs` in the row
 metadata. The measure set is part of the result configuration identity.
 
+Native and CSV ingestion drop flows whose reported packet count is 0 before any statistic
+accumulates, so they add no traffic, protocols, ports, or addresses. The bucket keeps its observed
+coverage, and publishing logs the dropped flow count per bucket. A CSV row without a packet count
+has an unknown count rather than a reported zero, so it still contributes.
+
 ## Coordinated subset runs
 
 Repeat `--dataset` for two or more registry entries to build coordinated subset products. Each entry

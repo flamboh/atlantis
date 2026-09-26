@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::{
     domain::{
         AddressSetRow, AddressTraffic, BucketKey, CanonicalBucket, CanonicalRows, DomainError,
-        IpVersion, MaadMeasure,
+        Granularity, IpVersion, MaadMeasure,
     },
     maad,
     storage::{
@@ -72,6 +72,7 @@ pub struct WriteBucketsProfile {
     pub(crate) maad_address_sets: u64,
     pub(crate) maad_addresses: u64,
     pub(crate) maad_zero_weight_addresses: u64,
+    pub(crate) dropped_zero_packet_flows: u64,
     pub(crate) address_structure_rows: u64,
     pub(crate) address_structure_json_bytes: u64,
 }
@@ -151,6 +152,18 @@ pub(crate) fn write_buckets_profiled(
         .collect::<Vec<_>>();
     insert_bucket_coverage_rows(connection, &coverage_rows)?;
     for bucket in buckets {
+        if bucket.key.granularity == Granularity::FiveMinutes
+            && bucket.dropped_zero_packet_flows > 0
+        {
+            profile.dropped_zero_packet_flows += bucket.dropped_zero_packet_flows;
+            tracing::info!(
+                source_id = %bucket.key.source_id,
+                granularity = bucket.key.granularity.as_str(),
+                bucket_start = bucket.key.bucket_start,
+                dropped_zero_packet_flows = bucket.dropped_zero_packet_flows,
+                "dropped zero-packet flows before aggregation"
+            );
+        }
         let canonical_rows_started = Instant::now();
         let rows = bucket.rows();
         profile.canonical_rows_elapsed += canonical_rows_started.elapsed();
@@ -514,6 +527,20 @@ mod tests {
                 .with_locality(EndpointLocality::Internal, EndpointLocality::External),
             )
             .unwrap();
+        builder
+            .add(
+                FlowObservation::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                    IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)),
+                    6,
+                    0,
+                    0,
+                    0,
+                )
+                .unwrap()
+                .with_locality(EndpointLocality::Internal, EndpointLocality::External),
+            )
+            .unwrap();
 
         let profile = write_buckets_profiled(&connection, &[builder.finish()], true).unwrap();
 
@@ -544,6 +571,7 @@ mod tests {
         assert_eq!(profile.maad_address_sets, 20);
         assert_eq!(profile.address_structure_rows, 140);
         assert_eq!(profile.maad_zero_weight_addresses, 0);
+        assert_eq!(profile.dropped_zero_packet_flows, 1);
         assert!(profile.address_structure_json_bytes > 0);
         assert!(profile.total_elapsed >= profile.other_elapsed());
     }
