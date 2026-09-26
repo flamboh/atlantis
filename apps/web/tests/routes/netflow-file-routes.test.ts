@@ -314,6 +314,25 @@ describe('netflow file helpers and routes', () => {
 		expect(withDatasetDb).not.toHaveBeenCalledWith('alpha', undefined, expect.any(Function));
 	});
 
+	it('fails a per-file structure function stored without a matching q grid', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		const url = new URL('http://localhost/api/netflow/files/x/structure?router=r1&source=true');
+
+		for (const qGrid of [undefined, { ipVersion: 4, qMin: 1, qStep: 1, qCount: 33 }]) {
+			mockDatasetSession({
+				get: vi
+					.fn()
+					.mockResolvedValueOnce({ tau: f32([2]), tauSd: f32([0.5]) })
+					.mockResolvedValueOnce(qGrid)
+			});
+			const response = await getStructure({ params: { slug: '202503010005' }, url } as never);
+			expect(response.status).toBe(500);
+			await expect(response.json()).resolves.toEqual({
+				error: 'Failed to get structure statistics'
+			});
+		}
+	});
+
 	it('binds the requested MAAD ip version for the per-file spectrum and structure routes', async () => {
 		const get = vi
 			.fn()

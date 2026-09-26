@@ -380,8 +380,18 @@ export const addressMaadStats = sqliteTable(
 			'address_maad_stats_prefix_length_check',
 			sql`${table.maxPrefixLength} >= ${table.minPrefixLength}`
 		),
-		check('address_maad_stats_tau_sd_check', sql`length(${table.tauSd}) IS length(${table.tau})`),
-		check('address_maad_stats_spectrum_check', sql`length(${table.spectrum}) % 8 = 0`),
+		check(
+			'address_maad_stats_tau_check',
+			sql`typeof(${table.tau}) IN ('null', 'blob') AND length(${table.tau}) > 0 AND length(${table.tau}) % 4 = 0`
+		),
+		check(
+			'address_maad_stats_tau_sd_check',
+			sql`typeof(${table.tauSd}) = typeof(${table.tau}) AND length(${table.tauSd}) IS length(${table.tau})`
+		),
+		check(
+			'address_maad_stats_spectrum_check',
+			sql`typeof(${table.spectrum}) IN ('null', 'blob') AND length(${table.spectrum}) % 8 = 0`
+		),
 		check(
 			'address_maad_stats_measure_spectrum_check',
 			sql`${table.measure} = 'addresses' OR ${table.spectrum} IS NULL`

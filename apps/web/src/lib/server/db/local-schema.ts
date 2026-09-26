@@ -128,9 +128,9 @@ export const localSchemaSql = `
 		min_prefix_length INTEGER,
 		max_prefix_length INTEGER CHECK (max_prefix_length >= min_prefix_length),
 		d0 REAL, d1 REAL, d2 REAL,
-		tau BLOB,
-		tau_sd BLOB CHECK (length(tau_sd) IS length(tau)),
-		spectrum BLOB CHECK (length(spectrum) % 8 = 0),
+		tau BLOB CHECK (typeof(tau) IN ('null', 'blob') AND length(tau) > 0 AND length(tau) % 4 = 0),
+		tau_sd BLOB CHECK (typeof(tau_sd) = typeof(tau) AND length(tau_sd) IS length(tau)),
+		spectrum BLOB CHECK (typeof(spectrum) IN ('null', 'blob') AND length(spectrum) % 8 = 0),
 		CHECK (measure = 'addresses' OR spectrum IS NULL),
 		CHECK ((tau IS NULL) = (d0 IS NULL))
 	);

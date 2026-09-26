@@ -105,9 +105,13 @@ Nothing else rounds, truncates, or drops a value.
 - D0 is `-tau(0)` and D2 is `tau(2)`. Their standard deviations are the `tau_sd` values at those q.
   D1 has no standard deviation.
 
-`verify` checks every curve against the q grid and the spectrum presence of every measure.
-`compare` checks dimensions and each curve element within the MAAD tolerance. Changing this
-encoding is a MAAD contract change, so it needs a fresh product database.
+The schema rejects BLOBs that are not whole f32 values or whole spectrum pairs, and a `tau_sd`
+whose length differs from `tau`. `verify` checks every curve against the q grid and the spectrum
+presence of every measure. The dashboard API fails a request whose curve lacks a grid or disagrees
+with `q_count` instead of drawing a partial curve. `compare` checks dimensions and each curve
+element within the MAAD tolerance, and requires identical `maad_q_grid` rows for every IP version
+whose curves both databases store in the window. Changing this encoding is a MAAD contract change,
+so it needs a fresh product database.
 
 Native and CSV ingestion drop flows whose reported packet count is 0 before any statistic
 accumulates, so they add no traffic, protocols, ports, or addresses. The bucket keeps its observed

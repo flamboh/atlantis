@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { localSchemaSql } from '../../../src/lib/server/db/local-schema';
 
 const migrationsDirectory = fileURLToPath(new URL('../../../drizzle', import.meta.url));
 
@@ -230,6 +231,55 @@ describe('D1 migrations', () => {
 					.prepare("SELECT name FROM sqlite_master WHERE name = 'address_structure_stats'")
 					.all()
 			).toHaveLength(0);
+		} finally {
+			database.close();
+		}
+	});
+
+	it.each([
+		[
+			'migrated',
+			(database: Database.Database) =>
+				migrationFiles().forEach((file) => applyMigration(database, file))
+		],
+		['local', (database: Database.Database) => database.exec(localSchemaSql)]
+	])('rejects malformed MAAD blobs in the %s schema', (_schema, createSchema) => {
+		const database = new Database(':memory:');
+
+		try {
+			createSchema(database);
+			const insert = database.prepare(`
+				INSERT INTO address_maad_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_locality, dst_locality, address_side, measure, total_addrs,
+					d0, d1, d2, tau, tau_sd, spectrum
+				) VALUES ('edge', '5m', ?, 300, 4, 'all', 'all', 'source', 'addresses', 1, ?, 1, 1, ?, ?, ?)
+			`);
+			const bytes = (length: number) => Buffer.alloc(length);
+			let bucketStart = 0;
+			const insertRow = (
+				tau: Buffer | string | null,
+				tauSd: Buffer | string | null,
+				spectrum: Buffer | string | null
+			) => insert.run(bucketStart++, tau === null ? null : 1, tau, tauSd, spectrum);
+
+			expect(() => insertRow(bytes(8), bytes(8), bytes(16))).not.toThrow();
+			expect(() => insertRow(null, null, bytes(0))).not.toThrow();
+			expect(() => insertRow(null, null, null)).not.toThrow();
+
+			for (const [tau, tauSd, spectrum] of [
+				[bytes(0), bytes(0), null],
+				[bytes(1), bytes(1), null],
+				[bytes(6), bytes(6), null],
+				[bytes(8), bytes(4), null],
+				[bytes(8), null, null],
+				['abcd', 'abcd', null],
+				[bytes(8), 'abcdefgh', null],
+				[null, null, bytes(4)],
+				[null, null, 'abcdefgh']
+			] as const) {
+				expect(() => insertRow(tau, tauSd, spectrum)).toThrow(/CHECK constraint failed/);
+			}
 		} finally {
 			database.close();
 		}

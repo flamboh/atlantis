@@ -373,7 +373,7 @@ describe('aggregate API routes', () => {
 			requestedRouters: ['r1']
 		});
 
-		const structureGet = vi.fn().mockResolvedValue(DEFAULT_Q_GRID);
+		const structureGet = vi.fn().mockResolvedValue({ ...DEFAULT_Q_GRID, qCount: 2 });
 		const structureAll = vi
 			.fn()
 			.mockResolvedValueOnce([
@@ -390,8 +390,8 @@ describe('aggregate API routes', () => {
 					router: 'r1',
 					bucketStart: 200,
 					bucketEnd: 500,
-					saTau: f32([]),
-					saTauSd: f32([]),
+					saTau: null,
+					saTauSd: null,
 					daTau: null,
 					daTauSd: null
 				}
@@ -455,6 +455,67 @@ describe('aggregate API routes', () => {
 			],
 			requestedRouters: ['r1']
 		});
+	});
+
+	it('fails MAAD curves that are missing their q grid or disagree with its length', async () => {
+		const row = {
+			router: 'r1',
+			bucketStart: 100,
+			bucketEnd: 200,
+			saTau: f32([0.2]),
+			saTauSd: f32([0.01]),
+			daTau: null,
+			daTauSd: null
+		};
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		const url = new URL(
+			'http://localhost/api/netflow/structure-stats?routers=r1&startDate=100&endDate=200'
+		);
+
+		for (const qGrid of [undefined, DEFAULT_Q_GRID]) {
+			mockDatasetSession({
+				all: vi.fn().mockResolvedValueOnce([row]).mockResolvedValueOnce([]),
+				get: vi.fn().mockResolvedValue(qGrid)
+			});
+			const response = await getStructureStats({ url } as never);
+			expect(response.status).toBe(500);
+			await expect(response.json()).resolves.toEqual({ error: 'Database query failed' });
+		}
+
+		mockDatasetSession({
+			all: vi
+				.fn()
+				.mockResolvedValueOnce([{ ...row, saTau: null, saTauSd: null }])
+				.mockResolvedValueOnce([]),
+			get: vi.fn().mockResolvedValue(undefined)
+		});
+		const withoutMaad = await getStructureStats({ url } as never);
+		expect(withoutMaad.status).toBe(200);
+	});
+
+	it('fails MAAD spectra that do not hold whole alpha/f pairs', async () => {
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		mockDatasetSession({
+			all: vi
+				.fn()
+				.mockResolvedValueOnce([
+					{
+						router: 'r1',
+						bucketStart: 100,
+						bucketEnd: 200,
+						saSpectrum: f32([1, 2, 3]),
+						daSpectrum: null
+					}
+				])
+				.mockResolvedValueOnce([])
+		});
+
+		const response = await getSpectrumStats({
+			url: new URL(
+				'http://localhost/api/netflow/spectrum-stats?routers=r1&startDate=100&endDate=200'
+			)
+		} as never);
+		expect(response.status).toBe(500);
 	});
 
 	it('keeps selected spectrum sources separate', async () => {

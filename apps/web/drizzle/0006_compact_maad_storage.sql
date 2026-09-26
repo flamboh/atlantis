@@ -26,8 +26,9 @@ CREATE TABLE `address_maad_stats` (
 	CONSTRAINT "address_maad_stats_total_addrs_check" CHECK("address_maad_stats"."total_addrs" >= 0),
 	CONSTRAINT "address_maad_stats_zero_weight_addrs_check" CHECK("address_maad_stats"."zero_weight_addrs" >= 0 AND ("address_maad_stats"."measure" <> 'addresses' OR "address_maad_stats"."zero_weight_addrs" = 0)),
 	CONSTRAINT "address_maad_stats_prefix_length_check" CHECK("address_maad_stats"."max_prefix_length" >= "address_maad_stats"."min_prefix_length"),
-	CONSTRAINT "address_maad_stats_tau_sd_check" CHECK(length("address_maad_stats"."tau_sd") IS length("address_maad_stats"."tau")),
-	CONSTRAINT "address_maad_stats_spectrum_check" CHECK(length("address_maad_stats"."spectrum") % 8 = 0),
+	CONSTRAINT "address_maad_stats_tau_check" CHECK(typeof("address_maad_stats"."tau") IN ('null', 'blob') AND length("address_maad_stats"."tau") > 0 AND length("address_maad_stats"."tau") % 4 = 0),
+	CONSTRAINT "address_maad_stats_tau_sd_check" CHECK(typeof("address_maad_stats"."tau_sd") = typeof("address_maad_stats"."tau") AND length("address_maad_stats"."tau_sd") IS length("address_maad_stats"."tau")),
+	CONSTRAINT "address_maad_stats_spectrum_check" CHECK(typeof("address_maad_stats"."spectrum") IN ('null', 'blob') AND length("address_maad_stats"."spectrum") % 8 = 0),
 	CONSTRAINT "address_maad_stats_measure_spectrum_check" CHECK("address_maad_stats"."measure" = 'addresses' OR "address_maad_stats"."spectrum" IS NULL),
 	CONSTRAINT "address_maad_stats_tau_d0_check" CHECK(("address_maad_stats"."tau" IS NULL) = ("address_maad_stats"."d0" IS NULL))
 );

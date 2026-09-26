@@ -1521,9 +1521,9 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             d0 REAL,
             d1 REAL,
             d2 REAL,
-            tau BLOB,
-            tau_sd BLOB CHECK (length(tau_sd) IS length(tau)),
-            spectrum BLOB CHECK (length(spectrum) % 8 = 0),
+            tau BLOB CHECK (typeof(tau) IN ('null', 'blob') AND length(tau) > 0 AND length(tau) % 4 = 0),
+            tau_sd BLOB CHECK (typeof(tau_sd) = typeof(tau) AND length(tau_sd) IS length(tau)),
+            spectrum BLOB CHECK (typeof(spectrum) IN ('null', 'blob') AND length(spectrum) % 8 = 0),
             CHECK (measure = 'addresses' OR spectrum IS NULL),
             CHECK ((tau IS NULL) = (d0 IS NULL))
         );
@@ -2998,6 +2998,42 @@ mod tests {
                 .as_deref(),
             Some("content")
         );
+    }
+
+    #[test]
+    fn address_maad_stats_rejects_malformed_curve_blobs() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        let row = |tau: Vec<u8>, tau_sd: Vec<u8>, spectrum: Option<Vec<u8>>| AddressMaadStatsRow {
+            curve: Some(MaadCurve {
+                d0: 1.0,
+                d1: 1.0,
+                d2: 1.0,
+                tau,
+                tau_sd,
+            }),
+            spectrum,
+            ..AddressMaadStatsRow::example()
+        };
+
+        insert_address_maad_stats_rows(
+            &connection,
+            &[row(vec![0; 8], vec![0; 8], Some(vec![0; 16]))],
+        )
+        .unwrap();
+        for malformed in [
+            row(Vec::new(), Vec::new(), None),
+            row(vec![0; 1], vec![0; 1], None),
+            row(vec![0; 6], vec![0; 6], None),
+            row(vec![0; 8], vec![0; 4], None),
+            row(vec![0; 8], vec![0; 8], Some(vec![0; 4])),
+        ] {
+            let error = insert_address_maad_stats_rows(&connection, &[malformed]).unwrap_err();
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

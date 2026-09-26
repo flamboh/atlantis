@@ -3,6 +3,7 @@ import {
 	buildSpectrumPoints,
 	buildStructurePoints,
 	decodeF32,
+	MaadDataError,
 	getNetflowSchemaVersion,
 	groupByToGranularity,
 	parseAggregateStatsParams,
@@ -236,17 +237,32 @@ describe('netflow v3 helpers', () => {
 		expect(decodeF32(misaligned)).toEqual(new Float32Array([1, 2]));
 	});
 
+	it('rejects f32 blobs whose length is not a multiple of four bytes', () => {
+		expect(() => decodeF32(Uint8Array.from([0, 0, 128]))).toThrow(MaadDataError);
+		expect(() => decodeF32(Uint8Array.from([0, 0, 128, 63, 0]))).toThrow(MaadDataError);
+	});
+
 	it('builds structure points from tau/tau_sd blobs and a q grid, or an empty array for a null result', () => {
-		const qGrid = { ipVersion: 4 as const, qMin: -0.5, qStep: 0.5, qCount: 3 };
+		const qGrid = { ipVersion: 4 as const, qMin: -0.5, qStep: 0.5, qCount: 2 };
 		expect(buildStructurePoints(f32([0.2, 0.4]), f32([0.01, 0.02]), qGrid)).toEqual([
 			{ q: -0.5, tau: Math.fround(0.2), sd: Math.fround(0.01) },
 			{ q: 0, tau: Math.fround(0.4), sd: Math.fround(0.02) }
 		]);
-		expect(buildStructurePoints(f32([0.2]), null, qGrid)).toEqual([
-			{ q: -0.5, tau: Math.fround(0.2), sd: 0 }
-		]);
 		expect(buildStructurePoints(null, null, qGrid)).toEqual([]);
-		expect(buildStructurePoints(f32([0.25]), f32([0.5]), null)).toEqual([]);
+		expect(buildStructurePoints(null, null, null)).toEqual([]);
+	});
+
+	it('rejects structure blobs that are missing a q grid or disagree with its length', () => {
+		const qGrid = { ipVersion: 4 as const, qMin: -0.5, qStep: 0.5, qCount: 33 };
+		const tau = f32(Array.from({ length: 33 }, (_, i) => i / 10));
+		expect(buildStructurePoints(tau, tau, qGrid)).toHaveLength(33);
+		expect(() => buildStructurePoints(tau, tau, null)).toThrow(MaadDataError);
+		expect(() => buildStructurePoints(f32([0.25]), f32([0.5]), qGrid)).toThrow(MaadDataError);
+		expect(() => buildStructurePoints(tau, null, qGrid)).toThrow(MaadDataError);
+		expect(() => buildStructurePoints(tau, f32([0.5]), qGrid)).toThrow(MaadDataError);
+		expect(() => buildStructurePoints(Uint8Array.from([0, 0, 128]), tau, qGrid)).toThrow(
+			MaadDataError
+		);
 	});
 
 	it('builds spectrum points from interleaved alpha/f blobs, and distinguishes empty from not computed', () => {
@@ -256,6 +272,13 @@ describe('netflow v3 helpers', () => {
 		]);
 		expect(buildSpectrumPoints(f32([]))).toEqual([]);
 		expect(buildSpectrumPoints(null)).toBeNull();
+	});
+
+	it('rejects spectrum blobs that do not hold whole alpha/f pairs', () => {
+		expect(() => buildSpectrumPoints(f32([1, 2, 3]))).toThrow(MaadDataError);
+		expect(() => buildSpectrumPoints(Uint8Array.from([0, 0, 128, 63, 0, 0]))).toThrow(
+			MaadDataError
+		);
 	});
 
 	it('resolves additive sources to one disjoint physical cover', () => {

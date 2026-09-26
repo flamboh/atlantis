@@ -325,13 +325,17 @@
 					"name": "address_maad_stats_prefix_length_check",
 					"value": "\"address_maad_stats\".\"max_prefix_length\" >= \"address_maad_stats\".\"min_prefix_length\""
 				},
+				"address_maad_stats_tau_check": {
+					"name": "address_maad_stats_tau_check",
+					"value": "typeof(\"address_maad_stats\".\"tau\") IN ('null', 'blob') AND length(\"address_maad_stats\".\"tau\") > 0 AND length(\"address_maad_stats\".\"tau\") % 4 = 0"
+				},
 				"address_maad_stats_tau_sd_check": {
 					"name": "address_maad_stats_tau_sd_check",
-					"value": "length(\"address_maad_stats\".\"tau_sd\") IS length(\"address_maad_stats\".\"tau\")"
+					"value": "typeof(\"address_maad_stats\".\"tau_sd\") = typeof(\"address_maad_stats\".\"tau\") AND length(\"address_maad_stats\".\"tau_sd\") IS length(\"address_maad_stats\".\"tau\")"
 				},
 				"address_maad_stats_spectrum_check": {
 					"name": "address_maad_stats_spectrum_check",
-					"value": "length(\"address_maad_stats\".\"spectrum\") % 8 = 0"
+					"value": "typeof(\"address_maad_stats\".\"spectrum\") IN ('null', 'blob') AND length(\"address_maad_stats\".\"spectrum\") % 8 = 0"
 				},
 				"address_maad_stats_measure_spectrum_check": {
 					"name": "address_maad_stats_measure_spectrum_check",

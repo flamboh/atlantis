@@ -362,11 +362,18 @@ export function groupByToGranularity(groupBy: string): IpGranularity {
 	return FIVE_MINUTE_GRANULARITY;
 }
 
+export class MaadDataError extends Error {
+	name = 'MaadDataError';
+}
+
 export function decodeF32(value: MaadBlob): Float32Array | null {
 	if (value === null) return null;
 	if (Array.isArray(value)) return decodeF32(Uint8Array.from(value));
 	if (value instanceof ArrayBuffer) return decodeF32(new Uint8Array(value));
 
+	if (value.byteLength % 4 !== 0) {
+		throw new MaadDataError(`MAAD blob length ${value.byteLength} is not a multiple of 4 bytes`);
+	}
 	const count = value.byteLength / 4;
 	const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
 	const out = new Float32Array(count);
@@ -399,15 +406,23 @@ export function buildStructurePoints(
 	qGrid: MaadQGridRow | null
 ): StructureFunctionPoint[] {
 	const tauValues = decodeF32(tau);
-	if (tauValues === null || qGrid === null) return [];
+	if (tauValues === null) return [];
+	if (qGrid === null) {
+		throw new MaadDataError('MAAD structure function is stored without a q grid');
+	}
 
 	const sdValues = decodeF32(tauSd);
+	if (tauValues.length !== qGrid.qCount || sdValues?.length !== qGrid.qCount) {
+		throw new MaadDataError(
+			`MAAD tau and tau_sd must each hold ${qGrid.qCount} values for IPv${qGrid.ipVersion}`
+		);
+	}
 	const points: StructureFunctionPoint[] = [];
 	for (let i = 0; i < tauValues.length; i++) {
 		points.push({
 			q: qGrid.qMin + i * qGrid.qStep,
 			tau: tauValues[i],
-			sd: sdValues?.[i] ?? 0
+			sd: sdValues[i]
 		});
 	}
 	return points;
@@ -416,9 +431,12 @@ export function buildStructurePoints(
 export function buildSpectrumPoints(spectrum: MaadBlob): SpectrumPoint[] | null {
 	const values = decodeF32(spectrum);
 	if (values === null) return null;
+	if (values.length % 2 !== 0) {
+		throw new MaadDataError('MAAD spectrum must hold alpha/f pairs');
+	}
 
 	const points: SpectrumPoint[] = [];
-	for (let i = 0; i + 1 < values.length; i += 2) {
+	for (let i = 0; i < values.length; i += 2) {
 		points.push({ alpha: values[i], f: values[i + 1] });
 	}
 	return points;
