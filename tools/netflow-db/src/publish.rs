@@ -2,6 +2,7 @@
 
 use std::{
     net::IpAddr,
+    num::NonZeroUsize,
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -459,21 +460,42 @@ fn scope_results<A: maad::MaadAddress>(
     })
 }
 
+/// Size the MAAD worker pool before its first use; later calls fail.
+pub fn set_maad_workers(workers: NonZeroUsize) -> Result<(), PublishError> {
+    let mut initialized = false;
+    let pool = MAAD_POOL.get_or_init(|| {
+        initialized = true;
+        build_maad_pool(workers.get())
+    });
+    if !initialized {
+        return Err(PublishError::MaadPool(
+            "the worker pool was already initialized".into(),
+        ));
+    }
+    pool.as_ref()
+        .map(|_| ())
+        .map_err(|error| PublishError::MaadPool(error.clone()))
+}
+
 fn maad_pool() -> Result<&'static rayon::ThreadPool, PublishError> {
     match MAAD_POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(
-                std::thread::available_parallelism()
-                    .map_or(1, std::num::NonZeroUsize::get)
-                    .min(MAX_MAAD_WORKERS),
-            )
-            .thread_name(|index| format!("maad-{index}"))
-            .build()
-            .map_err(|error| error.to_string())
+        build_maad_pool(
+            std::thread::available_parallelism()
+                .map_or(1, NonZeroUsize::get)
+                .min(MAX_MAAD_WORKERS),
+        )
     }) {
         Ok(pool) => Ok(pool),
         Err(error) => Err(PublishError::MaadPool(error.clone())),
     }
+}
+
+fn build_maad_pool(workers: usize) -> Result<rayon::ThreadPool, String> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|index| format!("maad-{index}"))
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 fn dimensions(key: &BucketKey, scope: crate::domain::Scope) -> StatsDimensions {
@@ -574,6 +596,13 @@ mod tests {
         assert_eq!(profile.dropped_zero_packet_flows, 1);
         assert!(profile.address_structure_json_bytes > 0);
         assert!(profile.total_elapsed >= profile.other_elapsed());
+    }
+
+    #[test]
+    fn maad_workers_cannot_resize_an_initialized_pool() {
+        assert!(maad_pool().unwrap().current_num_threads() >= 1);
+        let error = set_maad_workers(NonZeroUsize::new(2).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("already initialized"));
     }
 
     #[test]

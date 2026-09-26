@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Write},
     net::{Ipv4Addr, Ipv6Addr},
+    num::NonZeroUsize,
     path::PathBuf,
 };
 
@@ -95,6 +96,9 @@ struct PipelineArgs {
     force: bool,
     #[arg(long)]
     no_maad: bool,
+    /// MAAD worker threads (defaults to available parallelism, capped at 8).
+    #[arg(long)]
+    maad_workers: Option<NonZeroUsize>,
     /// Leave partial results in place but fail if requested five-minute coverage is incomplete.
     #[arg(long)]
     require_complete: bool,
@@ -342,6 +346,9 @@ fn main() -> Result<()> {
 }
 
 fn run_pipeline(args: PipelineArgs) -> Result<()> {
+    if let Some(workers) = args.maad_workers {
+        netflow_db::publish::set_maad_workers(workers)?;
+    }
     let mut selection = serde_json::Map::new();
     if args.daily_active_sources {
         selection.insert("kind".into(), serde_json::json!("daily_active_sources"));
@@ -711,4 +718,32 @@ fn parse_boundary(raw: &str, timezone: &str) -> Result<i64> {
         .context("invalid date/time timezone")?
         .timestamp()
         .as_second())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pipeline_args(extra: &[&str]) -> Result<PipelineArgs, clap::Error> {
+        let mut argv = vec!["netflow-db", "pipeline", "--config", "pipeline.json"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).map(|cli| match cli.command {
+            Command::Pipeline(args) => args,
+            command => panic!("unexpected command {command:?}"),
+        })
+    }
+
+    #[test]
+    fn maad_workers_must_be_a_positive_count() {
+        assert_eq!(pipeline_args(&[]).unwrap().maad_workers, None);
+        assert_eq!(
+            pipeline_args(&["--maad-workers", "3"])
+                .unwrap()
+                .maad_workers,
+            NonZeroUsize::new(3)
+        );
+        for invalid in ["0", "-1", "many"] {
+            assert!(pipeline_args(&["--maad-workers", invalid]).is_err());
+        }
+    }
 }

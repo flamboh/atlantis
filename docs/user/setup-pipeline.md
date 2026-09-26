@@ -213,6 +213,7 @@ On the native path, nfcapd input needs the fork path: set the top-level `"nfdump
 | `--nfdump`        | Names the nfdump executable.               |
 | `--force`         | Rewrites selected nfcapd buckets.          |
 | `--no-maad`       | Skips the MAAD statistics.                 |
+| `--maad-workers`  | Sets MAAD threads (default: CPUs, max 8).  |
 
 Time limits must align with local-day boundaries.
 
