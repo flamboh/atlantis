@@ -223,17 +223,27 @@ any primary-key conflict. The merge writes a private temporary file beside the o
 the first shard with the SQLite backup API, then attaches, inserts, commits, and detaches each
 remaining shard in turn, with journaling and synchronous writes off. It checks each insert's row
 count against validation, syncs the file, and renames it into place, so the output appears only
-when the merge is complete. An inferred dataset `default_start_date` becomes the earliest shard
-date. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
+when the merge is complete. A dataset `default_start_date` that every shard shares is kept,
+which covers configured dates. Otherwise every shard must hold the date inferred from its own
+earliest five-minute traffic, or the fallback date if it has no traffic. The merge then sets the
+date from the earliest traffic in the merged product, and uses the fallback only when the whole
+product has no traffic. It recomputes that date inside every shard's insert transaction, so a
+partial product always carries the date of the days it holds. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
 product is itself a valid shard.
 
 `--consume` keeps peak disk near the output size plus one shard. After every check passes, the
 merge renames the first shard into the temporary output (or copies it across filesystems), then
 commits each remaining shard with a rollback journal and `synchronous=FULL`. Only after that
-commit returns does it delete the shard and its sidecars. A failure therefore never loses data:
-each shard is either untouched or durably inside the temporary output, whose completed days are
-exactly the consumed shards. The merge keeps that partial product and reports it, and merging the
-partial with the remaining shards resumes the job.
+commit returns does it delete the shard and its sidecars. A shard counts as consumed as soon as
+the rename, cross-filesystem copy, or commit succeeds. Any later failure keeps the temporary
+output and reports it with the consumed shards. This includes a failed directory sync or a
+failed shard-file deletion, which is reported as its own cleanup error. The completed days of
+the temporary output are exactly the consumed shards, and merging it with the remaining shards
+resumes the job. Tests cover failures during a shard insert, and deletion failures right after
+the first shard's rename and after a later shard's commit. Crash durability rests on SQLite's
+rollback journal and the explicit file and directory syncs, and is not tested. Once the output
+has been renamed into place, a failed directory sync is reported as a published product, not as
+a partial merge.
 
 ## Native decoder contract
 

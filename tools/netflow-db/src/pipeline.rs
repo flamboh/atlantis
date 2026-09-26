@@ -1159,7 +1159,7 @@ fn infer_default_start_dates(
 }
 
 /// Local calendar day that contains `timestamp`, formatted as `YYYY-MM-DD`.
-fn local_date(timestamp: i64, timezone: &str) -> Result<String, PipelineError> {
+pub(crate) fn local_date(timestamp: i64, timezone: &str) -> Result<String, PipelineError> {
     Ok(Timestamp::from_second(timestamp)
         .map_err(|error| PipelineError::Time(error.to_string()))?
         .in_tz(timezone)

@@ -234,8 +234,8 @@ Each host needs:
   network filesystem.
 
 `scripts/netflow-db-cluster.sh` runs the whole flow from one machine. It splits the inclusive date
-range into one contiguous shard per slot and starts `pipeline` on each host as a detached job, so
-a dropped ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
+range into contiguous shards and starts `pipeline` on each host as a detached job, so a dropped
+ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
 shard back, merges the snapshots, and runs `verify`:
 
 ```bash
@@ -250,7 +250,13 @@ shard back, merges the snapshots, and runs `verify`:
   --deploy-datasets /path/to/datasets.json
 ```
 
-- `host:N` runs N shards on that host at once.
+- `host:N` gives that host N slots, so it runs up to N shards at once. A host without `:N` gets
+  one slot, which is how to give a busier host a lighter share.
+- The range splits into one shard per slot, or one per day when there are fewer days than slots.
+  Shard lengths differ by at most one day. Slots are assigned round-robin across hosts, so every
+  host gets a shard whenever the range has at least as many days as there are hosts. For example,
+  six days on `nodeA:4,nodeB` gives nodeA four shards and nodeB one, and the first shard gets
+  two days.
 - Hosts install into `--remote-dir` (or `NETFLOW_CLUSTER_REMOTE_DIR`). The default is
   `$HOME/atlantis-cluster`, expanded with this machine's `$HOME`, so every host must be able to
   use that absolute path. The directory holds `bin/`, `nfdump/`, `datasets.json`, and the shard
@@ -282,7 +288,10 @@ To merge shards by hand, build each one with identical flags and an explicit `--
 ```
 
 The output must not exist yet. The command refuses shards with different product identities,
-schemas, source layouts, or dataset metadata, and shards whose completed days overlap. It also
+schemas, source layouts, or dataset metadata, and shards whose completed days overlap. Each
+dataset's `default_start_date` must either match across all shards, which keeps a configured
+date, or be the date each shard inferred from its own traffic. In the second case the merged
+product takes the date of its earliest traffic. It also
 refuses rows outside a shard's completed days, and completed days without full five-minute
 coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
 again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
@@ -295,7 +304,11 @@ shard's rows are durably committed. Peak disk is about the output size plus one 
 consuming merge fails after it has consumed a shard, it keeps the temporary output: a valid
 partial product that holds exactly the consumed shards. The error names the consumed shards and
 the partial file, and prints the command that resumes the merge from the partial and the
-remaining shards, which are left untouched.
+remaining shards, which are left untouched. If a shard's rows are merged but its files cannot be
+deleted, the error says so. That shard counts as consumed, so delete its leftover files instead
+of passing it again. If the merge has already renamed the output into place but cannot sync its
+directory, the error says the product is published. Run `verify` on it instead of merging
+again.
 
 ## Verify the output
 
