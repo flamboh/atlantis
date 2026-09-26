@@ -1,13 +1,13 @@
 <script lang="ts">
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { getNetflowFileDetailLoader } from '$lib/components/netflow/file-detail-loader.svelte';
 	import NetflowFileHeader from '$lib/components/netflow/NetflowFileHeader.svelte';
 	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
+	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import {
-		DEFAULT_MAAD_IP_VERSION,
 		MAAD_IP_VERSION_OPTIONS,
 		type FlowDirection,
 		type MaadIpVersion
@@ -23,6 +23,7 @@
 		dataset: string;
 		slug: string;
 		direction: FlowDirection;
+		ipVersion: MaadIpVersion;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -35,7 +36,6 @@
 
 	let { data }: { data: NetflowFileDetailData } = $props();
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
-	let maadIpVersion = $state<MaadIpVersion>(DEFAULT_MAAD_IP_VERSION);
 
 	const formatCount = (value: number | null | undefined) =>
 		typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'N/A';
@@ -59,7 +59,7 @@
 	const nextSlug = $derived(getNextSlug(data.slug));
 
 	function syncLoader() {
-		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction, maadIpVersion);
+		loader = getNetflowFileDetailLoader(data.dataset, data.slug, data.direction, data.ipVersion);
 		loader.refresh();
 	}
 
@@ -68,11 +68,14 @@
 	}
 
 	function handleMaadIpVersionChange(nextIpVersion: MaadIpVersion) {
-		if (nextIpVersion === maadIpVersion) {
+		if (nextIpVersion === data.ipVersion) {
 			return;
 		}
-		maadIpVersion = nextIpVersion;
-		syncLoader();
+		void navigateToNetflowFile(goto, data.slug, data.dataset, data.direction, nextIpVersion, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true
+		});
 	}
 
 	onMount(() => {
@@ -89,6 +92,7 @@
 		dataset={data.dataset}
 		{nextSlug}
 		direction={data.direction}
+		ipVersion={data.ipVersion}
 		filename={data.fileInfo.filename}
 		year={data.fileInfo.year}
 		month={data.fileInfo.month}
@@ -109,7 +113,7 @@
 				value: String(option.value),
 				label: option.label
 			}))}
-			value={String(maadIpVersion)}
+			value={String(data.ipVersion)}
 			onValueChange={(value) => handleMaadIpVersionChange(Number(value) as MaadIpVersion)}
 			ariaLabel="Select MAAD IP address family"
 			buttonClass="sm:min-w-32"

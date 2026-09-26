@@ -10,6 +10,16 @@ describe('date range search params', () => {
 		}
 	});
 
+	it('defaults the MAAD IP family to IPv4 and accepts IPv6', () => {
+		expect(schema.parse({}).ipVersion).toBe(4);
+		expect(schema.parse({ ipVersion: 6 }).ipVersion).toBe(6);
+	});
+
+	it('rejects unknown MAAD IP families', () => {
+		expect(schema.safeParse({ ipVersion: 5 }).success).toBe(false);
+		expect(schema.safeParse({ ipVersion: '6' }).success).toBe(false);
+	});
+
 	it('rejects stored granularity spellings as groupings', () => {
 		expect(schema.safeParse({ groupBy: '10m' }).success).toBe(false);
 	});

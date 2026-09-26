@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '$lib/datasets';
-import { parseFlowDirectionParams } from '$lib/server/netflow-v3';
+import { parseFlowDirectionParams, parseMaadIpVersion } from '$lib/server/netflow-v3';
 
 export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	const { slug } = params;
@@ -10,6 +10,11 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 
 	if ('error' in flowDirection) {
 		throw error(flowDirection.status, flowDirection.error);
+	}
+
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		throw error(ipVersion.status, ipVersion.error);
 	}
 
 	if (!dataset) {
@@ -34,6 +39,7 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 		dataset,
 		slug,
 		direction: flowDirection.direction,
+		ipVersion,
 		fileInfo: {
 			year,
 			month,

@@ -2,12 +2,13 @@
 	import { buildNetflowFileHref } from '$lib/utils/netflow-file-navigation';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
-	import type { FlowDirection } from '$lib/types/types';
+	import type { FlowDirection, MaadIpVersion } from '$lib/types/types';
 
 	let {
 		dataset,
 		nextSlug,
 		direction,
+		ipVersion,
 		filename,
 		year,
 		month,
@@ -19,6 +20,7 @@
 		dataset: string;
 		nextSlug: string;
 		direction: FlowDirection;
+		ipVersion: MaadIpVersion;
 		filename: string;
 		year: string;
 		month: string;
@@ -31,9 +33,13 @@
 
 <div class="text-foreground mb-2 flex items-center justify-between text-2xl">
 	<h1>NetFlow File: {filename}</h1>
-	<form method="GET" action={buildNetflowFileHref(nextSlug, dataset, direction)}>
-		<Button type="submit" size="sm" class="w-24">Next File</Button>
-	</form>
+	<Button
+		href={buildNetflowFileHref(nextSlug, dataset, direction, ipVersion)}
+		size="sm"
+		class="w-24"
+	>
+		Next File
+	</Button>
 </div>
 
 <Card.Root size="sm" class="mb-2">

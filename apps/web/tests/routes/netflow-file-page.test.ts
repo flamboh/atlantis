@@ -32,6 +32,7 @@ describe('/netflow/files/[slug] page load', () => {
 			dataset: 'alpha',
 			slug: '202503010005',
 			direction: 'ingress',
+			ipVersion: 4,
 			fileInfo: {
 				year: '2025',
 				month: '03',
@@ -40,6 +41,29 @@ describe('/netflow/files/[slug] page load', () => {
 				minute: '05',
 				filename: 'nfcapd.202503010005'
 			}
+		});
+	});
+
+	it('reads the MAAD IP family from the search params', async () => {
+		const result = await load({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&ipVersion=6'),
+			fetch: vi.fn()
+		} as never);
+
+		expect(result).toMatchObject({ dataset: 'alpha', direction: 'all', ipVersion: 6 });
+	});
+
+	it('rejects invalid ipVersion params', async () => {
+		await expect(
+			load({
+				params: { slug: '202503010005' },
+				url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&ipVersion=5'),
+				fetch: vi.fn()
+			} as never)
+		).rejects.toMatchObject({
+			status: 400,
+			body: { message: 'Invalid ipVersion. Expected one of: 4, 6' }
 		});
 	});
 

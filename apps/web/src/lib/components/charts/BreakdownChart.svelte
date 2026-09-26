@@ -659,7 +659,13 @@
 			const labelForSlug = activeLabel ?? label;
 			const slug = generateSlugFromLabel(labelForSlug, '5min');
 			if (slug) {
-				void navigateToNetflowFile(goto, slug, props.dataset, props.direction ?? 'all');
+				void navigateToNetflowFile(
+					goto,
+					slug,
+					props.dataset,
+					props.direction ?? 'all',
+					props.ipVersion
+				);
 			}
 			return;
 		}

@@ -1,5 +1,5 @@
 // schemas.ts
-import { FLOW_DIRECTIONS } from '$lib/types/types';
+import { DEFAULT_MAAD_IP_VERSION, FLOW_DIRECTIONS, MAAD_IP_VERSIONS } from '$lib/types/types';
 import { z } from 'zod';
 // Requires Zod 4+
 
@@ -8,6 +8,7 @@ export function createDateRangeSearchSchema(defaultStartDate: string) {
 		startDate: z.iso.date().default(defaultStartDate),
 		endDate: z.iso.date().default(new Date().toJSON().slice(0, 10)),
 		groupBy: z.enum(['date', 'hour', '30min', '10min', '5min']).default('date'),
-		direction: z.enum(FLOW_DIRECTIONS).default('all')
+		direction: z.enum(FLOW_DIRECTIONS).default('all'),
+		ipVersion: z.literal(MAAD_IP_VERSIONS).default(DEFAULT_MAAD_IP_VERSION)
 	});
 }

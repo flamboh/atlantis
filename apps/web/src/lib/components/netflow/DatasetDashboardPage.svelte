@@ -54,7 +54,6 @@
 	let selectedRouters = $state<RouterConfig>({});
 	let selectedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
-	let selectedSpectrumIpVersion = $state<MaadIpVersion>(DEFAULT_MAAD_IP_VERSION);
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
@@ -145,6 +144,7 @@
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
 	const hasLocality = $derived(props.hasLocality ?? true);
+	const ipVersion = $derived<MaadIpVersion>(params.ipVersion);
 	const direction = $derived<FlowDirection>(
 		hasLocality ? (params.direction as FlowDirection) : 'all'
 	);
@@ -401,7 +401,7 @@
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, direction);
+		void navigateToNetflowFile(goto, slug, props.dataset, direction, ipVersion);
 	}
 
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
@@ -428,6 +428,13 @@
 		params.direction = payload.direction;
 	}
 
+	function handleIpVersionChange(payload: { ipVersion: MaadIpVersion }) {
+		if (payload.ipVersion === params.ipVersion) {
+			return;
+		}
+		params.ipVersion = payload.ipVersion;
+	}
+
 	function handleResetView() {
 		const today = new Date().toJSON().slice(0, 10);
 		selectedGroupBy = 'date';
@@ -437,7 +444,8 @@
 			groupBy: selectedGroupBy,
 			startDate,
 			endDate,
-			direction: 'all'
+			direction: 'all',
+			ipVersion: DEFAULT_MAAD_IP_VERSION
 		});
 	}
 </script>
@@ -533,6 +541,7 @@
 						{routersLoaded}
 						{dataOptions}
 						{direction}
+						{ipVersion}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onDataOptionsChange={handleDataOptionsChange}
@@ -565,6 +574,7 @@
 						routers={selectedRouters}
 						activeMetrics={ipMetrics}
 						{direction}
+						{ipVersion}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={handleIpMetricsChange}
@@ -579,6 +589,7 @@
 						routers={selectedRouters}
 						activeMetrics={protocolMetrics}
 						{direction}
+						{ipVersion}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={(payload) => {
@@ -594,7 +605,7 @@
 						granularity={ipGranularity}
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
-						ipVersion={selectedSpectrumIpVersion}
+						{ipVersion}
 						availableRouters={availableSpectrumRouters}
 						{direction}
 						onDateChange={handleDateChange}
@@ -605,9 +616,7 @@
 						onAddressTypeChange={(payload) => {
 							selectedSpectrumAddressType = payload.addressType;
 						}}
-						onIpVersionChange={(payload) => {
-							selectedSpectrumIpVersion = payload.ipVersion;
-						}}
+						onIpVersionChange={handleIpVersionChange}
 					/>
 				{:else}
 					<CoverageStrip
