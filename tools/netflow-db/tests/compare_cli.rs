@@ -105,53 +105,69 @@ fn compare_rejects_a_candidate_only_scope_inside_a_reference_bucket() {
 }
 
 #[test]
-fn compare_accepts_maad_rows_for_an_ip_version_the_reference_lacks() {
+fn compare_rejects_ipv6_maad_rows_missing_from_a_reference_bucket() {
     let temporary = tempdir().unwrap();
     let candidate = temporary.path().join("candidate.sqlite");
     let reference = temporary.path().join("reference.sqlite");
     create_shared_database(&candidate, 42, 0.5, false);
     create_shared_database(&reference, 42, 0.5, false);
-    let insert_v6 = |path: &std::path::Path, side: &str| {
-        Connection::open(path)
-            .unwrap()
-            .execute(
-                "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,6,'all','all',?1,'dimension','[]','{\"totalAddrs\":0}')",
-                [side],
-            )
-            .unwrap();
-    };
-    insert_v6(&candidate, "source");
-    let run = || {
-        let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
-            .args([
-                "compare",
-                candidate.to_str().unwrap(),
-                reference.to_str().unwrap(),
-                "--start",
-                "0",
-                "--end",
-                "600",
-            ])
-            .output()
-            .unwrap();
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        (output.status.success(), report)
-    };
+    Connection::open(&candidate)
+        .unwrap()
+        .execute(
+            "INSERT INTO address_structure_stats VALUES ('r1','5m',0,300,6,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+            [],
+        )
+        .unwrap();
 
-    let (success, report) = run();
-    assert!(success, "{report}");
-    assert_eq!(
-        report["tables"]["address_structure_stats"]["unexpected_candidate_only_rows"],
-        0
-    );
-
-    insert_v6(&reference, "destination");
-    let (success, report) = run();
-    assert!(!success);
+    let (success, report) = run_compare(&candidate, &reference);
+    assert!(!success, "{report}");
     assert_eq!(
         report["tables"]["address_structure_stats"]["unexpected_candidate_only_rows"],
         1
     );
+}
+
+#[test]
+fn compare_rejects_ipv6_maad_rows_for_an_unrelated_source() {
+    let temporary = tempdir().unwrap();
+    let candidate = temporary.path().join("candidate.sqlite");
+    let reference = temporary.path().join("reference.sqlite");
+    create_shared_database(&candidate, 42, 0.5, false);
+    create_shared_database(&reference, 42, 0.5, false);
+    Connection::open(&candidate)
+        .unwrap()
+        .execute(
+            "INSERT INTO address_structure_stats VALUES ('r2','5m',0,300,6,'all','all','source','dimension','[]','{\"totalAddrs\":0}')",
+            [],
+        )
+        .unwrap();
+
+    let (success, report) = run_compare(&candidate, &reference);
+    assert!(!success, "{report}");
+    assert_eq!(
+        report["tables"]["address_structure_stats"]["unexpected_candidate_only_rows"],
+        1
+    );
+}
+
+fn run_compare(
+    candidate: &std::path::Path,
+    reference: &std::path::Path,
+) -> (bool, serde_json::Value) {
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args([
+            "compare",
+            candidate.to_str().unwrap(),
+            reference.to_str().unwrap(),
+            "--start",
+            "0",
+            "--end",
+            "600",
+        ])
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    (output.status.success(), report)
 }
 
 #[test]
