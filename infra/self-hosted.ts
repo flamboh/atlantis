@@ -1,12 +1,14 @@
 import * as Alchemy from 'alchemy';
 import * as Cloudflare from 'alchemy/Cloudflare';
 import * as Docker from 'alchemy/Docker';
-import { hashDockerBuildInputs } from 'alchemy/Docker/BuildHash';
 import * as Config from 'effect/Config';
+import * as ConfigProvider from 'effect/ConfigProvider';
 import * as Effect from 'effect/Effect';
-import { appName, repoRoot, stageName, webDockerfile } from './shared.ts';
+import { hashAllowlistedBuildContext } from './build-context.ts';
+import { appName, invalidStageMessage, repoRoot, stageName, webDockerfile } from './shared.ts';
+import { parseSshDockerHost, sshTunnelCommand } from './ssh.ts';
 
-const campusName = `${appName}-campus`;
+const selfHostedName = `${appName}-self-hosted`;
 
 const webPort = 3000;
 
@@ -15,7 +17,7 @@ const platform = 'linux/amd64';
 const parseDataUser = (value: string) => {
 	const match = /^(\d+):(\d+)$/.exec(value.trim());
 	if (!match) {
-		throw new Error(`ATLANTIS_CAMPUS_DATA_USER must be '<uid>:<gid>', got '${value}'`);
+		throw new Error(`ATLANTIS_SELF_HOSTED_DATA_USER must be '<uid>:<gid>', got '${value}'`);
 	}
 	return { uid: match[1], gid: match[2] };
 };
@@ -23,39 +25,51 @@ const parseDataUser = (value: string) => {
 const webHealthcheck = `node -e "fetch('http://127.0.0.1:${webPort}/api/datasets').then((response) => process.exit(response.ok ? 0 : 1), () => process.exit(1))"`;
 
 export default Alchemy.Stack(
-	campusName,
+	selfHostedName,
 	{
 		providers: Docker.providers(),
 		state: Cloudflare.state()
 	},
 	Effect.gen(function* () {
 		const { stage } = yield* Alchemy.Stack;
+		const invalidStage = invalidStageMessage(stage);
+		if (invalidStage) {
+			return yield* Effect.fail(
+				new Config.ConfigError(new ConfigProvider.SourceError({ message: invalidStage }))
+			);
+		}
 
-		const dockerHost = yield* Config.String('ATLANTIS_CAMPUS_DOCKER_HOST');
-		const dataDir = yield* Config.String('ATLANTIS_CAMPUS_DATA_DIR');
-		const port = yield* Config.Port('ATLANTIS_CAMPUS_PORT').pipe(Config.withDefault(8080));
-		const dataUser = yield* Config.String('ATLANTIS_CAMPUS_DATA_USER').pipe(
+		const dockerHost = yield* Config.String('ATLANTIS_SELF_HOSTED_DOCKER_HOST').pipe(
+			Config.map(parseSshDockerHost)
+		);
+		const dataDir = yield* Config.String('ATLANTIS_SELF_HOSTED_DATA_DIR');
+		const port = yield* Config.Port('ATLANTIS_SELF_HOSTED_PORT').pipe(Config.withDefault(8080));
+		const dataUser = yield* Config.String('ATLANTIS_SELF_HOSTED_DATA_USER').pipe(
 			Config.withDefault('1000:1000'),
 			Config.map(parseDataUser)
 		);
 
 		if (!dataDir.startsWith('/') || dataDir === '/') {
 			return yield* Effect.die(
-				new Error(`ATLANTIS_CAMPUS_DATA_DIR must be an absolute host directory, got '${dataDir}'`)
+				new Error(
+					`ATLANTIS_SELF_HOSTED_DATA_DIR must be an absolute host directory, got '${dataDir}'`
+				)
 			);
 		}
 
-		const webName = stageName(`${campusName}-web`, stage);
+		const webName = stageName(`${selfHostedName}-web`, stage);
 		const buildArgs = { RUNTIME_UID: dataUser.uid, RUNTIME_GID: dataUser.gid };
-		const buildHash = yield* hashDockerBuildInputs(
-			{ context: repoRoot, dockerfile: webDockerfile, platform, buildArgs },
-			'effective'
-		).pipe(Effect.orDie);
+		const buildHash = yield* hashAllowlistedBuildContext({
+			context: repoRoot,
+			dockerfile: webDockerfile,
+			platform,
+			buildArgs
+		}).pipe(Effect.orDie);
 
 		const context = yield* Docker.Context('DockerHost', {
-			name: stageName(campusName, stage),
-			docker: `host=${dockerHost}`,
-			description: `ATLANTIS campus deployment (${stage})`
+			name: stageName(selfHostedName, stage),
+			docker: `host=${dockerHost.url}`,
+			description: `ATLANTIS self-hosted deployment (${stage})`
 		});
 
 		const webImage = yield* Docker.Image('WebImage', {
@@ -97,7 +111,7 @@ export default Alchemy.Stack(
 			container: web.name,
 			image: webImage.imageRef,
 			dataDir,
-			tunnel: `ssh -N -L ${port}:127.0.0.1:${port} ${dockerHost.replace(/^ssh:\/\//, '')}`
+			tunnel: sshTunnelCommand(dockerHost, port)
 		};
 	})
 );

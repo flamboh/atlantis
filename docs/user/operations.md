@@ -1,6 +1,6 @@
 # Operations
 
-Use these procedures to verify and publish a database. This document also gives the Cloudflare and campus deployment commands.
+Use these procedures to verify and publish a database. This document also gives the Cloudflare and self-hosted deployment commands.
 
 The D1 and Cloudflare deployment sections apply to the hosted ATLANTIS deployment and need Cloudflare access. A local installation does not use them.
 
@@ -155,97 +155,89 @@ CAUTION: A restore overwrites remote D1 data. Record the current bookmark first.
 bunx wrangler@4.141.0 d1 time-travel restore atlantis-db --bookmark=<bookmark>
 ```
 
-## Deploy the campus dashboard
+## Deploy the self-hosted dashboard
 
-`infra/campus.ts` runs the dashboard as a Docker container on a self-hosted machine. It is an [Alchemy](https://alchemy.run) stack named `atlantis-campus`. The container reads the pipeline SQLite databases from a directory on that machine. It is not publicly reachable: it listens on the host loopback only, and users connect through SSH port forwarding.
+This runs the dashboard as a Docker container on a machine you control. Users reach it through an SSH tunnel; it is not exposed to the network.
 
-The stack has three resources:
+### Prerequisites
 
-- A Docker context that reaches the host's Docker daemon over SSH.
-- The web image, built from `apps/web/Dockerfile` on the host. The image holds the Node build of the dashboard with the SQLite driver.
-- The web container. It mounts the data directory at `/data`, has a 1 GB memory limit, restarts unless stopped, and reports health from `/api/datasets`.
+On the host:
 
-The image tag is a hash of the build inputs: the files that `apps/web/Dockerfile.dockerignore` admits, the Dockerfile, and the build arguments. A deploy after a source change builds a new image and replaces the container. A deploy without changes rebuilds from the Docker cache and leaves the container running.
+- Docker Engine, usable by your account without `sudo` (for example through the `docker` group).
+- A data directory with `<dataset-id>/netflow.sqlite` for each dataset.
 
-Each stage names its image and container `atlantis-campus-web-<stage>`. The `prod` stage uses `atlantis-campus-web`.
+On your machine:
 
-### Prepare the host
+- The repository with `bun install` done.
+- Docker's command-line client. A local Docker daemon is not needed; the image builds on the host.
+- SSH key access to the host: `ssh <host> docker info` must succeed without a password prompt. Host aliases from `~/.ssh/config` work.
+- `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, as for the [Cloudflare stack](#set-up-cloudflare-access). Alchemy keeps the deploy state in Cloudflare; no Cloudflare resources are created.
 
-The host needs:
+### Configure
 
-- Docker Engine. The operator's account must be able to run `docker` without `sudo`, for example through the `docker` group.
-- SSH key access for the operator. `ssh <host> docker info` must succeed without a password prompt. Docker uses the operator's SSH configuration, so a host alias from `~/.ssh/config` works.
-- A data directory that holds `<dataset-id>/netflow.sqlite` for each dataset.
+Export these variables:
 
-The operator's machine needs Docker's command-line client and the repository dependencies from `bun install`. It does not need a local Docker daemon, because builds run on the host.
+| Variable                           | Required | Meaning                                                                                                                                                |
+| ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ATLANTIS_SELF_HOSTED_DOCKER_HOST` | yes      | The host as an SSH URL, for example `ssh://user@host.example.com`, `ssh://user@host.example.com:2222`, or an `~/.ssh/config` alias as `ssh://my-host`. |
+| `ATLANTIS_SELF_HOSTED_DATA_DIR`    | yes      | Absolute path of the data directory on the host.                                                                                                       |
+| `ATLANTIS_SELF_HOSTED_PORT`        | no       | Port on the host's loopback interface. Default `8080`. `ssh <host> ss -ltn` lists ports already in use.                                                |
+| `ATLANTIS_SELF_HOSTED_DATA_USER`   | no       | `<uid>:<gid>` the container runs as. Default `1000:1000`. Use the owner of the data files (`id -u` and `id -g` on the host).                           |
 
-### Configure the stack
+The container must run as the data owner because SQLite creates `-shm` and `-wal` files next to each database even when it only reads it.
 
-Set these variables in the shell:
-
-| Variable                      | Required | Meaning                                                                                                                                                             |
-| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ATLANTIS_CAMPUS_DOCKER_HOST` | yes      | Docker host as an SSH URL, for example `ssh://barbera` or `ssh://user@host.example.edu`.                                                                            |
-| `ATLANTIS_CAMPUS_DATA_DIR`    | yes      | Absolute data directory on the host.                                                                                                                                |
-| `ATLANTIS_CAMPUS_PORT`        | no       | Host loopback port for the dashboard. The default is `8080`. Pick a free port: `ssh <host> ss -ltn` lists the ports in use.                                         |
-| `ATLANTIS_CAMPUS_DATA_USER`   | no       | `<uid>:<gid>` that the container runs as. The default is `1000:1000`. Use the owner of the data files, for example `$(id -u):$(id -g)` of that account on the host. |
-
-Alchemy stores the stack state in Cloudflare, like the [Cloudflare stack](#set-up-cloudflare-access). Export `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` too. The stack creates no Cloudflare resources.
-
-### Deploy and remove a stage
+### Deploy
 
 ```bash
-bun run plan:campus --stage <stage>
-bun run deploy:campus --stage <stage>
-bun run destroy:campus --stage <stage>
+bun run deploy:self-hosted --stage <stage>
 ```
 
-`plan:campus` builds the image on the host to compare it with the deployed image. It does not change the container. `deploy:campus` shows the plan and asks for approval. Add `--yes` to skip the prompt. The deploy prints the SSH command that users need.
+The deploy shows its plan and asks for approval; add `--yes` to skip the prompt. It prints the tunnel command for users. `bun run plan:self-hosted --stage <stage>` previews the change; it builds the image on the host but leaves the container alone.
 
-Check the container on the host:
+Deploy again after pulling new code. An unchanged checkout leaves the running container alone.
+
+Check that the container is healthy:
 
 ```bash
-ssh <host> docker ps --filter name=atlantis-campus-web
+ssh <host> docker ps --filter name=atlantis-self-hosted-web
 ```
 
-The status reads `healthy` after the first health check passes.
+### Connect
 
-`destroy:campus` removes the container, the current image, and the Docker context. It does not remove the data directory or its files. Images from earlier deploys keep their hash tags. Remove them on the host with `docker image rm atlantis-campus-web-<stage>:<tag>`.
+Users need an SSH account on the host. Run the tunnel command that the deploy printed, for example:
 
-### Load data
+```bash
+ssh -N -L 8080:127.0.0.1:8080 user@host.example.com
+```
 
-Copy each dataset to `<data-dir>/<dataset-id>/netflow.sqlite` on the host. The dashboard discovers every dataset directory. It picks up a new or replaced database on the next request, so the container does not need a restart.
+Then open `http://localhost:8080`. To use a different local port, change the first number and open that port instead. The tunnel stays open until you stop `ssh`.
 
-Copy only a database that no process is writing. To replace a live database, use `sqlite-maintenance`, which replaces the file atomically. See [Publish a local SQLite database](#publish-a-local-sqlite-database).
+### Tear down
 
-The dashboard opens each database read-only. The mount is still writable, because SQLite creates the `netflow.sqlite-shm` and `netflow.sqlite-wal` files next to a WAL-mode database when it reads it. Set `ATLANTIS_CAMPUS_DATA_USER` to the owner of the data files, so that the container can create those files and the pipeline can still write them.
+```bash
+bun run destroy:self-hosted --stage <stage>
+```
+
+This removes the container, its current image, and the Docker context. The data directory is untouched. Images from earlier deploys remain; remove them on the host with `docker image rm atlantis-self-hosted-web-<stage>:<tag>`.
+
+### Add or replace datasets
+
+Copy each database to `<data-dir>/<dataset-id>/netflow.sqlite` on the host. The dashboard picks up new and replaced databases on the next request, without a restart.
+
+Copy only a database that no process is writing. To replace a live database, use `sqlite-maintenance`; see [Publish a local SQLite database](#publish-a-local-sqlite-database).
 
 ### Run the pipeline on the host
 
-The stack does not build the pipeline image. The pipeline is a batch command, not a service, and its image build compiles nfdump and the Rust toolchain.
-
-Run the pipeline from a checkout of this repository on the host with the [Docker wrapper](setup-pipeline.md#docker-setup). The wrapper writes to the checkout's `data/` directory, so set `ATLANTIS_CAMPUS_DATA_DIR` to that directory:
+Use the [Docker wrapper](setup-pipeline.md#docker-setup) from a checkout on the host. It writes to the checkout's `data/` directory, so point `ATLANTIS_SELF_HOSTED_DATA_DIR` there:
 
 ```bash
 ssh <host>
-git clone https://gitlab.com/onrg/netflow-analysis.git atlantis
+git clone https://github.com/flamboh/atlantis.git atlantis
 cd atlantis
-./scripts/netflow-db-docker.sh --capture-root /absolute/path/to/captures pipeline ...
+./scripts/netflow-db-docker.sh --capture-root /data/netflow/example pipeline ...
 ```
 
-The wrapper builds the `atlantis-netflow-db:local` image on the host when it is missing or out of date. Follow [Set up the data pipeline](setup-pipeline.md) for the `datasets.json` configuration and the pipeline commands.
-
-### Connect as a user
-
-Users need an SSH account on the host. Forward a local port to the dashboard port on the host loopback:
-
-```bash
-ssh -N -L 8080:127.0.0.1:<port> <host>
-```
-
-Then open `http://localhost:8080`. Replace the first `8080` with any free local port, and open that port instead. The tunnel stays open until you stop `ssh`.
-
-A connection to `<host>:<port>` from another machine fails, because the container publishes its port on `127.0.0.1` only.
+See [Set up the data pipeline](setup-pipeline.md) for `datasets.json` and the pipeline commands.
 
 ## Deploy the landing site
 

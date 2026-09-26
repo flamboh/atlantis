@@ -65,7 +65,7 @@ bun run --cwd apps/web preview              # SQLite build, then vite preview
 
 A D1 build has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
 
-A SQLite build uses `@sveltejs/adapter-node` and writes a Node server to `apps/web/build`. Start it with `node build` from `apps/web`. The campus deployment runs this build in a container. [Operations](../user/operations.md#deploy-the-campus-dashboard) describes it.
+A SQLite build uses `@sveltejs/adapter-node` and writes a Node server to `apps/web/build`. Start it with `node build` from `apps/web`. The self-hosted deployment runs this build in a container. [Operations](../user/operations.md#deploy-the-self-hosted-dashboard) describes it.
 
 The build leaves `paths.origin` unset. SvelteKit 3 replaced adapter-node's runtime `ORIGIN` variable with this build-time option, and a fixed origin would break SSH port forwarding, where each user picks a local port. Adapter-node then builds the request URL from the `Host` header and the `https` protocol, so a request to `http://localhost:8080` has the origin `https://localhost:8080`. The dashboard has no form actions, remote functions, or mutating endpoints, so SvelteKit's CSRF origin check never runs. Before you add a `POST` form, set `PROTOCOL_HEADER` or `paths.origin` so that the origin check sees the browser's real origin.
 

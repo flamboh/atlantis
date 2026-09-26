@@ -5,7 +5,7 @@
     "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "husky": "^9.1.7"
   },
-  "packageManager": "bun@1.2.16",
+  "packageManager": "bun@1.3.11",
   "private": true,
   "scripts": {
     "prepare": "husky",
@@ -18,9 +18,9 @@
     "deploy:cloudflare": "ATLANTIS_DB_DRIVER=d1 alchemy deploy infra/cloudflare.ts",
     "plan:cloudflare": "ATLANTIS_DB_DRIVER=d1 alchemy plan infra/cloudflare.ts",
     "destroy:cloudflare": "alchemy destroy infra/cloudflare.ts",
-    "deploy:campus": "alchemy deploy infra/campus.ts",
-    "plan:campus": "alchemy plan infra/campus.ts",
-    "destroy:campus": "alchemy destroy infra/campus.ts",
+    "deploy:self-hosted": "alchemy deploy infra/self-hosted.ts",
+    "plan:self-hosted": "alchemy plan infra/self-hosted.ts",
+    "destroy:self-hosted": "alchemy destroy infra/self-hosted.ts",
     "check:web": "bun run --cwd apps/web check",
     "lint": "bun run --cwd apps/web lint && bun run --cwd infra lint && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd infra typecheck && cargo check --workspace --all-targets --locked",
