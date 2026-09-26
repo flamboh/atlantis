@@ -69,6 +69,27 @@ export interface ReadonlyDatasetDb {
 	prepare(sql: string): PreparedStatement;
 }
 
+const localityStatsTables = [
+	'traffic_stats',
+	'protocol_stats',
+	'address_count_stats',
+	'address_structure_stats',
+	'port_count_stats'
+];
+const currentProductSchemaSql = `SELECT (
+	EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bucket_coverage')
+	AND EXISTS(SELECT 1 FROM pragma_table_info('datasets') WHERE name = 'has_locality')
+	${localityStatsTables
+		.map(
+			(table) => `AND (
+		NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${table}')
+		OR (SELECT COUNT(*) FROM pragma_table_info('${table}')
+			WHERE name IN ('src_locality', 'dst_locality')) = 2
+	)`
+		)
+		.join('\n\t')}
+) AS compatible`;
+
 const localDbCache = new Map<string, LocalDbCacheEntry>();
 const localDbRefreshes = new Map<string, Promise<LocalDbCacheEntry>>();
 const d1DbCache = new WeakMap<D1Database, ReadonlyDatasetDb>();
@@ -363,6 +384,15 @@ async function readDatasetRowsFromEntry(
 		return entry.datasetRows.map((row) => ({ ...row }));
 	}
 
+	// Backups and obsolete products can remain under data/, but the current dashboard requires
+	// explicit coverage and locality dimensions and must not let an older database shadow a current
+	// product with the same ID.
+	const schema = await entry.db.get<{ compatible: number }>(currentProductSchemaSql);
+	if (schema?.compatible !== 1) {
+		entry.datasetRows = [];
+		return [];
+	}
+
 	const rows = await entry.db.all<DatasetRow>(
 		`
 			SELECT
@@ -376,20 +406,6 @@ async function readDatasetRowsFromEntry(
 			ORDER BY sort_order ASC, id ASC
 		`
 	);
-	// Backups and obsolete products can remain under data/, but the current dashboard requires
-	// explicit coverage and must not let an older database shadow a current product with the same ID.
-	const schema = await entry.db.get<{ hasCoverage: number }>(
-		`SELECT EXISTS(
-			SELECT 1
-			FROM sqlite_master
-			WHERE type = 'table' AND name = 'bucket_coverage'
-		) AS hasCoverage`
-	);
-	if (schema?.hasCoverage !== 1) {
-		entry.datasetRows = [];
-		return [];
-	}
-
 	entry.datasetRows = rows.map((row) => ({ ...row, dbPath }));
 	return entry.datasetRows.map((row) => ({ ...row }));
 }

@@ -285,7 +285,7 @@ describe('dataset server helpers', () => {
 
 		const datasets = await loadDatasetsModule();
 
-		await expect(datasets.listDatasetSummaries()).rejects.toThrow(/no such table: datasets/i);
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([]);
 		const schemaResult = spawnSync(
 			'sqlite3',
 			[dbPath, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'datasets';"],
@@ -496,6 +496,50 @@ describe('dataset server helpers', () => {
 			}
 		]);
 		await expect(datasets.getDatasetLabel('uoregon')).resolves.toBe('Current UOregon');
+	});
+
+	it('skips pre-locality databases instead of failing discovery', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-pre-locality-'));
+		const legacyDir = path.join(workspace, 'data', 'uoregon-visibility');
+		const legacyOtherDir = path.join(workspace, 'data', 'legacy-only');
+		const currentDir = path.join(workspace, 'data', 'uoregon-locality');
+		fs.mkdirSync(legacyDir, { recursive: true });
+		fs.mkdirSync(legacyOtherDir, { recursive: true });
+		fs.mkdirSync(currentDir, { recursive: true });
+		seedPreLocalityDatasetDb(
+			path.join(legacyDir, 'netflow.sqlite'),
+			'uoregon',
+			'Visibility UOregon',
+			'router-old'
+		);
+		seedPreLocalityDatasetDb(
+			path.join(legacyOtherDir, 'netflow.sqlite'),
+			'legacy',
+			'Legacy Only',
+			'router-legacy'
+		);
+		seedDatasetDb(
+			path.join(currentDir, 'netflow.sqlite'),
+			'uoregon',
+			'Locality UOregon',
+			'router-current'
+		);
+		process.chdir(workspace);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
+			{
+				datasetId: 'uoregon',
+				label: 'Locality UOregon',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				hasLocality: false,
+				isDefault: true
+			}
+		]);
+		await expect(datasets.getDatasetLabel('uoregon')).resolves.toBe('Locality UOregon');
+		await expect(datasets.getDatasetConfig('legacy')).rejects.toThrow(/Unknown dataset 'legacy'/);
 	});
 
 	it('refreshes local dataset discovery after files move', async () => {
@@ -709,6 +753,52 @@ function seedDatasetDb(
 				) VALUES ('${datasetId}', '${label}', '2025-03-01', 'static', 'static', 0);
 				INSERT INTO traffic_stats (
 					source_id, granularity, bucket_start, ip_version, src_locality, dst_locality
+				) VALUES ('${sourceId}', '5m', 1740823200, 4, 'all', 'all');
+			`
+		],
+		{ encoding: 'utf-8' }
+	);
+	expect(seedResult.status, seedResult.stderr).toBe(0);
+}
+
+function seedPreLocalityDatasetDb(
+	dbPath: string,
+	datasetId: string,
+	label: string,
+	sourceId: string
+): void {
+	const seedResult = spawnSync(
+		'sqlite3',
+		[
+			dbPath,
+			`
+				CREATE TABLE datasets (
+					id TEXT PRIMARY KEY NOT NULL,
+					label TEXT NOT NULL,
+					default_start_date TEXT NOT NULL,
+					source_mode TEXT DEFAULT 'static' NOT NULL,
+					discovery_mode TEXT DEFAULT 'static' NOT NULL,
+					sort_order INTEGER DEFAULT 0 NOT NULL
+				);
+				CREATE TABLE traffic_stats (
+					source_id TEXT NOT NULL,
+					granularity TEXT NOT NULL,
+					bucket_start INTEGER NOT NULL,
+					ip_version INTEGER NOT NULL,
+					src_visibility TEXT NOT NULL,
+					dst_visibility TEXT NOT NULL
+				);
+				${coverageTableSql}
+				INSERT INTO datasets (
+					id,
+					label,
+					default_start_date,
+					source_mode,
+					discovery_mode,
+					sort_order
+				) VALUES ('${datasetId}', '${label}', '2025-03-01', 'static', 'static', 0);
+				INSERT INTO traffic_stats (
+					source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility
 				) VALUES ('${sourceId}', '5m', 1740823200, 4, 'all', 'all');
 			`
 		],
