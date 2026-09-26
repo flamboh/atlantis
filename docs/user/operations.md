@@ -38,7 +38,7 @@ Compare a rebuilt candidate with a trusted historical database before you publis
 
 Scalar values must match exactly. MAAD dimensions and each element of the stored 32-bit float curves compare with an absolute tolerance. The default tolerance is `1e-10` and `--maad-absolute-tolerance` changes it. Builds whose MAAD values differ slightly can round to adjacent 32-bit floats, so use a tolerance above one 32-bit float step of the largest curve value (about `1e-6`) for those comparisons.
 
-A missing reference row or a shared-value mismatch returns a nonzero exit status.
+A missing reference row or a shared-value mismatch returns a nonzero exit status. So does a q grid that is missing or differs for an IP version whose MAAD curves both databases store in the window; `maad_q_grid.mismatched_ip_versions` in the report lists them.
 
 ## Publish a local SQLite database
 

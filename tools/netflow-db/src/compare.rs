@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::{
     maad::decode_f32,
-    storage::{StorageError, connect_readonly},
+    storage::{MaadQGridRow, StorageError, connect_readonly},
 };
 
 const TABLES: &[TableSpec] = &[
@@ -136,6 +136,14 @@ pub struct ComparisonReport {
     pub end_exclusive_ts: i64,
     pub maad_absolute_tolerance: f64,
     pub tables: BTreeMap<String, TableComparison>,
+    pub maad_q_grid: QGridComparison,
+}
+
+/// The q grids behind the IP versions whose MAAD curves both databases store in the window.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct QGridComparison {
+    pub ip_versions: Vec<i64>,
+    pub mismatched_ip_versions: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -186,6 +194,8 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
             && comparison.mismatched_rows == 0;
         tables.insert(spec.name.to_owned(), comparison);
     }
+    let maad_q_grid = compare_q_grids(&candidate, &reference, options)?;
+    compatible &= maad_q_grid.mismatched_ip_versions.is_empty();
     Ok(ComparisonReport {
         compatible,
         candidate: options.candidate.clone(),
@@ -194,7 +204,74 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
         end_exclusive_ts: options.end_exclusive_ts,
         maad_absolute_tolerance: options.maad_absolute_tolerance,
         tables,
+        maad_q_grid,
     })
+}
+
+fn compare_q_grids(
+    candidate: &Connection,
+    reference: &Connection,
+    options: &CompareOptions,
+) -> Result<QGridComparison, rusqlite::Error> {
+    let reference_versions = curve_ip_versions(reference, options)?;
+    let ip_versions = curve_ip_versions(candidate, options)?
+        .intersection(&reference_versions)
+        .copied()
+        .collect::<Vec<_>>();
+    let candidate_grids = load_q_grids(candidate)?;
+    let reference_grids = load_q_grids(reference)?;
+    let mismatched_ip_versions = ip_versions
+        .iter()
+        .copied()
+        .filter(|ip_version| {
+            let candidate_grid = candidate_grids.get(ip_version);
+            candidate_grid.is_none() || candidate_grid != reference_grids.get(ip_version)
+        })
+        .collect();
+    Ok(QGridComparison {
+        ip_versions,
+        mismatched_ip_versions,
+    })
+}
+
+fn curve_ip_versions(
+    connection: &Connection,
+    options: &CompareOptions,
+) -> Result<BTreeSet<i64>, rusqlite::Error> {
+    if !table_columns(connection, "address_maad_stats")?
+        .iter()
+        .any(|column| column == "tau")
+    {
+        return Ok(BTreeSet::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT ip_version FROM address_maad_stats \
+         WHERE tau IS NOT NULL AND bucket_start >= ?1 AND bucket_start < ?2",
+    )?;
+    statement
+        .query_map(params![options.start_ts, options.end_exclusive_ts], |row| {
+            row.get(0)
+        })?
+        .collect()
+}
+
+fn load_q_grids(connection: &Connection) -> Result<BTreeMap<i64, MaadQGridRow>, rusqlite::Error> {
+    if table_columns(connection, "maad_q_grid")?.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement =
+        connection.prepare("SELECT ip_version, q_min, q_step, q_count FROM maad_q_grid")?;
+    statement
+        .query_map([], |row| {
+            let grid = MaadQGridRow {
+                ip_version: row.get(0)?,
+                q_min: row.get(1)?,
+                q_step: row.get(2)?,
+                q_count: row.get(3)?,
+            };
+            Ok((grid.ip_version, grid))
+        })?
+        .collect()
 }
 
 fn validate_options(options: &CompareOptions) -> Result<(), CompareError> {

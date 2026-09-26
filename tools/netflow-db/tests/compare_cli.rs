@@ -36,6 +36,10 @@ fn compare_accepts_candidate_only_keys_and_maad_rounding() {
     assert_eq!(report["compatible"], true);
     assert_eq!(report["tables"]["traffic_stats"]["candidate_only_rows"], 1);
     assert_eq!(report["tables"]["address_maad_stats"]["mismatched_rows"], 0);
+    assert_eq!(
+        report["maad_q_grid"],
+        serde_json::json!({"ip_versions": [4], "mismatched_ip_versions": []})
+    );
     assert!(
         report["tables"]["address_maad_stats"]["max_maad_absolute_delta"]
             .as_f64()
@@ -73,6 +77,52 @@ fn compare_rejects_maad_curves_outside_the_tolerance_or_of_another_length() {
         assert_eq!(
             report["tables"]["address_maad_stats"]["mismatched_rows"], 1,
             "{candidate_tau:?}"
+        );
+    }
+}
+
+#[test]
+fn compare_rejects_identical_maad_curves_on_a_changed_or_missing_q_grid() {
+    for change in [
+        "UPDATE maad_q_grid SET q_min = -1.0",
+        "UPDATE maad_q_grid SET q_step = 0.25",
+        "DELETE FROM maad_q_grid",
+        "DROP TABLE maad_q_grid",
+    ] {
+        let temporary = tempdir().unwrap();
+        let candidate = temporary.path().join("candidate.sqlite");
+        let reference = temporary.path().join("reference.sqlite");
+        create_shared_database(&candidate, 42, 0.5, &[0.5, 1.0], false);
+        create_shared_database(&reference, 42, 0.5, &[0.5, 1.0], false);
+        Connection::open(&candidate)
+            .unwrap()
+            .execute_batch(change)
+            .unwrap();
+
+        let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+            .args([
+                "compare",
+                candidate.to_str().unwrap(),
+                reference.to_str().unwrap(),
+                "--start",
+                "0",
+                "--end",
+                "600",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success(), "{change}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["compatible"], false, "{change}");
+        assert_eq!(
+            report["tables"]["address_maad_stats"]["mismatched_rows"], 0,
+            "{change}"
+        );
+        assert_eq!(
+            report["maad_q_grid"],
+            serde_json::json!({"ip_versions": [4], "mismatched_ip_versions": [4]}),
+            "{change}"
         );
     }
 }
@@ -288,6 +338,10 @@ fn create_shared_database(
                 dst_locality TEXT NOT NULL, address_side TEXT NOT NULL,
                 measure TEXT NOT NULL, total_addrs INTEGER NOT NULL, d1 REAL, tau BLOB
             );
+            CREATE TABLE maad_q_grid (
+                ip_version INTEGER PRIMARY KEY, q_min REAL NOT NULL,
+                q_step REAL NOT NULL, q_count INTEGER NOT NULL
+            );
             CREATE TABLE processed_inputs (
                 input_kind TEXT NOT NULL, input_locator TEXT NOT NULL,
                 source_id TEXT NOT NULL, bucket_start INTEGER NOT NULL,
@@ -319,6 +373,12 @@ fn create_shared_database(
         .execute(
             "INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,4,'all','all','source','addresses',2,?1,?2)",
             rusqlite::params![dimension, f32_blob(tau)],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO maad_q_grid VALUES (4, -0.5, 0.125, ?1)",
+            [tau.len() as i64],
         )
         .unwrap();
     connection
