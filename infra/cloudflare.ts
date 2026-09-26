@@ -1,7 +1,16 @@
 import * as Alchemy from 'alchemy';
 import * as Cloudflare from 'alchemy/Cloudflare';
+import * as Config from 'effect/Config';
+import * as ConfigProvider from 'effect/ConfigProvider';
 import * as Effect from 'effect/Effect';
-import { appName, isProduction, stageName, webMigrationsDir, webRoot } from './shared.ts';
+import {
+	appName,
+	invalidStageMessage,
+	isProduction,
+	stageName,
+	webMigrationsDir,
+	webRoot
+} from './shared.ts';
 
 export default Alchemy.Stack(
 	appName,
@@ -11,6 +20,12 @@ export default Alchemy.Stack(
 	},
 	Effect.gen(function* () {
 		const { stage } = yield* Alchemy.Stack;
+		const invalidStage = invalidStageMessage(stage);
+		if (invalidStage) {
+			return yield* Effect.fail(
+				new Config.ConfigError(new ConfigProvider.SourceError({ message: invalidStage }))
+			);
+		}
 		const production = isProduction(stage);
 
 		const database = yield* Cloudflare.D1.Database('Database', {

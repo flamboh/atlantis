@@ -12,5 +12,5 @@
 		"verbatimModuleSyntax": true,
 		"isolatedModules": true
 	},
-	"include": ["*.ts"]
+	"include": ["*.ts", "tests/**/*.ts"]
 }

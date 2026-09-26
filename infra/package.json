@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"lint": "eslint .",
+		"test": "vitest run",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
@@ -20,6 +21,7 @@
 		"eslint-config-prettier": "^10.0.1",
 		"globals": "^16.0.0",
 		"typescript": "^6.0.3",
-		"typescript-eslint": "^8.70.1"
+		"typescript-eslint": "^8.70.1",
+		"vitest": "^5.0.1"
 	}
 }
