@@ -11,7 +11,10 @@ Split an inclusive local-date range into contiguous day shards, build each shard
 
 Required:
   --hosts LIST         Comma-separated ssh hosts. Append :N for N concurrent shards on a host
-                       (e.g. nodeA:2,nodeB,nodeC).
+                       (e.g. nodeA:2,nodeB,nodeC). The range splits into min(days, slots)
+                       contiguous shards whose sizes differ by at most one day, assigned to
+                       slots round-robin across hosts so every listed host gets work when
+                       there are at least as many days as hosts.
   --dataset ID         Dataset ID in the remote registry.
   --start-date DATE    First local day (YYYY-MM-DD).
   --end-date DATE      Last local day, inclusive.
@@ -102,9 +105,10 @@ if [[ -e "$output" ]]; then
   exit 1
 fi
 
-slots=()
 IFS=',' read -r -a host_specs <<<"$hosts"
 unique_hosts=()
+host_counts=()
+max_count=0
 for spec in "${host_specs[@]}"; do
   host="${spec%%:*}"
   count=1
@@ -116,8 +120,17 @@ for spec in "${host_specs[@]}"; do
     exit 2
   fi
   unique_hosts+=("$host")
-  for ((index = 0; index < count; index++)); do
-    slots+=("$host")
+  host_counts+=("$count")
+  if ((count > max_count)); then
+    max_count=$count
+  fi
+done
+slots=()
+for ((round = 0; round < max_count; round++)); do
+  for index in "${!unique_hosts[@]}"; do
+    if ((round < host_counts[index])); then
+      slots+=("${unique_hosts[$index]}")
+    fi
   done
 done
 
@@ -135,24 +148,23 @@ shard_count=${#slots[@]}
 if ((shard_count > ${#days[@]})); then
   shard_count=${#days[@]}
 fi
-per_shard=$(((${#days[@]} + shard_count - 1) / shard_count))
+per_shard=$((${#days[@]} / shard_count))
+longer_shards=$((${#days[@]} % shard_count))
 
 shard_hosts=()
 shard_names=()
 shard_ranges=()
 safe_dataset="$(printf '%s' "$dataset" | tr -c 'A-Za-z0-9_.-' '-')"
+first=0
 for ((shard = 0; shard < shard_count; shard++)); do
-  first=$((shard * per_shard))
-  if ((first >= ${#days[@]})); then
-    break
-  fi
   last=$((first + per_shard - 1))
-  if ((last >= ${#days[@]})); then
-    last=$((${#days[@]} - 1))
+  if ((shard < longer_shards)); then
+    last=$((last + 1))
   fi
   shard_hosts+=("${slots[$shard]}")
   shard_ranges+=("${days[$first]} ${days[$last]}")
   shard_names+=("$safe_dataset.${days[$first]}_${days[$last]}")
+  first=$((last + 1))
 done
 
 mkdir -p "$work_dir"

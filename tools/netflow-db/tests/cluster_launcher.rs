@@ -34,7 +34,12 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-fn merge_invocation(extra: &[&str]) -> String {
+struct Launch {
+    stdout: String,
+    merge: String,
+}
+
+fn launch(hosts: &str, start: &str, end: &str, extra: &[&str]) -> Launch {
     let temporary = tempdir().unwrap();
     let bin = temporary.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -57,8 +62,8 @@ fn merge_invocation(extra: &[&str]) -> String {
     );
     let output = Command::new("bash")
         .arg(&script)
-        .args(["--hosts", "nodeA,nodeB", "--dataset", "example"])
-        .args(["--start-date", "2025-06-01", "--end-date", "2025-06-02"])
+        .args(["--hosts", hosts, "--dataset", "example"])
+        .args(["--start-date", start, "--end-date", end])
         .arg("--output")
         .arg(temporary.path().join("out.sqlite"))
         .args(["--remote-dir", "/remote/atlantis-cluster"])
@@ -75,12 +80,30 @@ fn merge_invocation(extra: &[&str]) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    fs::read_to_string(&log)
+    let merge = fs::read_to_string(&log)
         .unwrap()
         .lines()
         .find(|line| line.starts_with("merge-shards --output"))
         .expect("launcher ran merge-shards")
-        .to_owned()
+        .to_owned();
+    Launch {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        merge,
+    }
+}
+
+fn merge_invocation(extra: &[&str]) -> String {
+    launch("nodeA,nodeB", "2025-06-01", "2025-06-02", extra).merge
+}
+
+fn shard_plan(hosts: &str, start: &str, end: &str) -> Vec<String> {
+    launch(hosts, start, end, &[])
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once(": ").map(|(_, plan)| plan))
+        .filter(|plan| plan.contains(".."))
+        .map(str::to_owned)
+        .collect()
 }
 
 #[test]
@@ -98,4 +121,33 @@ fn launcher_consumes_shards_by_default() {
 fn keep_shards_disables_consuming_merge() {
     let merge = merge_invocation(&["--keep-shards"]);
     assert!(!merge.contains("--consume"), "{merge}");
+}
+
+#[test]
+fn shards_use_every_slot_and_every_host() {
+    assert_eq!(
+        shard_plan("nodeA:4,nodeB", "2025-06-01", "2025-06-06"),
+        [
+            "2025-06-01..2025-06-02 on nodeA",
+            "2025-06-03..2025-06-03 on nodeB",
+            "2025-06-04..2025-06-04 on nodeA",
+            "2025-06-05..2025-06-05 on nodeA",
+            "2025-06-06..2025-06-06 on nodeA",
+        ]
+    );
+    assert_eq!(
+        shard_plan("nodeA:4,nodeB", "2025-06-01", "2025-06-03"),
+        [
+            "2025-06-01..2025-06-01 on nodeA",
+            "2025-06-02..2025-06-02 on nodeB",
+            "2025-06-03..2025-06-03 on nodeA",
+        ]
+    );
+    assert_eq!(
+        shard_plan("nodeA,nodeB", "2025-06-01", "2025-06-07"),
+        [
+            "2025-06-01..2025-06-04 on nodeA",
+            "2025-06-05..2025-06-07 on nodeB",
+        ]
+    );
 }
