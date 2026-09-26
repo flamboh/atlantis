@@ -7,32 +7,6 @@ with (import (builtins.fetchTarball {
 let
   system = stdenv.hostPlatform.system;
 
-  nodeVersion = "24.18.1";
-  nodePlatform =
-    {
-      x86_64-linux = { name = "linux-x64"; hash = "sha256-1sZk3z8/YUWOjCd1hVcTKFItcFFmcjp8eCOpJTpNFaA="; };
-      aarch64-linux = { name = "linux-arm64"; hash = "sha256-cgHjoJ3IJbrFeGfIGRPiuPDvh9BMuQgq9M2oL2/z2Iw="; };
-      x86_64-darwin = { name = "darwin-x64"; hash = "sha256-+JLHiVcg9A03UL3iTzVUJC028jYCtRZ7W3PsTROTiu8="; };
-      aarch64-darwin = { name = "darwin-arm64"; hash = "sha256-HWC3A/5dfnBySJvoGH9DDxoJWmWMMeXh4oEzGlhz+sM="; };
-    }
-    .${system} or (throw "Unsupported system: ${system}");
-  nodejs = stdenv.mkDerivation {
-    pname = "nodejs";
-    version = nodeVersion;
-    src = fetchurl {
-      url = "https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-${nodePlatform.name}.tar.xz";
-      inherit (nodePlatform) hash;
-    };
-    nativeBuildInputs = lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ];
-    buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib ];
-    dontConfigure = true;
-    dontBuild = true;
-    installPhase = ''
-      mkdir -p $out
-      cp -r bin include lib share $out/
-    '';
-  };
-
   bunVersion = "1.3.11";
   bunPlatform =
     {
@@ -63,7 +37,7 @@ mkShell {
     pkgs.gnumake
     pkgs.gnutar
     pkgs.libtool
-    nodejs
+    pkgs.nodejs_24
     pkgs.pkg-config
     pkgs.python3
     pkgs.rustup
