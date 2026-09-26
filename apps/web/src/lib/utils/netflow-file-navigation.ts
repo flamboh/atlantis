@@ -1,11 +1,18 @@
 import type { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
-import { DEFAULT_MAAD_IP_VERSION, type FlowDirection, type MaadIpVersion } from '$lib/types/types';
+import {
+	DEFAULT_MAAD_IP_VERSION,
+	DEFAULT_MAAD_MEASURE,
+	type FlowDirection,
+	type MaadIpVersion,
+	type MaadMeasure
+} from '$lib/types/types';
 
 export function buildNetflowFileSearch(
 	dataset?: string,
 	direction?: FlowDirection,
-	ipVersion?: MaadIpVersion
+	ipVersion?: MaadIpVersion,
+	measure?: MaadMeasure
 ): string {
 	const normalizedDataset = dataset?.trim();
 	const searchParams: string[] = [];
@@ -22,6 +29,10 @@ export function buildNetflowFileSearch(
 		searchParams.push(`ipVersion=${ipVersion}`);
 	}
 
+	if (measure && measure !== DEFAULT_MAAD_MEASURE) {
+		searchParams.push(`measure=${encodeURIComponent(measure)}`);
+	}
+
 	const search = searchParams.join('&');
 	if (!search) {
 		return '';
@@ -34,10 +45,11 @@ export function buildNetflowFileHref(
 	slug: string,
 	dataset?: string,
 	direction?: FlowDirection,
-	ipVersion?: MaadIpVersion
+	ipVersion?: MaadIpVersion,
+	measure?: MaadMeasure
 ): string {
 	const pathname = resolve('/netflow/files/[slug]', { slug });
-	return `${pathname}${buildNetflowFileSearch(dataset, direction, ipVersion)}`;
+	return `${pathname}${buildNetflowFileSearch(dataset, direction, ipVersion, measure)}`;
 }
 
 export function navigateToNetflowFile(
@@ -46,7 +58,8 @@ export function navigateToNetflowFile(
 	dataset?: string,
 	direction?: FlowDirection,
 	ipVersion?: MaadIpVersion,
+	measure?: MaadMeasure,
 	options?: Parameters<typeof goto>[1]
 ): Promise<void> {
-	return navigate(buildNetflowFileHref(slug, dataset, direction, ipVersion), options);
+	return navigate(buildNetflowFileHref(slug, dataset, direction, ipVersion, measure), options);
 }

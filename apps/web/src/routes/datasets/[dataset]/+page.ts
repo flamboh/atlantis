@@ -11,7 +11,14 @@ export const load: PageLoad = async ({ params, fetch }) => {
 
 	const datasetsPromise = loadDatasetSummariesFromFetch(fetch);
 	const routersResponsePromise = fetch(`/api/routers?dataset=${encodeURIComponent(dataset)}`);
-	const [datasets, routersResponse] = await Promise.all([datasetsPromise, routersResponsePromise]);
+	const maadStatusResponsePromise = fetch(
+		`/api/netflow/maad-status?dataset=${encodeURIComponent(dataset)}`
+	);
+	const [datasets, routersResponse, maadStatusResponse] = await Promise.all([
+		datasetsPromise,
+		routersResponsePromise,
+		maadStatusResponsePromise
+	]);
 	const selectedDataset = datasets.find((entry) => entry.datasetId === dataset);
 	if (!selectedDataset) {
 		throw error(404, `Unknown dataset '${dataset}'`);
@@ -34,11 +41,22 @@ export const load: PageLoad = async ({ params, fetch }) => {
 		throw error(500, 'Invalid source metadata response');
 	}
 
+	const maadStatusPayload = await maadStatusResponse.json();
+	if (!maadStatusResponse.ok || typeof maadStatusPayload?.computed !== 'boolean') {
+		throw error(
+			maadStatusResponse.ok ? 500 : maadStatusResponse.status,
+			typeof maadStatusPayload?.error === 'string'
+				? maadStatusPayload.error
+				: 'Invalid MAAD status response'
+		);
+	}
+
 	return {
 		datasetId: selectedDataset.datasetId,
 		title: selectedDataset.label,
 		defaultStartDate: selectedDataset.defaultStartDate,
 		hasLocality: selectedDataset.hasLocality,
+		maadComputed: maadStatusPayload.computed,
 		routers: routersPayload
 	};
 };

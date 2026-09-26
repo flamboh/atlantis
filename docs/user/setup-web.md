@@ -47,6 +47,8 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
 
 The dashboard shows one card for each dataset. Select a card to see the charts.
 
+The **MAAD measure** control switches the MAAD charts between distinct addresses and packet- or byte-weighted results. The MAAD Dimensions chart plots the stored D0, D1, and D2 for the selected measure. The spectrum exists only for addresses. The measure stays in the URL and carries over when you open a file. A database built with `--no-maad` shows that MAAD was not computed instead of empty charts.
+
 The dashboard automatically discovers each database at `data/<dataset-id>/netflow.sqlite`. Before the pipeline creates a database, the dashboard shows a "No datasets found" message with setup guidance.
 
 ## Run both sites

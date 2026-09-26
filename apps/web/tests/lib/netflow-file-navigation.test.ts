@@ -80,12 +80,40 @@ describe('buildNetflowFileHref', () => {
 			undefined
 		);
 
-		await navigateToNetflowFile(navigate, '202506192010', 'uoregon', 'all', 6, {
+		await navigateToNetflowFile(navigate, '202506192010', 'uoregon', 'all', 6, undefined, {
 			replaceState: true
 		});
 
 		expect(navigate).toHaveBeenLastCalledWith(
 			'/netflow/files/202506192010?dataset=uoregon&ipVersion=6',
+			{ replaceState: true }
+		);
+	});
+
+	it('carries a weighted MAAD measure and omits the default', async () => {
+		const { buildNetflowFileHref, buildNetflowFileSearch, navigateToNetflowFile } =
+			await import('$lib/utils/netflow-file-navigation');
+
+		expect(buildNetflowFileSearch('uoregon', 'all', 4, 'addresses')).toBe('?dataset=uoregon');
+		expect(buildNetflowFileSearch('uoregon', 'all', 4, 'packets')).toBe(
+			'?dataset=uoregon&measure=packets'
+		);
+		expect(buildNetflowFileHref('202506192010', 'uoregon', 'ingress', 6, 'bytes')).toBe(
+			'/netflow/files/202506192010?dataset=uoregon&direction=ingress&ipVersion=6&measure=bytes'
+		);
+
+		const navigate = vi.fn().mockResolvedValue(undefined);
+		await navigateToNetflowFile(navigate, '202506192010', 'uoregon', 'all', 4, 'bytes');
+		expect(navigate).toHaveBeenCalledWith(
+			'/netflow/files/202506192010?dataset=uoregon&measure=bytes',
+			undefined
+		);
+
+		await navigateToNetflowFile(navigate, '202506192010', 'uoregon', 'all', 6, 'packets', {
+			replaceState: true
+		});
+		expect(navigate).toHaveBeenLastCalledWith(
+			'/netflow/files/202506192010?dataset=uoregon&ipVersion=6&measure=packets',
 			{ replaceState: true }
 		);
 	});

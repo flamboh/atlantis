@@ -18,11 +18,13 @@
 		type IpGranularity,
 		type IpMetricKey,
 		type MaadIpVersion,
+		type MaadMeasure,
 		type ProtocolMetricKey,
 		type SpectrumPoint,
 		type TimeBucket
 	} from '$lib/types/types';
 	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
+	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
 	import {
 		BREAKDOWN_CHART_CONFIGS,
 		readLineMetric,
@@ -88,7 +90,9 @@
 		? IpMetricKey[]
 		: ChartKind extends 'protocol'
 			? ProtocolMetricKey[]
-			: never[];
+			: ChartKind extends 'dimensions'
+				? DimensionMetricKey[]
+				: never[];
 
 	const props = $props<{
 		kind: Kind;
@@ -99,6 +103,8 @@
 		router?: string;
 		addressType?: 'sa' | 'da';
 		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
+		unavailableCopy?: string | null;
 		availableRouters?: string[];
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
@@ -664,7 +670,8 @@
 					slug,
 					props.dataset,
 					props.direction ?? 'all',
-					props.ipVersion
+					props.ipVersion,
+					props.measure
 				);
 			}
 			return;
@@ -1199,6 +1206,7 @@
 		routers: string[];
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
 	};
 
 	let lastFiltersKey = '';
@@ -1220,7 +1228,8 @@
 			granularity: filters.granularity,
 			routers: filters.routers,
 			direction: filters.direction,
-			ipVersion: filters.ipVersion ?? null
+			ipVersion: filters.ipVersion ?? null,
+			measure: filters.measure ?? null
 		});
 	}
 
@@ -1241,7 +1250,8 @@
 			granularity: filters.granularity,
 			routers: filters.routers.join(','),
 			direction: filters.direction,
-			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {})
+			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {}),
+			...(filters.measure !== undefined ? { measure: filters.measure } : {})
 		});
 
 		try {
@@ -1342,7 +1352,19 @@
 		})();
 	});
 
+	function releaseUnavailableChart() {
+		requestToken += 1;
+		requestController?.abort();
+		requestController = null;
+		destroyChart();
+		lastFiltersKey = '';
+	}
+
 	$effect(() => {
+		if (props.unavailableCopy) {
+			releaseUnavailableChart();
+			return;
+		}
 		if (props.kind !== 'spectrum') {
 			const routerConfig = props.routers;
 			if (!routerConfig || Object.keys(routerConfig).length === 0) {
@@ -1354,7 +1376,10 @@
 				endDate: props.endDate ?? formatDate(today),
 				granularity: props.granularity ?? config.defaultGranularity,
 				routers: selectedRouters,
-				direction: props.direction ?? 'all'
+				direction: props.direction ?? 'all',
+				...(config.usesMaad
+					? { ipVersion: props.ipVersion ?? DEFAULT_MAAD_IP_VERSION, measure: props.measure }
+					: {})
 			};
 
 			currentGranularity = filters.granularity;
@@ -1444,9 +1469,23 @@
 	});
 </script>
 
+{#snippet ipVersionControl()}
+	<SegmentedControl
+		options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
+			value: String(option.value),
+			label: option.label
+		}))}
+		value={String(ipVersion)}
+		onValueChange={(value) => handleIpVersionChange(Number(value) as MaadIpVersion)}
+		ariaLabel="Select MAAD IP address family"
+		buttonClass="sm:min-w-32"
+	/>
+{/snippet}
+
 <ChartCard
 	title={config.title}
 	size={props.kind === 'spectrum' ? 'spectrum' : 'default'}
+	unavailableCopy={props.unavailableCopy ?? null}
 	{loading}
 	{error}
 	noMetrics={props.kind === 'spectrum'
@@ -1507,16 +1546,7 @@
 						</label>
 					{/each}
 				</div>
-				<SegmentedControl
-					options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
-						value: String(option.value),
-						label: option.label
-					}))}
-					value={String(ipVersion)}
-					onValueChange={(value) => handleIpVersionChange(Number(value) as MaadIpVersion)}
-					ariaLabel="Select MAAD IP address family"
-					buttonClass="sm:min-w-32"
-				/>
+				{@render ipVersionControl()}
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center gap-4">
@@ -1529,6 +1559,9 @@
 						<span>{metric.label}</span>
 					</label>
 				{/each}
+				{#if config.usesMaad}
+					{@render ipVersionControl()}
+				{/if}
 			</div>
 		{/if}
 	{/snippet}

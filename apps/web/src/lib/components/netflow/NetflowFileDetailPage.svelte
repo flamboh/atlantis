@@ -9,7 +9,6 @@
 	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import {
-		DEFAULT_MAAD_MEASURE,
 		MAAD_IP_VERSION_OPTIONS,
 		maadMeasureHasSpectrum,
 		type FlowDirection,
@@ -28,6 +27,7 @@
 		slug: string;
 		direction: FlowDirection;
 		ipVersion: MaadIpVersion;
+		measure: MaadMeasure;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -40,7 +40,7 @@
 
 	let { data }: { data: NetflowFileDetailData } = $props();
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
-	let maadMeasure = $state<MaadMeasure>(DEFAULT_MAAD_MEASURE);
+	const maadMeasure = $derived(data.measure);
 	const showSpectrum = $derived(maadMeasureHasSpectrum(maadMeasure));
 
 	const formatCount = (value: number | null | undefined) =>
@@ -83,19 +83,38 @@
 		if (nextIpVersion === data.ipVersion) {
 			return;
 		}
-		void navigateToNetflowFile(goto, data.slug, data.dataset, data.direction, nextIpVersion, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true
-		});
+		void navigateToNetflowFile(
+			goto,
+			data.slug,
+			data.dataset,
+			data.direction,
+			nextIpVersion,
+			data.measure,
+			{
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			}
+		);
 	}
 
 	function handleMaadMeasureChange({ measure }: { measure: MaadMeasure }) {
 		if (measure === maadMeasure) {
 			return;
 		}
-		maadMeasure = measure;
-		syncLoader();
+		void navigateToNetflowFile(
+			goto,
+			data.slug,
+			data.dataset,
+			data.direction,
+			data.ipVersion,
+			measure,
+			{
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			}
+		);
 	}
 
 	onMount(() => {
@@ -113,6 +132,7 @@
 		{nextSlug}
 		direction={data.direction}
 		ipVersion={data.ipVersion}
+		measure={data.measure}
 		filename={data.fileInfo.filename}
 		year={data.fileInfo.year}
 		month={data.fileInfo.month}

@@ -6,10 +6,11 @@ import {
 	type ProtocolMetricKey,
 	type ProtocolStatsBucket
 } from '$lib/types/types';
+import type { DimensionMetricKey, DimensionStatsPayload } from '$lib/types/dimension-stats';
 
-export type BreakdownChartKind = 'ip' | 'protocol' | 'spectrum';
-export type BreakdownMetricKey = IpMetricKey | ProtocolMetricKey;
-export type LineBucketData = IpStatsBucket | ProtocolStatsBucket;
+export type BreakdownChartKind = 'ip' | 'protocol' | 'dimensions' | 'spectrum';
+export type BreakdownMetricKey = IpMetricKey | ProtocolMetricKey | DimensionMetricKey;
+export type LineBucketData = IpStatsBucket | ProtocolStatsBucket | DimensionStatsPayload;
 
 export interface LineMetricConfig {
 	key: BreakdownMetricKey;
@@ -27,6 +28,7 @@ export interface BreakdownChartConfig {
 	chartId: BreakdownChartKind;
 	title: string;
 	endpoint: string;
+	usesMaad: boolean;
 	defaultGranularity: IpGranularity;
 	defaultMetrics: BreakdownMetricKey[];
 	metrics: LineMetricConfig[];
@@ -62,6 +64,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	chartId: 'ip',
 	title: 'Unique IP Counts',
 	endpoint: '/api/ip/stats',
+	usesMaad: false,
 	defaultGranularity: '1d',
 	defaultMetrics: ['saIpv4Count', 'daIpv4Count'],
 	metrics: IP_METRIC_OPTIONS.map((option) => ({
@@ -88,6 +91,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	chartId: 'protocol',
 	title: 'Unique Protocol Counts',
 	endpoint: '/api/protocol/stats',
+	usesMaad: false,
 	defaultGranularity: '1h',
 	defaultMetrics: ['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6'],
 	metrics: [
@@ -117,11 +121,60 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	canvasLabel: 'Protocol chart'
 };
 
+const dimensionColors: Record<
+	DimensionMetricKey,
+	{ hue: number; saturation: number; lightness: number }
+> = {
+	saD0: { hue: 210, saturation: 70, lightness: 58 },
+	saD1: { hue: 150, saturation: 60, lightness: 50 },
+	saD2: { hue: 30, saturation: 80, lightness: 58 },
+	daD0: { hue: 210, saturation: 70, lightness: 38 },
+	daD1: { hue: 150, saturation: 60, lightness: 32 },
+	daD2: { hue: 30, saturation: 80, lightness: 40 }
+};
+
+const DIMENSIONS_CONFIG: BreakdownChartConfig = {
+	kind: 'dimensions',
+	chartId: 'dimensions',
+	title: 'MAAD Dimensions',
+	endpoint: '/api/netflow/dimension-stats',
+	usesMaad: true,
+	defaultGranularity: '1h',
+	defaultMetrics: ['saD0', 'saD1', 'saD2'],
+	metrics: (
+		[
+			['saD0', 'Src D0'],
+			['saD1', 'Src D1'],
+			['saD2', 'Src D2'],
+			['daD0', 'Dst D0'],
+			['daD1', 'Dst D1'],
+			['daD2', 'Dst D2']
+		] as const
+	).map(([key, label]) => ({
+		key,
+		label,
+		seriesLabel: label,
+		color: dimensionColors[key]
+	})),
+	routerHueStep: 45,
+	fillAlpha: 0.18,
+	yAxisTitle: 'Dimension',
+	formatYAxisTicks: false,
+	loadingCopy: 'Loading MAAD dimensions...',
+	emptyCopy: 'No MAAD dimensions for the selected window.',
+	noMetricsCopy: 'Select at least one dimension to display.',
+	noSourceCopy: 'Select at least one source to view MAAD dimensions',
+	fetchErrorCopy: 'Failed to load MAAD dimensions',
+	unexpectedErrorCopy: 'Unexpected error loading MAAD dimensions',
+	canvasLabel: 'MAAD dimensions chart'
+};
+
 const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	kind: 'spectrum',
 	chartId: 'spectrum',
 	title: 'Spectrum',
 	endpoint: '/api/netflow/spectrum-stats',
+	usesMaad: true,
 	defaultGranularity: '1h',
 	defaultMetrics: [],
 	metrics: [],
@@ -141,6 +194,7 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 export const BREAKDOWN_CHART_CONFIGS: Record<BreakdownChartKind, BreakdownChartConfig> = {
 	ip: IP_CONFIG,
 	protocol: PROTOCOL_CONFIG,
+	dimensions: DIMENSIONS_CONFIG,
 	spectrum: SPECTRUM_CONFIG
 };
 

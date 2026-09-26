@@ -23,4 +23,15 @@ describe('date range search params', () => {
 	it('rejects stored granularity spellings as groupings', () => {
 		expect(schema.safeParse({ groupBy: '10m' }).success).toBe(false);
 	});
+
+	it('defaults the MAAD measure to addresses and accepts weighted measures', () => {
+		expect(schema.parse({}).measure).toBe('addresses');
+		for (const measure of ['addresses', 'packets', 'bytes']) {
+			expect(schema.parse({ measure }).measure).toBe(measure);
+		}
+	});
+
+	it('rejects unknown MAAD measures', () => {
+		expect(schema.safeParse({ measure: 'flows' }).success).toBe(false);
+	});
 });

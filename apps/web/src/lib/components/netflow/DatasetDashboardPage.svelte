@@ -17,13 +17,17 @@
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
 		DEFAULT_MAAD_IP_VERSION,
+		DEFAULT_MAAD_MEASURE,
 		type FlowDirection,
 		IP_METRIC_OPTIONS,
 		type IpGranularity,
 		type IpMetricKey,
 		type MaadIpVersion,
+		type MaadMeasure,
+		maadMeasureHasSpectrum,
 		type ProtocolMetricKey
 	} from '$lib/types/types';
+	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
 	import { watch } from 'runed';
 	import { useSearchParams } from 'runed/kit';
 	import { createDateRangeSearchSchema } from '$lib/schemas';
@@ -33,6 +37,7 @@
 		dataset: string;
 		defaultStartDate: string;
 		hasLocality?: boolean;
+		maadComputed?: boolean;
 		routers?: string[];
 		title?: string;
 	}>();
@@ -58,12 +63,14 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
+	let dimensionMetrics = $state<DimensionMetricKey[]>(['saD0', 'saD1', 'saD2']);
 	type ChartCardId =
 		| 'dashboard'
 		| 'characteristics'
 		| 'ports'
 		| 'ip'
 		| 'protocol'
+		| 'dimensions'
 		| 'spectrum'
 		| 'coverage';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = [
@@ -72,6 +79,7 @@
 		'ports',
 		'ip',
 		'protocol',
+		'dimensions',
 		'spectrum',
 		'coverage'
 	];
@@ -81,10 +89,11 @@
 		ports: { title: 'Unique Ports', minimumHeight: 440 },
 		ip: { title: 'IP Address Breakdown', minimumHeight: 440 },
 		protocol: { title: 'Protocol Breakdown', minimumHeight: 440 },
+		dimensions: { title: 'MAAD Dimensions', minimumHeight: 440 },
 		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
 		coverage: { title: 'Coverage', minimumHeight: 113 }
 	};
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v5';
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v6';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let activatedCharts = $state<Record<ChartCardId, boolean>>({
 		dashboard: false,
@@ -92,6 +101,7 @@
 		ports: false,
 		ip: false,
 		protocol: false,
+		dimensions: false,
 		spectrum: false,
 		coverage: false
 	});
@@ -113,6 +123,9 @@
 		}),
 		protocol: createNearViewportAttachment(() => {
 			activatedCharts.protocol = true;
+		}),
+		dimensions: createNearViewportAttachment(() => {
+			activatedCharts.dimensions = true;
 		}),
 		spectrum: createNearViewportAttachment(() => {
 			activatedCharts.spectrum = true;
@@ -147,6 +160,18 @@
 	const ipVersion = $derived<MaadIpVersion>(params.ipVersion);
 	const direction = $derived<FlowDirection>(
 		hasLocality ? (params.direction as FlowDirection) : 'all'
+	);
+	const measure = $derived(params.measure as MaadMeasure);
+	const maadUnavailableCopy = $derived(
+		(props.maadComputed ?? true)
+			? null
+			: 'MAAD was not computed for this dataset. Rebuild it without --no-maad to chart MAAD results.'
+	);
+	const spectrumUnavailableCopy = $derived(
+		maadUnavailableCopy ??
+			(maadMeasureHasSpectrum(measure)
+				? null
+				: `The spectrum is not available for weighted measures (${measure}). Switch the MAAD measure to Addresses to see it.`)
 	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
@@ -401,7 +426,7 @@
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, direction, ipVersion);
+		void navigateToNetflowFile(goto, slug, props.dataset, direction, ipVersion, measure);
 	}
 
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
@@ -435,6 +460,13 @@
 		params.ipVersion = payload.ipVersion;
 	}
 
+	function handleMeasureChange(payload: { measure: MaadMeasure }) {
+		if (payload.measure === params.measure) {
+			return;
+		}
+		params.measure = payload.measure;
+	}
+
 	function handleResetView() {
 		const today = new Date().toJSON().slice(0, 10);
 		selectedGroupBy = 'date';
@@ -445,7 +477,8 @@
 			startDate,
 			endDate,
 			direction: 'all',
-			ipVersion: DEFAULT_MAAD_IP_VERSION
+			ipVersion: DEFAULT_MAAD_IP_VERSION,
+			measure: DEFAULT_MAAD_MEASURE
 		});
 	}
 </script>
@@ -468,11 +501,13 @@
 		routers={selectedRouters}
 		{direction}
 		showDirection={hasLocality}
+		{measure}
 		onStartDateChange={handleStartDateChange}
 		onEndDateChange={handleEndDateChange}
 		onGroupByChange={handleGroupByChange}
 		onRoutersChange={handleRoutersChange}
 		onDirectionChange={handleDirectionChange}
+		onMeasureChange={handleMeasureChange}
 		onResetView={handleResetView}
 	/>
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
@@ -542,6 +577,7 @@
 						{dataOptions}
 						{direction}
 						{ipVersion}
+						{measure}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onDataOptionsChange={handleDataOptionsChange}
@@ -596,6 +632,26 @@
 							protocolMetrics = payload.metrics;
 						}}
 					/>
+				{:else if chartId === 'dimensions'}
+					<BreakdownChart
+						kind="dimensions"
+						dataset={props.dataset}
+						{startDate}
+						{endDate}
+						granularity={ipGranularity}
+						routers={selectedRouters}
+						activeMetrics={dimensionMetrics}
+						{ipVersion}
+						{measure}
+						unavailableCopy={maadUnavailableCopy}
+						{direction}
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onMetricsChange={(payload) => {
+							dimensionMetrics = payload.metrics;
+						}}
+						onIpVersionChange={handleIpVersionChange}
+					/>
 				{:else if chartId === 'spectrum'}
 					<BreakdownChart
 						kind="spectrum"
@@ -606,6 +662,8 @@
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
 						{ipVersion}
+						{measure}
+						unavailableCopy={spectrumUnavailableCopy}
 						availableRouters={availableSpectrumRouters}
 						{direction}
 						onDateChange={handleDateChange}

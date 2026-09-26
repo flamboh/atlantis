@@ -33,6 +33,7 @@ describe('/netflow/files/[slug] page load', () => {
 			slug: '202503010005',
 			direction: 'ingress',
 			ipVersion: 4,
+			measure: 'addresses',
 			fileInfo: {
 				year: '2025',
 				month: '03',
@@ -79,6 +80,26 @@ describe('/netflow/files/[slug] page load', () => {
 			body: {
 				message: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 			}
+		});
+	});
+
+	it('reads the MAAD measure from the URL and rejects unknown measures', async () => {
+		const result = await load({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&measure=bytes'),
+			fetch: vi.fn()
+		} as never);
+		expect(result).toMatchObject({ dataset: 'alpha', direction: 'all', measure: 'bytes' });
+
+		await expect(
+			load({
+				params: { slug: '202503010005' },
+				url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&measure=flows'),
+				fetch: vi.fn()
+			} as never)
+		).rejects.toMatchObject({
+			status: 400,
+			body: { message: 'Invalid measure. Expected one of: addresses, packets, bytes' }
 		});
 	});
 });

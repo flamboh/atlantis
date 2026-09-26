@@ -3,12 +3,13 @@
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
 	import DirectionFilter from '$lib/components/filters/DirectionFilter.svelte';
+	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
 	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import type { FlowDirection } from '$lib/types/types';
+	import type { FlowDirection, MaadMeasure } from '$lib/types/types';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;
@@ -30,12 +31,14 @@
 		routers: RouterConfig;
 		direction: FlowDirection;
 		showDirection?: boolean;
+		measure?: MaadMeasure;
 		groupByOptions?: GroupBySelectOption[];
 		onStartDateChange?: (payload: { startDate: string }) => void;
 		onEndDateChange?: (payload: { endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
 		onDirectionChange?: (payload: { direction: FlowDirection }) => void;
+		onMeasureChange?: (payload: { measure: MaadMeasure }) => void;
 		onResetView?: () => void;
 	}>();
 
@@ -134,6 +137,13 @@
 			<div class="text-foreground flex items-center gap-2">
 				<span class="text-sm font-medium">Direction:</span>
 				<DirectionFilter direction={props.direction} onDirectionChange={handleDirectionChange} />
+			</div>
+		{/if}
+
+		{#if props.measure}
+			<div class="text-foreground flex items-center gap-2">
+				<span class="text-sm font-medium">MAAD measure:</span>
+				<MaadMeasureFilter measure={props.measure} onMeasureChange={props.onMeasureChange} />
 			</div>
 		{/if}
 

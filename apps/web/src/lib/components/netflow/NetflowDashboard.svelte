@@ -23,6 +23,7 @@
 	import type {
 		FlowDirection,
 		MaadIpVersion,
+		MaadMeasure,
 		NetflowIpFamily,
 		NetflowMetricTotals,
 		NetflowStatsResponse,
@@ -40,6 +41,7 @@
 		dataOptions: DataOption[];
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
 		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
@@ -239,7 +241,14 @@
 	}
 
 	function handleNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, props.direction, props.ipVersion);
+		void navigateToNetflowFile(
+			goto,
+			slug,
+			props.dataset,
+			props.direction,
+			props.ipVersion,
+			props.measure
+		);
 	}
 
 	function handleChartTypeChange(newChartType: ChartTypeOption) {

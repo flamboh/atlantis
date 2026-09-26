@@ -9,6 +9,8 @@ export function seedPlaywrightDatabase() {
 	const databasePath = path.join(fixtureDirectory, 'netflow.sqlite');
 	const database = new Database(databasePath);
 	database.exec(localSchemaSql);
+	const tau = `X'${'0000803F'.repeat(33)}'`;
+	const tauSd = 'zeroblob(132)';
 	database.exec(`
 		INSERT INTO datasets (
 			id, label, default_start_date, source_mode, discovery_mode, sort_order
@@ -31,6 +33,22 @@ export function seedPlaywrightDatabase() {
 			source_id, granularity, bucket_start, bucket_end,
 			coverage_state, observed_units, expected_units, rejected_units
 		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0);
+		INSERT INTO address_maad_stats (
+			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
+			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum
+		) VALUES
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'source', 'addresses',
+				40, 0.92, 0.88, 0.85, ${tau}, ${tauSd}, X'6666663F0000803F0000C03F0000003F'),
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'destination', 'addresses',
+				40, 0.9, 0.86, 0.82, ${tau}, ${tauSd}, X'6666663F0000803F0000C03F0000003F'),
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'source', 'packets',
+				40, 0.92, 0.71, 0.63, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'destination', 'packets',
+				40, 0.9, 0.69, 0.6, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'source', 'bytes',
+				40, 0.92, 0.64, 0.55, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'destination', 'bytes',
+				40, 0.9, 0.61, 0.52, ${tau}, ${tauSd}, NULL);
 		INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
 			(4, -0.5, 0.125, 33),
 			(6, -0.5, 0.125, 33);
