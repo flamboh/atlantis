@@ -68,30 +68,25 @@ Run the compatibility check after the restore.
 
 ## Deploy the dashboard
 
-`infra/cloudflare.ts` defines the dashboard deployment as an [Alchemy](https://alchemy.run) stack named `atlantis`. It has two resources:
-
-- A D1 database. Alchemy applies the migrations in `apps/web/drizzle` during each deploy.
-- A SvelteKit worker with the database bound as `DB`. Alchemy builds the worker with the D1 driver. It skips the build and the upload when no file in the memo scope has changed.
-
-Each deploy targets one stage. The stage selects the physical names:
+`infra/cloudflare.ts` defines the deployment as an [Alchemy](https://alchemy.run) stack with a D1 database and a SvelteKit worker. Each deploy targets one stage:
 
 | Stage          | Worker             | D1 database           |
 | -------------- | ------------------ | --------------------- |
 | `prod`         | `atlantis`         | `atlantis-db`         |
 | any other name | `atlantis-<stage>` | `atlantis-db-<stage>` |
 
-Underscores in a stage name become hyphens. Destroying the `prod` stage keeps the production worker and database.
+A stage name uses lowercase letters, digits, and single hyphens, for example `alice-dev`. Other names are rejected. Destroying the `prod` stage keeps the production worker and database.
+
+The examples use Wrangler 4.141.0.
 
 ### Set up Cloudflare access
-
-Export a Cloudflare API token and the account ID in the shell:
 
 ```bash
 export CLOUDFLARE_API_TOKEN=<token>
 export CLOUDFLARE_ACCOUNT_ID=<account-id>
 ```
 
-Alchemy stores the stack state in the account's `alchemy-state-store` worker, and keeps its secrets in the account's Secrets Store. The first deploy on an account creates both.
+The first Alchemy command on an account, `plan` included, offers to create Alchemy's state store. Later commands can offer to upgrade it.
 
 ### Preview, deploy, and remove a stage
 
@@ -101,36 +96,29 @@ bun run deploy:cloudflare --stage <stage>
 bun run destroy:cloudflare --stage <stage>
 ```
 
-`plan:cloudflare` does not change anything. `deploy:cloudflare` shows the plan and asks for approval. Add `--yes` to skip the prompt. The deploy prints the worker URL.
+`plan:cloudflare` does not change the stage's worker or database. It can still create or upgrade the state store. `deploy:cloudflare` asks for approval; add `--yes` to skip the prompt. The deploy prints the worker URL.
 
-A personal stage is a full copy of the deployment with an empty database. Use it to check D1 behavior before a production deploy.
+A non-production stage starts with an empty database. Use one to check D1 behavior before a production deploy.
 
 ### D1 migrations
 
-Deploys apply pending migrations in order. Alchemy records applied migrations in the `__alchemy_migrations` table of the database. The migrations change the schema only. They do not copy pipeline data from SQLite to D1.
-
-The repository does not have a general SQLite-to-D1 load command. Use the approved project data-load process after the schema deploy.
+Deploys apply pending migrations from `apps/web/drizzle`. Migrations change the schema only; they do not load pipeline data.
 
 List the applied migrations:
 
 ```bash
-bunx wrangler d1 execute atlantis-db --remote \
+bunx wrangler@4.141.0 d1 execute atlantis-db --remote \
   --command "SELECT name, applied_at FROM __alchemy_migrations ORDER BY id"
 ```
 
-If a database has a wrangler `d1_migrations` table and no `__alchemy_migrations` table, the first deploy copies its history into `__alchemy_migrations`. After that, Alchemy never writes to `d1_migrations`. Each recorded name must match a local migration, or the deploy stops.
-
 ### Deploy production
 
-1. Record a D1 recovery point. See [Record a D1 recovery point](#record-a-d1-recovery-point).
-
-2. Review the production plan.
+1. [Record a D1 recovery point](#record-a-d1-recovery-point).
+2. Review the plan. It must not replace or delete `atlantis-db` or the `atlantis` worker.
 
    ```bash
    bun run plan:cloudflare --stage prod
    ```
-
-   The plan must not replace or delete `atlantis-db` or the `atlantis` worker.
 
 3. Deploy.
 
@@ -138,45 +126,34 @@ If a database has a wrangler `d1_migrations` table and no `__alchemy_migrations`
    bun run deploy:cloudflare --stage prod
    ```
 
-4. Open the deployed dashboard and check a known dataset.
+4. Open the dashboard and check a known dataset.
 
-### First Alchemy deploy of production
+### Production cutover (pending)
 
-Wrangler created the production worker and database. Alchemy adopts them by name:
+Production still runs the Wrangler deployment. The first Alchemy deploy adopts the existing `atlantis` worker and `atlantis-db` database; the plan shows the worker as `create`. Planned steps:
 
-- The D1 provider has no ownership marker. Alchemy adopts `atlantis-db` silently.
-- The `atlantis` worker has no Alchemy tags, so Alchemy treats it as foreign. The stack sets `AdoptPolicy.adopt` for the `prod` stage only, so the deploy takes over the worker in place. The plan shows it as `create`. The takeover happens during the deploy, because the worker settings depend on the database output. `--adopt` is not needed.
+1. [Record a D1 recovery point](#record-a-d1-recovery-point).
+2. Drop every table in `atlantis-db` except the `_cf_*` tables.
+3. Deploy production. All seven migrations in `apps/web/drizzle`, from `military_stature` through `compact_maad_storage`, run on the empty database.
+4. Reload the pipeline data from products built with the current schema (locality dimensions and compact MAAD storage). The reload tooling is not decided yet.
 
-A migration fails if the production database still contains tables from an older schema. In that case the deploy stops before it changes the worker. Reset the database contents first:
-
-1. Record a D1 recovery point.
-2. Drop every table in `atlantis-db` except the internal `_cf_*` tables.
-3. Deploy production. Alchemy applies all migrations to the empty database.
-4. Load the pipeline data with the approved data-load process.
-
-To undo the reset, restore the recorded bookmark.
+To undo, [restore the bookmark](#restore-d1).
 
 ## Record a D1 recovery point
 
-[Cloudflare D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) provides point-in-time recovery for production D1 databases.
-
-Before a production deploy with new migrations, record the current bookmark:
+[D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) gives point-in-time recovery. Before a production deploy with new migrations, record the bookmark and keep it with the release record:
 
 ```bash
-bunx wrangler d1 time-travel info atlantis-db
+bunx wrangler@4.141.0 d1 time-travel info atlantis-db
 ```
-
-Keep the bookmark with the release record.
 
 ## Restore D1
 
-CAUTION: A Time Travel restore overwrites remote D1 data. Record the current bookmark before you restore an earlier bookmark.
+CAUTION: A restore overwrites remote D1 data. Record the current bookmark first.
 
 ```bash
-bunx wrangler d1 time-travel restore atlantis-db --bookmark=<bookmark>
+bunx wrangler@4.141.0 d1 time-travel restore atlantis-db --bookmark=<bookmark>
 ```
-
-The restore command needs Cloudflare access and confirmation. Check the database name and the bookmark before you approve the restore.
 
 ## Deploy the landing site
 
@@ -189,7 +166,7 @@ The restore command needs Cloudflare access and confirmation. Check the database
 2. Deploy the static assets.
 
    ```bash
-   bunx wrangler deploy --config apps/landing/wrangler.jsonc
+   bunx wrangler@4.141.0 deploy --config apps/landing/wrangler.jsonc
    ```
 
 3. Open the public URL and check the main links.
