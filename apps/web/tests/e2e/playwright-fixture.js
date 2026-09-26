@@ -28,11 +28,25 @@ export function seedPlaywrightDatabase() {
 			0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0
+		), (
+			'fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all',
+			10, 10, 0, 0, 0,
+			0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0
 		);
+		INSERT INTO address_count_stats (
+			source_id, granularity, bucket_start, bucket_end,
+			ip_version, src_locality, dst_locality, address_side, unique_address_count
+		) VALUES
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'source', 5),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'destination', 5);
 		INSERT INTO bucket_coverage (
 			source_id, granularity, bucket_start, bucket_end,
 			coverage_state, observed_units, expected_units, rejected_units
-		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0);
+		) VALUES
+			('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0),
+			('fixture-router', '1d', 1740816000, 1740902400, 'complete', 288, 288, 0);
 		INSERT INTO address_maad_stats (
 			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
 			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum

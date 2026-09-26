@@ -117,8 +117,7 @@
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
 		direction?: FlowDirection;
-		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
-		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onDrillDown?: (payload: { groupBy: GroupByOption; startDate: string; endDate: string }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
 		onAddressTypeChange?: (payload: { addressType: 'sa' | 'da' }) => void;
 		onMetricsChange?: (payload: { metrics: MetricsForKind<Kind> }) => void;
@@ -507,8 +506,8 @@
 	}
 
 	function emitDrilldown(nextGroupBy: GroupByOption, start: Date, end: Date) {
-		props.onGroupByChange?.({ groupBy: nextGroupBy });
-		props.onDateChange?.({
+		props.onDrillDown?.({
+			groupBy: nextGroupBy,
 			startDate: formatDate(start),
 			endDate: formatDate(end)
 		});

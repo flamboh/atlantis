@@ -42,8 +42,7 @@
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
-		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
-		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onDrillDown?: (payload: { groupBy: GroupByOption; startDate: string; endDate: string }) => void;
 		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
 	}>();
 	const IP_FAMILY_LABELS: Record<NetflowIpFamily, string> = {
@@ -236,8 +235,7 @@
 	}
 
 	function handleDrillDown(newGroupBy: GroupByOption, newStartDate: string, newEndDate: string) {
-		props.onGroupByChange?.({ groupBy: newGroupBy });
-		props.onDateChange?.({ startDate: newStartDate, endDate: newEndDate });
+		props.onDrillDown?.({ groupBy: newGroupBy, startDate: newStartDate, endDate: newEndDate });
 	}
 
 	function handleNavigateToFile(slug: string) {

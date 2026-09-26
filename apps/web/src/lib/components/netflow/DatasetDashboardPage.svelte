@@ -373,20 +373,20 @@
 		updateSearch({ endDate: payload.endDate });
 	}
 
-	function handleDateChange(payload: { startDate: string; endDate: string }) {
-		updateSearch({ startDate: payload.startDate, endDate: payload.endDate });
-	}
-
 	function handleGroupByChange(payload: { groupBy: GroupByOption }) {
 		updateSearch({ groupBy: payload.groupBy });
 	}
 
-	function handleMetricDrillDown(
-		groupBy: GroupByOption,
-		nextStartDate: string,
-		nextEndDate: string
-	) {
-		updateSearch({ groupBy, startDate: nextStartDate, endDate: nextEndDate });
+	function handleDrillDown(payload: {
+		groupBy: GroupByOption;
+		startDate: string;
+		endDate: string;
+	}) {
+		updateSearch(payload);
+	}
+
+	function handleMetricDrillDown(groupBy: GroupByOption, startDate: string, endDate: string) {
+		handleDrillDown({ groupBy, startDate, endDate });
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
@@ -527,8 +527,7 @@
 						{direction}
 						{ipVersion}
 						{measure}
-						onDateChange={handleDateChange}
-						onGroupByChange={handleGroupByChange}
+						onDrillDown={handleDrillDown}
 						onDataOptionsChange={handleDataOptionsChange}
 					/>
 				{:else if chartId === 'characteristics'}
@@ -560,8 +559,7 @@
 						activeMetrics={ipMetrics}
 						{direction}
 						{ipVersion}
-						onDateChange={handleDateChange}
-						onGroupByChange={handleGroupByChange}
+						onDrillDown={handleDrillDown}
 						onMetricsChange={handleIpMetricsChange}
 					/>
 				{:else if chartId === 'protocol'}
@@ -575,8 +573,7 @@
 						activeMetrics={protocolMetrics}
 						{direction}
 						{ipVersion}
-						onDateChange={handleDateChange}
-						onGroupByChange={handleGroupByChange}
+						onDrillDown={handleDrillDown}
 						onMetricsChange={(payload) => {
 							protocolMetrics = payload.metrics;
 						}}
@@ -594,8 +591,7 @@
 						{measure}
 						unavailableCopy={maadUnavailableCopy}
 						{direction}
-						onDateChange={handleDateChange}
-						onGroupByChange={handleGroupByChange}
+						onDrillDown={handleDrillDown}
 						onMetricsChange={(payload) => {
 							dimensionMetrics = payload.metrics;
 						}}
@@ -614,8 +610,7 @@
 						unavailableCopy={spectrumUnavailableCopy}
 						availableRouters={availableSpectrumRouters}
 						{direction}
-						onDateChange={handleDateChange}
-						onGroupByChange={handleGroupByChange}
+						onDrillDown={handleDrillDown}
 						onRouterChange={(payload) => {
 							selectedSpectrumRouter = payload.router;
 						}}
