@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
@@ -6,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { localSchemaSql } from '../../../src/lib/server/db/local-schema';
 
 const migrationsDirectory = fileURLToPath(new URL('../../../drizzle', import.meta.url));
+const schemaPath = fileURLToPath(new URL('../../../src/lib/server/db/schema.ts', import.meta.url));
 
 function indexColumns(database: Database.Database, indexName: string): string[] {
 	return database
@@ -88,6 +91,24 @@ function seedPlannerStatistics(database: Database.Database): void {
 }
 
 describe('D1 migrations', () => {
+	it('keeps the latest snapshot in sync with the schema', () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'drizzle-generate-'));
+		const out = path.join(workspace, 'drizzle');
+
+		try {
+			fs.cpSync(migrationsDirectory, out, { recursive: true });
+			execFileSync(
+				'drizzle-kit',
+				['generate', '--dialect', 'sqlite', '--schema', schemaPath, '--out', out],
+				{ stdio: 'pipe' }
+			);
+
+			expect(fs.readdirSync(out).sort()).toEqual(fs.readdirSync(migrationsDirectory).sort());
+		} finally {
+			fs.rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it('bootstrap the canonical observation schema from an empty database', () => {
 		const database = new Database(':memory:');
 		const migrations = migrationFiles();

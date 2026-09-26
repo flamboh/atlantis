@@ -192,19 +192,19 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"address_count_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "address_count_stats_ip_version_check",
 			"table": "address_count_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_count_stats\".\"src_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
 			"name": "address_count_stats_src_locality_check",
 			"table": "address_count_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_count_stats\".\"dst_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
 			"name": "address_count_stats_dst_locality_check",
 			"table": "address_count_stats",
 			"entityType": "checks"
@@ -464,79 +464,79 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"address_maad_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "address_maad_stats_ip_version_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"src_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
 			"name": "address_maad_stats_src_locality_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"dst_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
 			"name": "address_maad_stats_dst_locality_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"measure\" IN ('addresses', 'packets', 'bytes')",
+			"value": "\"measure\" IN ('addresses', 'packets', 'bytes')",
 			"name": "address_maad_stats_measure_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"bucket_end\" > \"address_maad_stats\".\"bucket_start\"",
+			"value": "\"bucket_end\" > \"bucket_start\"",
 			"name": "address_maad_stats_bucket_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"total_addrs\" >= 0",
+			"value": "\"total_addrs\" >= 0",
 			"name": "address_maad_stats_total_addrs_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"zero_weight_addrs\" >= 0 AND (\"address_maad_stats\".\"measure\" <> 'addresses' OR \"address_maad_stats\".\"zero_weight_addrs\" = 0)",
+			"value": "\"zero_weight_addrs\" >= 0 AND (\"measure\" <> 'addresses' OR \"zero_weight_addrs\" = 0)",
 			"name": "address_maad_stats_zero_weight_addrs_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"max_prefix_length\" >= \"address_maad_stats\".\"min_prefix_length\"",
+			"value": "\"max_prefix_length\" >= \"min_prefix_length\"",
 			"name": "address_maad_stats_prefix_length_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "typeof(\"address_maad_stats\".\"tau\") IN ('null', 'blob') AND length(\"address_maad_stats\".\"tau\") > 0 AND length(\"address_maad_stats\".\"tau\") % 4 = 0",
+			"value": "typeof(\"tau\") IN ('null', 'blob') AND length(\"tau\") > 0 AND length(\"tau\") % 4 = 0",
 			"name": "address_maad_stats_tau_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "typeof(\"address_maad_stats\".\"tau_sd\") = typeof(\"address_maad_stats\".\"tau\") AND length(\"address_maad_stats\".\"tau_sd\") IS length(\"address_maad_stats\".\"tau\")",
+			"value": "typeof(\"tau_sd\") = typeof(\"tau\") AND length(\"tau_sd\") IS length(\"tau\")",
 			"name": "address_maad_stats_tau_sd_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "typeof(\"address_maad_stats\".\"spectrum\") IN ('null', 'blob') AND length(\"address_maad_stats\".\"spectrum\") % 8 = 0",
+			"value": "typeof(\"spectrum\") IN ('null', 'blob') AND length(\"spectrum\") % 8 = 0",
 			"name": "address_maad_stats_spectrum_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"address_maad_stats\".\"measure\" = 'addresses' OR \"address_maad_stats\".\"spectrum\" IS NULL",
+			"value": "\"measure\" = 'addresses' OR \"spectrum\" IS NULL",
 			"name": "address_maad_stats_measure_spectrum_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "(\"address_maad_stats\".\"tau\" IS NULL) = (\"address_maad_stats\".\"d0\" IS NULL)",
+			"value": "(\"tau\" IS NULL) = (\"d0\" IS NULL)",
 			"name": "address_maad_stats_tau_d0_check",
 			"table": "address_maad_stats",
 			"entityType": "checks"
@@ -655,31 +655,31 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"bucket_coverage\".\"bucket_end\" > \"bucket_coverage\".\"bucket_start\"",
+			"value": "\"bucket_end\" > \"bucket_start\"",
 			"name": "bucket_coverage_interval_check",
 			"table": "bucket_coverage",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"bucket_coverage\".\"expected_units\" > 0",
+			"value": "\"expected_units\" > 0",
 			"name": "bucket_coverage_expected_check",
 			"table": "bucket_coverage",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"bucket_coverage\".\"observed_units\" >= 0 AND \"bucket_coverage\".\"observed_units\" <= \"bucket_coverage\".\"expected_units\"",
+			"value": "\"observed_units\" >= 0 AND \"observed_units\" <= \"expected_units\"",
 			"name": "bucket_coverage_observed_check",
 			"table": "bucket_coverage",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"bucket_coverage\".\"rejected_units\" >= 0 AND \"bucket_coverage\".\"rejected_units\" <= \"bucket_coverage\".\"expected_units\"",
+			"value": "\"rejected_units\" >= 0 AND \"rejected_units\" <= \"expected_units\"",
 			"name": "bucket_coverage_rejected_check",
 			"table": "bucket_coverage",
 			"entityType": "checks"
 		},
 		{
-			"value": "(\"bucket_coverage\".\"coverage_state\" = 'complete' AND \"bucket_coverage\".\"observed_units\" = \"bucket_coverage\".\"expected_units\" AND \"bucket_coverage\".\"rejected_units\" = 0) OR (\"bucket_coverage\".\"coverage_state\" = 'unknown' AND \"bucket_coverage\".\"observed_units\" = 0 AND \"bucket_coverage\".\"rejected_units\" = 0) OR (\"bucket_coverage\".\"coverage_state\" = 'partial' AND NOT (\"bucket_coverage\".\"observed_units\" = \"bucket_coverage\".\"expected_units\" AND \"bucket_coverage\".\"rejected_units\" = 0) AND NOT (\"bucket_coverage\".\"observed_units\" = 0 AND \"bucket_coverage\".\"rejected_units\" = 0))",
+			"value": "(\"coverage_state\" = 'complete' AND \"observed_units\" = \"expected_units\" AND \"rejected_units\" = 0) OR (\"coverage_state\" = 'unknown' AND \"observed_units\" = 0 AND \"rejected_units\" = 0) OR (\"coverage_state\" = 'partial' AND NOT (\"observed_units\" = \"expected_units\" AND \"rejected_units\" = 0) AND NOT (\"observed_units\" = 0 AND \"rejected_units\" = 0))",
 			"name": "bucket_coverage_state_check",
 			"table": "bucket_coverage",
 			"entityType": "checks"
@@ -817,19 +817,19 @@
 			"entityType": "columns"
 		},
 		{
-			"value": "\"maad_q_grid\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "maad_q_grid_ip_version_check",
 			"table": "maad_q_grid",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"maad_q_grid\".\"q_step\" > 0",
+			"value": "\"q_step\" > 0",
 			"name": "maad_q_grid_q_step_check",
 			"table": "maad_q_grid",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"maad_q_grid\".\"q_count\" > 0",
+			"value": "\"q_count\" > 0",
 			"name": "maad_q_grid_q_count_check",
 			"table": "maad_q_grid",
 			"entityType": "checks"
@@ -995,19 +995,19 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"port_count_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "port_count_stats_ip_version_check",
 			"table": "port_count_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"port_count_stats\".\"src_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
 			"name": "port_count_stats_src_locality_check",
 			"table": "port_count_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"port_count_stats\".\"dst_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
 			"name": "port_count_stats_dst_locality_check",
 			"table": "port_count_stats",
 			"entityType": "checks"
@@ -1280,19 +1280,19 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"protocol_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "protocol_stats_ip_version_check",
 			"table": "protocol_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"protocol_stats\".\"src_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
 			"name": "protocol_stats_src_locality_check",
 			"table": "protocol_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"protocol_stats\".\"dst_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
 			"name": "protocol_stats_dst_locality_check",
 			"table": "protocol_stats",
 			"entityType": "checks"
@@ -1741,19 +1741,19 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"traffic_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "traffic_stats_ip_version_check",
 			"table": "traffic_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"traffic_stats\".\"src_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
 			"name": "traffic_stats_src_locality_check",
 			"table": "traffic_stats",
 			"entityType": "checks"
 		},
 		{
-			"value": "\"traffic_stats\".\"dst_locality\" IN ('all', 'internal', 'external')",
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
 			"name": "traffic_stats_dst_locality_check",
 			"table": "traffic_stats",
 			"entityType": "checks"

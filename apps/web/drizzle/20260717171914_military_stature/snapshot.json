@@ -162,7 +162,7 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"address_count_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "address_count_stats_ip_version_check",
 			"table": "address_count_stats",
 			"entityType": "checks"
@@ -350,7 +350,7 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"address_structure_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "address_structure_stats_ip_version_check",
 			"table": "address_structure_stats",
 			"entityType": "checks"
@@ -599,7 +599,7 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"port_count_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "port_count_stats_ip_version_check",
 			"table": "port_count_stats",
 			"entityType": "checks"
@@ -876,7 +876,7 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"protocol_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "protocol_stats_ip_version_check",
 			"table": "protocol_stats",
 			"entityType": "checks"
@@ -1295,7 +1295,7 @@
 			"entityType": "indexes"
 		},
 		{
-			"value": "\"traffic_stats\".\"ip_version\" IN (4, 6)",
+			"value": "\"ip_version\" IN (4, 6)",
 			"name": "traffic_stats_ip_version_check",
 			"table": "traffic_stats",
 			"entityType": "checks"
