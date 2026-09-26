@@ -512,30 +512,58 @@ fn ipv4_literal(value: &str) -> Option<&str> {
 
 /// Every scope must carry a structure row for each MAAD measure.
 fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyError> {
-    let counts = connection
-        .prepare(
-            "SELECT measure, COUNT(*) FROM address_structure_stats
-             WHERE structure_kind = 'structure' GROUP BY measure",
-        )?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?
-        .collect::<Result<HashMap<_, _>, _>>()?;
-    let expected = counts.get("addresses").copied().unwrap_or_default();
-    if expected == 0 {
+    let has_rows: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM address_structure_stats WHERE structure_kind = 'structure'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_rows {
         return Err(VerifyError::Incompatible(
-            "address_structure_stats has no addresses structure rows".into(),
+            "address_structure_stats has no structure rows".into(),
         ));
     }
-    for measure in ["packets", "bytes"] {
-        let actual = counts.get(measure).copied().unwrap_or_default();
-        if actual != expected {
-            return Err(VerifyError::Incompatible(format!(
-                "address_structure_stats has {actual} {measure} structure rows; expected {expected}"
-            )));
-        }
+    let incomplete = connection
+        .query_row(
+            "SELECT source_id, granularity, bucket_start, ip_version, src_locality,
+                    dst_locality, address_side,
+                    SUM(measure = 'addresses'), SUM(measure = 'packets'), SUM(measure = 'bytes')
+             FROM address_structure_stats
+             WHERE structure_kind = 'structure'
+             GROUP BY granularity, bucket_start, source_id, ip_version, src_locality,
+                      dst_locality, address_side
+             HAVING SUM(measure = 'addresses') = 0 OR SUM(measure = 'packets') = 0
+                 OR SUM(measure = 'bytes') = 0
+             LIMIT 1",
+            [],
+            |row| {
+                let present = [row.get::<_, i64>(7)?, row.get(8)?, row.get(9)?];
+                let missing = ["addresses", "packets", "bytes"]
+                    .into_iter()
+                    .zip(present)
+                    .filter(|(_, count)| *count == 0)
+                    .map(|(measure, _)| measure)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!(
+                    "address_structure_stats is missing {missing} structure rows for \
+                     source {} {} bucket {} IPv{} {}->{} {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    match incomplete {
+        Some(message) => Err(VerifyError::Incompatible(message)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn assert_processed_inputs_complete(connection: &Connection) -> Result<(), VerifyError> {
@@ -861,32 +889,32 @@ mod tests {
     fn maad_data_requires_a_structure_row_for_every_measure() {
         let connection = Connection::open_in_memory().unwrap();
         init_schema(&connection).unwrap();
-        let insert = |measure: &str, bucket_start: i64| {
+        let insert = |measure: &str, bucket_start: i64, address_side: &str| {
             connection
                 .execute(
                     "INSERT INTO address_structure_stats (
                         source_id, granularity, bucket_start, bucket_end, ip_version,
                         src_locality, dst_locality, address_side, measure, structure_kind,
                         values_json, metadata_json
-                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', 'source', ?1,
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', ?3, ?1,
                               'structure', '[]', '{}')",
-                    params![measure, bucket_start],
+                    params![measure, bucket_start, address_side],
                 )
                 .unwrap();
         };
 
         assert!(assert_maad_measures_present(&connection).is_err());
         for measure in ["addresses", "packets", "bytes"] {
-            insert(measure, 0);
+            insert(measure, 0, "source");
         }
         assert!(assert_maad_measures_present(&connection).is_ok());
-        insert("addresses", 300);
-        insert("packets", 300);
+        insert("addresses", 300, "source");
+        insert("packets", 300, "source");
         let error = assert_maad_measures_present(&connection).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("1 bytes structure rows; expected 2")
+                .contains("missing bytes structure rows for source r1 5m bucket 300")
         );
         assert!(
             connection
@@ -901,6 +929,32 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn maad_measure_presence_is_checked_per_scope_key_not_by_global_counts() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let insert = |measure: &str, bucket_start: i64, address_side: &str| {
+            connection
+                .execute(
+                    "INSERT INTO address_structure_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, structure_kind,
+                        values_json, metadata_json
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', ?3, ?1,
+                              'structure', '[]', '{}')",
+                    params![measure, bucket_start, address_side],
+                )
+                .unwrap();
+        };
+        insert("addresses", 0, "source");
+        insert("packets", 0, "source");
+        insert("bytes", 300, "source");
+        let error = assert_maad_measures_present(&connection)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing bytes structure rows for source r1 5m bucket 0"));
     }
 
     #[test]
