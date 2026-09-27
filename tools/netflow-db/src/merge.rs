@@ -23,18 +23,19 @@ const DAY_OWNED_TABLES: [&str; 8] = [
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
-    "address_structure_stats",
+    "address_maad_stats",
     "bucket_coverage",
     "input_evidence",
     "processed_inputs",
 ];
 
-const SHARED_TABLES: [&str; 5] = [
+const SHARED_TABLES: [&str; 6] = [
     "pipeline_product",
     "nfcapd_source_layout",
     "datasets",
     "source_members",
     "processed_input_scans",
+    "maad_q_grid",
 ];
 
 const MARKER_TABLE: &str = "daily_product_completion";
@@ -121,6 +122,7 @@ struct ShardSummary {
     inferred_start_date: String,
     timezone: String,
     source_members: BTreeSet<(String, String, String)>,
+    maad_q_grid: Vec<(i64, f64, f64, i64)>,
     days: Vec<(i64, i64)>,
     table_rows: BTreeMap<String, i64>,
 }
@@ -331,6 +333,12 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
         .prepare("SELECT dataset_id, source_id, member_id FROM source_members")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    let maad_q_grid = connection
+        .prepare("SELECT ip_version, q_min, q_step, q_count FROM maad_q_grid ORDER BY ip_version")?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let csv_scans: i64 =
         connection.query_row("SELECT COUNT(*) FROM processed_input_scans", [], |row| {
@@ -409,6 +417,7 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
         inferred_start_date,
         timezone,
         source_members,
+        maad_q_grid,
         days,
         table_rows,
     })
@@ -531,6 +540,11 @@ fn validate_compatible(summaries: &[ShardSummary]) -> Result<(), MergeError> {
         if shard.datasets != first.datasets || shard.source_members != first.source_members {
             return Err(refused(format!(
                 "dataset metadata of {label} differs from {first_label}"
+            )));
+        }
+        if shard.maad_q_grid != first.maad_q_grid {
+            return Err(refused(format!(
+                "MAAD q grid of {label} differs from {first_label}"
             )));
         }
     }
@@ -781,6 +795,39 @@ mod tests {
             }
         }
 
+        fn dual_stack(days: &[&str]) -> Self {
+            let fixture = Self::new(days);
+            let stream_path = fixture.executable.with_extension("stream");
+            let stream = fs::read(&stream_path).unwrap();
+            let ipv4 = stream[16..88].to_vec();
+            let ipv6_address = |network: u8, host: u8| {
+                let mut address = [0_u8; 16];
+                address[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+                address[4] = network;
+                address[15] = host;
+                address
+            };
+            let mut records = Vec::new();
+            for (index, source, destination) in [(0_u8, 0x01_u8, 0x02_u8), (1, 0x41, 0x82)] {
+                let mut record = ipv4.clone();
+                record[..4].copy_from_slice(&[192, 0, 2 + index, source]);
+                record[16..20].copy_from_slice(&[198, 51, 100 + index, destination]);
+                records.push(record.clone());
+                record[..16].copy_from_slice(&ipv6_address(index, source));
+                record[16..32].copy_from_slice(&ipv6_address(index + 2, destination));
+                record[69] |= 1;
+                records.push(record);
+            }
+            let mut dual = stream[..12].to_vec();
+            dual.extend_from_slice(&(records.len() as u32).to_le_bytes());
+            for record in &records {
+                dual.extend_from_slice(record);
+            }
+            dual.extend_from_slice(&stream[88..]);
+            fs::write(&stream_path, dual).unwrap();
+            fixture
+        }
+
         fn path(&self, name: &str) -> PathBuf {
             self.directory.path().join(name)
         }
@@ -868,7 +915,7 @@ mod tests {
 
     #[test]
     fn merged_shards_match_a_single_run_and_resume_as_a_no_op() {
-        let fixture = Fixture::new(&["2025-06-01", "2025-06-02", "2025-06-03"]);
+        let fixture = Fixture::dual_stack(&["2025-06-01", "2025-06-02", "2025-06-03"]);
         let first = fixture.path("first.sqlite");
         let second = fixture.path("second.sqlite");
         let single = fixture.path("single.sqlite");
@@ -892,6 +939,40 @@ mod tests {
                 "{table} differs from the single-process product"
             );
         }
+        let connection = Connection::open(&merged).unwrap();
+        let curves = connection
+            .prepare(
+                "SELECT ip_version, measure, COUNT(DISTINCT bucket_start),
+                        SUM(typeof(spectrum) = 'blob')
+                 FROM address_maad_stats
+                 WHERE granularity = '5m' AND typeof(tau) = 'blob' AND typeof(tau_sd) = 'blob'
+                 GROUP BY ip_version, measure ORDER BY ip_version, measure",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)? > 0,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let expected = [4, 6]
+            .into_iter()
+            .flat_map(|ip_version| {
+                [("addresses", true), ("bytes", false), ("packets", false)]
+                    .map(|(measure, spectrum)| (ip_version, measure.to_owned(), 864, spectrum))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(curves, expected);
+        let grid_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM maad_q_grid", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(grid_rows, 2);
+        drop(connection);
         verify_database(
             &merged,
             &VerifyOptions {
@@ -930,6 +1011,52 @@ mod tests {
             "{error}"
         );
         assert!(!merged.exists());
+    }
+
+    #[test]
+    fn mismatched_maad_q_grids_are_refused_before_writing() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let merged = fixture.path("merged.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", true);
+        fixture.run(&second, "2025-06-02", "2025-06-02", true);
+
+        for statement in [
+            "UPDATE maad_q_grid SET q_min = q_min - 1 WHERE ip_version = 4",
+            "UPDATE maad_q_grid SET q_step = q_step * 2 WHERE ip_version = 6",
+            "UPDATE maad_q_grid SET q_count = q_count + 1 WHERE ip_version = 4",
+            "DELETE FROM maad_q_grid WHERE ip_version = 6",
+        ] {
+            let altered = fixture.path("altered.sqlite");
+            fs::copy(&second, &altered).unwrap();
+            Connection::open(&altered)
+                .unwrap()
+                .execute(statement, [])
+                .unwrap();
+            assert_refused(fixture.merge(&merged, &[&first, &altered]), "MAAD q grid");
+            assert!(!merged.exists());
+            fs::remove_file(&altered).unwrap();
+        }
+    }
+
+    #[test]
+    fn maad_disabled_shards_merge_with_an_empty_q_grid() {
+        let fixture = Fixture::dual_stack(&["2025-06-01", "2025-06-02"]);
+        let (first, second) = two_day_shards(&fixture);
+        let merged = fixture.path("merged.sqlite");
+
+        fixture.merge(&merged, &[&first, &second]).unwrap();
+
+        let connection = Connection::open(&merged).unwrap();
+        for table in ["maad_q_grid", "address_maad_stats"] {
+            let rows: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
     }
 
     #[test]

@@ -210,6 +210,8 @@ local-day ranges into a new product and refuses before it writes anything unless
 - every shard has the same SQLite schema, the table contract this build writes, the same product
   identity (schema, selection, and result configuration, including the nfdump path and digest),
   the same nfcapd source layout, and the same dataset metadata;
+- every shard has identical `maad_q_grid` rows, including none at all when MAAD is disabled. The
+  merge keeps the first shard's copy of this and the other shared tables;
 - every shard is an nfcapd-tree product without CSV inputs;
 - every completion marker names the shard's product identity;
 - every completion marker has one five-minute `bucket_coverage` row for each local five-minute

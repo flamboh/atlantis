@@ -288,7 +288,7 @@ To merge shards by hand, build each one with identical flags and an explicit `--
 ```
 
 The output must not exist yet. The command refuses shards with different product identities,
-schemas, source layouts, or dataset metadata, and shards whose completed days overlap. Each
+schemas, source layouts, dataset metadata, or MAAD q grids, and shards whose completed days overlap. Each
 dataset's `default_start_date` must either match across all shards, which keeps a configured
 date, or be the date each shard inferred from its own traffic. In the second case the merged
 product takes the date of its earliest traffic. It also
