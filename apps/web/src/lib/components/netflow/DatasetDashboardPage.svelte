@@ -63,7 +63,7 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
-	let dimensionMetrics = $state<DimensionMetricKey[]>(['saD0', 'saD1', 'saD2']);
+	let dimensionMetrics = $state<DimensionMetricKey[]>(['saD1']);
 	type ChartCardId =
 		| 'dashboard'
 		| 'characteristics'
@@ -93,6 +93,7 @@
 		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
 		coverage: { title: 'Coverage', minimumHeight: 113 }
 	};
+	const UNAVAILABLE_CARD_MINIMUM_HEIGHT = 214;
 	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v6';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let activatedCharts = $state<Record<ChartCardId, boolean>>({
@@ -140,6 +141,12 @@
 	}
 
 	function getCardMinimumHeight(chartId: ChartCardId): number {
+		if (
+			(chartId === 'dimensions' && maadUnavailableCopy) ||
+			(chartId === 'spectrum' && spectrumUnavailableCopy)
+		) {
+			return UNAVAILABLE_CARD_MINIMUM_HEIGHT;
+		}
 		if (chartId !== 'coverage') {
 			return CHART_CARD_DETAILS[chartId].minimumHeight;
 		}
@@ -162,8 +169,9 @@
 		hasLocality ? (params.direction as FlowDirection) : 'all'
 	);
 	const measure = $derived(params.measure as MaadMeasure);
+	const maadComputed = $derived(props.maadComputed ?? true);
 	const maadUnavailableCopy = $derived(
-		(props.maadComputed ?? true)
+		maadComputed
 			? null
 			: 'MAAD was not computed for this dataset. Rebuild it without --no-maad to chart MAAD results.'
 	);
@@ -171,7 +179,7 @@
 		maadUnavailableCopy ??
 			(maadMeasureHasSpectrum(measure)
 				? null
-				: `The spectrum is not available for weighted measures (${measure}). Switch the MAAD measure to Addresses to see it.`)
+				: 'The spectrum is only computed for the Addresses measure. Switch MAAD to Addresses in Controls to see it.')
 	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
@@ -501,13 +509,15 @@
 		routers={selectedRouters}
 		{direction}
 		showDirection={hasLocality}
-		{measure}
+		measure={maadComputed ? measure : undefined}
+		maadIpVersion={ipVersion}
 		onStartDateChange={handleStartDateChange}
 		onEndDateChange={handleEndDateChange}
 		onGroupByChange={handleGroupByChange}
 		onRoutersChange={handleRoutersChange}
 		onDirectionChange={handleDirectionChange}
 		onMeasureChange={handleMeasureChange}
+		onMaadIpVersionChange={handleIpVersionChange}
 		onResetView={handleResetView}
 	/>
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
@@ -650,7 +660,6 @@
 						onMetricsChange={(payload) => {
 							dimensionMetrics = payload.metrics;
 						}}
-						onIpVersionChange={handleIpVersionChange}
 					/>
 				{:else if chartId === 'spectrum'}
 					<BreakdownChart
@@ -674,7 +683,6 @@
 						onAddressTypeChange={(payload) => {
 							selectedSpectrumAddressType = payload.addressType;
 						}}
-						onIpVersionChange={handleIpVersionChange}
 					/>
 				{:else}
 					<CoverageStrip

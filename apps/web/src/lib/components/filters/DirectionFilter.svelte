@@ -7,6 +7,7 @@
 	const props = $props<{
 		direction: FlowDirection;
 		onDirectionChange?: (payload: { direction: FlowDirection }) => void;
+		buttonClass?: string;
 	}>();
 
 	const options: SegmentedControlOption<FlowDirection>[] = FLOW_DIRECTION_OPTIONS.map((option) => ({
@@ -25,4 +26,6 @@
 	value={props.direction}
 	onValueChange={handleValueChange}
 	ariaLabel="Traffic direction"
+	class="grid-cols-5"
+	buttonClass={props.buttonClass}
 />

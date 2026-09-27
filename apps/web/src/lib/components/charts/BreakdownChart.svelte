@@ -14,6 +14,7 @@
 	import {
 		DEFAULT_MAAD_IP_VERSION,
 		MAAD_IP_VERSION_OPTIONS,
+		MAAD_MEASURE_OPTIONS,
 		type FlowDirection,
 		type IpGranularity,
 		type IpMetricKey,
@@ -27,10 +28,16 @@
 	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
 	import {
 		BREAKDOWN_CHART_CONFIGS,
+		DIMENSION_ORDER_OPTIONS,
+		DIMENSION_SIDE_OPTIONS,
+		dimensionMetricKey,
 		readLineMetric,
+		splitDimensionMetricKey,
 		type BreakdownChartKind,
 		type BreakdownChartConfig,
 		type BreakdownMetricKey,
+		type DimensionOrder,
+		type DimensionSide,
 		type LineBucketData
 	} from './breakdown-chart-config';
 	import {
@@ -56,7 +63,8 @@
 	import {
 		formatIpGranularityTick,
 		formatTemporalBucketLabel,
-		shouldHighlightIpGranularityGrid
+		shouldHighlightIpGranularityGrid,
+		placeTicksOnBucketStarts
 	} from './ip-time-axis';
 	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
 	import { crosshairStore } from '$lib/stores/crosshair';
@@ -113,7 +121,6 @@
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
 		onAddressTypeChange?: (payload: { addressType: 'sa' | 'da' }) => void;
-		onIpVersionChange?: (payload: { ipVersion: MaadIpVersion }) => void;
 		onMetricsChange?: (payload: { metrics: MetricsForKind<Kind> }) => void;
 	}>();
 	function getConfig(kind: BreakdownChartKind): BreakdownChartConfig {
@@ -149,6 +156,16 @@
 	let error = $state<string | null>(null);
 	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
 	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
+	const maadSubtitle = $derived(
+		config.usesMaad && !props.unavailableCopy
+			? [
+					MAAD_MEASURE_OPTIONS.find((option) => option.value === props.measure)?.label,
+					MAAD_IP_VERSION_OPTIONS.find((option) => option.value === ipVersion)?.label
+				]
+					.filter(Boolean)
+					.join(' · ')
+			: null
+	);
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
@@ -458,13 +475,25 @@
 
 	function buildColors(metricIndex: number, routerIndex: number) {
 		const metric = config.metrics[metricIndex];
-		if (!metric) {
+		if (!metric?.color) {
 			return { stroke: 'transparent', fill: 'transparent' };
 		}
 		const hue = (metric.color.hue + routerIndex * config.routerHueStep) % 360;
 		const stroke = `hsl(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%)`;
 		const fill = `hsla(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%, ${config.fillAlpha})`;
 		return { stroke, fill };
+	}
+
+	function buildRouterColors(router: string) {
+		const index = Object.keys(props.routers ?? {})
+			.map((name) => name.trim())
+			.sort()
+			.indexOf(router);
+		const slot = index >= 0 && index < 8 ? `${index + 1}` : 'other';
+		const color = getComputedStyle(document.documentElement)
+			.getPropertyValue(`--chart-series-${slot}`)
+			.trim();
+		return { stroke: color, fill: color };
 	}
 
 	function handleMetricToggle(metric: BreakdownMetricKey) {
@@ -503,11 +532,10 @@
 		props.onAddressTypeChange?.({ addressType: nextAddressType });
 	}
 
-	function handleIpVersionChange(nextIpVersion: MaadIpVersion) {
-		if (nextIpVersion === ipVersion) {
-			return;
-		}
-		props.onIpVersionChange?.({ ipVersion: nextIpVersion });
+	function handleDimensionChange(side: DimensionSide, order: DimensionOrder) {
+		const nextMetrics = [dimensionMetricKey(side, order)];
+		activeMetrics = nextMetrics;
+		props.onMetricsChange?.({ metrics: nextMetrics as MetricsForKind<Kind> });
 	}
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
@@ -766,13 +794,16 @@
 		textColor: string,
 		gridColor: string,
 		gridHighlightColor: string,
-		dataBounds: { min: number; max: number }
+		dataBounds: { min: number; max: number },
+		tickBucketStarts: number[],
+		yAxisTitle: string
 	) {
 		return {
 			x: {
 				type: 'linear' as const,
 				min: dataBounds.min,
 				max: dataBounds.max,
+				afterBuildTicks: placeTicksOnBucketStarts(tickBucketStarts),
 				title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
 				ticks: {
 					color: textColor,
@@ -795,17 +826,23 @@
 				}
 			},
 			y: {
-				beginAtZero: true,
+				beginAtZero: !config.fitYAxisToData,
+				...(config.fitYAxisToData ? { grace: '10%' } : {}),
 				afterFit(axis: { width: number }) {
 					axis.width = Y_AXIS_WIDTH;
 				},
-				title: { display: true, text: config.yAxisTitle, color: textColor },
+				title: { display: true, text: yAxisTitle, color: textColor },
 				ticks: config.formatYAxisTicks
 					? {
 							color: textColor,
 							callback: (value: string | number) => formatNumber(Number(value))
 						}
-					: { color: textColor },
+					: config.fitYAxisToData
+						? {
+								color: textColor,
+								callback: (value: string | number) => Number(value).toFixed(2)
+							}
+						: { color: textColor },
 				grid: { color: gridColor }
 			}
 		};
@@ -819,6 +856,16 @@
 	) {
 		return {
 			legend: { position: 'top', labels: { color: textColor } },
+			...(config.fitYAxisToData
+				? {
+						tooltip: {
+							callbacks: {
+								label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+									`${context.dataset.label ?? ''}: ${context.parsed.y === null ? 'No data' : context.parsed.y.toFixed(3)}`
+							}
+						}
+					}
+				: {}),
 			verticalCrosshair: {
 				enabled: true,
 				line: {
@@ -886,12 +933,17 @@
 			selectedBuckets.map((record) => [`${record.router}-${record.bucket.bucketStart}`, record])
 		);
 
+		const activeMetricConfigs = config.metrics.filter((metric) =>
+			activeMetrics.includes(metric.key)
+		);
 		const datasets = routers.flatMap((router, routerIndex) =>
 			config.metrics
 				.filter((metric) => activeMetrics.includes(metric.key))
 				.map((metric) => {
 					const configIndex = config.metrics.findIndex((candidate) => candidate.key === metric.key);
-					const { stroke, fill } = buildColors(configIndex, routerIndex);
+					const { stroke, fill } = config.seriesByRouter
+						? buildRouterColors(router)
+						: buildColors(configIndex, routerIndex);
 					const data = bucketStarts.map((bucketStart) => {
 						const record = bucketByRouterAndStart.get(`${router}-${bucketStart}`);
 						const bucket = record?.bucket;
@@ -918,7 +970,7 @@
 							)
 						: null;
 					return {
-						label: `${router} · ${metric.seriesLabel}`,
+						label: config.seriesByRouter ? router : `${router} · ${metric.seriesLabel}`,
 						data,
 						borderColor: stroke,
 						backgroundColor: fill,
@@ -955,7 +1007,16 @@
 			return;
 		}
 
-		const scales = buildLineScales(textColor, gridColor, gridHighlightColor, dataBounds);
+		const scales = buildLineScales(
+			textColor,
+			gridColor,
+			gridHighlightColor,
+			dataBounds,
+			bucketStarts,
+			config.seriesByRouter
+				? (activeMetricConfigs[0]?.label ?? config.yAxisTitle)
+				: config.yAxisTitle
+		);
 		const plugins = buildLinePlugins(
 			textColor,
 			tooltipBackgroundColor,
@@ -1080,6 +1141,7 @@
 							type: 'linear',
 							min: dataBounds.min,
 							max: dataBounds.max,
+							afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
 							title: {
 								display: true,
 								text: `Time (${granularity})`,
@@ -1146,6 +1208,7 @@
 					type: 'linear',
 					min: dataBounds.min,
 					max: dataBounds.max,
+					afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
 					title: { display: true, text: `Time (${granularity})`, color: textColor },
 					ticks: {
 						color: textColor,
@@ -1331,7 +1394,11 @@
 	$effect(() => {
 		void theme.dark;
 		if (chart) {
-			applyChartTheme();
+			if (config.seriesByRouter) {
+				renderChart();
+			} else {
+				applyChartTheme();
+			}
 		}
 	});
 
@@ -1469,21 +1536,9 @@
 	});
 </script>
 
-{#snippet ipVersionControl()}
-	<SegmentedControl
-		options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
-			value: String(option.value),
-			label: option.label
-		}))}
-		value={String(ipVersion)}
-		onValueChange={(value) => handleIpVersionChange(Number(value) as MaadIpVersion)}
-		ariaLabel="Select MAAD IP address family"
-		buttonClass="sm:min-w-32"
-	/>
-{/snippet}
-
 <ChartCard
 	title={config.title}
+	subtitle={maadSubtitle}
 	size={props.kind === 'spectrum' ? 'spectrum' : 'default'}
 	unavailableCopy={props.unavailableCopy ?? null}
 	{loading}
@@ -1511,42 +1566,52 @@
 >
 	{#snippet controls()}
 		{#if props.kind === 'spectrum'}
-			<div class="space-y-2">
-				<div class="flex min-h-6 flex-wrap items-center gap-4">
-					{#if (props.availableRouters ?? []).length === 0}
-						{#each Array(4) as _, index (index)}
-							<Skeleton class="inline-block h-4 w-24" aria-hidden="true" />
-						{/each}
-					{:else}
-						{#each props.availableRouters ?? [] as routerName (routerName)}
-							<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-								<input
-									type="radio"
-									name="spectrum-router-local"
-									checked={props.router === routerName}
-									onchange={() => handleRouterChange(routerName)}
-									class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-								/>
-								<span>{routerName}</span>
-							</label>
-						{/each}
-					{/if}
-				</div>
-				<div class="flex flex-wrap items-center gap-4">
-					{#each [['sa', 'Source'], ['da', 'Destination']] as const as addressOption (addressOption[0])}
-						<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-							<input
-								type="radio"
-								name="spectrum-address-type-local"
-								checked={addressType === addressOption[0]}
-								onchange={() => handleAddressTypeChange(addressOption[0])}
-								class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-							/>
-							<span>{addressOption[1]}</span>
-						</label>
-					{/each}
-				</div>
-				{@render ipVersionControl()}
+			<div class="flex flex-wrap items-center gap-3">
+				{#if (props.availableRouters ?? []).length === 0}
+					<Skeleton class="h-9 w-48" aria-hidden="true" />
+				{:else}
+					<SegmentedControl
+						options={(props.availableRouters ?? []).map((routerName: string) => ({
+							value: routerName,
+							label: routerName
+						}))}
+						value={props.router ?? null}
+						onValueChange={handleRouterChange}
+						ariaLabel="Spectrum source"
+						class="flex flex-wrap"
+						buttonClass="w-auto sm:min-w-20"
+					/>
+				{/if}
+				<SegmentedControl
+					options={DIMENSION_SIDE_OPTIONS}
+					value={addressType}
+					onValueChange={handleAddressTypeChange}
+					ariaLabel="Spectrum address side"
+					class="grid-cols-2"
+					buttonClass="sm:min-w-20"
+				/>
+			</div>
+		{:else if config.seriesByRouter}
+			{@const selected = splitDimensionMetricKey(
+				(activeMetrics[0] ?? config.defaultMetrics[0]) as DimensionMetricKey
+			)}
+			<div class="flex flex-wrap items-center gap-3">
+				<SegmentedControl
+					options={DIMENSION_SIDE_OPTIONS}
+					value={selected.side}
+					onValueChange={(side) => handleDimensionChange(side, selected.order)}
+					ariaLabel="MAAD address side"
+					class="grid-cols-2"
+					buttonClass="sm:min-w-20"
+				/>
+				<SegmentedControl
+					options={DIMENSION_ORDER_OPTIONS}
+					value={selected.order}
+					onValueChange={(order) => handleDimensionChange(selected.side, order)}
+					ariaLabel="MAAD dimension"
+					class="grid-cols-3"
+					buttonClass="sm:min-w-12"
+				/>
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center gap-4">
@@ -1559,9 +1624,6 @@
 						<span>{metric.label}</span>
 					</label>
 				{/each}
-				{#if config.usesMaad}
-					{@render ipVersionControl()}
-				{/if}
 			</div>
 		{/if}
 	{/snippet}

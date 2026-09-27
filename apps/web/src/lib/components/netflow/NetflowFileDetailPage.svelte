@@ -5,11 +5,10 @@
 	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
+	import MaadIpVersionFilter from '$lib/components/filters/MaadIpVersionFilter.svelte';
 	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
 	import {
-		MAAD_IP_VERSION_OPTIONS,
 		maadMeasureHasSpectrum,
 		type FlowDirection,
 		type MaadIpVersion,
@@ -79,7 +78,7 @@
 		loader?.refresh();
 	}
 
-	function handleMaadIpVersionChange(nextIpVersion: MaadIpVersion) {
+	function handleMaadIpVersionChange({ ipVersion: nextIpVersion }: { ipVersion: MaadIpVersion }) {
 		if (nextIpVersion === data.ipVersion) {
 			return;
 		}
@@ -149,15 +148,9 @@
 	<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
 		<div class="flex items-center gap-2">
 			<span class="text-foreground text-sm font-medium">MAAD address family:</span>
-			<SegmentedControl
-				options={MAAD_IP_VERSION_OPTIONS.map((option) => ({
-					value: String(option.value),
-					label: option.label
-				}))}
-				value={String(data.ipVersion)}
-				onValueChange={(value) => handleMaadIpVersionChange(Number(value) as MaadIpVersion)}
-				ariaLabel="Select MAAD IP address family"
-				buttonClass="sm:min-w-32"
+			<MaadIpVersionFilter
+				ipVersion={data.ipVersion}
+				onIpVersionChange={handleMaadIpVersionChange}
 			/>
 		</div>
 		<div class="flex items-center gap-2">

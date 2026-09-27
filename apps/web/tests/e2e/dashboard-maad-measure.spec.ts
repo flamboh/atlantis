@@ -14,11 +14,13 @@ async function activateCard(page: Page, chartId: string) {
 	);
 }
 
-function waitForDimensions(page: Page, measure: string) {
+function waitForDimensions(page: Page, measure: string, ipVersion = '4') {
 	return page.waitForRequest((request) => {
 		const url = new URL(request.url());
 		return (
-			url.pathname === '/api/netflow/dimension-stats' && url.searchParams.get('measure') === measure
+			url.pathname === '/api/netflow/dimension-stats' &&
+			url.searchParams.get('measure') === measure &&
+			url.searchParams.get('ipVersion') === ipVersion
 		);
 	});
 }
@@ -50,14 +52,57 @@ test('switches dashboard MAAD views between addresses, packets and bytes', async
 		await expect.poll(() => new URL(page.url()).searchParams.get('measure')).toBe(measure);
 		await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 		await expect(spectrum.getByTestId('chart-unavailable')).toContainText(
-			`not available for weighted measures (${measure})`
+			'only computed for the Addresses measure'
 		);
+		await expect(spectrum.getByRole('group', { name: 'Spectrum source' })).not.toBeAttached();
 	}
 
 	await measureControl(page).getByRole('button', { name: 'Addresses' }).click();
 	await expect.poll(() => new URL(page.url()).searchParams.has('measure')).toBe(false);
 	await expect(spectrum.getByTestId('chart-unavailable')).not.toBeAttached();
 	await expect(spectrum.getByLabel('Spectrum chart')).toBeVisible();
+});
+
+test('shares one MAAD address family control across both MAAD cards', async ({ page }) => {
+	await page.goto(DASHBOARD);
+	await activateCard(page, 'dimensions');
+	await activateCard(page, 'spectrum');
+	const familyControl = page.getByRole('group', { name: 'MAAD address family' });
+	await expect(familyControl).toHaveCount(1);
+
+	const dimensionsRequest = waitForDimensions(page, 'addresses', '6');
+	const spectrumRequest = page.waitForRequest((request) => {
+		const url = new URL(request.url());
+		return (
+			url.pathname === '/api/netflow/spectrum-stats' && url.searchParams.get('ipVersion') === '6'
+		);
+	});
+	await familyControl.getByRole('button', { name: 'IPv6 (/23–/64)' }).click();
+	await dimensionsRequest;
+	await spectrumRequest;
+});
+
+test('charts one MAAD dimension and address side at a time', async ({ page }) => {
+	await page.goto(DASHBOARD);
+	await activateCard(page, 'dimensions');
+	const dimensions = page.locator('[data-chart-id="dimensions"]');
+	const side = dimensions.getByRole('group', { name: 'MAAD address side' });
+	const order = dimensions.getByRole('group', { name: 'MAAD dimension' });
+	await expect(side.getByRole('button', { name: 'Source' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(order.getByRole('button', { name: 'D1' })).toHaveAttribute('aria-pressed', 'true');
+
+	await side.getByRole('button', { name: 'Destination' }).click();
+	await order.getByRole('button', { name: 'D2' }).click();
+	await expect(side.getByRole('button', { name: 'Destination' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(order.getByRole('button', { name: 'D2' })).toHaveAttribute('aria-pressed', 'true');
+	await expect(order.getByRole('button', { name: 'D1' })).toHaveAttribute('aria-pressed', 'false');
+	await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 });
 
 test('rejects an unknown measure param in favor of addresses', async ({ page }) => {

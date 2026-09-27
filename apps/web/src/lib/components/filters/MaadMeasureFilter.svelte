@@ -7,6 +7,7 @@
 	const props = $props<{
 		measure: MaadMeasure;
 		onMeasureChange?: (payload: { measure: MaadMeasure }) => void;
+		buttonClass?: string;
 	}>();
 
 	const options: SegmentedControlOption<MaadMeasure>[] = MAAD_MEASURE_OPTIONS.map((option) => ({
@@ -28,4 +29,6 @@
 	value={props.measure}
 	onValueChange={handleValueChange}
 	ariaLabel="MAAD measure"
+	class="grid-cols-3"
+	buttonClass={props.buttonClass}
 />

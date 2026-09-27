@@ -16,7 +16,7 @@ export interface LineMetricConfig {
 	key: BreakdownMetricKey;
 	label: string;
 	seriesLabel: string;
-	color: {
+	color?: {
 		hue: number;
 		saturation: number;
 		lightness: number;
@@ -29,6 +29,7 @@ export interface BreakdownChartConfig {
 	title: string;
 	endpoint: string;
 	usesMaad: boolean;
+	seriesByRouter: boolean;
 	defaultGranularity: IpGranularity;
 	defaultMetrics: BreakdownMetricKey[];
 	metrics: LineMetricConfig[];
@@ -36,6 +37,7 @@ export interface BreakdownChartConfig {
 	fillAlpha: number;
 	yAxisTitle: string;
 	formatYAxisTicks: boolean;
+	fitYAxisToData: boolean;
 	loadingCopy: string;
 	emptyCopy: string;
 	noMetricsCopy: string;
@@ -65,6 +67,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	title: 'Unique IP Counts',
 	endpoint: '/api/ip/stats',
 	usesMaad: false,
+	seriesByRouter: false,
 	defaultGranularity: '1d',
 	defaultMetrics: ['saIpv4Count', 'daIpv4Count'],
 	metrics: IP_METRIC_OPTIONS.map((option) => ({
@@ -77,6 +80,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	fillAlpha: 0.18,
 	yAxisTitle: 'Unique IPs',
 	formatYAxisTicks: true,
+	fitYAxisToData: false,
 	loadingCopy: 'Loading IP data...',
 	emptyCopy: 'No IP data for the selected window.',
 	noMetricsCopy: 'Select at least one metric to display.',
@@ -92,6 +96,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	title: 'Unique Protocol Counts',
 	endpoint: '/api/protocol/stats',
 	usesMaad: false,
+	seriesByRouter: false,
 	defaultGranularity: '1h',
 	defaultMetrics: ['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6'],
 	metrics: [
@@ -112,6 +117,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	fillAlpha: 0.2,
 	yAxisTitle: 'Unique Protocols',
 	formatYAxisTicks: false,
+	fitYAxisToData: false,
 	loadingCopy: 'Loading protocol data...',
 	emptyCopy: 'No protocol data for the selected window.',
 	noMetricsCopy: 'Select at least one metric to display.',
@@ -121,17 +127,34 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	canvasLabel: 'Protocol chart'
 };
 
-const dimensionColors: Record<
-	DimensionMetricKey,
-	{ hue: number; saturation: number; lightness: number }
-> = {
-	saD0: { hue: 210, saturation: 70, lightness: 58 },
-	saD1: { hue: 150, saturation: 60, lightness: 50 },
-	saD2: { hue: 30, saturation: 80, lightness: 58 },
-	daD0: { hue: 210, saturation: 70, lightness: 38 },
-	daD1: { hue: 150, saturation: 60, lightness: 32 },
-	daD2: { hue: 30, saturation: 80, lightness: 40 }
-};
+export type DimensionSide = 'sa' | 'da';
+export type DimensionOrder = '0' | '1' | '2';
+
+export const DIMENSION_SIDE_OPTIONS: Array<{ value: DimensionSide; label: string }> = [
+	{ value: 'sa', label: 'Source' },
+	{ value: 'da', label: 'Destination' }
+];
+
+export const DIMENSION_ORDER_OPTIONS: Array<{
+	value: DimensionOrder;
+	label: string;
+	title: string;
+}> = [
+	{ value: '0', label: 'D0', title: 'Capacity dimension' },
+	{ value: '1', label: 'D1', title: 'Information dimension' },
+	{ value: '2', label: 'D2', title: 'Correlation dimension' }
+];
+
+export function dimensionMetricKey(side: DimensionSide, order: DimensionOrder): DimensionMetricKey {
+	return `${side}D${order}`;
+}
+
+export function splitDimensionMetricKey(key: DimensionMetricKey): {
+	side: DimensionSide;
+	order: DimensionOrder;
+} {
+	return { side: key.slice(0, 2) as DimensionSide, order: key.slice(3) as DimensionOrder };
+}
 
 const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 	kind: 'dimensions',
@@ -139,27 +162,24 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 	title: 'MAAD Dimensions',
 	endpoint: '/api/netflow/dimension-stats',
 	usesMaad: true,
+	seriesByRouter: true,
 	defaultGranularity: '1h',
-	defaultMetrics: ['saD0', 'saD1', 'saD2'],
-	metrics: (
-		[
-			['saD0', 'Src D0'],
-			['saD1', 'Src D1'],
-			['saD2', 'Src D2'],
-			['daD0', 'Dst D0'],
-			['daD1', 'Dst D1'],
-			['daD2', 'Dst D2']
-		] as const
-	).map(([key, label]) => ({
-		key,
-		label,
-		seriesLabel: label,
-		color: dimensionColors[key]
-	})),
-	routerHueStep: 45,
-	fillAlpha: 0.18,
+	defaultMetrics: ['saD1'],
+	metrics: DIMENSION_SIDE_OPTIONS.flatMap((side) =>
+		DIMENSION_ORDER_OPTIONS.map((order) => {
+			const label = `${side.label} ${order.label}`;
+			return {
+				key: dimensionMetricKey(side.value, order.value),
+				label,
+				seriesLabel: label
+			};
+		})
+	),
+	routerHueStep: 0,
+	fillAlpha: 0,
 	yAxisTitle: 'Dimension',
 	formatYAxisTicks: false,
+	fitYAxisToData: true,
 	loadingCopy: 'Loading MAAD dimensions...',
 	emptyCopy: 'No MAAD dimensions for the selected window.',
 	noMetricsCopy: 'Select at least one dimension to display.',
@@ -175,6 +195,7 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	title: 'Spectrum',
 	endpoint: '/api/netflow/spectrum-stats',
 	usesMaad: true,
+	seriesByRouter: false,
 	defaultGranularity: '1h',
 	defaultMetrics: [],
 	metrics: [],
@@ -182,6 +203,7 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	fillAlpha: 0,
 	yAxisTitle: 'alpha',
 	formatYAxisTicks: false,
+	fitYAxisToData: false,
 	loadingCopy: 'Loading spectrum data...',
 	emptyCopy: 'No spectrum data for the selected window.',
 	noMetricsCopy: '',

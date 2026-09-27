@@ -11,8 +11,13 @@ import {
 import {
 	formatIpGranularityTick,
 	formatTemporalBucketLabel,
-	shouldHighlightIpGranularityGrid
+	shouldHighlightIpGranularityGrid,
+	placeTicksOnBucketStarts
 } from '../../src/lib/components/charts/ip-time-axis';
+import {
+	dimensionMetricKey,
+	splitDimensionMetricKey
+} from '../../src/lib/components/charts/breakdown-chart-config';
 import { dateStringToEpochPST } from '../../src/lib/utils/timezone';
 
 describe('chart granularity policy', () => {
@@ -64,6 +69,40 @@ describe('shared IP granularity chart labels', () => {
 		expect(formatIpGranularityTick(tuesdayStart, '1d', 1)).toBe('');
 		expect(shouldHighlightIpGranularityGrid(mondayStart, '1d', 0)).toBe(true);
 		expect(shouldHighlightIpGranularityGrid(tuesdayStart, '1d', 1)).toBe(false);
+	});
+
+	it('places linear time-axis ticks on every bucket start so day boundaries get labels', () => {
+		const dayStart = dateStringToEpochPST('2026-03-02');
+		const bucketStarts = Array.from({ length: 48 }, (_, index) => dayStart + index * 3600);
+		const axis = {
+			min: bucketStarts[0],
+			max: bucketStarts[bucketStarts.length - 1],
+			ticks: [{ value: dayStart + 1234 }]
+		};
+
+		placeTicksOnBucketStarts(bucketStarts)(axis);
+
+		expect(axis.ticks.map((tick) => tick.value)).toEqual(bucketStarts);
+		expect(
+			axis.ticks
+				.map((tick, index) => formatIpGranularityTick(tick.value, '1h', index))
+				.filter(Boolean)
+		).toEqual(['Mon 3/2', 'Tue 3/3']);
+	});
+
+	it('keeps the default linear ticks when fewer than two buckets fall inside the axis', () => {
+		const axis = { min: 99, max: 101, ticks: [{ value: 99 }, { value: 100 }, { value: 101 }] };
+
+		placeTicksOnBucketStarts([0, 100, 200])(axis);
+
+		expect(axis.ticks.map((tick) => tick.value)).toEqual([99, 100, 101]);
+	});
+});
+
+describe('MAAD dimension metric keys', () => {
+	it('round-trips an address side and dimension order', () => {
+		expect(dimensionMetricKey('da', '2')).toBe('daD2');
+		expect(splitDimensionMetricKey('saD1')).toEqual({ side: 'sa', order: '1' });
 	});
 });
 
