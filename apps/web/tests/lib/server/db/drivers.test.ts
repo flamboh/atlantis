@@ -7,6 +7,10 @@ import {
 
 type RouteModule = { GET: (event: never) => unknown };
 
+const cloudflareEnv = vi.hoisted(() => ({ DB: null as unknown }));
+
+vi.mock('cloudflare:workers', () => ({ env: cloudflareEnv }));
+
 const fixtures: string[] = [];
 
 function seedDatabase(): string {
@@ -45,7 +49,7 @@ async function loadDriver(driver: 'sqlite' | 'd1', databasePath: string) {
 	vi.resetModules();
 	if (driver === 'd1') {
 		const binding = createD1Binding(databasePath);
-		vi.doMock('cloudflare:workers', () => ({ env: { DB: binding } }));
+		cloudflareEnv.DB = binding;
 		vi.doMock('#db', () => import('../../../../src/lib/server/db/d1.ts'));
 		return binding;
 	}
@@ -120,7 +124,7 @@ const routes: Array<{
 
 describe('database drivers', () => {
 	afterEach(() => {
-		vi.doUnmock('cloudflare:workers');
+		cloudflareEnv.DB = null;
 		vi.doUnmock('#db');
 		vi.unstubAllEnvs();
 		vi.resetModules();
@@ -130,7 +134,7 @@ describe('database drivers', () => {
 	});
 
 	it('export the same driver interface', async () => {
-		vi.doMock('cloudflare:workers', () => ({ env: { DB: null } }));
+		vi.resetModules();
 		const [{ default: sqlite }, { default: d1 }] = await Promise.all([
 			import('../../../../src/lib/server/db/sqlite.ts'),
 			import('../../../../src/lib/server/db/d1.ts')
