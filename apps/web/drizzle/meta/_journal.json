@@ -22,6 +22,34 @@
 			"when": 1787518254723,
 			"tag": "0002_keen_moira_mactaggert",
 			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "6",
+			"when": 1790239417630,
+			"tag": "0003_mixed_vin_gonzales",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "6",
+			"when": 1790313292395,
+			"tag": "0004_dataset_locality",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "6",
+			"when": 1790328400092,
+			"tag": "0005_maad_measures",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "6",
+			"when": 1790331619750,
+			"tag": "0006_compact_maad_storage",
+			"breakpoints": true
 		}
 	]
 }

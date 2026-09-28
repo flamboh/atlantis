@@ -8,10 +8,12 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, Rows, params, types::Value as SqlValue};
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 use thiserror::Error;
 
-use crate::storage::{StorageError, connect_readonly};
+use crate::{
+    maad::decode_f32,
+    storage::{MaadQGridRow, StorageError, connect_readonly},
+};
 
 const TABLES: &[TableSpec] = &[
     TableSpec::new(
@@ -21,8 +23,8 @@ const TABLES: &[TableSpec] = &[
             "bucket_start",
             "source_id",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "bucket_end",
         ],
         &["processed_at"],
@@ -43,8 +45,8 @@ const TABLES: &[TableSpec] = &[
             "bucket_start",
             "source_id",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "bucket_end",
         ],
         &["processed_at"],
@@ -58,8 +60,8 @@ const TABLES: &[TableSpec] = &[
             "bucket_start",
             "source_id",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
             "bucket_end",
         ],
@@ -74,8 +76,8 @@ const TABLES: &[TableSpec] = &[
             "bucket_start",
             "source_id",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "port_side",
             "port_range",
             "bucket_end",
@@ -85,20 +87,20 @@ const TABLES: &[TableSpec] = &[
         CandidateOnlyPolicy::Always,
     ),
     TableSpec::new(
-        "address_structure_stats",
+        "address_maad_stats",
         &[
             "granularity",
             "bucket_start",
             "source_id",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
-            "structure_kind",
+            "measure",
             "bucket_end",
         ],
-        &["processed_at"],
-        &["values_json", "metadata_json"],
+        &[],
+        &["d0", "d1", "d2", "tau", "tau_sd", "spectrum"],
         CandidateOnlyPolicy::MissingReferenceBucket,
     ),
     TableSpec::new(
@@ -134,6 +136,14 @@ pub struct ComparisonReport {
     pub end_exclusive_ts: i64,
     pub maad_absolute_tolerance: f64,
     pub tables: BTreeMap<String, TableComparison>,
+    pub maad_q_grid: QGridComparison,
+}
+
+/// The q grids behind the IP versions whose MAAD curves both databases store in the window.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct QGridComparison {
+    pub ip_versions: Vec<i64>,
+    pub mismatched_ip_versions: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -146,7 +156,7 @@ pub struct TableComparison {
     pub unexpected_candidate_only_rows: i64,
     pub reference_only_rows: i64,
     pub mismatched_rows: i64,
-    pub max_json_absolute_delta: f64,
+    pub max_maad_absolute_delta: f64,
 }
 
 #[derive(Debug, Error)]
@@ -164,12 +174,6 @@ pub enum CompareError {
         table: &'static str,
         column: &'static str,
         database: &'static str,
-    },
-    #[error("{table}.{column} contains invalid JSON: {source}")]
-    InvalidJson {
-        table: &'static str,
-        column: String,
-        source: serde_json::Error,
     },
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
@@ -190,6 +194,8 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
             && comparison.mismatched_rows == 0;
         tables.insert(spec.name.to_owned(), comparison);
     }
+    let maad_q_grid = compare_q_grids(&candidate, &reference, options)?;
+    compatible &= maad_q_grid.mismatched_ip_versions.is_empty();
     Ok(ComparisonReport {
         compatible,
         candidate: options.candidate.clone(),
@@ -198,7 +204,74 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
         end_exclusive_ts: options.end_exclusive_ts,
         maad_absolute_tolerance: options.maad_absolute_tolerance,
         tables,
+        maad_q_grid,
     })
+}
+
+fn compare_q_grids(
+    candidate: &Connection,
+    reference: &Connection,
+    options: &CompareOptions,
+) -> Result<QGridComparison, rusqlite::Error> {
+    let reference_versions = curve_ip_versions(reference, options)?;
+    let ip_versions = curve_ip_versions(candidate, options)?
+        .intersection(&reference_versions)
+        .copied()
+        .collect::<Vec<_>>();
+    let candidate_grids = load_q_grids(candidate)?;
+    let reference_grids = load_q_grids(reference)?;
+    let mismatched_ip_versions = ip_versions
+        .iter()
+        .copied()
+        .filter(|ip_version| {
+            let candidate_grid = candidate_grids.get(ip_version);
+            candidate_grid.is_none() || candidate_grid != reference_grids.get(ip_version)
+        })
+        .collect();
+    Ok(QGridComparison {
+        ip_versions,
+        mismatched_ip_versions,
+    })
+}
+
+fn curve_ip_versions(
+    connection: &Connection,
+    options: &CompareOptions,
+) -> Result<BTreeSet<i64>, rusqlite::Error> {
+    if !table_columns(connection, "address_maad_stats")?
+        .iter()
+        .any(|column| column == "tau")
+    {
+        return Ok(BTreeSet::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT ip_version FROM address_maad_stats \
+         WHERE tau IS NOT NULL AND bucket_start >= ?1 AND bucket_start < ?2",
+    )?;
+    statement
+        .query_map(params![options.start_ts, options.end_exclusive_ts], |row| {
+            row.get(0)
+        })?
+        .collect()
+}
+
+fn load_q_grids(connection: &Connection) -> Result<BTreeMap<i64, MaadQGridRow>, rusqlite::Error> {
+    if table_columns(connection, "maad_q_grid")?.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement =
+        connection.prepare("SELECT ip_version, q_min, q_step, q_count FROM maad_q_grid")?;
+    statement
+        .query_map([], |row| {
+            let grid = MaadQGridRow {
+                ip_version: row.get(0)?,
+                q_min: row.get(1)?,
+                q_step: row.get(2)?,
+                q_count: row.get(3)?,
+            };
+            Ok((grid.ip_version, grid))
+        })?
+        .collect()
 }
 
 fn validate_options(options: &CompareOptions) -> Result<(), CompareError> {
@@ -343,8 +416,8 @@ fn compare_shared_rows(
                             spec,
                             columns,
                             options.maad_absolute_tolerance,
-                            &mut report.max_json_absolute_delta,
-                        )? {
+                            &mut report.max_maad_absolute_delta,
+                        ) {
                             report.mismatched_rows += 1;
                         }
                         candidate_row =
@@ -384,8 +457,7 @@ fn rows_match(
     columns: &[String],
     tolerance: f64,
     max_delta: &mut f64,
-) -> Result<bool, CompareError> {
-    let json_columns = spec.json_columns.iter().copied().collect::<BTreeSet<_>>();
+) -> bool {
     let mut matches = true;
     for ((column, candidate_value), reference_value) in
         columns.iter().zip(&candidate.values).zip(&reference.values)
@@ -393,67 +465,40 @@ fn rows_match(
         if candidate_value == reference_value {
             continue;
         }
-        if json_columns.contains(column.as_str()) {
-            let candidate_json = parse_json_cell(spec.name, column, candidate_value)?;
-            let reference_json = parse_json_cell(spec.name, column, reference_value)?;
-            matches &= json_matches(&candidate_json, &reference_json, tolerance, max_delta);
-        } else {
-            matches &= candidate_value == reference_value;
-        }
+        matches &= spec.maad_columns.contains(&column.as_str())
+            && maad_values_match(candidate_value, reference_value, tolerance, max_delta);
     }
-    Ok(matches)
+    matches
 }
 
-fn parse_json_cell(
-    table: &'static str,
-    column: &str,
-    value: &SqlValue,
-) -> Result<JsonValue, CompareError> {
-    let SqlValue::Text(value) = value else {
-        return Ok(JsonValue::Null);
-    };
-    serde_json::from_str(value).map_err(|source| CompareError::InvalidJson {
-        table,
-        column: column.to_owned(),
-        source,
-    })
-}
-
-fn json_matches(
-    candidate: &JsonValue,
-    reference: &JsonValue,
+/// Compare MAAD REAL values, or f32 BLOB arrays element-wise, within the absolute tolerance.
+fn maad_values_match(
+    candidate: &SqlValue,
+    reference: &SqlValue,
     tolerance: f64,
     max_delta: &mut f64,
 ) -> bool {
+    let mut within = |candidate: f64, reference: f64| {
+        let delta = (candidate - reference).abs();
+        *max_delta = max_delta.max(delta);
+        delta <= tolerance
+    };
     match (candidate, reference) {
-        (JsonValue::Number(candidate), JsonValue::Number(reference)) => {
-            match (candidate.as_f64(), reference.as_f64()) {
-                (Some(candidate), Some(reference)) => {
-                    let delta = (candidate - reference).abs();
-                    *max_delta = max_delta.max(delta);
-                    delta <= tolerance
+        (SqlValue::Real(candidate), SqlValue::Real(reference)) => within(*candidate, *reference),
+        (SqlValue::Blob(candidate), SqlValue::Blob(reference)) => {
+            match (decode_f32(candidate), decode_f32(reference)) {
+                (Some(candidate), Some(reference)) if candidate.len() == reference.len() => {
+                    candidate.iter().zip(&reference).fold(
+                        true,
+                        |matches, (candidate, reference)| {
+                            within(f64::from(*candidate), f64::from(*reference)) && matches
+                        },
+                    )
                 }
-                _ => candidate == reference,
+                _ => false,
             }
         }
-        (JsonValue::Array(candidate), JsonValue::Array(reference)) => {
-            candidate.len() == reference.len()
-                && candidate
-                    .iter()
-                    .zip(reference)
-                    .all(|(candidate, reference)| {
-                        json_matches(candidate, reference, tolerance, max_delta)
-                    })
-        }
-        (JsonValue::Object(candidate), JsonValue::Object(reference)) => {
-            candidate.len() == reference.len()
-                && candidate.iter().all(|(key, candidate)| {
-                    reference.get(key).is_some_and(|reference| {
-                        json_matches(candidate, reference, tolerance, max_delta)
-                    })
-                })
-        }
-        _ => candidate == reference,
+        _ => false,
     }
 }
 
@@ -552,7 +597,7 @@ fn reference_bucket_missing(
         && matches!(
             granularity,
             KeyValue::Text(granularity)
-                if matches!(granularity.as_str(), "5m" | "30m" | "1h" | "1d")
+                if matches!(granularity.as_str(), "5m" | "10m" | "30m" | "1h" | "1d")
         )
         && !reference.bucket_keys.contains(&vec![
             source.clone(),
@@ -625,7 +670,7 @@ fn ordered_query(spec: &TableSpec, columns: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let granularity_filter = if spec.key_columns.contains(&"granularity") {
-        "granularity IN ('1d', '1h', '30m', '5m') AND "
+        "granularity IN ('1d', '1h', '30m', '10m', '5m') AND "
     } else {
         ""
     };
@@ -662,7 +707,7 @@ struct TableSpec {
     name: &'static str,
     key_columns: &'static [&'static str],
     ignored_columns: &'static [&'static str],
-    json_columns: &'static [&'static str],
+    maad_columns: &'static [&'static str],
     candidate_only_policy: CandidateOnlyPolicy,
 }
 
@@ -671,14 +716,14 @@ impl TableSpec {
         name: &'static str,
         key_columns: &'static [&'static str],
         ignored_columns: &'static [&'static str],
-        json_columns: &'static [&'static str],
+        maad_columns: &'static [&'static str],
         candidate_only_policy: CandidateOnlyPolicy,
     ) -> Self {
         Self {
             name,
             key_columns,
             ignored_columns,
-            json_columns,
+            maad_columns,
             candidate_only_policy,
         }
     }

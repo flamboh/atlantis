@@ -6,10 +6,12 @@
 
 	let {
 		row,
+		showSpectrum = true,
 		formatCount,
 		formatTimestampAsPST
 	}: {
 		row: NetflowFileRouterRow;
+		showSpectrum?: boolean;
 		formatCount: (value: number | null | undefined) => string;
 		formatTimestampAsPST: (timestamp: number) => string;
 	} = $props();
@@ -35,12 +37,18 @@
 				source={row.source.structure}
 				destination={row.destination.structure}
 			/>
-			<NetflowFileRouterAnalysisSection
-				title="Spectrum"
-				kind="spectrum"
-				source={row.source.spectrum}
-				destination={row.destination.spectrum}
-			/>
+			{#if showSpectrum}
+				<NetflowFileRouterAnalysisSection
+					title="Spectrum"
+					kind="spectrum"
+					source={row.source.spectrum}
+					destination={row.destination.spectrum}
+				/>
+			{:else}
+				<p class="text-muted-foreground text-sm">
+					The spectrum is only computed for the addresses measure.
+				</p>
+			{/if}
 		</div>
 	</Card.Content>
 </Card.Root>

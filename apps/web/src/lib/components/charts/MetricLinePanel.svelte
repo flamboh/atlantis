@@ -210,7 +210,7 @@
 			);
 		} else if (props.groupBy === 'hour') {
 			props.onDrillDown(
-				'30min',
+				'10min',
 				formatDateAsPSTDateString(new Date(clickedDate.getTime() - 3 * 24 * 60 * 60 * 1000)),
 				formatDateAsPSTDateString(new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000))
 			);

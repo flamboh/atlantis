@@ -116,18 +116,13 @@ pub fn select_web_verification_window(
             "
             SELECT ts.bucket_start
             FROM traffic_stats ts
-            JOIN address_structure_stats st
-              ON st.source_id = ts.source_id AND st.granularity = '5m'
-             AND st.bucket_start = ts.bucket_start AND st.ip_version = 4
-             AND st.src_visibility = 'all' AND st.dst_visibility = 'all'
-             AND st.structure_kind = 'structure'
-            JOIN address_structure_stats sp
-              ON sp.source_id = ts.source_id AND sp.granularity = '5m'
-             AND sp.bucket_start = ts.bucket_start AND sp.ip_version = 4
-             AND sp.src_visibility = 'all' AND sp.dst_visibility = 'all'
-             AND sp.structure_kind = 'spectrum'
+            JOIN address_maad_stats maad
+              ON maad.source_id = ts.source_id AND maad.granularity = '5m'
+             AND maad.bucket_start = ts.bucket_start AND maad.ip_version = 4
+             AND maad.src_locality = 'all' AND maad.dst_locality = 'all'
+             AND maad.measure = 'addresses'
             WHERE ts.source_id = ?1 AND ts.granularity = '5m'
-              AND ts.src_visibility = 'all' AND ts.dst_visibility = 'all'
+              AND ts.src_locality = 'all' AND ts.dst_locality = 'all'
             ORDER BY ts.bucket_start LIMIT 1
             ",
             [source_id],
@@ -208,6 +203,11 @@ pub fn verify_web_routes(
             "buckets",
             route,
         )?;
+        let ipv6 = common
+            .into_iter()
+            .chain([("granularity", "5m"), ("ipVersion", "6")])
+            .collect::<Vec<_>>();
+        assert_no_error(request_json(&client, &base, route, &ipv6)?, route)?;
     }
     let slug = jiff::Timestamp::new(window.detail_bucket, 0)
         .and_then(|timestamp| timestamp.in_tz("America/Los_Angeles"))
@@ -224,7 +224,25 @@ pub fn verify_web_routes(
         "routers",
         "/api/netflow/files/[slug]/details",
     )?;
+    assert_no_error(
+        request_json(
+            &client,
+            &base,
+            &format!("/api/netflow/files/{slug}/details"),
+            &[("dataset", dataset), ("ipVersion", "6")],
+        )?,
+        "/api/netflow/files/[slug]/details",
+    )?;
     Ok(())
+}
+
+fn assert_no_error(payload: Value, route: &str) -> Result<(), OperationsError> {
+    match payload.get("error") {
+        Some(error) => Err(OperationsError::Invalid(format!(
+            "{route} returned error: {error}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn request_json(

@@ -11,17 +11,17 @@ use fixedbitset::FixedBitSet;
 use crate::{
     coverage::BucketCoverage,
     domain::{
-        AddressSet, AddressSide, BucketKey, CanonicalBucket, DAILY_ACTIVE_MIN_BYTES,
-        DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, ExactVisibility, FlowSelection,
-        Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts, ScopedProtocols,
-        ScopedTraffic, TrafficMetrics, Visibility,
+        AddressSet, AddressSide, AddressTotals, AddressTraffic, BucketKey, CanonicalBucket,
+        DAILY_ACTIVE_MIN_BYTES, DAILY_ACTIVE_MIN_FLOWS, DAILY_ACTIVE_MIN_PACKETS, EndpointLocality,
+        FlowSelection, Granularity, IpVersion, Scope, ScopedAddresses, ScopedPorts,
+        ScopedProtocols, ScopedTraffic, TrafficMetrics, ZERO_FILL_LOCALITY_PAIRS,
     },
 };
 
 pub(crate) const OUTPUT_MODE: &str = "atlantis";
 pub(crate) const CONTRACT_VERSION: u32 = 1;
 pub(crate) const INPUT_CONTRACT: &str = "atlantis-flow-stream-v1";
-pub(crate) const OUTPUT_CONTRACT: &str = "canonical-scopes-v1";
+pub(crate) const OUTPUT_CONTRACT: &str = "canonical-locality-scopes-v1";
 
 const MAGIC: &[u8; 8] = b"ATLNFLOW";
 const RECORD_LEN: usize = 72;
@@ -276,8 +276,8 @@ impl std::error::Error for NfdumpError {
 struct ScopeAccumulator {
     metrics: [i64; METRIC_COUNT],
     protocols: [u64; 4],
-    source_addresses: AddressSet,
-    destination_addresses: AddressSet,
+    source_addresses: AddressTotals,
+    destination_addresses: AddressTotals,
     source_ports: FixedBitSet,
     destination_ports: FixedBitSet,
 }
@@ -331,8 +331,10 @@ impl ScopeAccumulator {
         }
         self.protocols[usize::from(flow.protocol) / 64] |=
             1_u64 << (usize::from(flow.protocol) % 64);
-        self.source_addresses.insert(flow.source_address);
-        self.destination_addresses.insert(flow.destination_address);
+        let traffic = AddressTraffic::new(flow.packets.unsigned_abs(), flow.bytes.unsigned_abs());
+        self.source_addresses.add(flow.source_address, traffic);
+        self.destination_addresses
+            .add(flow.destination_address, traffic);
         insert_port(&mut self.source_ports, flow.source_port);
         insert_port(&mut self.destination_ports, flow.destination_port);
     }
@@ -394,7 +396,7 @@ pub(crate) fn reduce_to_bucket<R: Read>(
     selection: &FlowSelection,
 ) -> Result<CanonicalBucket, NfdumpError> {
     match reduce_stream(&mut input, selection, None) {
-        Ok(scopes) => Ok(finish_bucket(scopes, key)),
+        Ok(reduced) => Ok(finish_bucket(reduced, key)),
         Err(error) => {
             drain_to_eof(&mut input);
             Err(error)
@@ -409,7 +411,7 @@ pub(crate) fn reduce_to_bucket_with_active_sources<R: Read>(
     active_sources: &AddressSet,
 ) -> Result<CanonicalBucket, NfdumpError> {
     match reduce_stream(&mut input, selection, Some(active_sources)) {
-        Ok(scopes) => Ok(finish_bucket(scopes, key)),
+        Ok(reduced) => Ok(finish_bucket(reduced, key)),
         Err(error) => {
             drain_to_eof(&mut input);
             Err(error)
@@ -423,9 +425,9 @@ pub(crate) fn reduce_to_buckets_with_active_sources<R: Read>(
     selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
 ) -> Result<Vec<CanonicalBucket>, NfdumpError> {
     match reduce_stream_for_active_sources(&mut input, selections_and_active_sources) {
-        Ok(scopes) => Ok(scopes
+        Ok(reduced) => Ok(reduced
             .into_iter()
-            .map(|scopes| finish_bucket(scopes, key.clone()))
+            .map(|reduced| finish_bucket(reduced, key.clone()))
             .collect()),
         Err(error) => {
             drain_to_eof(&mut input);
@@ -443,8 +445,11 @@ pub(crate) fn reduce_to_daily_source_activities<R: Read>(
         .map(|_| HashMap::<IpAddr, SourceActivity>::new())
         .collect::<Vec<_>>();
     let result = visit_stream(&mut input, |flow, _, _| {
+        if flow.packets == 0 {
+            return Ok(());
+        }
         for (selection, activity) in selections.iter().zip(&mut activities) {
-            if !matches_selection(flow, selection) {
+            if classify_selected(flow, selection).is_none() {
                 continue;
             }
             let entry = activity.entry(flow.source_address).or_default();
@@ -468,24 +473,26 @@ pub(crate) fn reduce_to_daily_source_activities<R: Read>(
 fn reduce_stream_for_active_sources(
     input: &mut impl Read,
     selections_and_active_sources: &[(FlowSelection, Arc<AddressSet>)],
-) -> Result<Vec<[ScopeAccumulator; 10]>, NfdumpError> {
+) -> Result<Vec<ReducedScopes>, NfdumpError> {
     validate_daily_active_selection_pairs(selections_and_active_sources)?;
-    let mut scopes = (0..selections_and_active_sources.len())
-        .map(|_| std::array::from_fn(|_| ScopeAccumulator::default()))
+    let mut reduced = (0..selections_and_active_sources.len())
+        .map(|_| ReducedScopes::default())
         .collect::<Vec<_>>();
     visit_stream(input, |flow, block_index, record_ordinal| {
-        for ((selection, active_sources), scopes) in
-            selections_and_active_sources.iter().zip(&mut scopes)
+        for ((selection, active_sources), reduced) in
+            selections_and_active_sources.iter().zip(&mut reduced)
         {
-            if !matches_selection(flow, selection) || !active_sources.contains(&flow.source_address)
-            {
+            let Some(locality) = classify_selected(flow, selection) else {
+                continue;
+            };
+            if !active_sources.contains(&flow.source_address) {
                 continue;
             }
-            add_flow_to_scopes(scopes, flow, block_index, record_ordinal)?;
+            reduced.add(flow, locality, block_index, record_ordinal)?;
         }
         Ok(())
     })?;
-    Ok(scopes)
+    Ok(reduced)
 }
 
 fn validate_daily_active_selections(selections: &[FlowSelection]) -> Result<(), NfdumpError> {
@@ -536,7 +543,7 @@ fn reduce_stream<R: Read>(
     input: &mut R,
     selection: &FlowSelection,
     active_sources: Option<&AddressSet>,
-) -> Result<[ScopeAccumulator; 10], NfdumpError> {
+) -> Result<ReducedScopes, NfdumpError> {
     if selection.selects_daily_active_sources() && active_sources.is_none() {
         return Err(NfdumpError::new(
             Phase::Aggregate,
@@ -544,21 +551,61 @@ fn reduce_stream<R: Read>(
             ErrorReason::MissingDailyActiveSources,
         ));
     }
-    let mut scopes = std::array::from_fn(|_| ScopeAccumulator::default());
+    let mut reduced = ReducedScopes::default();
     visit_stream(input, |flow, block_index, record_ordinal| {
-        if !matches_selection(flow, selection)
-            || active_sources.is_some_and(|sources| !sources.contains(&flow.source_address))
-        {
+        let Some(locality) = classify_selected(flow, selection) else {
+            return Ok(());
+        };
+        if active_sources.is_some_and(|sources| !sources.contains(&flow.source_address)) {
             return Ok(());
         }
-        add_flow_to_scopes(&mut scopes, flow, block_index, record_ordinal)
+        reduced.add(flow, locality, block_index, record_ordinal)
     })?;
-    Ok(scopes)
+    Ok(reduced)
+}
+
+struct ReducedScopes {
+    scopes: [ScopeAccumulator; 10],
+    dropped_zero_packet_flows: u64,
+}
+
+impl Default for ReducedScopes {
+    fn default() -> Self {
+        Self {
+            scopes: std::array::from_fn(|_| ScopeAccumulator::default()),
+            dropped_zero_packet_flows: 0,
+        }
+    }
+}
+
+impl ReducedScopes {
+    fn add(
+        &mut self,
+        flow: &Flow,
+        locality: (EndpointLocality, EndpointLocality),
+        block_index: u64,
+        record_ordinal: u64,
+    ) -> Result<(), NfdumpError> {
+        if flow.packets == 0 {
+            self.dropped_zero_packet_flows = self
+                .dropped_zero_packet_flows
+                .saturating_add(flow.flow_count.unsigned_abs());
+            return Ok(());
+        }
+        add_flow_to_scopes(
+            &mut self.scopes,
+            flow,
+            locality,
+            block_index,
+            record_ordinal,
+        )
+    }
 }
 
 fn add_flow_to_scopes(
     scopes: &mut [ScopeAccumulator; 10],
     flow: &Flow,
+    (source, destination): (EndpointLocality, EndpointLocality),
     block_index: u64,
     record_ordinal: u64,
 ) -> Result<(), NfdumpError> {
@@ -567,8 +614,7 @@ fn add_flow_to_scopes(
     } else {
         5
     };
-    let exact_index =
-        family_base + exact_scope_index(flow.source_anonymized, flow.destination_anonymized);
+    let exact_index = family_base + exact_scope_index(source, destination);
     for index in [family_base, exact_index] {
         scopes[index].validate_add(flow).map_err(|field| {
             NfdumpError::new(Phase::Aggregate, field, ErrorReason::AggregateOverflow)
@@ -901,31 +947,34 @@ where
     i64::try_from(value).map_err(|_| error(field, ErrorReason::NumericOverflow(value)))
 }
 
-fn matches_selection(flow: &Flow, selection: &FlowSelection) -> bool {
-    selection.matches_flow_fields(
+fn classify_selected(
+    flow: &Flow,
+    selection: &FlowSelection,
+) -> Option<(EndpointLocality, EndpointLocality)> {
+    let (source, destination) = selection.locality().classify_flow(
         flow.source_address,
         flow.destination_address,
-        flow.protocol,
-        Some(flow.source_port),
-        if flow.source_anonymized {
-            ExactVisibility::Anonymized
-        } else {
-            ExactVisibility::Literal
-        },
-        if flow.destination_anonymized {
-            ExactVisibility::Anonymized
-        } else {
-            ExactVisibility::Literal
-        },
-    )
+        flow.source_anonymized,
+        flow.destination_anonymized,
+    );
+    selection
+        .matches_flow_fields(
+            flow.source_address,
+            flow.destination_address,
+            flow.protocol,
+            Some(flow.source_port),
+            source,
+            destination,
+        )
+        .then_some((source, destination))
 }
 
-const fn exact_scope_index(source_anonymized: bool, destination_anonymized: bool) -> usize {
-    match (source_anonymized, destination_anonymized) {
-        (true, true) => 1,
-        (true, false) => 2,
-        (false, true) => 3,
-        (false, false) => 4,
+const fn exact_scope_index(source: EndpointLocality, destination: EndpointLocality) -> usize {
+    match (source, destination) {
+        (EndpointLocality::Internal, EndpointLocality::Internal) => 1,
+        (EndpointLocality::Internal, EndpointLocality::External) => 2,
+        (EndpointLocality::External, EndpointLocality::Internal) => 3,
+        (EndpointLocality::External, EndpointLocality::External) => 4,
     }
 }
 
@@ -1029,27 +1078,20 @@ const fn record_field_at(offset: usize) -> Field {
     }
 }
 
-fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBucket {
-    const VISIBILITIES: [(Visibility, Visibility); 5] = [
-        (Visibility::All, Visibility::All),
-        (Visibility::Anonymized, Visibility::Anonymized),
-        (Visibility::Anonymized, Visibility::Literal),
-        (Visibility::Literal, Visibility::Anonymized),
-        (Visibility::Literal, Visibility::Literal),
-    ];
+fn finish_bucket(reduced: ReducedScopes, key: BucketKey) -> CanonicalBucket {
     let mut traffic = Vec::with_capacity(10);
     let mut protocols = Vec::with_capacity(10);
     let mut addresses = Vec::with_capacity(20);
     let mut ports = Vec::with_capacity(20);
-    for (index, accumulator) in scopes.into_iter().enumerate() {
+    for (index, accumulator) in reduced.scopes.into_iter().enumerate() {
         let scope = Scope::new(
             if index < 5 {
                 IpVersion::V4
             } else {
                 IpVersion::V6
             },
-            VISIBILITIES[index % 5].0,
-            VISIBILITIES[index % 5].1,
+            ZERO_FILL_LOCALITY_PAIRS[index % 5].0,
+            ZERO_FILL_LOCALITY_PAIRS[index % 5].1,
         );
         let (scope_traffic, scope_protocols, scope_addresses, scope_ports) =
             accumulator.finish(scope);
@@ -1070,6 +1112,7 @@ fn finish_bucket(scopes: [ScopeAccumulator; 10], key: BucketKey) -> CanonicalBuc
         addresses,
         ports,
         five_minute_starts,
+        dropped_zero_packet_flows: reduced.dropped_zero_packet_flows,
     }
 }
 
@@ -1129,7 +1172,20 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::domain::{Granularity, Scope};
+    use crate::domain::{Granularity, Locality, Scope};
+    use crate::locality::{LocalityRuleConfig, LocalityRules};
+
+    fn address_keys(totals: &AddressTotals) -> AddressSet {
+        totals.iter().map(|(address, _)| address).collect()
+    }
+
+    fn rules(configs: &[LocalityRuleConfig]) -> Arc<LocalityRules> {
+        Arc::new(LocalityRules::from_config(configs, std::path::Path::new("/")).unwrap())
+    }
+
+    fn tos_rules() -> Arc<LocalityRules> {
+        rules(&[LocalityRuleConfig::TosAnonymized {}])
+    }
 
     fn key() -> BucketKey {
         BucketKey::new(
@@ -1152,6 +1208,7 @@ mod tests {
             "ip_prefix": prefix,
         })))
         .unwrap()
+        .with_locality(tos_rules())
     }
 
     fn daily_record(
@@ -1222,19 +1279,82 @@ mod tests {
             assert_eq!(bucket.protocols[index].protocols, ["6"]);
         }
         assert_eq!(
-            bucket.addresses[0].addresses,
+            address_keys(&bucket.addresses[0].addresses),
             [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))]
                 .into_iter()
                 .collect::<AddressSet>()
         );
         assert_eq!(
-            bucket.addresses[1].addresses,
+            bucket.addresses[0]
+                .addresses
+                .get(&IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))),
+            Some(AddressTraffic::new(2, 128))
+        );
+        assert_eq!(
+            address_keys(&bucket.addresses[1].addresses),
             [IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
                 .into_iter()
                 .collect::<AddressSet>()
         );
         assert!(bucket.ports[0].ports.contains(55_000));
         assert!(bucket.ports[1].ports.contains(443));
+    }
+
+    #[test]
+    fn zero_packet_flows_are_dropped_and_counted_while_the_bucket_stays_observed() {
+        let mut zero_packets = base_record();
+        zero_packets[16..20].copy_from_slice(&[198, 51, 100, 9]);
+        zero_packets[32..40].copy_from_slice(&0_u64.to_le_bytes());
+        zero_packets[48..56].copy_from_slice(&3_u64.to_le_bytes());
+
+        let zero_only = reduce_to_bucket(
+            Cursor::new(stream(&[zero_packets])),
+            key(),
+            &FlowSelection::default(),
+        )
+        .unwrap();
+        assert_eq!(zero_only.dropped_zero_packet_flows, 3);
+        assert_eq!(zero_only.coverage, BucketCoverage::complete_unit());
+        assert_eq!(zero_only.five_minute_starts, [1_700_000_000].into());
+        assert_eq!(zero_only.traffic.len(), 10);
+        assert!(
+            zero_only
+                .traffic
+                .iter()
+                .all(|traffic| traffic.metrics == TrafficMetrics::default())
+        );
+        assert!(
+            zero_only
+                .addresses
+                .iter()
+                .all(|addresses| addresses.addresses.is_empty())
+        );
+
+        let mixed = reduce_to_bucket(
+            Cursor::new(stream(&[base_record(), zero_packets])),
+            key(),
+            &FlowSelection::default(),
+        )
+        .unwrap();
+        assert_eq!(mixed.dropped_zero_packet_flows, 3);
+        assert_eq!(mixed.traffic[0].metrics.flows, 1);
+        assert_eq!(mixed.traffic[0].metrics.packets, 2);
+        assert_eq!(mixed.traffic[0].metrics.bytes, 128);
+        let source = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        assert_eq!(
+            address_keys(&mixed.addresses[1].addresses),
+            [source].into_iter().collect::<AddressSet>()
+        );
+        assert_eq!(
+            mixed.addresses[1].addresses.get(&source),
+            Some(AddressTraffic::new(2, 128))
+        );
+        assert_eq!(
+            address_keys(&mixed.addresses[0].addresses),
+            [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2))]
+                .into_iter()
+                .collect::<AddressSet>()
+        );
     }
 
     #[test]
@@ -1258,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_visibility_prefix_and_weighted_missing_ttl_reduce_correctly() {
+    fn ipv6_locality_prefix_and_weighted_missing_ttl_reduce_correctly() {
         let mut record = base_record();
         record[..16].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         record[16..32]
@@ -1274,10 +1394,11 @@ mod tests {
             "version": 1,
             "kind": "flows",
             "ip_prefix": "2001:db8::/32",
-            "src_visibility": "anonymized",
-            "dst_visibility": "literal",
+            "src_locality": "internal",
+            "dst_locality": "external",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
 
         let bucket = reduce_to_bucket(Cursor::new(stream(&[record])), key(), &selection).unwrap();
 
@@ -1293,7 +1414,7 @@ mod tests {
             assert_eq!(bucket.protocols[index].protocols, ["58"]);
         }
         assert_eq!(
-            bucket.addresses[10].addresses,
+            address_keys(&bucket.addresses[10].addresses),
             [IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 2))]
                 .into_iter()
                 .collect::<AddressSet>()
@@ -1343,7 +1464,8 @@ mod tests {
             "kind": "daily_active_sources",
             "ip_prefix": "192.0.0.0/16"
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let mut first = base_record();
         first[32..40].copy_from_slice(&5_u64.to_le_bytes());
         first[40..48].copy_from_slice(&500_u64.to_le_bytes());
@@ -1468,7 +1590,7 @@ mod tests {
                 .traffic
                 .iter()
                 .find(|entry| {
-                    entry.scope == Scope::new(IpVersion::V4, Visibility::All, Visibility::All)
+                    entry.scope == Scope::new(IpVersion::V4, Locality::All, Locality::All)
                 })
                 .unwrap()
                 .metrics
@@ -1476,11 +1598,11 @@ mod tests {
         };
         assert_eq!(buckets.iter().map(all_v4).collect::<Vec<_>>(), [3, 0, 3, 4]);
         assert_eq!(
-            buckets[0].addresses[1].addresses,
+            address_keys(&buckets[0].addresses[1].addresses),
             [source_a].into_iter().collect::<AddressSet>()
         );
         assert_eq!(
-            buckets[3].addresses[1].addresses,
+            address_keys(&buckets[3].addresses[1].addresses),
             [source_b].into_iter().collect::<AddressSet>()
         );
     }
@@ -1515,9 +1637,10 @@ mod tests {
         let selection = FlowSelection::from_payload(Some(&serde_json::json!({
             "version": 1,
             "kind": "flows",
-            "src_visibility": "anonymized",
+            "src_locality": "internal",
         })))
-        .unwrap();
+        .unwrap()
+        .with_locality(tos_rules());
         let mut input = Cursor::new(bytes);
 
         let error = reduce_to_bucket(&mut input, key(), &selection).unwrap_err();
@@ -1771,17 +1894,18 @@ mod tests {
         let bucket = reduce_to_bucket(
             Cursor::new(stream(&[udp, tcp])),
             key(),
-            &FlowSelection::default(),
+            &FlowSelection::default().with_locality(tos_rules()),
         )
         .unwrap();
 
         assert_eq!(
             bucket.traffic[3].scope,
-            Scope::new(IpVersion::V4, Visibility::Literal, Visibility::Anonymized)
+            Scope::new(IpVersion::V4, Locality::External, Locality::Internal)
         );
+        assert_eq!(bucket.traffic[3].metrics.flows, 2);
         assert_eq!(bucket.protocols[0].protocols, ["17", "6"]);
         assert_eq!(
-            bucket.addresses[1].addresses,
+            address_keys(&bucket.addresses[1].addresses),
             [
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
@@ -1789,5 +1913,52 @@ mod tests {
             .into_iter()
             .collect::<AddressSet>()
         );
+    }
+
+    #[test]
+    fn address_and_prefix_rules_classify_literal_endpoints_into_direction_scopes() {
+        let mut egress = base_record();
+        egress[0..4].copy_from_slice(&[192, 0, 2, 53]);
+        egress[16..20].copy_from_slice(&[203, 0, 113, 9]);
+        let mut ingress = base_record();
+        ingress[0..4].copy_from_slice(&[203, 0, 113, 9]);
+        ingress[16..20].copy_from_slice(&[198, 51, 100, 77]);
+        let mut anonymized_lateral = base_record();
+        anonymized_lateral[0..4].copy_from_slice(&[10, 1, 1, 1]);
+        anonymized_lateral[16..20].copy_from_slice(&[10, 2, 2, 2]);
+        anonymized_lateral[69] = 0b110;
+        let transit = base_record();
+        let selection = FlowSelection::default().with_locality(rules(&[
+            LocalityRuleConfig::TosAnonymized {},
+            LocalityRuleConfig::Addresses {
+                addresses: Some(vec!["192.0.2.53".into()]),
+                path: None,
+            },
+            LocalityRuleConfig::Prefixes {
+                prefixes: vec!["198.51.100.64/26".into()],
+            },
+        ]));
+
+        let bucket = reduce_to_bucket(
+            Cursor::new(stream(&[egress, ingress, anonymized_lateral, transit])),
+            key(),
+            &selection,
+        )
+        .unwrap();
+
+        let flows = |source, destination| {
+            bucket
+                .traffic
+                .iter()
+                .find(|entry| entry.scope == Scope::new(IpVersion::V4, source, destination))
+                .unwrap()
+                .metrics
+                .flows
+        };
+        assert_eq!(flows(Locality::All, Locality::All), 4);
+        assert_eq!(flows(Locality::Internal, Locality::External), 1);
+        assert_eq!(flows(Locality::External, Locality::Internal), 1);
+        assert_eq!(flows(Locality::Internal, Locality::Internal), 1);
+        assert_eq!(flows(Locality::External, Locality::External), 1);
     }
 }

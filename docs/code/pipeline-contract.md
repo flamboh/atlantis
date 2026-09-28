@@ -8,9 +8,10 @@ The pipeline binds each database to one product identity. The identity contains 
 
 - The schema version and table versions
 - The normalized flow selection
+- The canonical endpoint-locality rules
 - The pipeline timezone
 - The native decoder contract
-- The MAAD enabled state
+- The MAAD enabled state, contract version, configuration, and measure set
 
 The pipeline rejects a database when its identity differs. Build a new database for a different product identity.
 
@@ -20,18 +21,18 @@ A database with populated pipeline tables and no product identity is not adopted
 
 Selection conditions use AND logic. The IP prefix matches either endpoint.
 
-Source visibility and destination visibility are independent conditions. Keep each selected population in a separate database.
+Source locality and destination locality are independent conditions. Keep each selected population in a separate database.
 
 Coverage is observed before selection. Thus, selected-out buckets remain as dense zero buckets.
 
-Native nfcapd input pushes the IP prefix condition into the nfdump filter. Visibility conditions apply before statistics accumulate.
+Native nfcapd input pushes the IP prefix condition into the nfdump filter. Locality conditions apply before statistics accumulate.
 
 `daily_active_sources` is a separate, fixed selection policy for the UOregon `/16` candidate
 products. It accepts exactly one IPv4 `/16` and exactly one `nfcapd_tree` input. For each complete
 local calendar day, it makes two bounded passes over every unique physical member:
 
-1. Select anonymized IPv4 source traffic in the `/16` that uses TCP or UDP and source port 1024 or
-   greater. Sum flows, packets, and bytes by exact source address across physical members.
+1. Select IPv4 traffic from an internal source in the `/16` that uses TCP or UDP and source port
+   1024 or greater. Sum flows, packets, and bytes by exact source address across physical members.
 2. Mark sources active at the inclusive thresholds of 3 flows, 20 packets, and 2,000 bytes. Publish
    only the same qualifying-flow population from active sources into the existing five-minute and
    rollup contracts.
@@ -44,6 +45,78 @@ days.
 The normalized product identity records the entire fixed policy. It is not compatible with an old
 prefix-only database. A late or changed input can alter the active set for every five-minute bucket
 in a day, so repair requires a whole-day `--force` rebuild inside the existing day transaction.
+
+## Endpoint locality and direction
+
+Each dataset declares locality rules (see [dataset configuration](../user/datasets.md#classify-internal-and-external-endpoints)).
+An endpoint is `internal` when any rule matches: a listed CIDR prefix, a listed address, or, with
+`tos_anonymized`, the UOregon anonymizer flag in the low two source-ToS bits (bit 1 for the source,
+bit 0 for the destination). Every other endpoint is `external`. Adapters classify each flow once,
+before selection and aggregation. CSV and native nfcapd input use the same rules, and the native
+stream carries the ToS flags in its record tag.
+
+The stats tables keep the endpoint pair in `src_locality` and `dst_locality`. Every bucket and IP
+version stores five dense rows: `all`/`all` and the four exact pairs. Missing combinations are
+zero-filled rows, and the exact pairs sum to the `all` row for additive metrics at every
+granularity. Readers derive direction from the pair:
+
+| `src_locality` | `dst_locality` | Direction |
+| -------------- | -------------- | --------- |
+| `internal`     | `external`     | egress    |
+| `external`     | `internal`     | ingress   |
+| `internal`     | `internal`     | lateral   |
+| `external`     | `external`     | transit   |
+| `all`          | `all`          | all       |
+
+Transit remains a first-class scope so misclassified or unexpected records stay visible.
+
+The result configuration identity contains the canonical rules: the `tos_anonymized` flag and a
+count and SHA-256 digest of the aggregated prefix list and the deduplicated address list. Reordering
+rules or splitting a prefix does not change the identity. Any change to the matched address space
+does, and address-file contents are read on every run. The digest keeps private address lists out of
+database metadata and export manifests.
+
+## MAAD measures
+
+Each scope and address side keeps one entry per unique address with its summed packets and bytes.
+Rollups merge children by summing those counters per address, so a rollup's per-address totals
+equal the sums over its five-minute children. The per-address map adds 16 bytes to each address
+entry.
+
+Every MAAD computation runs three measures on the same entries, for both IP versions and every
+granularity. `addresses` weighs each address as 1 and stores structure, spectrum, and dimensions.
+`packets` and `bytes` weight moments and D1 entropy by the summed counter and store structure and
+dimensions only. Prefix validity always uses distinct-address counts. A weighted measure excludes
+addresses whose counter sums to 0 and records the excluded count in `zero_weight_addrs`. The
+measure set is part of the result configuration identity.
+
+## MAAD storage
+
+`address_maad_stats` holds one row per bucket, scope, address side, and measure. Dimensions are
+`REAL`. The structure function (`tau`), its standard deviation (`tau_sd`), and the spectrum are
+little-endian f32 BLOBs. The only rounding is `value as f32`, which rounds to the nearest even.
+Nothing else rounds, truncates, or drops a value.
+
+- `tau` and `tau_sd` hold `q_count` values each. Element `i` is at `q_min + i * q_step` from the
+  `maad_q_grid` row of the same IP version.
+- `spectrum` holds interleaved `(alpha, f)` pairs. A zero-length BLOB is a computed, empty
+  spectrum. `NULL` means the measure does not compute one.
+- A result below the minimum address count stores `NULL` dimensions and curves.
+- D0 is `-tau(0)` and D2 is `tau(2)`. Their standard deviations are the `tau_sd` values at those q.
+  D1 has no standard deviation.
+
+The schema rejects BLOBs that are not whole f32 values or whole spectrum pairs, and a `tau_sd`
+whose length differs from `tau`. `verify` checks every curve against the q grid and the spectrum
+presence of every measure. The dashboard API fails a request whose curve lacks a grid or disagrees
+with `q_count` instead of drawing a partial curve. `compare` checks dimensions and each curve
+element within the MAAD tolerance, and requires identical `maad_q_grid` rows for every IP version
+whose curves both databases store in the window. Changing this encoding is a MAAD contract change,
+so it needs a fresh product database.
+
+Native and CSV ingestion drop flows whose reported packet count is 0 before any statistic
+accumulates, so they add no traffic, protocols, ports, or addresses. The bucket keeps its observed
+coverage, and publishing logs the dropped flow count per bucket. A CSV row without a packet count
+has an unknown count rather than a reported zero, so it still contributes.
 
 ## Coordinated subset runs
 
@@ -108,13 +181,71 @@ requested five-minute coverage is incomplete, leaving the database available for
 
 ## Time and aggregation
 
-The canonical input granularity is five minutes. The pipeline also creates 30-minute, one-hour, and one-day rows.
+The canonical input granularity is five minutes. The pipeline also creates 10-minute, 30-minute, one-hour, and one-day rows. Every rollup is a local-time-aligned, half-open window built from its five-minute children; a 10-minute row covers exactly two of them.
 
 Time windows use the configured pipeline timezone. The default timezone is `America/Los_Angeles`.
 
 The `--start-time` and `--end-time` limits are half-open. Their boundaries must align with local-day boundaries so aggregate rows stay complete.
 
 The observation schema stores duration and TTL sums and counts. It also stores port-cardinality rows.
+
+## Day-sharded products
+
+Every stored row belongs to exactly one local day. The coarsest rollup is `1d`, and every rollup
+bucket (`30m`, `1h`, `1d`) is computed from the local wall clock, so it never crosses local
+midnight. nfcapd-tree windows must start and end on local-day boundaries, and the pipeline
+processes and commits one local day at a time together with its `daily_product_completion`
+markers.
+
+Zero-fill depends on the requested window, which is not part of the product identity. Each
+member's first and last capture in the whole tree bound its coverage. With an explicit end date,
+the pipeline also publishes coverage for every five-minute bucket of the requested window. Without
+one, days outside a member's capture bounds get no coverage rows for that member, yet still receive
+completion markers. A day therefore publishes the same rows alone or inside a longer range only
+when every run names an explicit end date.
+
+`netflow-db merge-shards` relies on this. It combines pipeline products built over disjoint
+local-day ranges into a new product and refuses before it writes anything unless:
+
+- every shard has the same SQLite schema, the table contract this build writes, the same product
+  identity (schema, selection, and result configuration, including the nfdump path and digest),
+  the same nfcapd source layout, and the same dataset metadata;
+- every shard has identical `maad_q_grid` rows, including none at all when MAAD is disabled. The
+  merge keeps the first shard's copy of this and the other shared tables;
+- every shard is an nfcapd-tree product without CSV inputs;
+- every completion marker names the shard's product identity;
+- every completion marker has one five-minute `bucket_coverage` row for each local five-minute
+  bucket of its source and day, which rejects shards built without an explicit end date;
+- completed days do not overlap across shards;
+- every row of every day-owned table (stats, `bucket_coverage`, `input_evidence`,
+  `processed_inputs`) lies inside one of its own shard's completed days.
+
+The last two checks together prove that shard keys are disjoint. Plain inserts would also fail on
+any primary-key conflict. The merge writes a private temporary file beside the output: it copies
+the first shard with the SQLite backup API, then attaches, inserts, commits, and detaches each
+remaining shard in turn, with journaling and synchronous writes off. It checks each insert's row
+count against validation, syncs the file, and renames it into place, so the output appears only
+when the merge is complete. A dataset `default_start_date` that every shard shares is kept,
+which covers configured dates. Otherwise every shard must hold the date inferred from its own
+earliest five-minute traffic, or the fallback date if it has no traffic. The merge then sets the
+date from the earliest traffic in the merged product, and uses the fallback only when the whole
+product has no traffic. It recomputes that date inside every shard's insert transaction, so a
+partial product always carries the date of the days it holds. The copied markers make a later `pipeline` run over the merged days a no-op. A merged
+product is itself a valid shard.
+
+`--consume` keeps peak disk near the output size plus one shard. After every check passes, the
+merge renames the first shard into the temporary output (or copies it across filesystems), then
+commits each remaining shard with a rollback journal and `synchronous=FULL`. Only after that
+commit returns does it delete the shard and its sidecars. A shard counts as consumed as soon as
+the rename, cross-filesystem copy, or commit succeeds. Any later failure keeps the temporary
+output and reports it with the consumed shards. This includes a failed directory sync or a
+failed shard-file deletion, which is reported as its own cleanup error. The completed days of
+the temporary output are exactly the consumed shards, and merging it with the remaining shards
+resumes the job. Tests cover failures during a shard insert, and deletion failures right after
+the first shard's rename and after a later shard's commit. Crash durability rests on SQLite's
+rollback journal and the explicit file and directory syncs, and is not tested. Once the output
+has been renamed into place, a failed directory sync is reported as a published product, not as
+a partial merge.
 
 ## Native decoder contract
 

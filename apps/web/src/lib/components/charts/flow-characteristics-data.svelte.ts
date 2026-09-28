@@ -5,7 +5,7 @@ import { dateStringToEpochPST } from '$lib/utils/timezone';
 import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types';
 import type {
 	FlowCharacteristicsResponse,
-	FlowVisibility,
+	FlowDirection,
 	IpGranularity,
 	ObservationStats,
 	PortCardinalityCounts,
@@ -27,8 +27,7 @@ export type FlowCharacteristicsFilters = {
 	groupBy: GroupByOption;
 	routers: RouterConfig;
 	routersLoaded: boolean;
-	srcVisibility: FlowVisibility;
-	dstVisibility: FlowVisibility;
+	direction: FlowDirection;
 };
 
 export type FlowCharacteristicsData = {
@@ -46,6 +45,7 @@ const GROUP_BY_TO_GRANULARITY: Record<GroupByOption, IpGranularity> = {
 	date: '1d',
 	hour: '1h',
 	'30min': '30m',
+	'10min': '10m',
 	'5min': '5m'
 };
 
@@ -63,8 +63,7 @@ function cacheKey(filters: FlowCharacteristicsFilters, routers: string[]): strin
 		dataset: filters.dataset,
 		granularity: GROUP_BY_TO_GRANULARITY[filters.groupBy],
 		routers,
-		srcVisibility: filters.srcVisibility,
-		dstVisibility: filters.dstVisibility
+		direction: filters.direction
 	});
 }
 
@@ -162,8 +161,7 @@ export function createFlowCharacteristicsData(
 			dataset: filters.dataset,
 			routers: routers.join(','),
 			granularity,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction
 		});
 		const controller = new AbortController();
 		requestController = controller;

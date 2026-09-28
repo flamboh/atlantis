@@ -25,6 +25,7 @@
 		date: '1d',
 		hour: '1h',
 		'30min': '30m',
+		'10min': '10m',
 		'5min': '5m'
 	};
 	const IP_FAMILY_OPTIONS: Array<{ value: NetflowIpFamily; label: string }> = [

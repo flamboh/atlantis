@@ -12,7 +12,7 @@ export interface RouterConfig {
 	[key: string]: boolean;
 }
 
-export type GroupByOption = 'date' | 'hour' | '30min' | '5min';
+export type GroupByOption = 'date' | 'hour' | '30min' | '10min' | '5min';
 
 export type ChartTypeOption = 'stacked' | 'line';
 

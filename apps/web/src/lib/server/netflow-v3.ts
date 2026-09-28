@@ -1,28 +1,46 @@
 import {
-	FLOW_VISIBILITIES,
+	DEFAULT_MAAD_IP_VERSION,
+	DEFAULT_MAAD_MEASURE,
+	FLOW_DIRECTIONS,
+	flowDirectionLocalities,
 	IP_GRANULARITIES,
-	type FlowScope,
-	type FlowVisibility,
-	type IpGranularity
+	MAAD_IP_VERSIONS,
+	MAAD_MEASURES,
+	type FlowDirection,
+	type FlowLocality,
+	type FlowLocalityPair,
+	type IpGranularity,
+	type MaadIpVersion,
+	type MaadMeasure
 } from '$lib/types/types';
-import type { SourceDefinition } from '$lib/server/datasets';
-import type { StructureFunctionPoint } from '$lib/types/types';
-type RawStructureFunctionPoint = {
-	q: number;
-	tau?: number;
-	tauTilde?: number;
-	sd?: number;
-	s?: number;
-};
+import type { ReadonlyDatasetDb, SourceDefinition } from '$lib/server/datasets';
+import type { SpectrumPoint, StructureFunctionPoint } from '$lib/types/types';
+
+export type MaadBlob = Uint8Array | ArrayBuffer | number[] | null;
+
+export interface MaadQGridRow {
+	ipVersion: MaadIpVersion;
+	qMin: number;
+	qStep: number;
+	qCount: number;
+}
 
 export interface AggregateStatsParams {
 	routers: string[];
 	granularity: IpGranularity;
 	start: number;
 	end: number;
-	srcVisibility: FlowVisibility;
-	dstVisibility: FlowVisibility;
+	direction: FlowDirection;
+	srcLocality: FlowLocality;
+	dstLocality: FlowLocality;
 }
+
+export interface MaadParams {
+	ipVersion: MaadIpVersion;
+	measure: MaadMeasure;
+}
+
+export type MaadStatsParams = AggregateStatsParams & MaadParams;
 
 export interface RequestValidationError {
 	error: string;
@@ -34,7 +52,8 @@ export const DEFAULT_IP_GRANULARITY: IpGranularity = '1h';
 export type NetflowSchemaVersion = 'v3';
 
 const VALID_IP_GRANULARITIES = new Set<string>(IP_GRANULARITIES);
-const VALID_FLOW_VISIBILITIES = new Set<string>(FLOW_VISIBILITIES);
+const VALID_FLOW_DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
+const VALID_MAAD_MEASURES = new Set<string>(MAAD_MEASURES);
 
 export function assertNetflowV3Database(): void {
 	return;
@@ -70,52 +89,107 @@ export function parseIpGranularityOrDefault(param: string | null): IpGranularity
 	return parseIpGranularity(param) ?? DEFAULT_IP_GRANULARITY;
 }
 
-export function parseFlowVisibility(param: string | null): FlowVisibility | null {
+export function parseFlowDirection(param: string | null): FlowDirection | null {
 	if (!param) {
 		return null;
 	}
 
-	return VALID_FLOW_VISIBILITIES.has(param) ? (param as FlowVisibility) : null;
+	return VALID_FLOW_DIRECTIONS.has(param) ? (param as FlowDirection) : null;
 }
 
-export function parseFlowVisibilityParam(
-	param: string | null,
-	name: 'srcVisibility' | 'dstVisibility'
-): FlowVisibility | RequestValidationError {
-	const visibility = parseFlowVisibility(param);
-	if (visibility) {
-		return visibility;
-	}
-
+export function parseDirectionParam(param: string | null): FlowDirection | RequestValidationError {
 	if (!param) {
 		return 'all';
 	}
 
+	const direction = parseFlowDirection(param);
+	if (direction) {
+		return direction;
+	}
+
 	return {
-		error: `Invalid ${name}. Expected one of: ${FLOW_VISIBILITIES.join(', ')}`,
+		error: `Invalid direction. Expected one of: ${FLOW_DIRECTIONS.join(', ')}`,
 		status: 400
 	};
 }
 
-export function parseFlowScopeParams(url: URL): FlowScope | RequestValidationError {
-	const srcVisibility = parseFlowVisibilityParam(
-		url.searchParams.get('srcVisibility'),
-		'srcVisibility'
-	);
-	const dstVisibility = parseFlowVisibilityParam(
-		url.searchParams.get('dstVisibility'),
-		'dstVisibility'
-	);
-
-	if (typeof srcVisibility !== 'string') {
-		return srcVisibility;
+export function parseMaadIpVersion(url: URL): MaadIpVersion | RequestValidationError {
+	const param = url.searchParams.get('ipVersion');
+	if (param === null) {
+		return DEFAULT_MAAD_IP_VERSION;
 	}
 
-	if (typeof dstVisibility !== 'string') {
-		return dstVisibility;
+	const version = MAAD_IP_VERSIONS.find((candidate) => String(candidate) === param);
+	if (version === undefined) {
+		return {
+			error: `Invalid ipVersion. Expected one of: ${MAAD_IP_VERSIONS.join(', ')}`,
+			status: 400
+		};
 	}
 
-	return { srcVisibility, dstVisibility };
+	return version;
+}
+
+export function parseMaadMeasure(url: URL): MaadMeasure | RequestValidationError {
+	const param = url.searchParams.get('measure');
+	if (param === null) {
+		return DEFAULT_MAAD_MEASURE;
+	}
+
+	if (!VALID_MAAD_MEASURES.has(param)) {
+		return {
+			error: `Invalid measure. Expected one of: ${MAAD_MEASURES.join(', ')}`,
+			status: 400
+		};
+	}
+
+	return param as MaadMeasure;
+}
+
+export function parseMaadParams(url: URL): MaadParams | RequestValidationError {
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		return ipVersion;
+	}
+
+	const measure = parseMaadMeasure(url);
+	if (typeof measure !== 'string') {
+		return measure;
+	}
+
+	return { ipVersion, measure };
+}
+
+export function parseMaadStatsParams(url: URL): MaadStatsParams | RequestValidationError {
+	const aggregate = parseAggregateStatsParams(url);
+	if ('error' in aggregate) {
+		return aggregate;
+	}
+
+	const maad = parseMaadParams(url);
+	if ('error' in maad) {
+		return maad;
+	}
+
+	return { ...aggregate, ...maad };
+}
+
+export function spectrumMeasureError(measure: MaadMeasure): RequestValidationError | null {
+	return measure === 'addresses'
+		? null
+		: { error: `Spectrum is only computed for the addresses measure, not ${measure}`, status: 400 };
+}
+
+export function parseFlowDirectionParams(
+	url: URL
+): ({ direction: FlowDirection } & FlowLocalityPair) | RequestValidationError {
+	const direction = parseDirectionParam(url.searchParams.get('direction'));
+
+	if (typeof direction !== 'string') {
+		return direction;
+	}
+
+	return { direction, ...flowDirectionLocalities(direction) };
 }
 
 export function parseAggregateStatsParams(url: URL): AggregateStatsParams | RequestValidationError {
@@ -125,7 +199,7 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 	const granularity = parsedGranularity ?? DEFAULT_IP_GRANULARITY;
 	const start = parseTimestamp(url.searchParams.get('startDate'));
 	const end = parseTimestamp(url.searchParams.get('endDate'));
-	const flowScope = parseFlowScopeParams(url);
+	const flowDirection = parseFlowDirectionParams(url);
 
 	if (routers.length === 0) {
 		return { error: 'No routers selected', status: 400 };
@@ -138,8 +212,8 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		};
 	}
 
-	if ('error' in flowScope) {
-		return flowScope;
+	if ('error' in flowDirection) {
+		return flowDirection;
 	}
 
 	if (start === null || end === null) {
@@ -155,8 +229,9 @@ export function parseAggregateStatsParams(url: URL): AggregateStatsParams | Requ
 		granularity,
 		start,
 		end,
-		srcVisibility: flowScope.srcVisibility,
-		dstVisibility: flowScope.dstVisibility
+		direction: flowDirection.direction,
+		srcLocality: flowDirection.srcLocality,
+		dstLocality: flowDirection.dstLocality
 	};
 }
 
@@ -283,25 +358,86 @@ export function groupByToGranularity(groupBy: string): IpGranularity {
 	if (groupBy === 'date') return '1d';
 	if (groupBy === 'hour') return '1h';
 	if (groupBy === '30min') return '30m';
+	if (groupBy === '10min') return '10m';
 	return FIVE_MINUTE_GRANULARITY;
 }
 
-export function getBucketStartQuery(columnName: string, groupBy: string): string {
-	const granularity = groupByToGranularity(groupBy);
-	if (granularity === '5m') {
-		return columnName;
-	}
-
-	const bucketSize = granularity === '30m' ? 1800 : granularity === '1h' ? 3600 : 86400;
-	return `(CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day', 'utc', printf('+%d seconds', ((CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime')) AS integer) - CAST(strftime('%s', datetime(${columnName}, 'unixepoch', 'localtime', 'start of day')) AS integer)) / ${bucketSize}) * ${bucketSize}))) AS integer))`;
+export class MaadDataError extends Error {
+	name = 'MaadDataError';
 }
 
-export function normalizeStructurePoints(
-	points: RawStructureFunctionPoint[]
+export function decodeF32(value: MaadBlob): Float32Array | null {
+	if (value === null) return null;
+	if (Array.isArray(value)) return decodeF32(Uint8Array.from(value));
+	if (value instanceof ArrayBuffer) return decodeF32(new Uint8Array(value));
+
+	if (value.byteLength % 4 !== 0) {
+		throw new MaadDataError(`MAAD blob length ${value.byteLength} is not a multiple of 4 bytes`);
+	}
+	const count = value.byteLength / 4;
+	const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+	const out = new Float32Array(count);
+	for (let i = 0; i < count; i++) {
+		out[i] = view.getFloat32(i * 4, true);
+	}
+	return out;
+}
+
+export async function getMaadQGrid(
+	db: ReadonlyDatasetDb,
+	ipVersion: MaadIpVersion
+): Promise<MaadQGridRow | null> {
+	const row = await db.get<MaadQGridRow>(
+		`SELECT
+			ip_version AS ipVersion,
+			q_min AS qMin,
+			q_step AS qStep,
+			q_count AS qCount
+		FROM maad_q_grid
+		WHERE ip_version = ?`,
+		[ipVersion]
+	);
+	return row ?? null;
+}
+
+export function buildStructurePoints(
+	tau: MaadBlob,
+	tauSd: MaadBlob,
+	qGrid: MaadQGridRow | null
 ): StructureFunctionPoint[] {
-	return points.map((point) => ({
-		q: point.q,
-		tau: point.tau ?? point.tauTilde ?? 0,
-		sd: point.sd ?? point.s ?? 0
-	}));
+	const tauValues = decodeF32(tau);
+	if (tauValues === null) return [];
+	if (qGrid === null) {
+		throw new MaadDataError('MAAD structure function is stored without a q grid');
+	}
+
+	const sdValues = decodeF32(tauSd);
+	if (tauValues.length !== qGrid.qCount || sdValues?.length !== qGrid.qCount) {
+		throw new MaadDataError(
+			`MAAD tau and tau_sd must each hold ${qGrid.qCount} values for IPv${qGrid.ipVersion}`
+		);
+	}
+	const points: StructureFunctionPoint[] = [];
+	for (let i = 0; i < tauValues.length; i++) {
+		points.push({
+			q: qGrid.qMin + i * qGrid.qStep,
+			tau: tauValues[i],
+			sd: sdValues[i]
+		});
+	}
+	return points;
+}
+
+export function buildSpectrumPoints(spectrum: MaadBlob): SpectrumPoint[] | null {
+	const values = decodeF32(spectrum);
+	if (values === null) return null;
+	if (values.length % 2 !== 0) {
+		throw new MaadDataError('MAAD spectrum must hold alpha/f pairs');
+	}
+
+	const points: SpectrumPoint[] = [];
+	for (let i = 0; i < values.length; i += 2) {
+		points.push({ alpha: values[i], f: values[i + 1] });
+	}
+	return points;
 }

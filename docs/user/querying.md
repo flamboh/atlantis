@@ -22,20 +22,29 @@ Show a table schema:
 
 ## Main tables
 
-| Table                     | Content                                              |
-| ------------------------- | ---------------------------------------------------- |
-| `datasets`                | Public dataset metadata                              |
-| `source_members`          | Logical-source membership                            |
-| `traffic_stats`           | Flow, packet, byte, duration, and TTL metrics        |
-| `protocol_stats`          | Unique protocol counts and protocol lists            |
-| `address_count_stats`     | Unique source-address and destination-address counts |
-| `port_count_stats`        | Unique low-port and high-port counts                 |
-| `address_structure_stats` | MAAD structure, spectrum, and dimension values       |
-| `processed_inputs`        | Input processing state and provenance                |
+| Table                 | Content                                                    |
+| --------------------- | ---------------------------------------------------------- |
+| `datasets`            | Public dataset metadata                                    |
+| `source_members`      | Logical-source membership                                  |
+| `traffic_stats`       | Flow, packet, byte, duration, and TTL metrics              |
+| `protocol_stats`      | Unique protocol counts and protocol lists                  |
+| `address_count_stats` | Unique source-address and destination-address counts       |
+| `port_count_stats`    | Unique low-port and high-port counts                       |
+| `address_maad_stats`  | MAAD dimensions, structure, and spectrum per measure       |
+| `maad_q_grid`         | The q grid of each IP version's stored structure functions |
+| `processed_inputs`    | Input processing state and provenance                      |
 
-The `granularity` value is `5m`, `30m`, `1h`, or `1d`.
+The `granularity` value is `5m`, `10m`, `30m`, `1h`, or `1d`.
 
-Visibility values are `all`, `literal`, or `anonymized`.
+Each stats table stores an endpoint locality pair per bucket: `src_locality` and `dst_locality`, each `all`, `internal`, or `external`. Only five pairs are ever stored — mixed pairs with `all` on only one side never occur:
+
+| Direction | `src_locality` | `dst_locality` | Meaning                                                              |
+| --------- | -------------- | -------------- | -------------------------------------------------------------------- |
+| `all`     | `all`          | `all`          | All traffic                                                          |
+| `ingress` | `external`     | `internal`     | external → internal                                                  |
+| `egress`  | `internal`     | `external`     | internal → external                                                  |
+| `lateral` | `internal`     | `internal`     | internal → internal                                                  |
+| `transit` | `external`     | `external`     | external → external (kept for visibility into misclassified records) |
 
 ## Query traffic totals
 
@@ -50,8 +59,8 @@ SELECT
     SUM(bytes) AS bytes
 FROM traffic_stats
 WHERE granularity = '1d'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
   AND bucket_start >= strftime('%s', '<YYYY-MM-DD>')
   AND bucket_start < strftime('%s', '<YYYY-MM-DD>')
 GROUP BY bucket_start, source_id
@@ -71,8 +80,8 @@ SELECT
 FROM protocol_stats
 WHERE granularity = '30m'
   AND ip_version = 4
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY bucket_start, source_id;
 ```
 
@@ -87,8 +96,8 @@ SELECT
     unique_address_count
 FROM address_count_stats
 WHERE granularity = '1h'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start, ip_version, address_side;
 ```
 
@@ -104,9 +113,58 @@ SELECT
     unique_port_count
 FROM port_count_stats
 WHERE granularity = '1h'
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start, ip_version, port_side, port_range;
+```
+
+## Query MAAD results
+
+`address_maad_stats` stores one MAAD analysis per bucket, IP version, locality pair, address side,
+and `measure`:
+
+| `measure`   | Weights each address by                  | `spectrum`                   |
+| ----------- | ---------------------------------------- | ---------------------------- |
+| `addresses` | 1 (distinct addresses)                   | Stored, possibly zero-length |
+| `packets`   | Packets summed over the bucket and scope | `NULL` (not computed)        |
+| `bytes`     | Bytes summed over the bucket and scope   | `NULL` (not computed)        |
+
+Weighted measures keep the address-count prefix tests and weight only the moments and the entropy.
+The pipeline drops flows that report 0 packets before aggregation. Addresses with zero summed
+packets or bytes, such as CSV rows without a packet count, are left out of that measure, and
+`zero_weight_addrs` counts them. `total_addrs`, `min_prefix_length`, and `max_prefix_length`
+describe the analyzed set. Always filter on `measure`. Otherwise results for different measures mix.
+
+`d0`, `d1`, and `d2` are the generalized dimensions as `REAL`. `tau` and `tau_sd` are little-endian
+32-bit float arrays with one value per q. Element `i` is at `q = q_min + i * q_step`, from the
+`maad_q_grid` row of the same `ip_version`. `spectrum` holds little-endian 32-bit `(alpha, f)` pairs.
+A result with too few addresses has `NULL` dimensions and curves. The D0 and D2 standard deviations
+are the `tau_sd` values at q = 0 and q = 2. D1 has no standard deviation.
+
+```sql
+SELECT
+    source_id,
+    bucket_start,
+    address_side,
+    d0,
+    d1,
+    d2,
+    total_addrs
+FROM address_maad_stats
+WHERE granularity = '1h'
+  AND ip_version = 4
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
+  AND measure = 'packets'
+ORDER BY source_id, bucket_start, address_side;
+```
+
+Decode a curve outside SQL, for example in Python:
+
+```python
+import struct
+
+values = struct.unpack(f"<{len(blob) // 4}f", blob)
 ```
 
 ## Query observation averages
@@ -123,7 +181,7 @@ SELECT
 FROM traffic_stats
 WHERE granularity = '1h'
   AND ip_version = 4
-  AND src_visibility = 'all'
-  AND dst_visibility = 'all'
+  AND src_locality = 'all'
+  AND dst_locality = 'all'
 ORDER BY source_id, bucket_start;
 ```

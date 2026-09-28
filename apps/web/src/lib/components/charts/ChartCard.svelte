@@ -5,7 +5,9 @@
 
 	let {
 		title,
+		subtitle = null,
 		size = 'default',
+		unavailableCopy = null,
 		loading,
 		error,
 		noMetrics,
@@ -29,7 +31,9 @@
 		onmouseleave
 	}: {
 		title: string;
+		subtitle?: string | null;
 		size?: 'default' | 'spectrum' | 'split';
+		unavailableCopy?: string | null;
 		loading: boolean;
 		error: string | null;
 		noMetrics: boolean;
@@ -60,57 +64,71 @@
 		draggable="true"
 		data-drag-handle
 	>
-		<Card.Title class="text-lg font-semibold"><h2>{title}</h2></Card.Title>
+		<Card.Title class="flex items-baseline gap-3 text-lg font-semibold">
+			<h2>{title}</h2>
+			{#if subtitle}
+				<span class="text-muted-foreground text-sm font-normal">{subtitle}</span>
+			{/if}
+		</Card.Title>
 		<DragGrip />
 	</Card.Header>
 
 	<Card.Content class="space-y-4 py-4">
-		{@render controls?.()}
+		{#if unavailableCopy}
+			<div
+				class="border-border bg-background/60 text-muted-foreground flex min-h-32 items-center justify-center rounded-md border px-6 py-8 text-center"
+				data-testid="chart-unavailable"
+			>
+				{unavailableCopy}
+			</div>
+		{:else}
+			{@render controls?.()}
 
-		<div
-			class={size === 'spectrum'
-				? 'border-border bg-background/60 relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border'
-				: size === 'split'
-					? 'border-border bg-background/60 relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border xl:h-[320px] xl:min-h-[240px]'
-					: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
-			role="presentation"
-			{onmousedown}
-			{onmousemove}
-			{onmouseup}
-			{onmouseleave}
-		>
-			{#if loading}
-				<div class="text-muted-foreground flex h-full items-center justify-center">
-					{loadingCopy}
-				</div>
-			{:else if error}
-				<div class="text-destructive flex h-full items-center justify-center">{error}</div>
-			{:else if noMetrics}
-				<div class="text-muted-foreground flex h-full items-center justify-center">
-					{noMetricsCopy}
-				</div>
-			{:else if empty}
-				<div class="text-muted-foreground flex h-full items-center justify-center">
-					{emptyCopy}
-				</div>
-			{:else}
-				<div class="relative h-full">
-					{@render children()}
-					{@render overlay?.()}
-					{#if isDraggingRange && selectionWidth >= minDragPixels}
-						<div
-							class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
-							style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${selectionTop}px; height:${selectionHeight}px;`}
-						></div>
-					{/if}
-					{#if !isDraggingRange && mirroredSelectionStyle !== null}
-						<div
-							class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
-							style={mirroredSelectionStyle}
-						></div>
-					{/if}
-				</div>
-			{/if}
-		</div>
+			<div
+				class={size === 'spectrum'
+					? 'border-border bg-background/60 relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border'
+					: size === 'split'
+						? 'border-border bg-background/60 relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border xl:h-[320px] xl:min-h-[240px]'
+						: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
+				role="presentation"
+				{onmousedown}
+				{onmousemove}
+				{onmouseup}
+				{onmouseleave}
+			>
+				{#if loading}
+					<div class="text-muted-foreground flex h-full items-center justify-center">
+						{loadingCopy}
+					</div>
+				{:else if error}
+					<div class="text-destructive flex h-full items-center justify-center">{error}</div>
+				{:else if noMetrics}
+					<div class="text-muted-foreground flex h-full items-center justify-center">
+						{noMetricsCopy}
+					</div>
+				{:else if empty}
+					<div class="text-muted-foreground flex h-full items-center justify-center">
+						{emptyCopy}
+					</div>
+				{:else}
+					<div class="relative h-full">
+						{@render children()}
+						{@render overlay?.()}
+						{#if isDraggingRange && selectionWidth >= minDragPixels}
+							<div
+								class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
+								style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${selectionTop}px; height:${selectionHeight}px;`}
+							></div>
+						{/if}
+						{#if !isDraggingRange && mirroredSelectionStyle !== null}
+							<div
+								class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
+								style={mirroredSelectionStyle}
+							></div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</Card.Content>
 </Card.Root>

@@ -1,11 +1,19 @@
 <script lang="ts">
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import { getNetflowFileDetailLoader } from '$lib/components/netflow/file-detail-loader.svelte';
 	import NetflowFileHeader from '$lib/components/netflow/NetflowFileHeader.svelte';
 	import NetflowFileLoadingSkeleton from '$lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '$lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '$lib/components/netflow/NetflowFileRouterCard.svelte';
-	import type { FlowVisibility } from '$lib/types/types';
+	import MaadIpVersionFilter from '$lib/components/filters/MaadIpVersionFilter.svelte';
+	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
+	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import {
+		maadMeasureHasSpectrum,
+		type FlowDirection,
+		type MaadIpVersion,
+		type MaadMeasure
+	} from '$lib/types/types';
 	import {
 		createDateFromPSTComponents,
 		epochToPSTComponents,
@@ -16,8 +24,9 @@
 	type NetflowFileDetailData = {
 		dataset: string;
 		slug: string;
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
+		ipVersion: MaadIpVersion;
+		measure: MaadMeasure;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -30,6 +39,8 @@
 
 	let { data }: { data: NetflowFileDetailData } = $props();
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
+	const maadMeasure = $derived(data.measure);
+	const showSpectrum = $derived(maadMeasureHasSpectrum(maadMeasure));
 
 	const formatCount = (value: number | null | undefined) =>
 		typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'N/A';
@@ -51,18 +62,58 @@
 	}
 
 	const nextSlug = $derived(getNextSlug(data.slug));
-	const flowScope = $derived({
-		srcVisibility: data.srcVisibility,
-		dstVisibility: data.dstVisibility
-	});
 
 	function syncLoader() {
-		loader = getNetflowFileDetailLoader(data.dataset, data.slug, flowScope);
+		loader = getNetflowFileDetailLoader(
+			data.dataset,
+			data.slug,
+			data.direction,
+			data.ipVersion,
+			maadMeasure
+		);
 		loader.refresh();
 	}
 
 	function refreshLoader() {
 		loader?.refresh();
+	}
+
+	function handleMaadIpVersionChange({ ipVersion: nextIpVersion }: { ipVersion: MaadIpVersion }) {
+		if (nextIpVersion === data.ipVersion) {
+			return;
+		}
+		void navigateToNetflowFile(
+			goto,
+			data.slug,
+			data.dataset,
+			data.direction,
+			nextIpVersion,
+			data.measure,
+			{
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			}
+		);
+	}
+
+	function handleMaadMeasureChange({ measure }: { measure: MaadMeasure }) {
+		if (measure === maadMeasure) {
+			return;
+		}
+		void navigateToNetflowFile(
+			goto,
+			data.slug,
+			data.dataset,
+			data.direction,
+			data.ipVersion,
+			measure,
+			{
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			}
+		);
 	}
 
 	onMount(() => {
@@ -78,7 +129,9 @@
 	<NetflowFileHeader
 		dataset={data.dataset}
 		{nextSlug}
-		{flowScope}
+		direction={data.direction}
+		ipVersion={data.ipVersion}
+		measure={data.measure}
 		filename={data.fileInfo.filename}
 		year={data.fileInfo.year}
 		month={data.fileInfo.month}
@@ -91,6 +144,20 @@
 				? 'Loading...'
 				: 'N/A'}
 	/>
+
+	<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+		<div class="flex items-center gap-2">
+			<span class="text-foreground text-sm font-medium">MAAD address family:</span>
+			<MaadIpVersionFilter
+				ipVersion={data.ipVersion}
+				onIpVersionChange={handleMaadIpVersionChange}
+			/>
+		</div>
+		<div class="flex items-center gap-2">
+			<span class="text-foreground text-sm font-medium">MAAD measure:</span>
+			<MaadMeasureFilter measure={maadMeasure} onMeasureChange={handleMaadMeasureChange} />
+		</div>
+	</div>
 
 	{#if loader?.error && !loader.hasRows}
 		<NetflowFileMessageCard
@@ -116,7 +183,7 @@
 				/>
 			{/if}
 			{#each loader.rows as row (row.key)}
-				<NetflowFileRouterCard {row} {formatCount} {formatTimestampAsPST} />
+				<NetflowFileRouterCard {row} {showSpectrum} {formatCount} {formatTimestampAsPST} />
 			{/each}
 		</div>
 	{/if}

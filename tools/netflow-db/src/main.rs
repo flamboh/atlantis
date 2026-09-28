@@ -2,7 +2,8 @@ use std::{
     collections::BTreeSet,
     fs::File,
     io::{self, BufRead, BufReader, Write},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
+    num::NonZeroUsize,
     path::PathBuf,
 };
 
@@ -12,6 +13,7 @@ use netflow_db::{
     compare::{CompareOptions, compare_databases},
     export::{ExtractRequest, extract_window, validate_extract_plan},
     feed, maad,
+    merge::{MergeRequest, merge_shards},
     operations::{
         UgrAssetKind, scrape_ugr16_urls, select_web_verification_window, verify_web_routes,
     },
@@ -41,13 +43,15 @@ enum Command {
     Compare(CompareArgs),
     /// Create a consistent SQLite backup or promote a candidate database.
     SqliteMaintenance(MaintenanceArgs),
+    /// Merge day-sharded pipeline products built with identical flags into a new product.
+    MergeShards(MergeShardsArgs),
     /// Extract/segment an immutable archive into a canonical nfcapd tree.
     PrepareNfcapd(PrepareArgs),
     /// Scrape deterministic UGR16 asset URLs.
     ScrapeUgr16(ScrapeArgs),
     /// Verify a running web application against a built database.
     VerifyWebRoutes(WebVerifyArgs),
-    /// Compute MAAD JSON from IPv4 addresses, one per line.
+    /// Compute MAAD JSON from IPv4 (or, with --ipv6, IPv6) addresses, one per line.
     Maad(MaadArgs),
     /// Score IPv4 addresses (one per line) by Singularity alpha, as CSV.
     Singularity(SingularityArgs),
@@ -82,35 +86,38 @@ struct PipelineArgs {
     #[arg(
         long,
         requires = "ip_prefix",
-        conflicts_with_all = ["src_visibility", "dst_visibility"]
+        conflicts_with_all = ["src_locality", "dst_locality"]
     )]
     daily_active_sources: bool,
     #[arg(long, value_enum)]
-    src_visibility: Option<VisibilityArg>,
+    src_locality: Option<LocalityArg>,
     #[arg(long, value_enum)]
-    dst_visibility: Option<VisibilityArg>,
+    dst_locality: Option<LocalityArg>,
     #[arg(long, default_value = "nfdump")]
     nfdump: String,
     #[arg(long)]
     force: bool,
     #[arg(long)]
     no_maad: bool,
+    /// MAAD worker threads (defaults to available parallelism, capped at 8).
+    #[arg(long)]
+    maad_workers: Option<NonZeroUsize>,
     /// Leave partial results in place but fail if requested five-minute coverage is incomplete.
     #[arg(long)]
     require_complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum VisibilityArg {
-    Literal,
-    Anonymized,
+enum LocalityArg {
+    Internal,
+    External,
 }
 
-impl VisibilityArg {
+impl LocalityArg {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Literal => "literal",
-            Self::Anonymized => "anonymized",
+            Self::Internal => "internal",
+            Self::External => "external",
         }
     }
 }
@@ -191,6 +198,20 @@ struct MaintenanceArgs {
 }
 
 #[derive(Debug, Args)]
+struct MergeShardsArgs {
+    /// New product database to create; it must not exist yet.
+    #[arg(long)]
+    output: PathBuf,
+    /// Move the first shard into the output and delete every other shard once its rows are
+    /// committed, so peak disk stays near the output size plus one shard.
+    #[arg(long)]
+    consume: bool,
+    /// Shard databases, each built by `pipeline` over a disjoint local-day range.
+    #[arg(required = true, num_args = 1..)]
+    shards: Vec<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 struct PrepareArgs {
     #[arg(long)]
     archive: PathBuf,
@@ -246,6 +267,12 @@ struct WebVerifyArgs {
 struct MaadArgs {
     /// Read addresses from this file instead of standard input.
     input: Option<PathBuf>,
+    /// Read IPv6 addresses and use the IPv6 prefix range (/23-/64).
+    #[arg(short = '6', long)]
+    ipv6: bool,
+    /// Read `ADDR,MEASURE` rows and emit measure-weighted structure and dimensions.
+    #[arg(long)]
+    weighted: bool,
 }
 
 #[derive(Debug, Args)]
@@ -312,6 +339,7 @@ fn main() -> Result<()> {
                 args.target_path.display()
             );
         }
+        Command::MergeShards(args) => run_merge_shards(args)?,
         Command::PrepareNfcapd(args) => run_prepare(args)?,
         Command::ScrapeUgr16(args) => run_scrape(args)?,
         Command::VerifyWebRoutes(args) => run_web_verify(args)?,
@@ -336,18 +364,21 @@ fn main() -> Result<()> {
 }
 
 fn run_pipeline(args: PipelineArgs) -> Result<()> {
+    if let Some(workers) = args.maad_workers {
+        netflow_db::publish::set_maad_workers(workers)?;
+    }
     let mut selection = serde_json::Map::new();
     if args.daily_active_sources {
         selection.insert("kind".into(), serde_json::json!("daily_active_sources"));
     }
     selection.insert("ip_prefix".into(), serde_json::json!(args.ip_prefix));
     selection.insert(
-        "src_visibility".into(),
-        serde_json::json!(args.src_visibility.map(VisibilityArg::as_str)),
+        "src_locality".into(),
+        serde_json::json!(args.src_locality.map(LocalityArg::as_str)),
     );
     selection.insert(
-        "dst_visibility".into(),
-        serde_json::json!(args.dst_visibility.map(VisibilityArg::as_str)),
+        "dst_locality".into(),
+        serde_json::json!(args.dst_locality.map(LocalityArg::as_str)),
     );
     let selection = serde_json::Value::Object(selection);
     let dataset_ids = args.dataset;
@@ -500,6 +531,30 @@ fn run_compare(args: CompareArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_merge_shards(args: MergeShardsArgs) -> Result<()> {
+    let report = merge_shards(&MergeRequest {
+        output: args.output.clone(),
+        shards: args.shards,
+        consume: args.consume,
+    })?;
+    println!(
+        "Merged {} shards into {}: {} completed days, window {}..{}",
+        report.shards,
+        args.output.display(),
+        report.completed_days,
+        report
+            .first_day_start
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        report
+            .last_day_end
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+    );
+    for (table, rows) in &report.table_rows {
+        println!("{table}: {rows} rows");
+    }
+    Ok(())
+}
+
 fn run_prepare(args: PrepareArgs) -> Result<()> {
     let dataset_root = match args.dataset_root {
         Some(path) => path,
@@ -601,27 +656,75 @@ fn run_web_verify(args: WebVerifyArgs) -> Result<()> {
 }
 
 fn run_maad(args: MaadArgs) -> Result<()> {
-    let addresses = read_ipv4_lines(args.input)?;
-    maad::write_json(&maad::compute(addresses), io::stdout().lock())?;
+    let result = match (args.ipv6, args.weighted) {
+        (false, false) => maad::compute(read_address_lines::<Ipv4Addr>(args.input, "IPv4")?),
+        (true, false) => maad::compute(read_address_lines::<Ipv6Addr>(args.input, "IPv6")?),
+        (false, true) => {
+            maad::compute_weighted(read_weighted_lines::<Ipv4Addr>(args.input, "IPv4")?)?
+        }
+        (true, true) => {
+            maad::compute_weighted(read_weighted_lines::<Ipv6Addr>(args.input, "IPv6")?)?
+        }
+    };
+    maad::write_json(&result, io::stdout().lock())?;
     io::stdout().flush()?;
     Ok(())
 }
 
+/// Read one address family's `ADDR,MEASURE` rows from a file or standard input.
+fn read_weighted_lines<A>(input: Option<PathBuf>, family: &str) -> Result<Vec<(A, f64)>>
+where
+    A: std::str::FromStr,
+    A::Err: std::error::Error + Send + Sync + 'static,
+{
+    let input = open_input(input)?;
+    let mut entries = Vec::new();
+    for line in input.lines() {
+        let line = line?;
+        let value = line.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let (address, measure) = value
+            .split_once(',')
+            .with_context(|| format!("expected ADDR,MEASURE, got {value:?}"))?;
+        entries.push((
+            address
+                .trim()
+                .parse::<A>()
+                .with_context(|| format!("invalid {family} address {address:?}"))?,
+            measure
+                .trim()
+                .parse::<f64>()
+                .with_context(|| format!("invalid measure {measure:?}"))?,
+        ));
+    }
+    Ok(entries)
+}
+
 fn run_singularity(args: SingularityArgs) -> Result<()> {
-    let addresses = read_ipv4_lines(args.input)?;
+    let addresses = read_address_lines::<Ipv4Addr>(args.input, "IPv4")?;
     singularity::write_csv(&singularity::score(addresses), io::stdout().lock())?;
     io::stdout().flush()?;
     Ok(())
 }
 
-/// Read IPv4 addresses, one per line, from a file or standard input.
-fn read_ipv4_lines(input: Option<PathBuf>) -> Result<Vec<Ipv4Addr>> {
-    let input: Box<dyn BufRead> = match input {
+fn open_input(input: Option<PathBuf>) -> Result<Box<dyn BufRead>> {
+    Ok(match input {
         Some(path) => Box::new(BufReader::new(
             File::open(&path).with_context(|| format!("unable to open {}", path.display()))?,
         )),
         None => Box::new(BufReader::new(io::stdin())),
-    };
+    })
+}
+
+/// Read one address family's addresses, one per line, from a file or standard input.
+fn read_address_lines<A>(input: Option<PathBuf>, family: &str) -> Result<Vec<A>>
+where
+    A: std::str::FromStr,
+    A::Err: std::error::Error + Send + Sync + 'static,
+{
+    let input = open_input(input)?;
     let mut addresses = Vec::new();
     for line in input.lines() {
         let line = line?;
@@ -631,8 +734,8 @@ fn read_ipv4_lines(input: Option<PathBuf>) -> Result<Vec<Ipv4Addr>> {
         }
         addresses.push(
             value
-                .parse::<Ipv4Addr>()
-                .with_context(|| format!("invalid IPv4 address {value:?}"))?,
+                .parse::<A>()
+                .with_context(|| format!("invalid {family} address {value:?}"))?,
         );
     }
     Ok(addresses)
@@ -657,4 +760,32 @@ fn parse_boundary(raw: &str, timezone: &str) -> Result<i64> {
         .context("invalid date/time timezone")?
         .timestamp()
         .as_second())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pipeline_args(extra: &[&str]) -> Result<PipelineArgs, clap::Error> {
+        let mut argv = vec!["netflow-db", "pipeline", "--config", "pipeline.json"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).map(|cli| match cli.command {
+            Command::Pipeline(args) => args,
+            command => panic!("unexpected command {command:?}"),
+        })
+    }
+
+    #[test]
+    fn maad_workers_must_be_a_positive_count() {
+        assert_eq!(pipeline_args(&[]).unwrap().maad_workers, None);
+        assert_eq!(
+            pipeline_args(&["--maad-workers", "3"])
+                .unwrap()
+                .maad_workers,
+            NonZeroUsize::new(3)
+        );
+        for invalid in ["0", "-1", "many"] {
+            assert!(pipeline_args(&["--maad-workers", invalid]).is_err());
+        }
+    }
 }

@@ -178,7 +178,7 @@
 			return hours === 0 ? `${weekday} ${month}/${day}` : '';
 		}
 
-		if (currentGroupBy === '30min') {
+		if (currentGroupBy === '30min' || currentGroupBy === '10min') {
 			if (minutes === 0 && (hours === 0 || hours === 12)) {
 				return `${weekday} ${month}/${day} ${hours.toString().padStart(2, '0')}:00`;
 			}
@@ -212,7 +212,7 @@
 		if (currentGroupBy === 'hour') {
 			return hours === 0;
 		}
-		if (currentGroupBy === '30min') {
+		if (currentGroupBy === '30min' || currentGroupBy === '10min') {
 			return minutes === 0 && (hours === 0 || hours === 12);
 		}
 		if (currentGroupBy === '5min') {
@@ -368,8 +368,8 @@
 			const endOfWeek = new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000);
 			const startDateStr = formatDateAsPSTDateString(startOfWeek);
 			const endDateStr = formatDateAsPSTDateString(endOfWeek);
-			onDrillDown?.('30min', startDateStr, endDateStr);
-		} else if (groupBy === '30min') {
+			onDrillDown?.('10min', startDateStr, endDateStr);
+		} else if (groupBy === '30min' || groupBy === '10min') {
 			const endDate = new Date(clickedDate.getTime() + 24 * 60 * 60 * 1000);
 			const startDateStr = formatDateAsPSTDateString(clickedDate);
 			const endDateStr = formatDateAsPSTDateString(endDate);

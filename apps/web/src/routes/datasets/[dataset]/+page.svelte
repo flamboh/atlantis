@@ -9,5 +9,7 @@
 	dataset={data.datasetId}
 	title={data.title}
 	defaultStartDate={data.defaultStartDate}
+	hasLocality={data.hasLocality}
+	maadComputed={data.maadComputed}
 	routers={data.routers}
 />

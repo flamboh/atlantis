@@ -1,12 +1,14 @@
 import { sql } from 'drizzle-orm';
 import {
+	blob,
 	check,
 	index,
 	integer,
 	primaryKey,
 	real,
 	sqliteTable,
-	text
+	text,
+	uniqueIndex
 } from 'drizzle-orm/sqlite-core';
 
 const currentTimestamp = sql`CURRENT_TIMESTAMP`;
@@ -20,7 +22,8 @@ export const datasets = sqliteTable('datasets', {
 	discoveryMode: text('discovery_mode', { enum: ['static', 'live'] })
 		.notNull()
 		.default('static'),
-	sortOrder: integer('sort_order').notNull().default(0)
+	sortOrder: integer('sort_order').notNull().default(0),
+	hasLocality: integer('has_locality', { mode: 'boolean' }).notNull().default(false)
 });
 
 export const sourceMembers = sqliteTable(
@@ -64,7 +67,7 @@ export const bucketCoverage = sqliteTable(
 	'bucket_coverage',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		coverageState: text('coverage_state', {
@@ -127,12 +130,12 @@ export const trafficStats = sqliteTable(
 	'traffic_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		...netflowMetricColumns(),
 		processedAt: text('processed_at').default(currentTimestamp)
 	},
@@ -143,8 +146,8 @@ export const trafficStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility
+				table.srcLocality,
+				table.dstLocality
 			]
 		}),
 		index('idx_traffic_stats_query').on(
@@ -152,17 +155,25 @@ export const trafficStats = sqliteTable(
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility
+			table.srcLocality,
+			table.dstLocality
 		),
 		index('idx_traffic_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('traffic_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'traffic_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'traffic_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -170,12 +181,12 @@ export const protocolStats = sqliteTable(
 	'protocol_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		uniqueProtocolsCount: integer('unique_protocols_count').notNull(),
 		protocolsList: text('protocols_list').notNull(),
 		processedAt: text('processed_at').default(currentTimestamp)
@@ -187,18 +198,26 @@ export const protocolStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility
+				table.srcLocality,
+				table.dstLocality
 			]
 		}),
 		index('idx_protocol_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('protocol_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'protocol_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'protocol_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -206,12 +225,12 @@ export const addressCountStats = sqliteTable(
 	'address_count_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
 		uniqueAddressCount: integer('unique_address_count').notNull(),
 		processedAt: text('processed_at').default(currentTimestamp)
@@ -223,8 +242,8 @@ export const addressCountStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
+				table.srcLocality,
+				table.dstLocality,
 				table.addressSide
 			]
 		}),
@@ -233,18 +252,26 @@ export const addressCountStats = sqliteTable(
 			table.bucketStart,
 			table.sourceId,
 			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.addressSide
 		),
 		index('idx_address_count_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('address_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'address_count_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_count_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
@@ -252,12 +279,12 @@ export const portCountStats = sqliteTable(
 	'port_count_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		portSide: text('port_side', { enum: ['source', 'destination'] }).notNull(),
 		portRange: text('port_range', { enum: ['low', 'high'] }).notNull(),
 		uniquePortCount: integer('unique_port_count').notNull(),
@@ -270,8 +297,8 @@ export const portCountStats = sqliteTable(
 				table.granularity,
 				table.bucketStart,
 				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
+				table.srcLocality,
+				table.dstLocality,
 				table.portSide,
 				table.portRange
 			]
@@ -279,64 +306,111 @@ export const portCountStats = sqliteTable(
 		index('idx_port_count_stats_timeseries').on(
 			table.sourceId,
 			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
+			table.srcLocality,
+			table.dstLocality,
 			table.bucketStart
 		),
-		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check('port_count_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'port_count_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'port_count_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		)
 	]
 );
 
-export const addressStructureStats = sqliteTable(
-	'address_structure_stats',
+export const addressMaadStats = sqliteTable(
+	'address_maad_stats',
 	{
 		sourceId: text('source_id').notNull(),
-		granularity: text('granularity', { enum: ['5m', '30m', '1h', '1d'] }).notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
 		bucketStart: integer('bucket_start').notNull(),
 		bucketEnd: integer('bucket_end').notNull(),
 		ipVersion: integer('ip_version').notNull(),
-		srcVisibility: text('src_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
-		dstVisibility: text('dst_visibility', { enum: ['all', 'literal', 'anonymized'] }).notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
 		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
-		structureKind: text('structure_kind', {
-			enum: ['structure', 'spectrum', 'dimension']
-		}).notNull(),
-		valuesJson: text('values_json').notNull(),
-		metadataJson: text('metadata_json').notNull(),
-		processedAt: text('processed_at').default(currentTimestamp)
+		measure: text('measure', { enum: ['addresses', 'packets', 'bytes'] }).notNull(),
+		totalAddrs: integer('total_addrs').notNull(),
+		zeroWeightAddrs: integer('zero_weight_addrs').notNull().default(0),
+		minPrefixLength: integer('min_prefix_length'),
+		maxPrefixLength: integer('max_prefix_length'),
+		d0: real('d0'),
+		d1: real('d1'),
+		d2: real('d2'),
+		tau: blob('tau', { mode: 'buffer' }),
+		tauSd: blob('tau_sd', { mode: 'buffer' }),
+		spectrum: blob('spectrum', { mode: 'buffer' })
 	},
 	(table) => [
-		primaryKey({
-			columns: [
-				table.sourceId,
-				table.granularity,
-				table.bucketStart,
-				table.ipVersion,
-				table.srcVisibility,
-				table.dstVisibility,
-				table.addressSide,
-				table.structureKind
-			]
-		}),
-		index('idx_address_structure_stats_query').on(
+		uniqueIndex('idx_address_maad_stats_key').on(
+			table.sourceId,
 			table.granularity,
+			table.srcLocality,
+			table.dstLocality,
+			table.ipVersion,
+			table.measure,
 			table.bucketStart,
-			table.sourceId,
-			table.ipVersion,
-			table.srcVisibility,
-			table.dstVisibility,
-			table.addressSide,
-			table.structureKind
+			table.addressSide
 		),
-		index('idx_address_structure_stats_timeseries').on(
-			table.sourceId,
-			table.granularity,
-			table.srcVisibility,
-			table.dstVisibility,
-			table.ipVersion,
-			table.structureKind,
-			table.bucketStart
+		index('idx_address_maad_stats_bucket').on(table.granularity, table.bucketStart),
+		check('address_maad_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'address_maad_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
 		),
-		check('address_structure_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`)
+		check(
+			'address_maad_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_maad_stats_measure_check',
+			sql`${table.measure} IN ('addresses', 'packets', 'bytes')`
+		),
+		check('address_maad_stats_bucket_check', sql`${table.bucketEnd} > ${table.bucketStart}`),
+		check('address_maad_stats_total_addrs_check', sql`${table.totalAddrs} >= 0`),
+		check(
+			'address_maad_stats_zero_weight_addrs_check',
+			sql`${table.zeroWeightAddrs} >= 0 AND (${table.measure} <> 'addresses' OR ${table.zeroWeightAddrs} = 0)`
+		),
+		check(
+			'address_maad_stats_prefix_length_check',
+			sql`${table.maxPrefixLength} >= ${table.minPrefixLength}`
+		),
+		check(
+			'address_maad_stats_tau_check',
+			sql`typeof(${table.tau}) IN ('null', 'blob') AND length(${table.tau}) > 0 AND length(${table.tau}) % 4 = 0`
+		),
+		check(
+			'address_maad_stats_tau_sd_check',
+			sql`typeof(${table.tauSd}) = typeof(${table.tau}) AND length(${table.tauSd}) IS length(${table.tau})`
+		),
+		check(
+			'address_maad_stats_spectrum_check',
+			sql`typeof(${table.spectrum}) IN ('null', 'blob') AND length(${table.spectrum}) % 8 = 0`
+		),
+		check(
+			'address_maad_stats_measure_spectrum_check',
+			sql`${table.measure} = 'addresses' OR ${table.spectrum} IS NULL`
+		),
+		check('address_maad_stats_tau_d0_check', sql`(${table.tau} IS NULL) = (${table.d0} IS NULL)`)
+	]
+);
+
+export const maadQGrid = sqliteTable(
+	'maad_q_grid',
+	{
+		ipVersion: integer('ip_version').primaryKey(),
+		qMin: real('q_min').notNull(),
+		qStep: real('q_step').notNull(),
+		qCount: integer('q_count').notNull()
+	},
+	(table) => [
+		check('maad_q_grid_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check('maad_q_grid_q_step_check', sql`${table.qStep} > 0`),
+		check('maad_q_grid_q_count_check', sql`${table.qCount} > 0`)
 	]
 );

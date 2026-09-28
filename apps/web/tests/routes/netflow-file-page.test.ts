@@ -13,6 +13,7 @@ describe('/netflow/files/[slug] page load', () => {
 						label: 'Alpha',
 						defaultStartDate: '2025-02-11',
 						discoveryMode: 'db',
+						hasLocality: false,
 						isDefault: true
 					}
 				],
@@ -22,9 +23,7 @@ describe('/netflow/files/[slug] page load', () => {
 
 		const result = await load({
 			params: { slug: '202503010005' },
-			url: new URL(
-				'http://localhost/netflow/files/202503010005?srcVisibility=literal&dstVisibility=anonymized'
-			),
+			url: new URL('http://localhost/netflow/files/202503010005?direction=ingress'),
 			fetch
 		} as never);
 
@@ -32,8 +31,9 @@ describe('/netflow/files/[slug] page load', () => {
 		expect(result).toEqual({
 			dataset: 'alpha',
 			slug: '202503010005',
-			srcVisibility: 'literal',
-			dstVisibility: 'anonymized',
+			direction: 'ingress',
+			ipVersion: 4,
+			measure: 'addresses',
 			fileInfo: {
 				year: '2025',
 				month: '03',
@@ -45,18 +45,61 @@ describe('/netflow/files/[slug] page load', () => {
 		});
 	});
 
-	it('rejects invalid visibility params', async () => {
+	it('reads the MAAD IP family from the search params', async () => {
+		const result = await load({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&ipVersion=6'),
+			fetch: vi.fn()
+		} as never);
+
+		expect(result).toMatchObject({ dataset: 'alpha', direction: 'all', ipVersion: 6 });
+	});
+
+	it('rejects invalid ipVersion params', async () => {
 		await expect(
 			load({
 				params: { slug: '202503010005' },
-				url: new URL('http://localhost/netflow/files/202503010005?dstVisibility=bogus'),
+				url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&ipVersion=5'),
+				fetch: vi.fn()
+			} as never)
+		).rejects.toMatchObject({
+			status: 400,
+			body: { message: 'Invalid ipVersion. Expected one of: 4, 6' }
+		});
+	});
+
+	it('rejects invalid direction params', async () => {
+		await expect(
+			load({
+				params: { slug: '202503010005' },
+				url: new URL('http://localhost/netflow/files/202503010005?direction=bogus'),
 				fetch: vi.fn()
 			} as never)
 		).rejects.toMatchObject({
 			status: 400,
 			body: {
-				message: 'Invalid dstVisibility. Expected one of: all, literal, anonymized'
+				message: 'Invalid direction. Expected one of: all, ingress, egress, lateral, transit'
 			}
+		});
+	});
+
+	it('reads the MAAD measure from the URL and rejects unknown measures', async () => {
+		const result = await load({
+			params: { slug: '202503010005' },
+			url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&measure=bytes'),
+			fetch: vi.fn()
+		} as never);
+		expect(result).toMatchObject({ dataset: 'alpha', direction: 'all', measure: 'bytes' });
+
+		await expect(
+			load({
+				params: { slug: '202503010005' },
+				url: new URL('http://localhost/netflow/files/202503010005?dataset=alpha&measure=flows'),
+				fetch: vi.fn()
+			} as never)
+		).rejects.toMatchObject({
+			status: 400,
+			body: { message: 'Invalid measure. Expected one of: addresses, packets, bytes' }
 		});
 	});
 });

@@ -10,6 +10,7 @@ import { createDateFromPSTComponents, epochToPSTComponents } from '$lib/utils/ti
 
 const GRANULARITY_SECONDS: Record<IpGranularity, number> = {
 	'5m': 5 * 60,
+	'10m': 10 * 60,
 	'30m': 30 * 60,
 	'1h': 60 * 60,
 	'1d': 24 * 60 * 60

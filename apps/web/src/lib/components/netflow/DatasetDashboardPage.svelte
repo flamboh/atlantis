@@ -16,14 +16,18 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { clampGroupByToDateRange } from '$lib/components/charts/chart-utils';
 	import {
-		FLOW_SCOPE_OPTIONS,
-		type FlowVisibility,
+		DEFAULT_MAAD_IP_VERSION,
+		DEFAULT_MAAD_MEASURE,
+		type FlowDirection,
 		IP_METRIC_OPTIONS,
-		type FlowScopeKey,
 		type IpGranularity,
 		type IpMetricKey,
+		type MaadIpVersion,
+		type MaadMeasure,
+		maadMeasureHasSpectrum,
 		type ProtocolMetricKey
 	} from '$lib/types/types';
+	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
 	import { watch } from 'runed';
 	import { useSearchParams } from 'runed/kit';
 	import { createDateRangeSearchSchema } from '$lib/schemas';
@@ -32,6 +36,8 @@
 	const props = $props<{
 		dataset: string;
 		defaultStartDate: string;
+		hasLocality?: boolean;
+		maadComputed?: boolean;
 		routers?: string[];
 		title?: string;
 	}>();
@@ -57,12 +63,14 @@
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
 	let ipMetrics = $state<IpMetricKey[]>([...defaultIpMetrics]);
 	let protocolMetrics = $state<ProtocolMetricKey[]>(['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6']);
+	let dimensionMetrics = $state<DimensionMetricKey[]>(['saD1']);
 	type ChartCardId =
 		| 'dashboard'
 		| 'characteristics'
 		| 'ports'
 		| 'ip'
 		| 'protocol'
+		| 'dimensions'
 		| 'spectrum'
 		| 'coverage';
 	const DEFAULT_CHART_ORDER: ChartCardId[] = [
@@ -71,6 +79,7 @@
 		'ports',
 		'ip',
 		'protocol',
+		'dimensions',
 		'spectrum',
 		'coverage'
 	];
@@ -80,10 +89,12 @@
 		ports: { title: 'Unique Ports', minimumHeight: 440 },
 		ip: { title: 'IP Address Breakdown', minimumHeight: 440 },
 		protocol: { title: 'Protocol Breakdown', minimumHeight: 440 },
+		dimensions: { title: 'MAAD Dimensions', minimumHeight: 440 },
 		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
 		coverage: { title: 'Coverage', minimumHeight: 113 }
 	};
-	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v5';
+	const UNAVAILABLE_CARD_MINIMUM_HEIGHT = 214;
+	const CHART_ORDER_STORAGE_KEY = 'netflow-main-chart-order-v6';
 	let chartOrder = $state<ChartCardId[]>([...DEFAULT_CHART_ORDER]);
 	let activatedCharts = $state<Record<ChartCardId, boolean>>({
 		dashboard: false,
@@ -91,6 +102,7 @@
 		ports: false,
 		ip: false,
 		protocol: false,
+		dimensions: false,
 		spectrum: false,
 		coverage: false
 	});
@@ -113,6 +125,9 @@
 		protocol: createNearViewportAttachment(() => {
 			activatedCharts.protocol = true;
 		}),
+		dimensions: createNearViewportAttachment(() => {
+			activatedCharts.dimensions = true;
+		}),
 		spectrum: createNearViewportAttachment(() => {
 			activatedCharts.spectrum = true;
 		}),
@@ -126,6 +141,12 @@
 	}
 
 	function getCardMinimumHeight(chartId: ChartCardId): number {
+		if (
+			(chartId === 'dimensions' && maadUnavailableCopy) ||
+			(chartId === 'spectrum' && spectrumUnavailableCopy)
+		) {
+			return UNAVAILABLE_CARD_MINIMUM_HEIGHT;
+		}
 		if (chartId !== 'coverage') {
 			return CHART_CARD_DETAILS[chartId].minimumHeight;
 		}
@@ -137,26 +158,29 @@
 		date: '1d',
 		hour: '1h',
 		'30min': '30m',
+		'10min': '10m',
 		'5min': '5m'
 	};
 
 	const ipGranularity = $derived(GROUP_BY_TO_IP[selectedGroupBy]);
-	function getFlowScopeKey(
-		srcVisibility: FlowVisibility,
-		dstVisibility: FlowVisibility
-	): FlowScopeKey {
-		return (
-			FLOW_SCOPE_OPTIONS.find(
-				(option) => option.srcVisibility === srcVisibility && option.dstVisibility === dstVisibility
-			)?.key ?? 'all'
-		);
-	}
-
-	const flowScopeKey = $derived(
-		getFlowScopeKey(params.srcVisibility as FlowVisibility, params.dstVisibility as FlowVisibility)
+	const hasLocality = $derived(props.hasLocality ?? true);
+	const ipVersion = $derived<MaadIpVersion>(params.ipVersion);
+	const direction = $derived<FlowDirection>(
+		hasLocality ? (params.direction as FlowDirection) : 'all'
 	);
-	const srcVisibility = $derived(params.srcVisibility as FlowVisibility);
-	const dstVisibility = $derived(params.dstVisibility as FlowVisibility);
+	const measure = $derived(params.measure as MaadMeasure);
+	const maadComputed = $derived(props.maadComputed ?? true);
+	const maadUnavailableCopy = $derived(
+		maadComputed
+			? null
+			: 'MAAD was not computed for this dataset. Rebuild it without --no-maad to chart MAAD results.'
+	);
+	const spectrumUnavailableCopy = $derived(
+		maadUnavailableCopy ??
+			(maadMeasureHasSpectrum(measure)
+				? null
+				: 'The spectrum is only computed for the Addresses measure. Switch MAAD to Addresses in Controls to see it.')
+	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
@@ -169,8 +193,7 @@
 		groupBy: selectedGroupBy,
 		routers: selectedRouters,
 		routersLoaded,
-		srcVisibility,
-		dstVisibility
+		direction
 	}));
 
 	function isValidChartOrder(value: unknown): value is ChartCardId[] {
@@ -411,7 +434,7 @@
 	}
 
 	function handleMetricNavigateToFile(slug: string) {
-		void navigateToNetflowFile(goto, slug, props.dataset, { srcVisibility, dstVisibility });
+		void navigateToNetflowFile(goto, slug, props.dataset, direction, ipVersion, measure);
 	}
 
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
@@ -431,15 +454,25 @@
 		ipMetrics = payload.metrics;
 	}
 
-	function handleScopeChange(payload: { scope: FlowScopeKey }) {
-		const flowScope = FLOW_SCOPE_OPTIONS.find((option) => option.key === payload.scope);
-		if (!flowScope) {
+	function handleDirectionChange(payload: { direction: FlowDirection }) {
+		if (payload.direction === params.direction) {
 			return;
 		}
-		params.update({
-			srcVisibility: flowScope.srcVisibility,
-			dstVisibility: flowScope.dstVisibility
-		});
+		params.direction = payload.direction;
+	}
+
+	function handleIpVersionChange(payload: { ipVersion: MaadIpVersion }) {
+		if (payload.ipVersion === params.ipVersion) {
+			return;
+		}
+		params.ipVersion = payload.ipVersion;
+	}
+
+	function handleMeasureChange(payload: { measure: MaadMeasure }) {
+		if (payload.measure === params.measure) {
+			return;
+		}
+		params.measure = payload.measure;
 	}
 
 	function handleResetView() {
@@ -451,8 +484,9 @@
 			groupBy: selectedGroupBy,
 			startDate,
 			endDate,
-			srcVisibility: 'all',
-			dstVisibility: 'all'
+			direction: 'all',
+			ipVersion: DEFAULT_MAAD_IP_VERSION,
+			measure: DEFAULT_MAAD_MEASURE
 		});
 	}
 </script>
@@ -473,12 +507,17 @@
 		{endDate}
 		groupBy={selectedGroupBy}
 		routers={selectedRouters}
-		flowScope={flowScopeKey}
+		{direction}
+		showDirection={hasLocality}
+		measure={maadComputed ? measure : undefined}
+		maadIpVersion={ipVersion}
 		onStartDateChange={handleStartDateChange}
 		onEndDateChange={handleEndDateChange}
 		onGroupByChange={handleGroupByChange}
 		onRoutersChange={handleRoutersChange}
-		onScopeChange={handleScopeChange}
+		onDirectionChange={handleDirectionChange}
+		onMeasureChange={handleMeasureChange}
+		onMaadIpVersionChange={handleIpVersionChange}
 		onResetView={handleResetView}
 	/>
 	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
@@ -546,8 +585,9 @@
 						routers={selectedRouters}
 						{routersLoaded}
 						{dataOptions}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
+						{ipVersion}
+						{measure}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onDataOptionsChange={handleDataOptionsChange}
@@ -579,8 +619,8 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={ipMetrics}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
+						{ipVersion}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={handleIpMetricsChange}
@@ -594,12 +634,31 @@
 						granularity={ipGranularity}
 						routers={selectedRouters}
 						activeMetrics={protocolMetrics}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
+						{ipVersion}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onMetricsChange={(payload) => {
 							protocolMetrics = payload.metrics;
+						}}
+					/>
+				{:else if chartId === 'dimensions'}
+					<BreakdownChart
+						kind="dimensions"
+						dataset={props.dataset}
+						{startDate}
+						{endDate}
+						granularity={ipGranularity}
+						routers={selectedRouters}
+						activeMetrics={dimensionMetrics}
+						{ipVersion}
+						{measure}
+						unavailableCopy={maadUnavailableCopy}
+						{direction}
+						onDateChange={handleDateChange}
+						onGroupByChange={handleGroupByChange}
+						onMetricsChange={(payload) => {
+							dimensionMetrics = payload.metrics;
 						}}
 					/>
 				{:else if chartId === 'spectrum'}
@@ -611,9 +670,11 @@
 						granularity={ipGranularity}
 						router={selectedSpectrumRouter}
 						addressType={selectedSpectrumAddressType}
+						{ipVersion}
+						{measure}
+						unavailableCopy={spectrumUnavailableCopy}
 						availableRouters={availableSpectrumRouters}
-						{srcVisibility}
-						{dstVisibility}
+						{direction}
 						onDateChange={handleDateChange}
 						onGroupByChange={handleGroupByChange}
 						onRouterChange={(payload) => {

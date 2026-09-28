@@ -1,10 +1,14 @@
-import type {
-	FileIpCounts,
-	FlowScope,
-	NetflowFileDetailsResponse,
-	NetflowFileSummaryRecord,
-	SpectrumData,
-	StructureFunctionData
+import {
+	DEFAULT_MAAD_IP_VERSION,
+	DEFAULT_MAAD_MEASURE,
+	type FileIpCounts,
+	type FlowDirection,
+	type MaadIpVersion,
+	type MaadMeasure,
+	type NetflowFileDetailsResponse,
+	type NetflowFileSummaryRecord,
+	type SpectrumData,
+	type StructureFunctionData
 } from '$lib/types/types';
 import { SvelteMap } from 'svelte/reactivity';
 
@@ -66,19 +70,36 @@ export type NetflowFileRouterRow = {
 	};
 };
 
-function buildLoaderKey(dataset: string, slug: string, flowScope: FlowScope): string {
-	return `${dataset}:${slug}:${flowScope.srcVisibility}:${flowScope.dstVisibility}`;
+function buildLoaderKey(
+	dataset: string,
+	slug: string,
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion,
+	measure: MaadMeasure
+): string {
+	return `${dataset}:${slug}:${direction}:${ipVersion}:${measure}`;
 }
 
-function buildScopeSearchParams(flowScope: FlowScope): Record<string, string> {
-	if (flowScope.srcVisibility === 'all' && flowScope.dstVisibility === 'all') {
-		return {};
+function buildScopeSearchParams(
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion,
+	measure: MaadMeasure
+): Record<string, string> {
+	const params: Record<string, string> = {};
+
+	if (direction !== 'all') {
+		params.direction = direction;
 	}
 
-	return {
-		srcVisibility: flowScope.srcVisibility,
-		dstVisibility: flowScope.dstVisibility
-	};
+	if (ipVersion !== DEFAULT_MAAD_IP_VERSION) {
+		params.ipVersion = String(ipVersion);
+	}
+
+	if (measure !== DEFAULT_MAAD_MEASURE) {
+		params.measure = measure;
+	}
+
+	return params;
 }
 
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
@@ -97,7 +118,9 @@ async function readErrorMessage(response: Response, fallback: string): Promise<s
 class NetflowFileDetailLoader {
 	readonly dataset: string;
 	readonly slug: string;
-	readonly flowScope: FlowScope;
+	readonly direction: FlowDirection;
+	readonly ipVersion: MaadIpVersion;
+	readonly measure: MaadMeasure;
 	readonly key: string;
 
 	private _loading = $state(false);
@@ -110,11 +133,19 @@ class NetflowFileDetailLoader {
 	private _lastAccessedAt = Date.now();
 	private summarySkeletonDelayId: ReturnType<typeof setTimeout> | null = null;
 
-	constructor(dataset: string, slug: string, flowScope: FlowScope) {
+	constructor(
+		dataset: string,
+		slug: string,
+		direction: FlowDirection,
+		ipVersion: MaadIpVersion,
+		measure: MaadMeasure
+	) {
 		this.dataset = dataset;
 		this.slug = slug;
-		this.flowScope = flowScope;
-		this.key = buildLoaderKey(dataset, slug, flowScope);
+		this.direction = direction;
+		this.ipVersion = ipVersion;
+		this.measure = measure;
+		this.key = buildLoaderKey(dataset, slug, direction, ipVersion, measure);
 	}
 
 	get loading() {
@@ -284,7 +315,7 @@ class NetflowFileDetailLoader {
 			const response = await fetch(
 				`/api/netflow/files/${this.slug}/details?${new URLSearchParams({
 					dataset: this.dataset,
-					...buildScopeSearchParams(this.flowScope)
+					...buildScopeSearchParams(this.direction, this.ipVersion, this.measure)
 				}).toString()}`
 			);
 
@@ -364,7 +395,7 @@ class NetflowFileDetailLoader {
 		return `/api/netflow/files/${this.slug}/${kind === 'ipCounts' ? 'ip-counts' : kind}?${new URLSearchParams(
 			{
 				dataset: this.dataset,
-				...buildScopeSearchParams(this.flowScope),
+				...buildScopeSearchParams(this.direction, this.ipVersion, this.measure),
 				router,
 				source: String(side === 'source')
 			}
@@ -393,12 +424,18 @@ function evictStaleLoaders() {
 	}
 }
 
-export function getNetflowFileDetailLoader(dataset: string, slug: string, flowScope: FlowScope) {
-	const key = buildLoaderKey(dataset, slug, flowScope);
+export function getNetflowFileDetailLoader(
+	dataset: string,
+	slug: string,
+	direction: FlowDirection,
+	ipVersion: MaadIpVersion = DEFAULT_MAAD_IP_VERSION,
+	measure: MaadMeasure = DEFAULT_MAAD_MEASURE
+) {
+	const key = buildLoaderKey(dataset, slug, direction, ipVersion, measure);
 	let loader = fileDetailLoaders.get(key);
 
 	if (!loader) {
-		loader = new NetflowFileDetailLoader(dataset, slug, flowScope);
+		loader = new NetflowFileDetailLoader(dataset, slug, direction, ipVersion, measure);
 		fileDetailLoaders.set(key, loader);
 	}
 

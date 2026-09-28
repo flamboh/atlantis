@@ -24,6 +24,7 @@ use crate::{
         StatisticalBucket,
     },
     ingest::{self, IngestError, ProducerError},
+    locality::{LocalityRuleConfig, LocalityRules},
     nfdump,
     provenance::{
         ExecutableRevision, ExpectedAbsence, FileSnapshot, InputRevision, ProvenanceError,
@@ -177,6 +178,8 @@ struct PipelineConfigFile {
     nfdump: Option<String>,
     #[serde(default)]
     selection: Value,
+    #[serde(default)]
+    locality: Vec<LocalityRuleConfig>,
     inputs: Vec<InputSpec>,
     #[serde(default)]
     datasets: Vec<Dataset>,
@@ -802,6 +805,23 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
         } else {
             requested_selection
         };
+        if let Some(dataset) = config
+            .datasets
+            .iter()
+            .find(|dataset| !dataset.locality.is_empty())
+        {
+            return Err(PipelineError::InvalidConfig(format!(
+                "dataset {:?} declares locality inside a pipeline config; declare `locality` at the top level of the config",
+                dataset.dataset_id
+            )));
+        }
+        let config_directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(std::env::current_dir, |parent| Ok(parent.to_path_buf()))?;
+        let locality = LocalityRules::from_config(&config.locality, &config_directory)
+            .map_err(|error| PipelineError::InvalidConfig(error.to_string()))?;
+        let selection = bind_locality(selection, locality)?;
         validate_selection_inputs(&selection, &config.inputs)?;
         if request.force {
             let tree_count = config
@@ -882,6 +902,7 @@ fn resolve_dataset_request(
             "overriding a dataset's flow selection requires an explicit --database-path".into(),
         ));
     }
+    let selection = bind_locality(selection, dataset.locality_rules()?)?;
     let (nfdump, nfdump_revision) = match shared_nfdump {
         Some((path, revision)) => (path.to_owned(), Some(revision.clone())),
         None => {
@@ -916,6 +937,20 @@ fn resolve_dataset_request(
 
 fn selection_from_value(value: &Value) -> Result<FlowSelection, DomainError> {
     FlowSelection::from_payload((!value.is_null()).then_some(value))
+}
+
+fn bind_locality(
+    selection: FlowSelection,
+    locality: LocalityRules,
+) -> Result<FlowSelection, PipelineError> {
+    if locality.is_empty()
+        && (selection.src_locality().is_some() || selection.dst_locality().is_some())
+    {
+        return Err(PipelineError::InvalidConfig(
+            "selections that filter on endpoint locality require locality rules; without rules every endpoint is external".into(),
+        ));
+    }
+    Ok(selection.with_locality(Arc::new(locality)))
 }
 
 fn validate_selection_inputs(
@@ -1124,7 +1159,7 @@ fn infer_default_start_dates(
 }
 
 /// Local calendar day that contains `timestamp`, formatted as `YYYY-MM-DD`.
-fn local_date(timestamp: i64, timezone: &str) -> Result<String, PipelineError> {
+pub(crate) fn local_date(timestamp: i64, timezone: &str) -> Result<String, PipelineError> {
     Ok(Timestamp::from_second(timestamp)
         .map_err(|error| PipelineError::Time(error.to_string()))?
         .in_tz(timezone)
@@ -1199,7 +1234,12 @@ fn initialize_metadata_in_transaction_with_layouts(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(connection, dataset, sources)?;
+        upsert_dataset_with_sources(
+            connection,
+            dataset,
+            sources,
+            !pipeline.selection.locality().is_empty(),
+        )?;
     }
     if !layouts.is_empty() {
         let layout = layouts
@@ -1225,7 +1265,12 @@ fn initialize_coordinated_metadata_in_transaction(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(connection, dataset, sources)?;
+        upsert_dataset_with_sources(
+            connection,
+            dataset,
+            sources,
+            !pipeline.selection.locality().is_empty(),
+        )?;
     }
     if !layout.is_empty() {
         let layout = layout
@@ -1457,18 +1502,11 @@ fn bind_identity(
     pipeline: &ResolvedPipeline,
 ) -> Result<(), PipelineError> {
     verify_nfdump_revision(pipeline)?;
-    let maad_config = serde_json::to_value(crate::maad::MaadConfig::default())?;
-    let schema = json!({
-        "version": 3,
-        "tables": [
-            {"name":"traffic_stats","version":2},
-            {"name":"protocol_stats","version":1},
-            {"name":"address_count_stats","version":1},
-            {"name":"port_count_stats","version":1},
-            {"name":"address_structure_stats","version":1},
-            {"name":"bucket_coverage","version":1}
-        ]
+    let maad_config = json!({
+        "ipv4": crate::maad::MaadConfig::ipv4(),
+        "ipv6": crate::maad::MaadConfig::ipv6(),
     });
+    let schema = crate::storage::product_schema();
     let nfdump_executable = pipeline.nfdump_revision.as_ref().map(|revision| {
         json!({
             "locator": revision.locator,
@@ -1476,8 +1514,13 @@ fn bind_identity(
         })
     });
     let result_config = json!({
-        "version": 4,
+        "version": 6,
         "timezone": pipeline.timezone,
+        "locality": pipeline
+            .selection
+            .locality()
+            .identity_payload()
+            .map_err(|error| PipelineError::InvalidConfig(error.to_string()))?,
         "nfcapd_decoder": {
             "protocol_version": nfdump::CONTRACT_VERSION,
             "input_contract": nfdump::INPUT_CONTRACT,
@@ -1489,8 +1532,9 @@ fn bind_identity(
         "maad": {
             "enabled": pipeline.run_maad,
             "backend": "in-process",
-            "contract_version": 2,
-            "config": maad_config
+            "contract_version": 6,
+            "config": maad_config,
+            "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
         }
     });
     let identity = ProductIdentity::create(
@@ -1506,6 +1550,7 @@ fn upsert_dataset_with_sources(
     connection: &Connection,
     dataset: &Dataset,
     logical_sources: &[DatasetSource],
+    has_locality: bool,
 ) -> Result<(), PipelineError> {
     let sources = logical_sources
         .iter()
@@ -1517,6 +1562,7 @@ fn upsert_dataset_with_sources(
     metadata.source_mode = dataset.source_mode.clone();
     metadata.discovery_mode = dataset.discovery_mode.clone();
     metadata.sort_order = dataset.sort_order;
+    metadata.has_locality = has_locality;
     metadata.sources = sources;
     upsert_dataset_metadata(connection, &metadata)?;
     Ok(())
@@ -2530,9 +2576,7 @@ fn process_nfcapd_tree_day(
             .collect::<Vec<_>>()
     });
     let decode_pool = build_nfcapd_decode_pool()?;
-    let mut next = start;
-
-    while next < end {
+    let plan_batch = |next: i64| -> Result<NfcapdTreeBatch, PipelineError> {
         let batch_starts = nfcapd_batch_starts(
             next,
             end,
@@ -2542,7 +2586,7 @@ fn process_nfcapd_tree_day(
             &tree.member_bounds,
             tree.extend_gaps_to_window,
         )?;
-        next = batch_starts
+        let following = batch_starts
             .last()
             .copied()
             .map(|last| next_local_five_minute_start(last, &timezone))
@@ -2564,8 +2608,14 @@ fn process_nfcapd_tree_day(
             .collect::<BTreeMap<_, _>>()
             .into_iter()
             .collect::<Vec<_>>();
-        verify_nfdump_revision(first_pipeline)?;
-        let decoded = decode_pool.install(|| {
+        Ok(NfcapdTreeBatch {
+            following,
+            prepared,
+            requests,
+        })
+    };
+    let decode_batch = |requests: &[NfcapdTreeRequest]| {
+        decode_pool.install(|| {
             requests
                 .par_iter()
                 .map(|((member, bucket_start), path)| {
@@ -2588,49 +2638,132 @@ fn process_nfcapd_tree_day(
                     Ok::<_, PipelineError>(((member.clone(), *bucket_start), buckets))
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()
-        })?;
-        verify_nfdump_revision(first_pipeline)?;
+        })
+    };
 
-        for (selection_index, sink_index) in pending.iter().copied().enumerate() {
-            let aggregate = aggregates[sink_index]
-                .as_mut()
-                .expect("pending output has aggregate state");
-            for timestamp in &prepared {
-                for job in &timestamp.jobs {
-                    let member_buckets = job
-                        .present
-                        .iter()
-                        .map(|(member, _)| {
-                            &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
-                        })
-                        .collect::<Vec<_>>();
-                    let logical = logical_source_bucket(
-                        &job.source_id,
-                        timestamp.bucket_start,
-                        job.expected_units,
-                        &member_buckets,
-                    )?;
-                    aggregate.reject_persisted_siblings(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &timezone,
-                    )?;
-                    publish_nfcapd_bucket(
-                        sinks[sink_index].connection,
-                        &logical,
-                        &job.owners,
-                        &job.absences,
-                        &job.evidence,
-                        true,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    aggregate.include(&logical, &timezone)?;
-                    sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
-                        sinks[sink_index].connection,
-                        sinks[sink_index].pipeline.run_maad,
-                    )?;
-                    sinks[sink_index].report.five_minute_buckets += 1;
-                }
+    if start >= end {
+        return Ok(());
+    }
+    let first = plan_batch(start)?;
+    verify_nfdump_revision(first_pipeline)?;
+    publish_overlapped(
+        first,
+        |batch| {
+            (batch.following < end).then(|| {
+                verify_nfdump_revision(first_pipeline)?;
+                plan_batch(batch.following)
+            })
+        },
+        |batch| {
+            let decoded = decode_batch(&batch.requests)?;
+            verify_nfdump_revision(first_pipeline)?;
+            Ok(decoded)
+        },
+        |batch, decoded| {
+            publish_nfcapd_tree_batch(
+                &batch.prepared,
+                decoded,
+                sinks,
+                pending,
+                aggregates,
+                &timezone,
+            )
+        },
+    )
+}
+
+/// Publish batches in order while the following batch decodes on a scoped thread.
+///
+/// Planning, revision checks and decoding for batch N+1 report their errors only after
+/// batch N is published, and at most two decoded batches are held at once.
+fn publish_overlapped<B: Sync, D: Send>(
+    first: B,
+    next: impl Fn(&B) -> Option<Result<B, PipelineError>>,
+    decode: impl Fn(&B) -> Result<D, PipelineError> + Sync,
+    mut publish: impl FnMut(&B, &D) -> Result<(), PipelineError>,
+) -> Result<(), PipelineError> {
+    let mut batch = first;
+    let mut decoded = decode(&batch)?;
+    loop {
+        let upcoming = next(&batch);
+        let (published, upcoming_decoded) = std::thread::scope(|scope| {
+            let decoding = match &upcoming {
+                Some(Ok(upcoming)) => Some(scope.spawn(|| decode(upcoming))),
+                _ => None,
+            };
+            let published = publish(&batch, &decoded);
+            let upcoming_decoded = decoding.map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            });
+            (published, upcoming_decoded)
+        });
+        published?;
+        let Some(upcoming) = upcoming else {
+            return Ok(());
+        };
+        let upcoming = upcoming?;
+        decoded = upcoming_decoded.expect("a planned batch is decoded")?;
+        batch = upcoming;
+    }
+}
+
+type NfcapdTreeRequest = ((String, i64), PathBuf);
+
+struct NfcapdTreeBatch {
+    following: i64,
+    prepared: Vec<PreparedTreeTimestamp>,
+    requests: Vec<NfcapdTreeRequest>,
+}
+
+fn publish_nfcapd_tree_batch(
+    prepared: &[PreparedTreeTimestamp],
+    decoded: &BTreeMap<(String, i64), Vec<CanonicalBucket>>,
+    sinks: &mut [ProductSink<'_>],
+    pending: &[usize],
+    aggregates: &mut [Option<AggregateBuckets>],
+    timezone: &str,
+) -> Result<(), PipelineError> {
+    for (selection_index, sink_index) in pending.iter().copied().enumerate() {
+        let aggregate = aggregates[sink_index]
+            .as_mut()
+            .expect("pending output has aggregate state");
+        for timestamp in prepared {
+            for job in &timestamp.jobs {
+                let member_buckets = job
+                    .present
+                    .iter()
+                    .map(|(member, _)| {
+                        &decoded[&(member.clone(), timestamp.bucket_start)][selection_index]
+                    })
+                    .collect::<Vec<_>>();
+                let logical = logical_source_bucket(
+                    &job.source_id,
+                    timestamp.bucket_start,
+                    job.expected_units,
+                    &member_buckets,
+                )?;
+                aggregate.reject_persisted_siblings(
+                    sinks[sink_index].connection,
+                    &logical,
+                    timezone,
+                )?;
+                publish_nfcapd_bucket(
+                    sinks[sink_index].connection,
+                    &logical,
+                    &job.owners,
+                    &job.absences,
+                    &job.evidence,
+                    true,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                aggregate.include(&logical, timezone)?;
+                sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
+                    sinks[sink_index].connection,
+                    sinks[sink_index].pipeline.run_maad,
+                )?;
+                sinks[sink_index].report.five_minute_buckets += 1;
             }
         }
     }
@@ -3230,6 +3363,7 @@ impl AggregateBuckets {
             )));
         }
         for granularity in [
+            Granularity::TenMinutes,
             Granularity::ThirtyMinutes,
             Granularity::OneHour,
             Granularity::OneDay,
@@ -3299,6 +3433,16 @@ fn aggregate_bounds(
         .in_tz(timezone)
         .map_err(|error| PipelineError::Time(error.to_string()))?;
     let start = match granularity {
+        Granularity::TenMinutes => zoned
+            .round(
+                ZonedRound::new()
+                    .smallest(Unit::Minute)
+                    .increment(10)
+                    .mode(RoundMode::Trunc),
+            )
+            .map_err(|error| PipelineError::Time(error.to_string()))?
+            .timestamp()
+            .as_second(),
         Granularity::ThirtyMinutes => zoned
             .round(
                 ZonedRound::new()
@@ -3331,6 +3475,7 @@ fn aggregate_bounds(
         }
     };
     let end = match granularity {
+        Granularity::TenMinutes => start + 600,
         Granularity::ThirtyMinutes => start + 1_800,
         Granularity::OneHour => start + 3_600,
         Granularity::OneDay => zoned
@@ -3345,7 +3490,10 @@ fn aggregate_bounds(
     Ok((start, end))
 }
 
-fn next_local_five_minute_start(bucket_start: i64, timezone: &str) -> Result<i64, PipelineError> {
+pub(crate) fn next_local_five_minute_start(
+    bucket_start: i64,
+    timezone: &str,
+) -> Result<i64, PipelineError> {
     let current = Timestamp::from_second(bucket_start)
         .and_then(|timestamp| timestamp.in_tz(timezone))
         .map_err(|error| PipelineError::Time(error.to_string()))?;
@@ -3493,20 +3641,16 @@ fn expected_nfcapd_path(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::{Path, PathBuf},
+pub(crate) mod test_support {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    use jiff::Timestamp;
+
+    use super::{
+        DEFAULT_TIMEZONE, next_date_start, next_local_five_minute_start, parse_date_start,
     };
 
-    use rusqlite::Connection;
-    use serde_json::{Value, json};
-    use tempfile::tempdir;
-
-    use super::*;
-
-    fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
+    pub(crate) fn write_fake_nfdump(executable: &Path, invocation_log: &Path) {
         let stream_path = executable.with_extension("stream");
         let empty_stream_path = executable.with_extension("empty-stream");
         let mut stream = crate::nfdump::ONE_V4_TEST_STREAM.to_vec();
@@ -3535,7 +3679,7 @@ mod tests {
         fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
+    pub(crate) fn write_nfcapd_day(root: &Path, member: &str, date: &str) {
         let mut bucket_start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
         let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
         while bucket_start < end {
@@ -3553,6 +3697,87 @@ mod tests {
             fs::write(path, b"capture").unwrap();
             bucket_start = next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use rusqlite::Connection;
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    use super::test_support::{write_fake_nfdump, write_nfcapd_day};
+    use super::*;
+
+    #[test]
+    fn overlapped_publishing_finishes_a_batch_before_a_later_batch_fails() {
+        let requests_per_batch = NFCAPD_DECODE_BATCH_SIZE + 1;
+        let batches = 3;
+        let published = std::sync::Mutex::new(Vec::new());
+        let decoded = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |&batch| (batch + 1 < batches).then_some(Ok(batch + 1)),
+            |&batch| {
+                let requests = (0..requests_per_batch)
+                    .map(|request| batch * requests_per_batch + request)
+                    .collect::<Vec<_>>();
+                decoded.lock().unwrap().push(batch);
+                if batch == 1 {
+                    return Err(PipelineError::InvalidConfig(format!(
+                        "corrupt capture in batch {batch}"
+                    )));
+                }
+                Ok(requests)
+            },
+            |&batch, requests| {
+                assert_eq!(requests.len(), requests_per_batch);
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("corrupt capture in batch 1")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
+        assert_eq!(*decoded.lock().unwrap(), [0, 1]);
+    }
+
+    #[test]
+    fn overlapped_publishing_reports_a_planning_error_after_the_current_batch() {
+        let published = std::sync::Mutex::new(Vec::new());
+
+        let result = publish_overlapped(
+            0_usize,
+            |_| {
+                Some(Err(PipelineError::InvalidConfig(
+                    "unplannable batch".into(),
+                )))
+            },
+            |&batch| Ok(batch),
+            |&batch, _| {
+                published.lock().unwrap().push(batch);
+                Ok(())
+            },
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unplannable batch")
+        );
+        assert_eq!(*published.lock().unwrap(), [0]);
     }
 
     fn coordinated_request(
@@ -3733,6 +3958,7 @@ mod tests {
                 "root_path": root,
                 "db_path": database,
                 "source_ids": ["edge"],
+                "locality": [{"type": "tos_anonymized"}],
                 "selection": {
                     "kind": "daily_active_sources",
                     "ip_prefix": "72.5.0.0/16"
@@ -3760,7 +3986,39 @@ mod tests {
         .unwrap();
 
         assert!(resolved.selection.selects_daily_active_sources());
+        assert!(!resolved.selection.locality().is_empty());
         assert_eq!(resolved.database_path, database);
+    }
+
+    #[test]
+    fn locality_filters_require_locality_rules() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("captures");
+        fs::create_dir_all(root.join("edge")).unwrap();
+        let executable = temporary.path().join("fake-nfdump");
+        write_fake_nfdump(&executable, &temporary.path().join("invocations"));
+        let registry = temporary.path().join("datasets.json");
+        fs::write(
+            &registry,
+            serde_json::to_vec(&json!([{
+                "dataset_id": "active",
+                "root_path": root,
+                "db_path": temporary.path().join("active.sqlite"),
+                "source_ids": ["edge"],
+                "selection": {
+                    "kind": "daily_active_sources",
+                    "ip_prefix": "72.5.0.0/16"
+                }
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut request = coordinated_request(registry, &executable, "2025-06-01", "2025-06-01");
+        request.dataset_id = Some("active".into());
+
+        let error = resolve_request(&request).unwrap_err().to_string();
+
+        assert!(error.contains("require locality rules"), "{error}");
     }
 
     #[test]
@@ -3783,6 +4041,7 @@ mod tests {
                     "root_path": root,
                     "db_path": first_db,
                     "source_ids": ["edge"],
+                    "locality": [{"type": "tos_anonymized"}],
                     "selection": {
                         "kind": "daily_active_sources",
                         "ip_prefix": "192.0.0.0/16"
@@ -3793,6 +4052,7 @@ mod tests {
                     "root_path": root,
                     "db_path": second_db,
                     "source_ids": ["edge"],
+                    "locality": [{"type": "tos_anonymized"}],
                     "selection": {
                         "kind": "daily_active_sources",
                         "ip_prefix": "198.51.0.0/16"
@@ -3902,6 +4162,35 @@ mod tests {
             }
             assert_eq!(count, expected, "{date}");
             assert_eq!(bucket_start, end, "{date}");
+        }
+    }
+
+    #[test]
+    fn ten_minute_bounds_pair_local_five_minute_buckets_across_dst_transitions() {
+        for (date, expected) in [("2025-03-09", 138), ("2025-11-02", 144)] {
+            let start = parse_date_start(date, DEFAULT_TIMEZONE).unwrap();
+            let end = next_date_start(date, DEFAULT_TIMEZONE).unwrap();
+            let mut children = BTreeMap::<(i64, i64), Vec<i64>>::new();
+            let mut bucket_start = start;
+            while bucket_start < end {
+                let bounds =
+                    aggregate_bounds(bucket_start, Granularity::TenMinutes, DEFAULT_TIMEZONE)
+                        .unwrap();
+                children.entry(bounds).or_default().push(bucket_start);
+                bucket_start =
+                    next_local_five_minute_start(bucket_start, DEFAULT_TIMEZONE).unwrap();
+            }
+            assert_eq!(children.len(), expected, "{date}");
+            for ((bucket_start, bucket_end), members) in &children {
+                assert_eq!(bucket_end - bucket_start, 600, "{date} {bucket_start}");
+                assert_eq!(members, &vec![*bucket_start, bucket_start + 300], "{date}");
+                let (thirty_start, thirty_end) =
+                    aggregate_bounds(*bucket_start, Granularity::ThirtyMinutes, DEFAULT_TIMEZONE)
+                        .unwrap();
+                assert!(thirty_start <= *bucket_start && *bucket_end <= thirty_end);
+            }
+            assert_eq!(children.keys().next().unwrap().0, start, "{date}");
+            assert_eq!(children.keys().last().unwrap().1, end, "{date}");
         }
     }
 }

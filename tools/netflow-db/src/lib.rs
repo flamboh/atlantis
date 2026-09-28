@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 /// The persisted pipeline contract version produced by this implementation.
-pub const PIPELINE_CONTRACT_VERSION: u32 = 4;
+pub const PIPELINE_CONTRACT_VERSION: u32 = 7;
 
 pub mod compare;
 pub mod config;
@@ -12,7 +12,9 @@ pub mod domain;
 pub mod export;
 pub mod feed;
 pub mod ingest;
+pub mod locality;
 pub mod maad;
+pub mod merge;
 pub(crate) mod nfdump;
 pub mod normalize;
 pub mod operations;

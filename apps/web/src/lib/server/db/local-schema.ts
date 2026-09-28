@@ -5,7 +5,8 @@ export const localSchemaSql = `
 		default_start_date TEXT NOT NULL,
 		source_mode TEXT DEFAULT 'static' NOT NULL,
 		discovery_mode TEXT DEFAULT 'static' NOT NULL,
-		sort_order INTEGER DEFAULT 0 NOT NULL
+		sort_order INTEGER DEFAULT 0 NOT NULL,
+		has_locality INTEGER DEFAULT 0 NOT NULL
 	);
 
 	CREATE TABLE IF NOT EXISTS source_members (
@@ -30,7 +31,7 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS bucket_coverage (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL CHECK(bucket_end > bucket_start),
 		coverage_state TEXT NOT NULL CHECK(coverage_state IN ('complete', 'partial', 'unknown')),
@@ -49,12 +50,12 @@ export const localSchemaSql = `
 
 	CREATE TABLE IF NOT EXISTS traffic_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
-		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
+		src_locality TEXT NOT NULL CHECK(src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK(dst_locality IN ('all', 'internal', 'external')),
 		flows INTEGER NOT NULL,
 		flows_tcp INTEGER NOT NULL,
 		flows_udp INTEGER NOT NULL,
@@ -80,71 +81,82 @@ export const localSchemaSql = `
 		max_ttl_count INTEGER NOT NULL,
 		average_max_ttl REAL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
 	);
 
 	CREATE TABLE IF NOT EXISTS protocol_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
-		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
+		src_locality TEXT NOT NULL CHECK(src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK(dst_locality IN ('all', 'internal', 'external')),
 		unique_protocols_count INTEGER NOT NULL,
 		protocols_list TEXT NOT NULL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
 	);
 
 	CREATE TABLE IF NOT EXISTS address_count_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
-		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
+		src_locality TEXT NOT NULL CHECK(src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK(dst_locality IN ('all', 'internal', 'external')),
 		address_side TEXT NOT NULL CHECK(address_side IN ('source', 'destination')),
 		unique_address_count INTEGER NOT NULL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, address_side)
+		PRIMARY KEY(source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side)
 	);
 
-	CREATE TABLE IF NOT EXISTS address_structure_stats (
+	CREATE TABLE IF NOT EXISTS address_maad_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
-		bucket_end INTEGER NOT NULL,
-		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
-		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
-		address_side TEXT NOT NULL CHECK(address_side IN ('source', 'destination')),
-		structure_kind TEXT NOT NULL CHECK(structure_kind IN ('structure', 'spectrum', 'dimension')),
-		values_json TEXT NOT NULL,
-		metadata_json TEXT NOT NULL,
-		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY(
-			source_id, granularity, bucket_start, ip_version,
-			src_visibility, dst_visibility, address_side, structure_kind
-		)
+		bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
+		ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
+		src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
+		address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
+		measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
+		total_addrs INTEGER NOT NULL CHECK (total_addrs >= 0),
+		zero_weight_addrs INTEGER NOT NULL DEFAULT 0
+			CHECK (zero_weight_addrs >= 0 AND (measure <> 'addresses' OR zero_weight_addrs = 0)),
+		min_prefix_length INTEGER,
+		max_prefix_length INTEGER CHECK (max_prefix_length >= min_prefix_length),
+		d0 REAL, d1 REAL, d2 REAL,
+		tau BLOB CHECK (typeof(tau) IN ('null', 'blob') AND length(tau) > 0 AND length(tau) % 4 = 0),
+		tau_sd BLOB CHECK (typeof(tau_sd) = typeof(tau) AND length(tau_sd) IS length(tau)),
+		spectrum BLOB CHECK (typeof(spectrum) IN ('null', 'blob') AND length(spectrum) % 8 = 0),
+		CHECK (measure = 'addresses' OR spectrum IS NULL),
+		CHECK ((tau IS NULL) = (d0 IS NULL))
+	);
+
+	CREATE TABLE IF NOT EXISTS maad_q_grid (
+		ip_version INTEGER PRIMARY KEY CHECK (ip_version IN (4, 6)),
+		q_min REAL NOT NULL,
+		q_step REAL NOT NULL CHECK (q_step > 0),
+		q_count INTEGER NOT NULL CHECK (q_count > 0)
 	);
 
 	CREATE TABLE IF NOT EXISTS port_count_stats (
 		source_id TEXT NOT NULL,
-		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '30m', '1h', '1d')),
+		granularity TEXT NOT NULL CHECK(granularity IN ('5m', '10m', '30m', '1h', '1d')),
 		bucket_start INTEGER NOT NULL,
 		bucket_end INTEGER NOT NULL,
 		ip_version INTEGER NOT NULL CHECK(ip_version IN (4, 6)),
-		src_visibility TEXT NOT NULL CHECK(src_visibility IN ('all', 'literal', 'anonymized')),
-		dst_visibility TEXT NOT NULL CHECK(dst_visibility IN ('all', 'literal', 'anonymized')),
+		src_locality TEXT NOT NULL CHECK(src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK(dst_locality IN ('all', 'internal', 'external')),
 		port_side TEXT NOT NULL CHECK(port_side IN ('source', 'destination')),
 		port_range TEXT NOT NULL CHECK(port_range IN ('low', 'high')),
 		unique_port_count INTEGER NOT NULL,
 		processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY(
 			source_id, granularity, bucket_start, ip_version,
-			src_visibility, dst_visibility, port_side, port_range
+			src_locality, dst_locality, port_side, port_range
 		)
 	);
 
@@ -155,41 +167,38 @@ export const localSchemaSql = `
 	CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
 		ON traffic_stats (
 			granularity, bucket_start, source_id, ip_version,
-			src_visibility, dst_visibility
+			src_locality, dst_locality
 		);
 	CREATE INDEX IF NOT EXISTS idx_traffic_stats_timeseries
 		ON traffic_stats (
-			source_id, granularity, src_visibility, dst_visibility,
+			source_id, granularity, src_locality, dst_locality,
 			bucket_start
 		);
 	CREATE INDEX IF NOT EXISTS idx_protocol_stats_timeseries
 		ON protocol_stats (
-			source_id, granularity, src_visibility, dst_visibility,
+			source_id, granularity, src_locality, dst_locality,
 			bucket_start
 		);
 	CREATE INDEX IF NOT EXISTS idx_address_count_stats_query
 		ON address_count_stats (
 			granularity, bucket_start, source_id, ip_version,
-			src_visibility, dst_visibility, address_side
+			src_locality, dst_locality, address_side
 		);
 	CREATE INDEX IF NOT EXISTS idx_address_count_stats_timeseries
 		ON address_count_stats (
-			source_id, granularity, src_visibility, dst_visibility,
+			source_id, granularity, src_locality, dst_locality,
 			bucket_start
 		);
-	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
-		ON address_structure_stats (
-			granularity, bucket_start, source_id, ip_version,
-			src_visibility, dst_visibility, address_side, structure_kind
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_address_maad_stats_key
+		ON address_maad_stats (
+			source_id, granularity, src_locality, dst_locality,
+			ip_version, measure, bucket_start, address_side
 		);
-	CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
-		ON address_structure_stats (
-			source_id, granularity, src_visibility, dst_visibility,
-			ip_version, structure_kind, bucket_start
-		);
+	CREATE INDEX IF NOT EXISTS idx_address_maad_stats_bucket
+		ON address_maad_stats (granularity, bucket_start);
 	CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
 		ON port_count_stats (
-			source_id, granularity, src_visibility, dst_visibility,
+			source_id, granularity, src_locality, dst_locality,
 			bucket_start
 		);
 

@@ -60,7 +60,7 @@ Run a bounded import while you test the configuration:
 
 The start date and end date are inclusive; use the same date for both to process a single day. If you omit the end date, the pipeline processes each day through the latest available day.
 
-Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 address sets, and they power the address-structure charts. Use `--no-maad` to skip them.
+Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 and IPv6 address sets, and they power the address-structure charts. IPv4 uses prefix lengths /8 to /24 and IPv6 uses /23 to /64, so the two families are separate results, not one comparable series. Use `--no-maad` to skip them.
 
 If a command fails, read [Troubleshooting](troubleshooting.md).
 
@@ -113,7 +113,7 @@ Selection conditions use AND logic. The IP prefix can match the source endpoint 
   --end-date <YYYY-MM-DD> \
   --database-path data/example-public/netflow.sqlite \
   --ip-prefix 192.0.2.0/24 \
-  --src-visibility literal
+  --src-locality internal
 ```
 
 A selected population is a different database product. Thus, selection options require an explicit `--database-path`.
@@ -124,11 +124,15 @@ Available selection options are:
 
 - `--ip-prefix`
 - `--daily-active-sources`
-- `--src-visibility literal|anonymized`
-- `--dst-visibility literal|anonymized`
+- `--src-locality internal|external`
+- `--dst-locality internal|external`
+
+Locality filters use the dataset's [locality rules](datasets.md#classify-internal-and-external-endpoints).
+A pipeline configuration declares its rules in a top-level `locality` array, and relative address-file
+paths resolve from the configuration file's directory.
 
 `--daily-active-sources` applies the fixed active-user definition used to choose the UOregon
-candidate subnets. It requires an IPv4 `/16` and cannot be combined with the visibility flags:
+candidate subnets. It requires an IPv4 `/16` and locality rules, and it cannot be combined with the locality flags:
 
 ```bash
 ./scripts/netflow-db.sh pipeline \
@@ -142,7 +146,7 @@ candidate subnets. It requires an IPv4 `/16` and cannot be combined with the vis
 
 For each complete local day, the pipeline sums qualifying traffic by exact source address across
 each unique physical capture member. A source is active when it has at least 3 flows, 20 packets,
-and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an anonymized source in the
+and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an internal source in the
 target `/16`, with source port at least 1024. Destination ports and TCP flags are unrestricted.
 Only that qualifying traffic from active sources is published.
 
@@ -167,9 +171,10 @@ Put flow selection in the top-level `selection` object:
 {
   "selection": {
     "ip_prefix": "192.0.2.0/24",
-    "src_visibility": "literal",
-    "dst_visibility": "anonymized"
+    "src_locality": "internal",
+    "dst_locality": "external"
   },
+  "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
   "inputs": []
 }
 ```
@@ -208,8 +213,102 @@ On the native path, nfcapd input needs the fork path: set the top-level `"nfdump
 | `--nfdump`        | Names the nfdump executable.               |
 | `--force`         | Rewrites selected nfcapd buckets.          |
 | `--no-maad`       | Skips the MAAD statistics.                 |
+| `--maad-workers`  | Sets MAAD threads (default: CPUs, max 8).  |
 
 Time limits must align with local-day boundaries.
+
+## Process a date range on several hosts
+
+Days are independent, so a long nfcapd range can be split into day shards that run on different
+hosts and then merged into one product.
+The [pipeline contract](../code/pipeline-contract.md#day-sharded-products) explains why the shards
+never overlap.
+
+Each host needs:
+
+- read access to the capture tree at the same absolute path, for example on a shared filesystem;
+- the same `netflow-db` binary, pinned nfdump fork, and dataset registry, all under one absolute
+  directory that has the same path on every host. The nfdump path is part of the product identity,
+  so a different path produces an incompatible shard;
+- enough host-local disk for its shard database. Write shards to local disk, not to a shared
+  network filesystem.
+
+`scripts/netflow-db-cluster.sh` runs the whole flow from one machine. It splits the inclusive date
+range into contiguous shards and starts `pipeline` on each host as a detached job, so a dropped
+ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
+shard back, merges the snapshots, and runs `verify`:
+
+```bash
+./scripts/netflow-db-cluster.sh \
+  --hosts nodeA,nodeB,nodeC:2 \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output data/example/netflow.sqlite \
+  --deploy-bin target/release/netflow-db \
+  --deploy-nfdump target/nfdump/libexec/nfdump \
+  --deploy-datasets /path/to/datasets.json
+```
+
+- `host:N` gives that host N slots, so it runs up to N shards at once. A host without `:N` gets
+  one slot, which is how to give a busier host a lighter share.
+- The range splits into one shard per slot, or one per day when there are fewer days than slots.
+  Shard lengths differ by at most one day. Slots are assigned round-robin across hosts, so every
+  host gets a shard whenever the range has at least as many days as there are hosts. For example,
+  six days on `nodeA:4,nodeB` gives nodeA four shards and nodeB one, and the first shard gets
+  two days.
+- Hosts install into `--remote-dir` (or `NETFLOW_CLUSTER_REMOTE_DIR`). The default is
+  `$HOME/atlantis-cluster`, expanded with this machine's `$HOME`, so every host must be able to
+  use that absolute path. The directory holds `bin/`, `nfdump/`, `datasets.json`, and the shard
+  databases, logs, and exit-status files in `work/`.
+- The `--deploy-*` options replace files atomically. Do not replace nfdump while a shard is running
+  on that host: the running pipeline detects the change and stops, and a different nfdump build
+  produces an incompatible product.
+- Pipeline flags after `--` apply to every shard.
+- Each remote shard database is named after its dataset and day range. The script records the
+  host and day-range layout in `<output>.shards/layout` and refuses a rerun whose `--hosts`,
+  dates, or dataset differ. To start over with a different layout, delete that file.
+- If a shard fails or you interrupt the script, rerun the same command. A shard that is still
+  running is reattached instead of started twice, and a restarted shard resumes after its last
+  completed day. Ctrl-C stops only the local script; remote shards keep running.
+- The script merges with `merge-shards --consume`, which deletes each local shard copy in
+  `<output>.shards` as soon as its rows are committed, so local disk peaks near the output size
+  plus one shard. Pass `--keep-shards` to merge without consuming and keep the copies. The logs
+  and layout stay in `<output>.shards` either way.
+- If the merge fails, rerun the same command. The remote shard databases are the source of truth:
+  the rerun copies every shard back again and deletes the partial merge from the failed run
+  first. The script leaves the remote shard databases in place, so delete `work/` on each host
+  when you are finished.
+
+To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
+`--end-date` over a different day range, then run:
+
+```bash
+./scripts/netflow-db.sh merge-shards --output data/example/netflow.sqlite shard-*.sqlite
+```
+
+The output must not exist yet. The command refuses shards with different product identities,
+schemas, source layouts, dataset metadata, or MAAD q grids, and shards whose completed days overlap. Each
+dataset's `default_start_date` must either match across all shards, which keeps a configured
+date, or be the date each shard inferred from its own traffic. In the second case the merged
+product takes the date of its earliest traffic. It also
+refuses rows outside a shard's completed days, and completed days without full five-minute
+coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
+again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
+path publishes zero buckets.
+
+When disk is tight, add `--consume`. The command still runs every check on every shard before it
+changes anything. It then moves the first shard into the temporary output, or copies it if the
+output is on another filesystem, and deletes each other shard with its SQLite sidecars once that
+shard's rows are durably committed. Peak disk is about the output size plus one shard. If a
+consuming merge fails after it has consumed a shard, it keeps the temporary output: a valid
+partial product that holds exactly the consumed shards. The error names the consumed shards and
+the partial file, and prints the command that resumes the merge from the partial and the
+remaining shards, which are left untouched. If a shard's rows are merged but its files cannot be
+deleted, the error says so. That shard counts as consumed, so delete its leftover files instead
+of passing it again. If the merge has already renamed the output into place but cannot sync its
+directory, the error says the product is published. Run `verify` on it instead of merging
+again.
 
 ## Verify the output
 

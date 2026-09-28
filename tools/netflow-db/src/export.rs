@@ -27,6 +27,8 @@ use crate::{
 
 pub const SQLITE_FILENAME: &str = "netflow.sqlite";
 pub const MANIFEST_FILENAME: &str = "manifest.json";
+/// Product tables without buckets, which every extract copies whole.
+const WHOLE_TABLE_NAMES: [&str; 1] = ["maad_q_grid"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractRequest {
@@ -122,7 +124,7 @@ pub fn extract_window(request: &ExtractRequest) -> Result<ExtractResult, ExportE
         fs::create_dir(directory)?;
     }
     let mut summaries = BTreeMap::new();
-    for table in STATS_TABLE_NAMES {
+    for table in STATS_TABLE_NAMES.into_iter().chain(WHOLE_TABLE_NAMES) {
         let mut summary = extract_sqlite_table(&snapshot, destination.as_ref(), table, request)?;
         if let (Some(temporary), Some(target)) = (&temporary_parquet, &parquet_target) {
             summary.parquet_row_count = Some(export_table_to_parquet(
@@ -201,8 +203,8 @@ const COMMON_COLUMNS: &[&str] = &[
     "bucket_start",
     "bucket_end",
     "ip_version",
-    "src_visibility",
-    "dst_visibility",
+    "src_locality",
+    "dst_locality",
     "processed_at",
 ];
 
@@ -263,16 +265,14 @@ fn validate_request(request: &ExtractRequest) -> Result<(), ExportError> {
             ));
         }
     }
-    if let Some(granularities) = &request.granularities {
-        let supported = ["5m", "30m", "1h", "1d"];
-        if granularities
+    if let Some(granularities) = &request.granularities
+        && granularities
             .iter()
-            .any(|value| !supported.contains(&value.as_str()))
-        {
-            return Err(ExportError::InvalidRequest(
-                "unsupported granularity filter".into(),
-            ));
-        }
+            .any(|value| !crate::storage::STATS_GRANULARITIES.contains(&value.as_str()))
+    {
+        return Err(ExportError::InvalidRequest(
+            "unsupported granularity filter".into(),
+        ));
     }
     Ok(())
 }
@@ -323,7 +323,7 @@ fn open_readonly(path: &Path) -> Result<Connection, rusqlite::Error> {
 }
 
 fn validate_source(connection: &Connection) -> Result<(), ExportError> {
-    for table in STATS_TABLE_NAMES {
+    for table in STATS_TABLE_NAMES.into_iter().chain(WHOLE_TABLE_NAMES) {
         let columns = table_columns(connection, table)?;
         for column in required_columns(table) {
             if !columns.contains(column) {
@@ -338,6 +338,31 @@ fn validate_source(connection: &Connection) -> Result<(), ExportError> {
 }
 
 fn required_columns(table: &str) -> Vec<&'static str> {
+    if table == "maad_q_grid" {
+        return vec!["ip_version", "q_min", "q_step", "q_count"];
+    }
+    if table == "address_maad_stats" {
+        let mut columns = COMMON_COLUMNS
+            .iter()
+            .copied()
+            .filter(|column| *column != "processed_at")
+            .collect::<Vec<_>>();
+        columns.extend([
+            "address_side",
+            "measure",
+            "total_addrs",
+            "zero_weight_addrs",
+            "min_prefix_length",
+            "max_prefix_length",
+            "d0",
+            "d1",
+            "d2",
+            "tau",
+            "tau_sd",
+            "spectrum",
+        ]);
+        return columns;
+    }
     if table == "bucket_coverage" {
         return vec![
             "source_id",
@@ -381,12 +406,6 @@ fn required_columns(table: &str) -> Vec<&'static str> {
         "protocol_stats" => vec!["unique_protocols_count", "protocols_list"],
         "address_count_stats" => vec!["address_side", "unique_address_count"],
         "port_count_stats" => vec!["port_side", "port_range", "unique_port_count"],
-        "address_structure_stats" => vec![
-            "address_side",
-            "structure_kind",
-            "values_json",
-            "metadata_json",
-        ],
         _ => Vec::new(),
     });
     columns
@@ -422,10 +441,15 @@ fn extract_sqlite_table(
     table: &str,
     request: &ExtractRequest,
 ) -> Result<TableSummary, ExportError> {
-    let (where_sql, parameters) = table_filter(request);
+    let (where_sql, parameters) = table_filter(request, table);
+    let time_bounds = if WHOLE_TABLE_NAMES.contains(&table) {
+        "NULL, NULL"
+    } else {
+        "MIN(bucket_start), MAX(bucket_start)"
+    };
     let summary = source.query_row(
         &format!(
-            "SELECT COUNT(*), MIN(bucket_start), MAX(bucket_start) FROM {} {where_sql}",
+            "SELECT COUNT(*), {time_bounds} FROM {} {where_sql}",
             quote(table)
         ),
         params_from_iter(parameters.iter()),
@@ -456,7 +480,10 @@ fn extract_sqlite_table(
     })
 }
 
-fn table_filter(request: &ExtractRequest) -> (String, Vec<SqlValue>) {
+fn table_filter(request: &ExtractRequest, table: &str) -> (String, Vec<SqlValue>) {
+    if WHOLE_TABLE_NAMES.contains(&table) {
+        return (String::new(), Vec::new());
+    }
     let mut clauses = vec![
         "bucket_start >= ?".to_owned(),
         "bucket_start < ?".to_owned(),
@@ -557,7 +584,7 @@ fn export_table_to_parquet(
         .set_compression(Compression::ZSTD(Default::default()))
         .build();
     let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(properties))?;
-    let (where_sql, parameters) = table_filter(request);
+    let (where_sql, parameters) = table_filter(request, table);
     let mut statement = source.prepare(&format!("SELECT * FROM {} {where_sql}", quote(table)))?;
     let mut rows = statement.query(params_from_iter(parameters.iter()))?;
     let mut written = 0;
@@ -743,14 +770,7 @@ fn read_pipeline_product(connection: &Connection) -> Result<PipelineProduct, Exp
         .map_err(|error| ExportError::InvalidProduct(error.to_string()))?
         .normalized_payload();
     let config: Value = serde_json::from_str(&row.5)?;
-    let expected_schema = json!({"version": 2, "tables": [
-        {"name": "traffic_stats", "version": 2},
-        {"name": "protocol_stats", "version": 1},
-        {"name": "address_count_stats", "version": 1},
-        {"name": "port_count_stats", "version": 1},
-        {"name": "address_structure_stats", "version": 1},
-        {"name": "bucket_coverage", "version": 1}
-    ]});
+    let expected_schema = crate::storage::product_schema();
     if schema != expected_schema {
         return Err(ExportError::InvalidProduct(
             "unsupported observation-metrics schema".into(),
@@ -1024,14 +1044,7 @@ mod tests {
         let source_connection = Connection::open(&source).unwrap();
         init_stats_tables(&source_connection).unwrap();
         let product = ProductIdentity::create(
-            &serde_json::json!({"version": 2, "tables": [
-                {"name": "traffic_stats", "version": 2},
-                {"name": "protocol_stats", "version": 1},
-                {"name": "address_count_stats", "version": 1},
-                {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1},
-                {"name": "bucket_coverage", "version": 1}
-            ]}),
+            &crate::storage::product_schema(),
             &serde_json::json!({"version": 1, "kind": "all"}),
             &serde_json::json!({"version": 2}),
         )
@@ -1042,12 +1055,19 @@ mod tests {
             &crate::storage::STATS_TABLE_NAMES,
         )
         .unwrap();
+        source_connection
+            .execute(
+                "INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count)
+                 VALUES (4, -0.5, 0.125, 33)",
+                [],
+            )
+            .unwrap();
         for (bucket_start, flows) in [(99, 1), (100, 2), (199, 3), (200, 4)] {
             source_connection
                 .execute(
                     "INSERT INTO traffic_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, flows, flows_tcp, flows_udp,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
                     flows_icmp, flows_other, packets, packets_tcp, packets_udp,
                     packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
                     bytes_icmp, bytes_other, duration_sum_ms, duration_count,
@@ -1112,6 +1132,14 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(rows, [(100, 2), (199, 3)]);
+        assert_eq!(
+            output
+                .query_row("SELECT ip_version, q_count FROM maad_q_grid", [], |row| Ok(
+                    (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)
+                ))
+                .unwrap(),
+            (4, 33)
+        );
         let coverage = output
             .prepare(
                 "SELECT bucket_start, coverage_state, observed_units, expected_units, rejected_units
@@ -1153,14 +1181,7 @@ mod tests {
         let connection = Connection::open(&source).unwrap();
         init_stats_tables(&connection).unwrap();
         let product = ProductIdentity::create(
-            &serde_json::json!({"version": 2, "tables": [
-                {"name": "traffic_stats", "version": 2},
-                {"name": "protocol_stats", "version": 1},
-                {"name": "address_count_stats", "version": 1},
-                {"name": "port_count_stats", "version": 1},
-                {"name": "address_structure_stats", "version": 1},
-                {"name": "bucket_coverage", "version": 1}
-            ]}),
+            &crate::storage::product_schema(),
             &FlowSelection::from_payload(Some(&serde_json::json!({
                 "version":1,
                 "kind":"flows",

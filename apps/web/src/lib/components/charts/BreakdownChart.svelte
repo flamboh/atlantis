@@ -9,22 +9,35 @@
 	import ChartCard from './ChartCard.svelte';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
-	import type {
-		FlowVisibility,
-		IpGranularity,
-		IpMetricKey,
-		ProtocolMetricKey,
-		SpectrumPoint,
-		TimeBucket
+	import {
+		DEFAULT_MAAD_IP_VERSION,
+		MAAD_IP_VERSION_OPTIONS,
+		MAAD_MEASURE_OPTIONS,
+		type FlowDirection,
+		type IpGranularity,
+		type IpMetricKey,
+		type MaadIpVersion,
+		type MaadMeasure,
+		type ProtocolMetricKey,
+		type SpectrumPoint,
+		type TimeBucket
 	} from '$lib/types/types';
 	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
+	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
 	import {
 		BREAKDOWN_CHART_CONFIGS,
+		DIMENSION_ORDER_OPTIONS,
+		DIMENSION_SIDE_OPTIONS,
+		dimensionMetricKey,
 		readLineMetric,
+		splitDimensionMetricKey,
 		type BreakdownChartKind,
 		type BreakdownChartConfig,
 		type BreakdownMetricKey,
+		type DimensionOrder,
+		type DimensionSide,
 		type LineBucketData
 	} from './breakdown-chart-config';
 	import {
@@ -50,7 +63,8 @@
 	import {
 		formatIpGranularityTick,
 		formatTemporalBucketLabel,
-		shouldHighlightIpGranularityGrid
+		shouldHighlightIpGranularityGrid,
+		placeTicksOnBucketStarts
 	} from './ip-time-axis';
 	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
 	import { crosshairStore } from '$lib/stores/crosshair';
@@ -68,13 +82,15 @@
 		'1d': 'date',
 		'1h': 'hour',
 		'30m': '30min',
+		'10m': '10min',
 		'5m': '5min'
 	};
 
 	const GROUP_BY_TRANSITIONS: Record<GroupByOption, GroupByOption | null> = {
 		date: 'hour',
-		hour: '30min',
+		hour: '10min',
 		'30min': '5min',
+		'10min': '5min',
 		'5min': null
 	};
 
@@ -82,7 +98,9 @@
 		? IpMetricKey[]
 		: ChartKind extends 'protocol'
 			? ProtocolMetricKey[]
-			: never[];
+			: ChartKind extends 'dimensions'
+				? DimensionMetricKey[]
+				: never[];
 
 	const props = $props<{
 		kind: Kind;
@@ -92,11 +110,13 @@
 		granularity?: IpGranularity;
 		router?: string;
 		addressType?: 'sa' | 'da';
+		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
+		unavailableCopy?: string | null;
 		availableRouters?: string[];
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
-		srcVisibility?: FlowVisibility;
-		dstVisibility?: FlowVisibility;
+		direction?: FlowDirection;
 		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
@@ -135,6 +155,17 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
+	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
+	const maadSubtitle = $derived(
+		config.usesMaad && !props.unavailableCopy
+			? [
+					MAAD_MEASURE_OPTIONS.find((option) => option.value === props.measure)?.label,
+					MAAD_IP_VERSION_OPTIONS.find((option) => option.value === ipVersion)?.label
+				]
+					.filter(Boolean)
+					.join(' · ')
+			: null
+	);
 	let bucketStarts: number[] = [];
 
 	let chartCanvas = $state<HTMLCanvasElement | null>(null);
@@ -444,13 +475,25 @@
 
 	function buildColors(metricIndex: number, routerIndex: number) {
 		const metric = config.metrics[metricIndex];
-		if (!metric) {
+		if (!metric?.color) {
 			return { stroke: 'transparent', fill: 'transparent' };
 		}
 		const hue = (metric.color.hue + routerIndex * config.routerHueStep) % 360;
 		const stroke = `hsl(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%)`;
 		const fill = `hsla(${hue}, ${metric.color.saturation}%, ${metric.color.lightness}%, ${config.fillAlpha})`;
 		return { stroke, fill };
+	}
+
+	function buildRouterColors(router: string) {
+		const index = Object.keys(props.routers ?? {})
+			.map((name) => name.trim())
+			.sort()
+			.indexOf(router);
+		const slot = index >= 0 && index < 8 ? `${index + 1}` : 'other';
+		const color = getComputedStyle(document.documentElement)
+			.getPropertyValue(`--chart-series-${slot}`)
+			.trim();
+		return { stroke: color, fill: color };
 	}
 
 	function handleMetricToggle(metric: BreakdownMetricKey) {
@@ -487,6 +530,12 @@
 			renderChart();
 		}
 		props.onAddressTypeChange?.({ addressType: nextAddressType });
+	}
+
+	function handleDimensionChange(side: DimensionSide, order: DimensionOrder) {
+		const nextMetrics = [dimensionMetricKey(side, order)];
+		activeMetrics = nextMetrics;
+		props.onMetricsChange?.({ metrics: nextMetrics as MetricsForKind<Kind> });
 	}
 
 	function publishRangeSelection(startIndex: number, endIndex: number) {
@@ -644,10 +693,14 @@
 			const labelForSlug = activeLabel ?? label;
 			const slug = generateSlugFromLabel(labelForSlug, '5min');
 			if (slug) {
-				void navigateToNetflowFile(goto, slug, props.dataset, {
-					srcVisibility: props.srcVisibility ?? 'all',
-					dstVisibility: props.dstVisibility ?? 'all'
-				});
+				void navigateToNetflowFile(
+					goto,
+					slug,
+					props.dataset,
+					props.direction ?? 'all',
+					props.ipVersion,
+					props.measure
+				);
 			}
 			return;
 		}
@@ -665,7 +718,7 @@
 			const rangeStart = new Date(clickedDate.getTime() - 3 * 24 * 60 * 60 * 1000);
 			const rangeEnd = new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000);
 			emitDrilldown(nextGroupBy, rangeStart, rangeEnd);
-		} else if (groupBy === '30min') {
+		} else if (groupBy === '30min' || groupBy === '10min') {
 			const rangeEnd = new Date(clickedDate.getTime() + 24 * 60 * 60 * 1000);
 			emitDrilldown(nextGroupBy, clickedDate, rangeEnd);
 		}
@@ -741,13 +794,16 @@
 		textColor: string,
 		gridColor: string,
 		gridHighlightColor: string,
-		dataBounds: { min: number; max: number }
+		dataBounds: { min: number; max: number },
+		tickBucketStarts: number[],
+		yAxisTitle: string
 	) {
 		return {
 			x: {
 				type: 'linear' as const,
 				min: dataBounds.min,
 				max: dataBounds.max,
+				afterBuildTicks: placeTicksOnBucketStarts(tickBucketStarts),
 				title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
 				ticks: {
 					color: textColor,
@@ -770,17 +826,23 @@
 				}
 			},
 			y: {
-				beginAtZero: true,
+				beginAtZero: !config.fitYAxisToData,
+				...(config.fitYAxisToData ? { grace: '10%' } : {}),
 				afterFit(axis: { width: number }) {
 					axis.width = Y_AXIS_WIDTH;
 				},
-				title: { display: true, text: config.yAxisTitle, color: textColor },
+				title: { display: true, text: yAxisTitle, color: textColor },
 				ticks: config.formatYAxisTicks
 					? {
 							color: textColor,
 							callback: (value: string | number) => formatNumber(Number(value))
 						}
-					: { color: textColor },
+					: config.fitYAxisToData
+						? {
+								color: textColor,
+								callback: (value: string | number) => Number(value).toFixed(2)
+							}
+						: { color: textColor },
 				grid: { color: gridColor }
 			}
 		};
@@ -794,6 +856,16 @@
 	) {
 		return {
 			legend: { position: 'top', labels: { color: textColor } },
+			...(config.fitYAxisToData
+				? {
+						tooltip: {
+							callbacks: {
+								label: (context: { dataset: { label?: string }; parsed: { y: number | null } }) =>
+									`${context.dataset.label ?? ''}: ${context.parsed.y === null ? 'No data' : context.parsed.y.toFixed(3)}`
+							}
+						}
+					}
+				: {}),
 			verticalCrosshair: {
 				enabled: true,
 				line: {
@@ -861,12 +933,17 @@
 			selectedBuckets.map((record) => [`${record.router}-${record.bucket.bucketStart}`, record])
 		);
 
+		const activeMetricConfigs = config.metrics.filter((metric) =>
+			activeMetrics.includes(metric.key)
+		);
 		const datasets = routers.flatMap((router, routerIndex) =>
 			config.metrics
 				.filter((metric) => activeMetrics.includes(metric.key))
 				.map((metric) => {
 					const configIndex = config.metrics.findIndex((candidate) => candidate.key === metric.key);
-					const { stroke, fill } = buildColors(configIndex, routerIndex);
+					const { stroke, fill } = config.seriesByRouter
+						? buildRouterColors(router)
+						: buildColors(configIndex, routerIndex);
 					const data = bucketStarts.map((bucketStart) => {
 						const record = bucketByRouterAndStart.get(`${router}-${bucketStart}`);
 						const bucket = record?.bucket;
@@ -893,7 +970,7 @@
 							)
 						: null;
 					return {
-						label: `${router} · ${metric.seriesLabel}`,
+						label: config.seriesByRouter ? router : `${router} · ${metric.seriesLabel}`,
 						data,
 						borderColor: stroke,
 						backgroundColor: fill,
@@ -930,7 +1007,16 @@
 			return;
 		}
 
-		const scales = buildLineScales(textColor, gridColor, gridHighlightColor, dataBounds);
+		const scales = buildLineScales(
+			textColor,
+			gridColor,
+			gridHighlightColor,
+			dataBounds,
+			bucketStarts,
+			config.seriesByRouter
+				? (activeMetricConfigs[0]?.label ?? config.yAxisTitle)
+				: config.yAxisTitle
+		);
 		const plugins = buildLinePlugins(
 			textColor,
 			tooltipBackgroundColor,
@@ -1055,6 +1141,7 @@
 							type: 'linear',
 							min: dataBounds.min,
 							max: dataBounds.max,
+							afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
 							title: {
 								display: true,
 								text: `Time (${granularity})`,
@@ -1121,6 +1208,7 @@
 					type: 'linear',
 					min: dataBounds.min,
 					max: dataBounds.max,
+					afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
 					title: { display: true, text: `Time (${granularity})`, color: textColor },
 					ticks: {
 						color: textColor,
@@ -1179,8 +1267,9 @@
 		endDate: string;
 		granularity: IpGranularity;
 		routers: string[];
-		srcVisibility: FlowVisibility;
-		dstVisibility: FlowVisibility;
+		direction: FlowDirection;
+		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
 	};
 
 	let lastFiltersKey = '';
@@ -1201,8 +1290,9 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers,
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction,
+			ipVersion: filters.ipVersion ?? null,
+			measure: filters.measure ?? null
 		});
 	}
 
@@ -1222,8 +1312,9 @@
 			dataset: props.dataset ?? '',
 			granularity: filters.granularity,
 			routers: filters.routers.join(','),
-			srcVisibility: filters.srcVisibility,
-			dstVisibility: filters.dstVisibility
+			direction: filters.direction,
+			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {}),
+			...(filters.measure !== undefined ? { measure: filters.measure } : {})
 		});
 
 		try {
@@ -1303,7 +1394,11 @@
 	$effect(() => {
 		void theme.dark;
 		if (chart) {
-			applyChartTheme();
+			if (config.seriesByRouter) {
+				renderChart();
+			} else {
+				applyChartTheme();
+			}
 		}
 	});
 
@@ -1324,7 +1419,19 @@
 		})();
 	});
 
+	function releaseUnavailableChart() {
+		requestToken += 1;
+		requestController?.abort();
+		requestController = null;
+		destroyChart();
+		lastFiltersKey = '';
+	}
+
 	$effect(() => {
+		if (props.unavailableCopy) {
+			releaseUnavailableChart();
+			return;
+		}
 		if (props.kind !== 'spectrum') {
 			const routerConfig = props.routers;
 			if (!routerConfig || Object.keys(routerConfig).length === 0) {
@@ -1336,8 +1443,10 @@
 				endDate: props.endDate ?? formatDate(today),
 				granularity: props.granularity ?? config.defaultGranularity,
 				routers: selectedRouters,
-				srcVisibility: props.srcVisibility ?? 'all',
-				dstVisibility: props.dstVisibility ?? 'all'
+				direction: props.direction ?? 'all',
+				...(config.usesMaad
+					? { ipVersion: props.ipVersion ?? DEFAULT_MAAD_IP_VERSION, measure: props.measure }
+					: {})
 			};
 
 			currentGranularity = filters.granularity;
@@ -1375,8 +1484,8 @@
 		const endDateProp = props.endDate;
 		const granularityProp = props.granularity;
 		const nextAddressType = props.addressType ?? 'sa';
-		const srcVisibility = props.srcVisibility ?? 'all';
-		const dstVisibility = props.dstVisibility ?? 'all';
+		const nextIpVersion = props.ipVersion ?? DEFAULT_MAAD_IP_VERSION;
+		const direction = props.direction ?? 'all';
 
 		if (nextAddressType !== addressType) {
 			addressType = nextAddressType;
@@ -1398,8 +1507,8 @@
 			// The spectrum card displays one source at a time. Fetching every available source
 			// multiplied its SQL work and response size while the client discarded all but this one.
 			routers: nextRouter ? [nextRouter] : [],
-			srcVisibility,
-			dstVisibility
+			direction,
+			ipVersion: nextIpVersion
 		};
 
 		currentGranularity = filters.granularity;
@@ -1429,7 +1538,9 @@
 
 <ChartCard
 	title={config.title}
+	subtitle={maadSubtitle}
 	size={props.kind === 'spectrum' ? 'spectrum' : 'default'}
+	unavailableCopy={props.unavailableCopy ?? null}
 	{loading}
 	{error}
 	noMetrics={props.kind === 'spectrum'
@@ -1455,41 +1566,52 @@
 >
 	{#snippet controls()}
 		{#if props.kind === 'spectrum'}
-			<div class="space-y-2">
-				<div class="flex min-h-6 flex-wrap items-center gap-4">
-					{#if (props.availableRouters ?? []).length === 0}
-						{#each Array(4) as _, index (index)}
-							<Skeleton class="inline-block h-4 w-24" aria-hidden="true" />
-						{/each}
-					{:else}
-						{#each props.availableRouters ?? [] as routerName (routerName)}
-							<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-								<input
-									type="radio"
-									name="spectrum-router-local"
-									checked={props.router === routerName}
-									onchange={() => handleRouterChange(routerName)}
-									class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-								/>
-								<span>{routerName}</span>
-							</label>
-						{/each}
-					{/if}
-				</div>
-				<div class="flex flex-wrap items-center gap-4">
-					{#each [['sa', 'Source IPv4'], ['da', 'Destination IPv4']] as const as addressOption (addressOption[0])}
-						<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-							<input
-								type="radio"
-								name="spectrum-address-type-local"
-								checked={addressType === addressOption[0]}
-								onchange={() => handleAddressTypeChange(addressOption[0])}
-								class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-							/>
-							<span>{addressOption[1]}</span>
-						</label>
-					{/each}
-				</div>
+			<div class="flex flex-wrap items-center gap-3">
+				{#if (props.availableRouters ?? []).length === 0}
+					<Skeleton class="h-9 w-48" aria-hidden="true" />
+				{:else}
+					<SegmentedControl
+						options={(props.availableRouters ?? []).map((routerName: string) => ({
+							value: routerName,
+							label: routerName
+						}))}
+						value={props.router ?? null}
+						onValueChange={handleRouterChange}
+						ariaLabel="Spectrum source"
+						class="flex flex-wrap"
+						buttonClass="w-auto sm:min-w-20"
+					/>
+				{/if}
+				<SegmentedControl
+					options={DIMENSION_SIDE_OPTIONS}
+					value={addressType}
+					onValueChange={handleAddressTypeChange}
+					ariaLabel="Spectrum address side"
+					class="grid-cols-2"
+					buttonClass="sm:min-w-20"
+				/>
+			</div>
+		{:else if config.seriesByRouter}
+			{@const selected = splitDimensionMetricKey(
+				(activeMetrics[0] ?? config.defaultMetrics[0]) as DimensionMetricKey
+			)}
+			<div class="flex flex-wrap items-center gap-3">
+				<SegmentedControl
+					options={DIMENSION_SIDE_OPTIONS}
+					value={selected.side}
+					onValueChange={(side) => handleDimensionChange(side, selected.order)}
+					ariaLabel="MAAD address side"
+					class="grid-cols-2"
+					buttonClass="sm:min-w-20"
+				/>
+				<SegmentedControl
+					options={DIMENSION_ORDER_OPTIONS}
+					value={selected.order}
+					onValueChange={(order) => handleDimensionChange(selected.side, order)}
+					ariaLabel="MAAD dimension"
+					class="grid-cols-3"
+					buttonClass="sm:min-w-12"
+				/>
 			</div>
 		{:else}
 			<div class="flex flex-wrap items-center gap-4">

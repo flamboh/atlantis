@@ -6,6 +6,9 @@
       { "source_id": "router-a", "members": ["router-a"] },
       { "source_id": "router-b", "members": ["router-b"] },
       { "source_id": "all-routers", "members": ["router-a", "router-b"] }
+    ],
+    "locality": [
+      { "type": "prefixes", "prefixes": ["192.0.2.0/24", "2001:db8::/32"] }
     ]
   }
 ]

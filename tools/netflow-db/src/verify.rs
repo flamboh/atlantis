@@ -94,10 +94,9 @@ pub fn verify_database(
             ));
         }
     }
-    if options.require_maad_data && row_counts["address_structure_stats"] == 0 {
-        return Err(VerifyError::Incompatible(
-            "address_structure_stats has no rows".into(),
-        ));
+    assert_maad_encoding(&connection)?;
+    if options.require_maad_data {
+        assert_maad_measures_present(&connection)?;
     }
     if options.require_processed {
         assert_processed_inputs_complete(&connection)?;
@@ -158,6 +157,9 @@ pub fn verify_database(
             options.require_maad_data,
             "web spectrum stats query returned no rows",
         )?;
+        if options.require_maad_data {
+            assert_ipv6_maad_rows(&connection, &source_id, bucket_start, bucket_end)?;
+        }
         let file_bucket_start = connection.query_row(
             "SELECT MIN(bucket_start) FROM traffic_stats
              WHERE source_id = ?1 AND granularity = '5m'
@@ -196,6 +198,7 @@ const DATASET_REQUIRED_COLUMNS: &[(&str, &[&str])] = &[(
         "source_mode",
         "discovery_mode",
         "sort_order",
+        "has_locality",
     ],
 )];
 
@@ -247,8 +250,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "flows",
             "flows_tcp",
             "flows_udp",
@@ -284,8 +287,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "unique_protocols_count",
             "protocols_list",
             "processed_at",
@@ -299,8 +302,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
             "unique_address_count",
             "processed_at",
@@ -314,8 +317,8 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "port_side",
             "port_range",
             "unique_port_count",
@@ -323,22 +326,30 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "address_structure_stats",
+        "address_maad_stats",
         &[
             "source_id",
             "granularity",
             "bucket_start",
             "bucket_end",
             "ip_version",
-            "src_visibility",
-            "dst_visibility",
+            "src_locality",
+            "dst_locality",
             "address_side",
-            "structure_kind",
-            "values_json",
-            "metadata_json",
-            "processed_at",
+            "measure",
+            "total_addrs",
+            "zero_weight_addrs",
+            "min_prefix_length",
+            "max_prefix_length",
+            "d0",
+            "d1",
+            "d2",
+            "tau",
+            "tau_sd",
+            "spectrum",
         ],
     ),
+    ("maad_q_grid", &["ip_version", "q_min", "q_step", "q_count"]),
 ];
 
 const LEGACY_TABLES: &[&str] = &[
@@ -507,6 +518,95 @@ fn ipv4_literal(value: &str) -> Option<&str> {
         })
 }
 
+/// Every scope must carry a row for each MAAD measure.
+fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyError> {
+    let has_rows: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM address_maad_stats WHERE measure = 'addresses')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_rows {
+        return Err(VerifyError::Incompatible(
+            "address_maad_stats has no addresses rows".into(),
+        ));
+    }
+    let incomplete = connection
+        .query_row(
+            "SELECT source_id, granularity, bucket_start, ip_version, src_locality,
+                    dst_locality, address_side,
+                    SUM(measure = 'addresses'), SUM(measure = 'packets'), SUM(measure = 'bytes')
+             FROM address_maad_stats
+             GROUP BY granularity, bucket_start, source_id, ip_version, src_locality,
+                      dst_locality, address_side
+             HAVING SUM(measure = 'addresses') = 0 OR SUM(measure = 'packets') = 0
+                 OR SUM(measure = 'bytes') = 0
+             LIMIT 1",
+            [],
+            |row| {
+                let present = [row.get::<_, i64>(7)?, row.get(8)?, row.get(9)?];
+                let missing = ["addresses", "packets", "bytes"]
+                    .into_iter()
+                    .zip(present)
+                    .filter(|(_, count)| *count == 0)
+                    .map(|(measure, _)| measure)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!(
+                    "address_maad_stats is missing {missing} rows for \
+                     source {} {} bucket {} IPv{} {}->{} {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    match incomplete {
+        Some(message) => Err(VerifyError::Incompatible(message)),
+        None => Ok(()),
+    }
+}
+
+/// Every stored curve must hold one f32 per q of its IP version's grid, and only the
+/// addresses measure may store a spectrum, which it always does.
+fn assert_maad_encoding(connection: &Connection) -> Result<(), VerifyError> {
+    let (ungridded, bad_tau, bad_spectrum): (i64, i64, i64) = connection.query_row(
+        "SELECT
+             COALESCE(SUM(s.tau IS NOT NULL AND g.q_count IS NULL), 0),
+             COALESCE(SUM(s.tau IS NOT NULL AND (
+                 typeof(s.tau) <> 'blob' OR typeof(s.tau_sd) <> 'blob'
+                 OR length(s.tau) <> 4 * g.q_count
+             )), 0),
+             COALESCE(SUM(CASE WHEN s.measure = 'addresses'
+                 THEN s.spectrum IS NULL OR typeof(s.spectrum) <> 'blob'
+                 ELSE s.spectrum IS NOT NULL END), 0)
+         FROM address_maad_stats s
+         LEFT JOIN maad_q_grid g ON g.ip_version = s.ip_version",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if ungridded != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {ungridded} curves without a maad_q_grid row"
+        )));
+    }
+    if bad_tau != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {bad_tau} tau or tau_sd blobs that do not match the q grid"
+        )));
+    }
+    if bad_spectrum != 0 {
+        return Err(VerifyError::Incompatible(format!(
+            "address_maad_stats has {bad_spectrum} rows whose spectrum presence does not match the measure"
+        )));
+    }
+    Ok(())
+}
+
 fn assert_processed_inputs_complete(connection: &Connection) -> Result<(), VerifyError> {
     let pending: i64 = connection.query_row(
         "SELECT COUNT(*) FROM processed_inputs WHERE status != 'processed'",
@@ -588,6 +688,42 @@ fn assert_optional_maad_query(
     Ok(())
 }
 
+/// IPv6 traffic in the window must have IPv6 MAAD rows.
+fn assert_ipv6_maad_rows(
+    connection: &Connection,
+    source_id: &str,
+    bucket_start: i64,
+    bucket_end: i64,
+) -> Result<(), VerifyError> {
+    let has_traffic = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM traffic_stats
+            WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
+              AND src_locality = 'all' AND dst_locality = 'all' AND flows > 0
+              AND bucket_start >= ?2 AND bucket_start < ?3
+        )",
+        params![source_id, bucket_start, bucket_end],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let has_maad = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM address_maad_stats
+            WHERE source_id = ?1 AND granularity = '1h' AND ip_version = 6
+              AND src_locality = 'all' AND dst_locality = 'all'
+              AND measure = 'addresses'
+              AND bucket_start >= ?2 AND bucket_start < ?3
+        )",
+        params![source_id, bucket_start, bucket_end],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if has_traffic && !has_maad {
+        return Err(VerifyError::Incompatible(
+            "IPv6 traffic has no IPv6 MAAD rows".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -614,7 +750,7 @@ const NETFLOW_QUERY: &str = "
            SUM(CASE WHEN ip_version = 6 THEN flows ELSE 0 END)
     FROM traffic_stats
     WHERE source_id IN (?) AND granularity = '1h'
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY bucket_start ORDER BY bucket_start LIMIT 1";
 
@@ -639,7 +775,7 @@ const ADDRESS_QUERY: &str = "
            MAX(processed_at)
     FROM address_count_stats
     WHERE granularity = '1h' AND source_id IN (?)
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY source_id, bucket_start, bucket_end, granularity
     ORDER BY source_id, bucket_start LIMIT 1";
@@ -651,31 +787,33 @@ const PROTOCOL_QUERY: &str = "
            MAX(processed_at)
     FROM protocol_stats
     WHERE granularity = '1h' AND source_id IN (?)
-      AND src_visibility = 'all' AND dst_visibility = 'all'
+      AND src_locality = 'all' AND dst_locality = 'all'
       AND bucket_start >= ? AND bucket_start < ?
     GROUP BY source_id, bucket_start, bucket_end, granularity
     ORDER BY source_id, bucket_start LIMIT 1";
 
 const STRUCTURE_QUERY: &str = "
-    SELECT source_id, bucket_start,
-           MAX(CASE WHEN address_side = 'source' THEN values_json END),
-           MAX(CASE WHEN address_side = 'destination' THEN values_json END)
-    FROM address_structure_stats
-    WHERE granularity = '1h' AND source_id IN (?)
-      AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
-      AND src_visibility = 'all' AND dst_visibility = 'all'
-      AND structure_kind = 'structure'
-    GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
+    SELECT s.source_id, s.bucket_start,
+           MAX(CASE WHEN s.address_side = 'source' THEN s.tau END),
+           MAX(CASE WHEN s.address_side = 'destination' THEN s.tau END),
+           MAX(g.q_min), MAX(g.q_step)
+    FROM address_maad_stats s
+    JOIN maad_q_grid g ON g.ip_version = s.ip_version
+    WHERE s.granularity = '1h' AND s.source_id IN (?)
+      AND s.bucket_start >= ? AND s.bucket_start < ? AND s.ip_version = 4
+      AND s.src_locality = 'all' AND s.dst_locality = 'all'
+      AND s.measure = 'addresses'
+    GROUP BY s.source_id, s.bucket_start ORDER BY s.source_id, s.bucket_start LIMIT 1";
 
 const SPECTRUM_QUERY: &str = "
     SELECT source_id, bucket_start,
-           MAX(CASE WHEN address_side = 'source' THEN values_json END),
-           MAX(CASE WHEN address_side = 'destination' THEN values_json END)
-    FROM address_structure_stats
+           MAX(CASE WHEN address_side = 'source' THEN spectrum END),
+           MAX(CASE WHEN address_side = 'destination' THEN spectrum END)
+    FROM address_maad_stats
     WHERE granularity = '1h' AND source_id IN (?)
       AND bucket_start >= ? AND bucket_start < ? AND ip_version = 4
-      AND src_visibility = 'all' AND dst_visibility = 'all'
-      AND structure_kind = 'spectrum'
+      AND src_locality = 'all' AND dst_locality = 'all'
+      AND measure = 'addresses'
     GROUP BY source_id, bucket_start ORDER BY source_id, bucket_start LIMIT 1";
 
 const FILE_DETAILS_QUERY: &str = "
@@ -684,7 +822,7 @@ const FILE_DETAILS_QUERY: &str = "
         SELECT source_id AS router, bucket_start, SUM(flows) AS flows
         FROM traffic_stats
         WHERE granularity = '5m' AND bucket_start = ?
-          AND src_visibility = 'all' AND dst_visibility = 'all'
+          AND src_locality = 'all' AND dst_locality = 'all'
         GROUP BY source_id, bucket_start
     ) ns
     LEFT JOIN (
@@ -697,7 +835,7 @@ const FILE_DETAILS_QUERY: &str = "
                         THEN unique_address_count ELSE 0 END) AS address_count
         FROM address_count_stats
         WHERE granularity = '5m' AND bucket_start = ?
-          AND src_visibility = 'all' AND dst_visibility = 'all'
+          AND src_locality = 'all' AND dst_locality = 'all'
         GROUP BY source_id, bucket_start
     ) ip ON ip.source_id = ns.router AND ip.bucket_start = ns.bucket_start
     ORDER BY ns.router LIMIT 1";
@@ -705,7 +843,7 @@ const FILE_DETAILS_QUERY: &str = "
 const ROLLUP_PARITY_QUERY: &str = "
     WITH expected AS (
         SELECT calendar.source_id, calendar.granularity, calendar.bucket_start,
-               calendar.bucket_end, ts.ip_version, ts.src_visibility, ts.dst_visibility,
+               calendar.bucket_end, ts.ip_version, ts.src_locality, ts.dst_locality,
                SUM(ts.flows), SUM(ts.flows_tcp), SUM(ts.flows_udp), SUM(ts.flows_icmp),
                SUM(ts.flows_other), SUM(ts.packets), SUM(ts.packets_tcp),
                SUM(ts.packets_udp), SUM(ts.packets_icmp), SUM(ts.packets_other),
@@ -721,7 +859,7 @@ const ROLLUP_PARITY_QUERY: &str = "
                     ELSE CAST(SUM(ts.max_ttl_sum) AS REAL) / SUM(ts.max_ttl_count) END
         FROM (
             SELECT source_id, granularity, bucket_start, bucket_end
-            FROM address_count_stats WHERE granularity IN ('30m', '1h', '1d')
+            FROM address_count_stats WHERE granularity IN ('10m', '30m', '1h', '1d')
             GROUP BY source_id, granularity, bucket_start, bucket_end
         ) calendar
         JOIN traffic_stats ts
@@ -730,15 +868,15 @@ const ROLLUP_PARITY_QUERY: &str = "
          AND ts.bucket_start < calendar.bucket_end
          AND ts.granularity = '5m'
         GROUP BY calendar.source_id, calendar.granularity, calendar.bucket_start,
-                 calendar.bucket_end, ts.ip_version, ts.src_visibility, ts.dst_visibility
+                 calendar.bucket_end, ts.ip_version, ts.src_locality, ts.dst_locality
     ), actual AS (
         SELECT source_id, granularity, bucket_start, bucket_end, ip_version,
-               src_visibility, dst_visibility, flows, flows_tcp, flows_udp, flows_icmp,
+               src_locality, dst_locality, flows, flows_tcp, flows_udp, flows_icmp,
                flows_other, packets, packets_tcp, packets_udp, packets_icmp, packets_other,
                bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other, duration_sum_ms,
                duration_count, average_duration_ms, min_ttl_sum, min_ttl_count,
                average_min_ttl, max_ttl_sum, max_ttl_count, average_max_ttl
-        FROM traffic_stats WHERE granularity IN ('30m', '1h', '1d')
+        FROM traffic_stats WHERE granularity IN ('10m', '30m', '1h', '1d')
     ), missing_or_changed AS (SELECT * FROM expected EXCEPT SELECT * FROM actual),
        extra_or_changed AS (SELECT * FROM actual EXCEPT SELECT * FROM expected)
     SELECT (SELECT COUNT(*) FROM missing_or_changed)
@@ -750,6 +888,154 @@ mod tests {
 
     use super::*;
     use crate::storage::init_schema;
+
+    #[test]
+    fn ipv6_traffic_requires_ipv6_maad_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        assert!(assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).is_ok());
+        connection
+            .execute(
+                "INSERT INTO traffic_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
+                    flows_icmp, flows_other, packets, packets_tcp, packets_udp,
+                    packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
+                    bytes_icmp, bytes_other, duration_sum_ms, duration_count,
+                    average_duration_ms, min_ttl_sum, min_ttl_count, average_min_ttl,
+                    max_ttl_sum, max_ttl_count, average_max_ttl
+                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 2, 2, 0, 0, 0,
+                    3, 3, 0, 0, 0, 4, 4, 0, 0, 0, 10, 2, 5.0, 62, 2, 31.0,
+                    128, 2, 64.0)",
+                [],
+            )
+            .unwrap();
+
+        let error = assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).unwrap_err();
+        assert!(error.to_string().contains("IPv6 traffic has no IPv6 MAAD"));
+
+        connection
+            .execute(
+                "INSERT INTO address_maad_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+                 ) VALUES ('r1', '1h', 0, 3600, 6, 'all', 'all', 'source', 'addresses',
+                    0, X'')",
+                [],
+            )
+            .unwrap();
+        assert!(assert_ipv6_maad_rows(&connection, "r1", 0, 3_600).is_ok());
+    }
+
+    #[test]
+    fn maad_data_requires_a_row_for_every_measure() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let insert = |measure: &str, bucket_start: i64, address_side: &str| {
+            connection
+                .execute(
+                    "INSERT INTO address_maad_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', ?3, ?1, 0,
+                              CASE WHEN ?1 = 'addresses' THEN X'' END)",
+                    params![measure, bucket_start, address_side],
+                )
+                .unwrap();
+        };
+
+        assert!(assert_maad_measures_present(&connection).is_err());
+        for measure in ["addresses", "packets", "bytes"] {
+            insert(measure, 0, "source");
+        }
+        assert!(assert_maad_measures_present(&connection).is_ok());
+        insert("addresses", 300, "source");
+        insert("packets", 300, "source");
+        let error = assert_maad_measures_present(&connection).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing bytes rows for source r1 5m bucket 300")
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE address_maad_stats SET spectrum = X'' WHERE measure = 'packets'",
+                    [],
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn maad_measure_presence_is_checked_per_scope_key_not_by_global_counts() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let insert = |measure: &str, bucket_start: i64, address_side: &str| {
+            connection
+                .execute(
+                    "INSERT INTO address_maad_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+                    ) VALUES ('r1', '5m', ?2, ?2 + 300, 4, 'all', 'all', ?3, ?1, 0,
+                              CASE WHEN ?1 = 'addresses' THEN X'' END)",
+                    params![measure, bucket_start, address_side],
+                )
+                .unwrap();
+        };
+        insert("addresses", 0, "source");
+        insert("packets", 0, "source");
+        insert("bytes", 300, "source");
+        let error = assert_maad_measures_present(&connection)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing bytes rows for source r1 5m bucket 0"));
+    }
+
+    #[test]
+    fn maad_encoding_requires_grid_sized_curves_and_measure_spectra() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let tau = crate::maad::encode_f32([0.5; 33]);
+        let insert = |measure: &str, tau: &[u8], spectrum: Option<&[u8]>| {
+            connection.execute(
+                "INSERT OR REPLACE INTO address_maad_stats (
+                    source_id, granularity, bucket_start, bucket_end, ip_version,
+                    src_locality, dst_locality, address_side, measure, total_addrs,
+                    d0, d1, d2, tau, tau_sd, spectrum
+                ) VALUES ('r1', '5m', 0, 300, 4, 'all', 'all', 'source', ?1, 2,
+                          1.0, 1.0, 1.0, ?2, ?2, ?3)",
+                params![measure, tau, spectrum],
+            )
+        };
+
+        insert("addresses", &tau, Some(&[])).unwrap();
+        insert("packets", &tau, None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("2 curves without a maad_q_grid row")
+        );
+
+        connection
+            .execute(
+                "INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count)
+                 VALUES (4, -0.5, 0.125, 33)",
+                [],
+            )
+            .unwrap();
+        assert!(assert_maad_encoding(&connection).is_ok());
+
+        insert("packets", &tau[4..], None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(error.to_string().contains("1 tau or tau_sd blobs"));
+
+        insert("packets", &tau, None).unwrap();
+        insert("addresses", &tau, None).unwrap();
+        let error = assert_maad_encoding(&connection).unwrap_err();
+        assert!(error.to_string().contains("1 rows whose spectrum presence"));
+    }
 
     #[test]
     fn canonical_database_satisfies_web_query_contract() {
@@ -767,7 +1053,7 @@ mod tests {
                 .execute(
                     "INSERT INTO traffic_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, flows, flows_tcp, flows_udp,
+                    src_locality, dst_locality, flows, flows_tcp, flows_udp,
                     flows_icmp, flows_other, packets, packets_tcp, packets_udp,
                     packets_icmp, packets_other, bytes, bytes_tcp, bytes_udp,
                     bytes_icmp, bytes_other, duration_sum_ms, duration_count,
@@ -792,7 +1078,7 @@ mod tests {
                 .execute(
                     "INSERT INTO protocol_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, unique_protocols_count, protocols_list
+                    src_locality, dst_locality, unique_protocols_count, protocols_list
                  ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', 1, '6')",
                     params![granularity, end],
                 )
@@ -802,7 +1088,7 @@ mod tests {
                     .execute(
                         "INSERT INTO address_count_stats (
                         source_id, granularity, bucket_start, bucket_end, ip_version,
-                        src_visibility, dst_visibility, address_side, unique_address_count
+                        src_locality, dst_locality, address_side, unique_address_count
                      ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', ?3, 1)",
                         params![granularity, end, side],
                     )
@@ -812,7 +1098,7 @@ mod tests {
                 .execute(
                     "INSERT INTO port_count_stats (
                     source_id, granularity, bucket_start, bucket_end, ip_version,
-                    src_visibility, dst_visibility, port_side, port_range, unique_port_count
+                    src_locality, dst_locality, port_side, port_range, unique_port_count
                  ) VALUES ('r1', ?1, 100, ?2, 4, 'all', 'all', 'source', 'low', 1)",
                     params![granularity, end],
                 )
@@ -885,7 +1171,7 @@ mod tests {
             .execute(
                 "INSERT INTO protocol_stats (
                 source_id, granularity, bucket_start, bucket_end, ip_version,
-                src_visibility, dst_visibility, unique_protocols_count, protocols_list, trace
+                src_locality, dst_locality, unique_protocols_count, protocols_list, trace
              ) VALUES ('r1', '5m', 100, 400, 4, 'all', 'all', 1, '6', 'peer=192.0.2.8')",
                 [],
             )

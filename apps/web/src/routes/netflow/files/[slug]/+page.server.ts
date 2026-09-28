@@ -1,15 +1,29 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { loadDatasetSummariesFromFetch, resolveDefaultDatasetId } from '$lib/datasets';
-import { parseFlowScopeParams } from '$lib/server/netflow-v3';
+import {
+	parseFlowDirectionParams,
+	parseMaadIpVersion,
+	parseMaadMeasure
+} from '$lib/server/netflow-v3';
 
 export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	const { slug } = params;
 	let dataset = url.searchParams.get('dataset')?.trim() || '';
-	const flowScope = parseFlowScopeParams(url);
+	const flowDirection = parseFlowDirectionParams(url);
 
-	if ('error' in flowScope) {
-		throw error(flowScope.status, flowScope.error);
+	if ('error' in flowDirection) {
+		throw error(flowDirection.status, flowDirection.error);
+	}
+
+	const ipVersion = parseMaadIpVersion(url);
+	if (typeof ipVersion !== 'number') {
+		throw error(ipVersion.status, ipVersion.error);
+	}
+
+	const measure = parseMaadMeasure(url);
+	if (typeof measure !== 'string') {
+		throw error(measure.status, measure.error);
 	}
 
 	if (!dataset) {
@@ -33,8 +47,9 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 	return {
 		dataset,
 		slug,
-		srcVisibility: flowScope.srcVisibility,
-		dstVisibility: flowScope.dstVisibility,
+		direction: flowDirection.direction,
+		ipVersion,
+		measure,
 		fileInfo: {
 			year,
 			month,

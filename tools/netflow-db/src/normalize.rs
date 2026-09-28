@@ -102,7 +102,8 @@ pub fn normalize_csv_values(
     let src_ip = parse_ip(required(value(src_column)?, src_column)?)?;
     let dst_ip = parse_ip(required(value(dst_column)?, dst_column)?)?;
     let protocol = extract_protocol(optional("protocol")?, config)?;
-    let packets = extract_nonnegative(optional("packets")?, "packets", 0)?;
+    let raw_packets = optional("packets")?;
+    let packets = extract_nonnegative(raw_packets, "packets", 0)?;
     let bytes = extract_nonnegative(optional("bytes")?, "bytes", 0)?;
     let src_tos = extract_u8(optional("src_tos")?, "src_tos", 0)?;
     let dst_tos = extract_u8(optional("dst_tos")?, "dst_tos", 0)?;
@@ -123,6 +124,9 @@ pub fn normalize_csv_values(
         .with_ports(src_port, dst_port)
         .with_measurements(duration_ms, min_ttl, max_ttl)?
         .with_flow_count(flow_count)?;
+    if raw_packets.is_none() {
+        observation = observation.with_unreported_packets();
+    }
     observation.time_received_ms = timestamps.get("time_received").copied();
     observation.time_end_ms = timestamps.get("time_end").copied();
     observation.time_start_ms = timestamps.get("time_start").copied();

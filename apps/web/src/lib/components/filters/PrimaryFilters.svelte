@@ -2,12 +2,20 @@
 	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
+	import DirectionFilter from '$lib/components/filters/DirectionFilter.svelte';
+	import MaadIpVersionFilter from '$lib/components/filters/MaadIpVersionFilter.svelte';
+	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
 	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { FLOW_SCOPE_OPTIONS, type FlowScopeKey } from '$lib/types/types';
+	import {
+		DEFAULT_MAAD_IP_VERSION,
+		type FlowDirection,
+		type MaadIpVersion,
+		type MaadMeasure
+	} from '$lib/types/types';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;
@@ -18,6 +26,7 @@
 		{ value: 'date', label: 'Day' },
 		{ value: 'hour', label: 'Hour' },
 		{ value: '30min', label: '30 min' },
+		{ value: '10min', label: '10 min' },
 		{ value: '5min', label: '5 min' }
 	];
 
@@ -26,13 +35,18 @@
 		endDate: string;
 		groupBy: GroupByOption;
 		routers: RouterConfig;
-		flowScope: FlowScopeKey;
+		direction: FlowDirection;
+		showDirection?: boolean;
+		measure?: MaadMeasure;
+		maadIpVersion?: MaadIpVersion;
 		groupByOptions?: GroupBySelectOption[];
 		onStartDateChange?: (payload: { startDate: string }) => void;
 		onEndDateChange?: (payload: { endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
-		onScopeChange?: (payload: { scope: FlowScopeKey }) => void;
+		onDirectionChange?: (payload: { direction: FlowDirection }) => void;
+		onMeasureChange?: (payload: { measure: MaadMeasure }) => void;
+		onMaadIpVersionChange?: (payload: { ipVersion: MaadIpVersion }) => void;
 		onResetView?: () => void;
 	}>();
 
@@ -48,15 +62,15 @@
 		props.onRoutersChange?.({ routers: nextRouters });
 	}
 
-	function handleScopeChange(event: Event) {
-		const target = event.currentTarget as HTMLSelectElement;
-		props.onScopeChange?.({ scope: target.value as FlowScopeKey });
+	function handleDirectionChange(payload: { direction: FlowDirection }) {
+		props.onDirectionChange?.(payload);
 	}
 
 	function handleResetView() {
 		props.onResetView?.();
 	}
 
+	const toolbarButtonClass = 'px-3 text-sm';
 	const navigationTip = 'Click chart to drill down. Drag across chart to drill into a date range.';
 	const groupByOptions = $derived(props.groupByOptions ?? DEFAULT_GROUP_BY_OPTIONS);
 
@@ -81,7 +95,7 @@
 </script>
 
 <Card class="gap-3 rounded-lg border py-3 shadow-sm ring-0">
-	<CardHeader class="px-3">
+	<CardHeader class="flex items-center justify-between gap-2 px-3">
 		<div class="flex items-center gap-2">
 			<CardTitle class="text-sm font-semibold">Controls</CardTitle>
 			<Tooltip.Root>
@@ -104,43 +118,63 @@
 				</Tooltip.Content>
 			</Tooltip.Root>
 		</div>
+		<Button onclick={handleResetView} size="sm" class="h-7 px-4">Reset View</Button>
 	</CardHeader>
 
-	<CardContent class="flex flex-wrap items-center gap-3 px-3">
-		<DateRangeFilter
-			startDate={props.startDate}
-			endDate={props.endDate}
-			onStartDateChange={handleStartDateChange}
-			onEndDateChange={handleEndDateChange}
-		/>
+	<CardContent class="flex flex-col gap-3 px-3">
+		<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+			<div class="flex flex-wrap items-center gap-3">
+				<DateRangeFilter
+					startDate={props.startDate}
+					endDate={props.endDate}
+					onStartDateChange={handleStartDateChange}
+					onEndDateChange={handleEndDateChange}
+				/>
 
-		<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
+				<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
 
-		<SegmentedControl
-			options={segmentedGroupByOptions}
-			value={props.groupBy}
-			onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
-			class="min-w-[17rem] grid-cols-4"
-			buttonClass="px-3 py-1 text-sm"
-		/>
+				<SegmentedControl
+					options={segmentedGroupByOptions}
+					value={props.groupBy}
+					onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
+					ariaLabel="Granularity"
+					style={`grid-template-columns: repeat(${groupByOptions.length}, minmax(0, 1fr));`}
+					buttonClass={toolbarButtonClass}
+				/>
+			</div>
 
-		<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
+			<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
+		</div>
 
-		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
+		{#if (props.showDirection ?? true) || props.measure}
+			<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+				{#if props.showDirection ?? true}
+					<div class="flex items-center gap-2">
+						<span class="text-foreground text-sm font-medium">Direction:</span>
+						<DirectionFilter
+							direction={props.direction}
+							onDirectionChange={handleDirectionChange}
+							buttonClass={toolbarButtonClass}
+						/>
+					</div>
+				{/if}
 
-		<label class="text-foreground flex items-center gap-2">
-			<span class="text-sm font-medium">Scope:</span>
-			<select
-				value={props.flowScope}
-				onchange={handleScopeChange}
-				class="border-input bg-background text-foreground focus-visible:ring-ring rounded border px-2 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
-			>
-				{#each FLOW_SCOPE_OPTIONS as option (option.key)}
-					<option value={option.key}>{option.label}</option>
-				{/each}
-			</select>
-		</label>
-
-		<Button onclick={handleResetView} size="sm" class="h-7 px-4 sm:ml-auto">Reset View</Button>
+				{#if props.measure}
+					<div class="flex flex-wrap items-center gap-2" role="group" aria-label="MAAD options">
+						<span class="text-foreground text-sm font-medium">MAAD:</span>
+						<MaadMeasureFilter
+							measure={props.measure}
+							onMeasureChange={props.onMeasureChange}
+							buttonClass={toolbarButtonClass}
+						/>
+						<MaadIpVersionFilter
+							ipVersion={props.maadIpVersion ?? DEFAULT_MAAD_IP_VERSION}
+							onIpVersionChange={props.onMaadIpVersionChange}
+							buttonClass={toolbarButtonClass}
+						/>
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</CardContent>
 </Card>

@@ -14,7 +14,7 @@ import {
 	groupByToGranularity,
 	parseSourceIds,
 	parseTimestamp,
-	parseFlowScopeParams,
+	parseFlowDirectionParams,
 	placeholders,
 	resolveSourceIds
 } from '$lib/server/netflow-v3';
@@ -121,9 +121,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 		return json({ error: 'Start time must be before end time' }, { status: 400 });
 	}
 
-	const flowScope = parseFlowScopeParams(url);
-	if ('error' in flowScope) {
-		return json({ error: flowScope.error }, { status: flowScope.status });
+	const flowDirection = parseFlowDirectionParams(url);
+	if ('error' in flowDirection) {
+		return json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	try {
@@ -148,9 +148,9 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			FROM ${tableName} 
 			WHERE ${sourceColumn} IN (${placeholders(resolvedSources)})
 			AND granularity = ?
-			AND src_visibility = ?
-			AND dst_visibility = ?
-			AND ${timeColumn} >= ? 
+			AND src_locality = ?
+			AND dst_locality = ?
+			AND ${timeColumn} >= ?
 			AND ${timeColumn} < ?
 			GROUP BY +${timeColumn}
 			ORDER BY +${timeColumn}
@@ -159,8 +159,8 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 			const params = [
 				...resolvedSources,
 				granularity,
-				flowScope.srcVisibility,
-				flowScope.dstVisibility,
+				flowDirection.srcLocality,
+				flowDirection.dstLocality,
 				start,
 				end
 			];

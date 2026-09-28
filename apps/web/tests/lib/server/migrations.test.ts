@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { localSchemaSql } from '../../../src/lib/server/db/local-schema';
 
 const migrationsDirectory = fileURLToPath(new URL('../../../drizzle', import.meta.url));
 
@@ -18,6 +19,12 @@ function migrationFiles(): string[] {
 		.readdirSync(migrationsDirectory)
 		.filter((fileName) => fileName.endsWith('.sql'))
 		.sort();
+}
+
+function migrationIndexContaining(migrations: string[], needle: string): number {
+	return migrations.findIndex((fileName) =>
+		fs.readFileSync(path.join(migrationsDirectory, fileName), 'utf8').includes(needle)
+	);
 }
 
 function applyMigration(database: Database.Database, fileName: string): void {
@@ -140,30 +147,31 @@ describe('D1 migrations', () => {
 			const expectedTimeseriesIndexes = new Map([
 				[
 					'idx_traffic_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_protocol_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_address_count_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
 					'idx_port_count_stats_timeseries',
-					['source_id', 'granularity', 'src_visibility', 'dst_visibility', 'bucket_start']
+					['source_id', 'granularity', 'src_locality', 'dst_locality', 'bucket_start']
 				],
 				[
-					'idx_address_structure_stats_timeseries',
+					'idx_address_maad_stats_key',
 					[
 						'source_id',
 						'granularity',
-						'src_visibility',
-						'dst_visibility',
+						'src_locality',
+						'dst_locality',
 						'ip_version',
-						'structure_kind',
-						'bucket_start'
+						'measure',
+						'bucket_start',
+						'address_side'
 					]
 				]
 			]);
@@ -183,12 +191,95 @@ describe('D1 migrations', () => {
 			for (const indexName of [
 				'idx_traffic_stats_query',
 				'idx_address_count_stats_query',
-				'idx_address_structure_stats_query'
+				'idx_address_maad_stats_bucket'
 			]) {
 				expect(indexColumns(database, indexName), indexName).not.toHaveLength(0);
 			}
 			expect(indexColumns(database, 'idx_protocol_stats_query')).toHaveLength(0);
 			expect(indexColumns(database, 'idx_port_count_stats_query')).toHaveLength(0);
+
+			const maadColumns = database
+				.prepare('PRAGMA table_info(address_maad_stats)')
+				.all()
+				.map((column) => (column as { name: string }).name);
+			expect(maadColumns).toEqual(
+				expect.arrayContaining([
+					'total_addrs',
+					'zero_weight_addrs',
+					'min_prefix_length',
+					'max_prefix_length',
+					'd0',
+					'd1',
+					'd2',
+					'tau',
+					'tau_sd',
+					'spectrum'
+				])
+			);
+			expect(maadColumns).not.toEqual(
+				expect.arrayContaining(['values_json', 'metadata_json', 'structure_kind', 'processed_at'])
+			);
+
+			const qGridColumns = database
+				.prepare('PRAGMA table_info(maad_q_grid)')
+				.all()
+				.map((column) => (column as { name: string }).name);
+			expect(qGridColumns).toEqual(['ip_version', 'q_min', 'q_step', 'q_count']);
+
+			expect(
+				database
+					.prepare("SELECT name FROM sqlite_master WHERE name = 'address_structure_stats'")
+					.all()
+			).toHaveLength(0);
+		} finally {
+			database.close();
+		}
+	});
+
+	it.each([
+		[
+			'migrated',
+			(database: Database.Database) =>
+				migrationFiles().forEach((file) => applyMigration(database, file))
+		],
+		['local', (database: Database.Database) => database.exec(localSchemaSql)]
+	])('rejects malformed MAAD blobs in the %s schema', (_schema, createSchema) => {
+		const database = new Database(':memory:');
+
+		try {
+			createSchema(database);
+			const insert = database.prepare(`
+				INSERT INTO address_maad_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_locality, dst_locality, address_side, measure, total_addrs,
+					d0, d1, d2, tau, tau_sd, spectrum
+				) VALUES ('edge', '5m', ?, 300, 4, 'all', 'all', 'source', 'addresses', 1, ?, 1, 1, ?, ?, ?)
+			`);
+			const bytes = (length: number) => Buffer.alloc(length);
+			let bucketStart = 0;
+			const insertRow = (
+				tau: Buffer | string | null,
+				tauSd: Buffer | string | null,
+				spectrum: Buffer | string | null
+			) => insert.run(bucketStart++, tau === null ? null : 1, tau, tauSd, spectrum);
+
+			expect(() => insertRow(bytes(8), bytes(8), bytes(16))).not.toThrow();
+			expect(() => insertRow(null, null, bytes(0))).not.toThrow();
+			expect(() => insertRow(null, null, null)).not.toThrow();
+
+			for (const [tau, tauSd, spectrum] of [
+				[bytes(0), bytes(0), null],
+				[bytes(1), bytes(1), null],
+				[bytes(6), bytes(6), null],
+				[bytes(8), bytes(4), null],
+				[bytes(8), null, null],
+				['abcd', 'abcd', null],
+				[bytes(8), 'abcdefgh', null],
+				[null, null, bytes(4)],
+				[null, null, 'abcdefgh']
+			] as const) {
+				expect(() => insertRow(tau, tauSd, spectrum)).toThrow(/CHECK constraint failed/);
+			}
 		} finally {
 			database.close();
 		}
@@ -255,6 +346,131 @@ describe('D1 migrations', () => {
 			for (const indexName of timeseriesIndexes) {
 				expect(statisticsByIndex.get(indexName), indexName).toEqual(expect.any(String));
 			}
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keeps only locality-independent rollup rows when renaming visibility to locality', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const localityMigration = migrationIndexContaining(migrations, 'src_locality');
+		try {
+			for (const migration of migrations.slice(0, localityMigration)) {
+				applyMigration(database, migration);
+			}
+			const insert = database.prepare(`
+				INSERT INTO protocol_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_visibility, dst_visibility, unique_protocols_count, protocols_list
+				) VALUES ('edge', '5m', 0, 300, 4, ?, ?, 1, '6')
+			`);
+			insert.run('all', 'all');
+			insert.run('literal', 'anonymized');
+
+			for (const migration of migrations.slice(localityMigration)) {
+				applyMigration(database, migration);
+			}
+
+			expect(
+				database.prepare('SELECT src_locality, dst_locality FROM protocol_stats').all()
+			).toEqual([{ src_locality: 'all', dst_locality: 'all' }]);
+			expect(() =>
+				database
+					.prepare(
+						`INSERT INTO protocol_stats (
+							source_id, granularity, bucket_start, bucket_end, ip_version,
+							src_locality, dst_locality, unique_protocols_count, protocols_list
+						) VALUES ('edge', '5m', 0, 300, 4, 'literal', 'all', 1, '6')`
+					)
+					.run()
+			).toThrow(/CHECK constraint failed/);
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keeps only locality-independent rows in every stats table', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const localityMigration = migrationIndexContaining(migrations, 'src_locality');
+		const maadMigration = migrationIndexContaining(migrations, 'address_maad_stats');
+		const tables = [
+			'traffic_stats',
+			'protocol_stats',
+			'address_count_stats',
+			'port_count_stats',
+			'address_structure_stats'
+		];
+		try {
+			for (const migration of migrations.slice(0, localityMigration)) {
+				applyMigration(database, migration);
+			}
+			seedPlannerStatistics(database);
+			for (const table of tables) {
+				database
+					.prepare(
+						`UPDATE ${table} SET src_visibility = 'all', dst_visibility = 'all'
+						 WHERE source_id = 'stats-source-0'`
+					)
+					.run();
+			}
+
+			for (const migration of migrations.slice(localityMigration, maadMigration)) {
+				applyMigration(database, migration);
+			}
+
+			for (const table of tables) {
+				expect(
+					database.prepare(`SELECT source_id, src_locality, dst_locality FROM ${table}`).all(),
+					table
+				).toEqual([{ source_id: 'stats-source-0', src_locality: 'all', dst_locality: 'all' }]);
+			}
+		} finally {
+			database.close();
+		}
+	});
+
+	it('keys MAAD rows by measure and keeps existing rows as the addresses measure', () => {
+		const database = new Database(':memory:');
+		const migrations = migrationFiles();
+		const measureMigration = migrationIndexContaining(
+			migrations,
+			'address_structure_stats_measure_check'
+		);
+		const maadMigration = migrationIndexContaining(migrations, 'address_maad_stats');
+		try {
+			for (const migration of migrations.slice(0, measureMigration)) {
+				applyMigration(database, migration);
+			}
+			database
+				.prepare(
+					`INSERT INTO address_structure_stats (
+						source_id, granularity, bucket_start, bucket_end, ip_version,
+						src_locality, dst_locality, address_side, structure_kind,
+						values_json, metadata_json
+					) VALUES ('edge', '5m', 0, 300, 4, 'all', 'all', 'source', 'spectrum', '[]', '{}')`
+				)
+				.run();
+
+			for (const migration of migrations.slice(measureMigration, maadMigration)) {
+				applyMigration(database, migration);
+			}
+
+			expect(
+				database.prepare('SELECT measure, structure_kind FROM address_structure_stats').all()
+			).toEqual([{ measure: 'addresses', structure_kind: 'spectrum' }]);
+			const insert = database.prepare(
+				`INSERT INTO address_structure_stats (
+					source_id, granularity, bucket_start, bucket_end, ip_version,
+					src_locality, dst_locality, address_side, measure, structure_kind,
+					values_json, metadata_json
+				) VALUES ('edge', '5m', 0, 300, 4, 'all', 'all', 'source', ?, ?, '[]', '{}')`
+			);
+			insert.run('packets', 'structure');
+			insert.run('bytes', 'structure');
+			expect(() => insert.run('packets', 'spectrum')).toThrow(/CHECK constraint failed/);
+			expect(() => insert.run('flows', 'structure')).toThrow(/CHECK constraint failed/);
 		} finally {
 			database.close();
 		}

@@ -31,10 +31,25 @@ pub const STATS_TABLE_NAMES: [&str; 6] = [
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
-    "address_structure_stats",
+    "address_maad_stats",
     "bucket_coverage",
 ];
-const STATS_GRANULARITIES: [&str; 4] = ["5m", "30m", "1h", "1d"];
+/// Versioned product schema bound into every pipeline database identity.
+pub fn product_schema() -> serde_json::Value {
+    serde_json::json!({
+        "version": 7,
+        "tables": [
+            {"name": "traffic_stats", "version": 4},
+            {"name": "protocol_stats", "version": 3},
+            {"name": "address_count_stats", "version": 3},
+            {"name": "port_count_stats", "version": 3},
+            {"name": "address_maad_stats", "version": 1},
+            {"name": "maad_q_grid", "version": 1},
+            {"name": "bucket_coverage", "version": 2}
+        ]
+    })
+}
+pub const STATS_GRANULARITIES: [&str; 5] = ["5m", "10m", "30m", "1h", "1d"];
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("SQLite operation failed: {0}")]
@@ -1368,7 +1383,7 @@ pub fn init_bucket_coverage_table(connection: &Connection) -> Result<(), Storage
         "
         CREATE TABLE IF NOT EXISTS bucket_coverage (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
             coverage_state TEXT NOT NULL CHECK (coverage_state IN ('complete', 'partial', 'unknown')),
@@ -1399,12 +1414,12 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         "
         CREATE TABLE IF NOT EXISTS traffic_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             flows INTEGER NOT NULL,
             flows_tcp INTEGER NOT NULL,
             flows_udp INTEGER NOT NULL,
@@ -1430,85 +1445,101 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
             max_ttl_count INTEGER NOT NULL,
             average_max_ttl REAL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_traffic_stats_query
-        ON traffic_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+        ON traffic_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality);
         CREATE INDEX IF NOT EXISTS idx_traffic_stats_timeseries
-        ON traffic_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON traffic_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS protocol_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             unique_protocols_count INTEGER NOT NULL,
             protocols_list TEXT NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_protocol_stats_timeseries
-        ON protocol_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON protocol_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS address_count_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
             unique_address_count INTEGER NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, address_side)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, address_side)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_address_count_stats_query
-        ON address_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side);
+        ON address_count_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, address_side);
         CREATE INDEX IF NOT EXISTS idx_address_count_stats_timeseries
-        ON address_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON address_count_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
         CREATE TABLE IF NOT EXISTS port_count_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
             bucket_end INTEGER NOT NULL,
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             port_side TEXT NOT NULL CHECK (port_side IN ('source', 'destination')),
             port_range TEXT NOT NULL CHECK (port_range IN ('low', 'high')),
             unique_port_count INTEGER NOT NULL,
             processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, port_side, port_range)
+            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_locality, dst_locality, port_side, port_range)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS idx_port_count_stats_timeseries
-        ON port_count_stats (source_id, granularity, src_visibility, dst_visibility, bucket_start);
+        ON port_count_stats (source_id, granularity, src_locality, dst_locality, bucket_start);
 
-        CREATE TABLE IF NOT EXISTS address_structure_stats (
+        CREATE TABLE IF NOT EXISTS address_maad_stats (
             source_id TEXT NOT NULL,
-            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '30m', '1h', '1d')),
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
             bucket_start INTEGER NOT NULL,
-            bucket_end INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
             ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
-            src_visibility TEXT NOT NULL CHECK (src_visibility IN ('all', 'literal', 'anonymized')),
-            dst_visibility TEXT NOT NULL CHECK (dst_visibility IN ('all', 'literal', 'anonymized')),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
             address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
-            structure_kind TEXT NOT NULL CHECK (structure_kind IN ('structure', 'spectrum', 'dimension')),
-            values_json TEXT NOT NULL,
-            metadata_json TEXT NOT NULL,
-            processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, granularity, bucket_start, ip_version, src_visibility, dst_visibility, address_side, structure_kind)
-        ) WITHOUT ROWID;
-        CREATE INDEX IF NOT EXISTS idx_address_structure_stats_query
-        ON address_structure_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, address_side, structure_kind);
-        CREATE INDEX IF NOT EXISTS idx_address_structure_stats_timeseries
-        ON address_structure_stats (
-            source_id, granularity, src_visibility, dst_visibility,
-            ip_version, structure_kind, bucket_start
+            measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
+            total_addrs INTEGER NOT NULL CHECK (total_addrs >= 0),
+            zero_weight_addrs INTEGER NOT NULL DEFAULT 0
+                CHECK (zero_weight_addrs >= 0 AND (measure <> 'addresses' OR zero_weight_addrs = 0)),
+            min_prefix_length INTEGER,
+            max_prefix_length INTEGER CHECK (max_prefix_length >= min_prefix_length),
+            d0 REAL,
+            d1 REAL,
+            d2 REAL,
+            tau BLOB CHECK (typeof(tau) IN ('null', 'blob') AND length(tau) > 0 AND length(tau) % 4 = 0),
+            tau_sd BLOB CHECK (typeof(tau_sd) = typeof(tau) AND length(tau_sd) IS length(tau)),
+            spectrum BLOB CHECK (typeof(spectrum) IN ('null', 'blob') AND length(spectrum) % 8 = 0),
+            CHECK (measure = 'addresses' OR spectrum IS NULL),
+            CHECK ((tau IS NULL) = (d0 IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_address_maad_stats_key
+        ON address_maad_stats (
+            source_id, granularity, src_locality, dst_locality,
+            ip_version, measure, bucket_start, address_side
+        );
+        CREATE INDEX IF NOT EXISTS idx_address_maad_stats_bucket
+        ON address_maad_stats (granularity, bucket_start);
+
+        CREATE TABLE IF NOT EXISTS maad_q_grid (
+            ip_version INTEGER PRIMARY KEY CHECK (ip_version IN (4, 6)),
+            q_min REAL NOT NULL,
+            q_step REAL NOT NULL CHECK (q_step > 0),
+            q_count INTEGER NOT NULL CHECK (q_count > 0)
         );
 
         DROP INDEX IF EXISTS idx_protocol_stats_query;
@@ -1847,8 +1878,8 @@ pub struct StatsDimensions {
     pub bucket_start: i64,
     pub bucket_end: i64,
     pub ip_version: i64,
-    pub src_visibility: String,
-    pub dst_visibility: String,
+    pub src_locality: String,
+    pub dst_locality: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1902,13 +1933,37 @@ pub struct PortCountStatsRow {
     pub unique_port_count: i64,
 }
 
+/// One scope, side and measure's MAAD result with every curve value stored as little-endian f32.
 #[derive(Clone, Debug, PartialEq)]
-pub struct AddressStructureStatsRow {
+pub struct AddressMaadStatsRow {
     pub dimensions: StatsDimensions,
     pub address_side: String,
-    pub structure_kind: String,
-    pub values_json: String,
-    pub metadata_json: String,
+    pub measure: String,
+    pub total_addrs: i64,
+    pub zero_weight_addrs: i64,
+    pub min_prefix_length: Option<u8>,
+    pub max_prefix_length: Option<u8>,
+    pub curve: Option<MaadCurve>,
+    pub spectrum: Option<Vec<u8>>,
+}
+
+/// The dimensions and structure function of a non-empty MAAD result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaadCurve {
+    pub d0: f64,
+    pub d1: f64,
+    pub d2: f64,
+    pub tau: Vec<u8>,
+    pub tau_sd: Vec<u8>,
+}
+
+/// The q grid every tau and tau_sd array of one IP version is evaluated on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaadQGridRow {
+    pub ip_version: i64,
+    pub q_min: f64,
+    pub q_step: f64,
+    pub q_count: i64,
 }
 
 pub fn insert_traffic_stats_rows(
@@ -1919,7 +1974,7 @@ pub fn insert_traffic_stats_rows(
         "
         INSERT OR REPLACE INTO traffic_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility,
+            src_locality, dst_locality,
             flows, flows_tcp, flows_udp, flows_icmp, flows_other,
             packets, packets_tcp, packets_udp, packets_icmp, packets_other,
             bytes, bytes_tcp, bytes_udp, bytes_icmp, bytes_other,
@@ -1937,8 +1992,8 @@ pub fn insert_traffic_stats_rows(
             dimensions.bucket_start,
             dimensions.bucket_end,
             dimensions.ip_version,
-            dimensions.src_visibility,
-            dimensions.dst_visibility,
+            dimensions.src_locality,
+            dimensions.dst_locality,
             row.flows,
             row.flows_tcp,
             row.flows_udp,
@@ -1976,7 +2031,7 @@ pub fn insert_protocol_stats_rows(
         "
         INSERT OR REPLACE INTO protocol_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, unique_protocols_count, protocols_list
+            src_locality, dst_locality, unique_protocols_count, protocols_list
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
@@ -1988,8 +2043,8 @@ pub fn insert_protocol_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.unique_protocols_count,
             row.protocols_list
         ])?;
@@ -2005,7 +2060,7 @@ pub fn insert_address_count_stats_rows(
         "
         INSERT OR REPLACE INTO address_count_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, address_side, unique_address_count
+            src_locality, dst_locality, address_side, unique_address_count
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         ",
     )?;
@@ -2017,8 +2072,8 @@ pub fn insert_address_count_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.address_side,
             row.unique_address_count
         ])?;
@@ -2034,7 +2089,7 @@ pub fn insert_port_count_stats_rows(
         "
         INSERT OR REPLACE INTO port_count_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, port_side, port_range, unique_port_count
+            src_locality, dst_locality, port_side, port_range, unique_port_count
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ",
     )?;
@@ -2046,8 +2101,8 @@ pub fn insert_port_count_stats_rows(
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.port_side,
             row.port_range,
             row.unique_port_count
@@ -2056,34 +2111,58 @@ pub fn insert_port_count_stats_rows(
     Ok(())
 }
 
-pub fn insert_address_structure_stats_rows(
+pub fn insert_address_maad_stats_rows(
     connection: &Connection,
-    rows: &[AddressStructureStatsRow],
+    rows: &[AddressMaadStatsRow],
 ) -> Result<(), StorageError> {
     let mut statement = connection.prepare_cached(
         "
-        INSERT OR REPLACE INTO address_structure_stats (
+        INSERT OR REPLACE INTO address_maad_stats (
             source_id, granularity, bucket_start, bucket_end, ip_version,
-            src_visibility, dst_visibility, address_side, structure_kind,
-            values_json, metadata_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            src_locality, dst_locality, address_side, measure,
+            total_addrs, zero_weight_addrs, min_prefix_length, max_prefix_length,
+            d0, d1, d2, tau, tau_sd, spectrum
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ",
     )?;
     for row in rows {
         let d = &row.dimensions;
+        let curve = row.curve.as_ref();
         statement.execute(params![
             d.source_id,
             d.granularity,
             d.bucket_start,
             d.bucket_end,
             d.ip_version,
-            d.src_visibility,
-            d.dst_visibility,
+            d.src_locality,
+            d.dst_locality,
             row.address_side,
-            row.structure_kind,
-            row.values_json,
-            row.metadata_json
+            row.measure,
+            row.total_addrs,
+            row.zero_weight_addrs,
+            row.min_prefix_length,
+            row.max_prefix_length,
+            curve.map(|curve| curve.d0),
+            curve.map(|curve| curve.d1),
+            curve.map(|curve| curve.d2),
+            curve.map(|curve| curve.tau.as_slice()),
+            curve.map(|curve| curve.tau_sd.as_slice()),
+            row.spectrum.as_deref()
         ])?;
+    }
+    Ok(())
+}
+
+pub fn insert_maad_q_grid_rows(
+    connection: &Connection,
+    rows: &[MaadQGridRow],
+) -> Result<(), StorageError> {
+    let mut statement = connection.prepare_cached(
+        "INSERT OR REPLACE INTO maad_q_grid (ip_version, q_min, q_step, q_count)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for row in rows {
+        statement.execute(params![row.ip_version, row.q_min, row.q_step, row.q_count])?;
     }
     Ok(())
 }
@@ -2094,7 +2173,7 @@ pub struct StatsPayload {
     pub protocol_rows: Vec<ProtocolStatsRow>,
     pub address_count_rows: Vec<AddressCountStatsRow>,
     pub port_count_rows: Vec<PortCountStatsRow>,
-    pub address_structure_rows: Vec<AddressStructureStatsRow>,
+    pub address_maad_rows: Vec<AddressMaadStatsRow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2103,7 +2182,7 @@ pub enum StatsTable {
     Protocol,
     AddressCount,
     PortCount,
-    AddressStructure,
+    AddressMaad,
 }
 
 impl StatsTable {
@@ -2112,7 +2191,7 @@ impl StatsTable {
         Self::Protocol,
         Self::AddressCount,
         Self::PortCount,
-        Self::AddressStructure,
+        Self::AddressMaad,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -2121,14 +2200,7 @@ impl StatsTable {
             Self::Protocol => "protocol_stats",
             Self::AddressCount => "address_count_stats",
             Self::PortCount => "port_count_stats",
-            Self::AddressStructure => "address_structure_stats",
-        }
-    }
-
-    pub const fn schema_version(self) -> u32 {
-        match self {
-            Self::Traffic => 2,
-            Self::Protocol | Self::AddressCount | Self::PortCount | Self::AddressStructure => 1,
+            Self::AddressMaad => "address_maad_stats",
         }
     }
 }
@@ -2149,8 +2221,8 @@ pub fn insert_stats_payload(
             StatsTable::PortCount => {
                 insert_port_count_stats_rows(connection, &payload.port_count_rows)?
             }
-            StatsTable::AddressStructure => {
-                insert_address_structure_stats_rows(connection, &payload.address_structure_rows)?
+            StatsTable::AddressMaad => {
+                insert_address_maad_stats_rows(connection, &payload.address_maad_rows)?
             }
         }
     }
@@ -2250,8 +2322,8 @@ impl StatsDimensions {
             bucket_start: 0,
             bucket_end: 300,
             ip_version: 4,
-            src_visibility: "all".into(),
-            dst_visibility: "all".into(),
+            src_locality: "all".into(),
+            dst_locality: "all".into(),
         }
     }
 }
@@ -2324,14 +2396,18 @@ impl PortCountStatsRow {
 }
 
 #[cfg(test)]
-impl AddressStructureStatsRow {
+impl AddressMaadStatsRow {
     fn example() -> Self {
         Self {
             dimensions: StatsDimensions::example(),
             address_side: "source".into(),
-            structure_kind: "structure".into(),
-            values_json: "[]".into(),
-            metadata_json: "{}".into(),
+            measure: "addresses".into(),
+            total_addrs: 0,
+            zero_weight_addrs: 0,
+            min_prefix_length: None,
+            max_prefix_length: None,
+            curve: None,
+            spectrum: Some(Vec::new()),
         }
     }
 }
@@ -2347,6 +2423,7 @@ pub struct DatasetMetadata {
     pub source_mode: String,
     pub discovery_mode: String,
     pub sort_order: i64,
+    pub has_locality: bool,
     pub sources: Vec<SourceDefinition>,
 }
 
@@ -2360,6 +2437,7 @@ impl DatasetMetadata {
             source_mode: "static".to_owned(),
             discovery_mode: "static".to_owned(),
             sort_order: 0,
+            has_locality: false,
             sources: Vec::new(),
         }
     }
@@ -2382,7 +2460,8 @@ pub fn init_datasets_table(connection: &Connection) -> Result<(), StorageError> 
             default_start_date TEXT NOT NULL,
             source_mode TEXT NOT NULL DEFAULT 'static',
             discovery_mode TEXT NOT NULL DEFAULT 'static',
-            sort_order INTEGER NOT NULL DEFAULT 0
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS source_members (
             dataset_id TEXT NOT NULL,
@@ -2423,16 +2502,27 @@ pub fn upsert_dataset_metadata(
     };
     connection.execute(
         "
-        INSERT INTO datasets (id, label, default_start_date, source_mode, discovery_mode, sort_order)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT INTO datasets (
+            id, label, default_start_date, source_mode, discovery_mode, sort_order, has_locality
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(id) DO UPDATE SET
             label = excluded.label,
             default_start_date = excluded.default_start_date,
             source_mode = excluded.source_mode,
             discovery_mode = excluded.discovery_mode,
-            sort_order = excluded.sort_order
+            sort_order = excluded.sort_order,
+            has_locality = excluded.has_locality
         ",
-        params![dataset_id, label, default_start_date, source_mode, discovery_mode, dataset.sort_order],
+        params![
+            dataset_id,
+            label,
+            default_start_date,
+            source_mode,
+            discovery_mode,
+            dataset.sort_order,
+            dataset.has_locality
+        ],
     )?;
     upsert_source_members(connection, dataset_id, &dataset.sources)
 }
@@ -2911,6 +3001,42 @@ mod tests {
     }
 
     #[test]
+    fn address_maad_stats_rejects_malformed_curve_blobs() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        let row = |tau: Vec<u8>, tau_sd: Vec<u8>, spectrum: Option<Vec<u8>>| AddressMaadStatsRow {
+            curve: Some(MaadCurve {
+                d0: 1.0,
+                d1: 1.0,
+                d2: 1.0,
+                tau,
+                tau_sd,
+            }),
+            spectrum,
+            ..AddressMaadStatsRow::example()
+        };
+
+        insert_address_maad_stats_rows(
+            &connection,
+            &[row(vec![0; 8], vec![0; 8], Some(vec![0; 16]))],
+        )
+        .unwrap();
+        for malformed in [
+            row(Vec::new(), Vec::new(), None),
+            row(vec![0; 1], vec![0; 1], None),
+            row(vec![0; 6], vec![0; 6], None),
+            row(vec![0; 8], vec![0; 4], None),
+            row(vec![0; 8], vec![0; 8], Some(vec![0; 4])),
+        ] {
+            let error = insert_address_maad_stats_rows(&connection, &[malformed]).unwrap_err();
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn stats_rows_upsert_and_bucket_deletion_cover_every_table() {
         let connection = Connection::open_in_memory().unwrap();
         init_stats_tables(&connection).unwrap();
@@ -2918,8 +3044,7 @@ mod tests {
         insert_protocol_stats_rows(&connection, &[ProtocolStatsRow::example()]).unwrap();
         insert_address_count_stats_rows(&connection, &[AddressCountStatsRow::example()]).unwrap();
         insert_port_count_stats_rows(&connection, &[PortCountStatsRow::example()]).unwrap();
-        insert_address_structure_stats_rows(&connection, &[AddressStructureStatsRow::example()])
-            .unwrap();
+        insert_address_maad_stats_rows(&connection, &[AddressMaadStatsRow::example()]).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT flows_tcp FROM traffic_stats", [], |row| row
@@ -2994,16 +3119,28 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap()
                 .join("\n");
-            for clause in [
-                "USING PRIMARY KEY",
-                "source_id=?",
-                "granularity=?",
-                "bucket_start>?",
-                "bucket_start<?",
-            ] {
+            let bounded_range = if table == "address_maad_stats" {
+                [
+                    "USING INDEX idx_address_maad_stats_bucket",
+                    "granularity=?",
+                    "bucket_start>?",
+                    "bucket_start<?",
+                ]
+                .as_slice()
+            } else {
+                [
+                    "USING PRIMARY KEY",
+                    "source_id=?",
+                    "granularity=?",
+                    "bucket_start>?",
+                    "bucket_start<?",
+                ]
+                .as_slice()
+            };
+            for clause in bounded_range {
                 assert!(
                     plan.contains(clause),
-                    "{table} delete plan should use the bounded primary-key range: {plan}"
+                    "{table} delete plan should use a bounded bucket range: {plan}"
                 );
             }
         }
@@ -3018,8 +3155,8 @@ mod tests {
                     bucket_start,
                     bucket_end: bucket_start + 300,
                     ip_version: 4,
-                    src_visibility: "all".into(),
-                    dst_visibility: "all".into(),
+                    src_locality: "all".into(),
+                    dst_locality: "all".into(),
                 };
                 let mut traffic = TrafficStatsRow::example();
                 traffic.dimensions = dimensions.clone();
@@ -3033,9 +3170,9 @@ mod tests {
                 let mut port_count = PortCountStatsRow::example();
                 port_count.dimensions = dimensions.clone();
                 insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
-                let mut address_structure = AddressStructureStatsRow::example();
-                address_structure.dimensions = dimensions;
-                insert_address_structure_stats_rows(&connection, &[address_structure]).unwrap();
+                let mut address_maad = AddressMaadStatsRow::example();
+                address_maad.dimensions = dimensions;
+                insert_address_maad_stats_rows(&connection, &[address_maad]).unwrap();
 
                 let coverage = BucketCoverageRow::new(
                     source_id,
@@ -3141,7 +3278,7 @@ mod tests {
                     row.get::<_, i64>(0)
                 })
                 .unwrap();
-            assert_eq!(count, 12, "{table}");
+            assert_eq!(count, 15, "{table}");
             assert_eq!(
                 connection
                     .query_row(
@@ -3216,9 +3353,9 @@ mod tests {
 			.execute_batch(
 				"
 				CREATE INDEX idx_protocol_stats_query
-				ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility);
+				ON protocol_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality);
 				CREATE INDEX idx_port_count_stats_query
-				ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_visibility, dst_visibility, port_side, port_range);
+				ON port_count_stats (granularity, bucket_start, source_id, ip_version, src_locality, dst_locality, port_side, port_range);
 				",
 			)
 			.unwrap();
@@ -3230,8 +3367,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3241,8 +3378,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3252,8 +3389,8 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
@@ -3263,24 +3400,29 @@ mod tests {
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "bucket_start",
                 ]
                 .as_slice(),
             ),
             (
-                "idx_address_structure_stats_timeseries",
+                "idx_address_maad_stats_key",
                 [
                     "source_id",
                     "granularity",
-                    "src_visibility",
-                    "dst_visibility",
+                    "src_locality",
+                    "dst_locality",
                     "ip_version",
-                    "structure_kind",
+                    "measure",
                     "bucket_start",
+                    "address_side",
                 ]
                 .as_slice(),
+            ),
+            (
+                "idx_address_maad_stats_bucket",
+                ["granularity", "bucket_start"].as_slice(),
             ),
         ];
         for (index, expected_columns) in expected_indexes {
@@ -3317,7 +3459,7 @@ mod tests {
         for index in [
             "idx_traffic_stats_query",
             "idx_address_count_stats_query",
-            "idx_address_structure_stats_query",
+            "idx_address_maad_stats_bucket",
         ] {
             assert!(
                 connection
@@ -3463,6 +3605,26 @@ mod tests {
             query_input_evidence(&connection, "r1", 0).unwrap(),
             vec![rejected]
         );
+    }
+
+    #[test]
+    fn dataset_upsert_records_whether_locality_rules_exist() {
+        let connection = Connection::open_in_memory().unwrap();
+        let has_locality = |connection: &Connection| -> bool {
+            connection
+                .query_row(
+                    "SELECT has_locality FROM datasets WHERE id = 'd1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let mut dataset = DatasetMetadata::new("d1");
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(!has_locality(&connection));
+        dataset.has_locality = true;
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(has_locality(&connection));
     }
 
     #[test]
