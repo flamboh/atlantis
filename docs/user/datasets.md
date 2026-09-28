@@ -68,8 +68,8 @@ A logical source combines the captures from more than one collector directory. E
 
 ```json
 {
-  "dataset_id": "campus",
-  "root_path": "/data/netflow/campus",
+  "dataset_id": "dataset-a",
+  "root_path": "/data/netflow/dataset-a",
   "sources": [{ "source_id": "router-a", "members": ["router-a"] }],
   "locality": [
     { "type": "prefixes", "prefixes": ["192.0.2.0/24", "2001:db8::/32"] },
