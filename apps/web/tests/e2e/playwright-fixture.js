@@ -62,7 +62,11 @@ export function seedPlaywrightDatabase() {
 			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'source', 'bytes',
 				40, 0.92, 0.64, 0.55, ${tau}, ${tauSd}, NULL),
 			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'destination', 'bytes',
-				40, 0.9, 0.61, 0.52, ${tau}, ${tauSd}, NULL);
+				40, 0.9, 0.61, 0.52, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'source', 'packets',
+				40, 0.92, 0.71, 0.63, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'destination', 'packets',
+				40, 0.9, 0.69, 0.6, ${tau}, ${tauSd}, NULL);
 		INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
 			(4, -0.5, 0.125, 33),
 			(6, -0.5, 0.125, 33);

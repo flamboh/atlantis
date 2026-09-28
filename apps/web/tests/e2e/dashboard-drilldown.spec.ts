@@ -56,3 +56,33 @@ test('IP breakdown drill-down from a wide daily range switches to hourly', async
 	expect(searchParam(page, 'endDate')).not.toBe('2025-03-31');
 	await drillDownRequest;
 });
+
+test('MAAD dimensions drill-down keeps the MAAD measure while switching to hourly', async ({
+	page
+}) => {
+	await page.goto(`${WIDE_DAILY_RANGE}&measure=packets`);
+	const initialRequest = page.waitForRequest(
+		(request) => new URL(request.url()).pathname === '/api/netflow/dimension-stats'
+	);
+	await page.locator('[data-chart-sentinel="dimensions"]').scrollIntoViewIfNeeded();
+	const initialUrl = new URL((await initialRequest).url());
+	expect(initialUrl.searchParams.get('granularity')).toBe('1d');
+	expect(initialUrl.searchParams.get('measure')).toBe('packets');
+	await page.waitForLoadState('networkidle');
+
+	const drillDownRequest = page.waitForRequest((request) => {
+		const url = new URL(request.url());
+		return (
+			url.pathname === '/api/netflow/dimension-stats' &&
+			url.searchParams.get('granularity') === '1h' &&
+			url.searchParams.get('measure') === 'packets'
+		);
+	});
+	await clickChartCenter(page, 'dimensions');
+
+	await expect.poll(() => searchParam(page, 'groupBy')).toBe('hour');
+	expect(searchParam(page, 'measure')).toBe('packets');
+	expect(searchParam(page, 'startDate')).not.toBe('2025-01-01');
+	expect(searchParam(page, 'endDate')).not.toBe('2025-03-31');
+	await drillDownRequest;
+});
