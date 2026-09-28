@@ -548,6 +548,38 @@ describe('dataset server helpers', () => {
 		await expect(datasets.getDatasetConfig('legacy')).rejects.toThrow(/Unknown dataset 'legacy'/);
 	});
 
+	it('skips pre-locality databases found under LOCAL_DATA_DIR', async () => {
+		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-local-data-dir-'));
+		const dataDir = path.join(workspace, 'mounted-data');
+		const legacyDir = path.join(dataDir, 'legacy');
+		const currentDir = path.join(dataDir, 'current');
+		fs.mkdirSync(legacyDir, { recursive: true });
+		fs.mkdirSync(currentDir, { recursive: true });
+		seedPreLocalityDatasetDb(
+			path.join(legacyDir, 'netflow.sqlite'),
+			'legacy',
+			'Legacy Only',
+			'router-legacy'
+		);
+		seedDatasetDb(path.join(currentDir, 'netflow.sqlite'), 'current', 'Current', 'router-current');
+		process.chdir(os.tmpdir());
+		vi.stubEnv('LOCAL_DATA_DIR', dataDir);
+
+		const datasets = await loadDatasetsModule();
+
+		await expect(datasets.listDatasetSummaries()).resolves.toEqual([
+			{
+				datasetId: 'current',
+				label: 'Current',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				hasLocality: false,
+				isDefault: true
+			}
+		]);
+		await expect(datasets.getDatasetConfig('legacy')).rejects.toThrow(/Unknown dataset 'legacy'/);
+	});
+
 	it('refreshes local dataset discovery after files move', async () => {
 		const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'datasets-refresh-'));
 		const alphaDir = path.join(workspace, 'data', 'alpha');
