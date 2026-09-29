@@ -1,47 +1,18 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import type { ChartConfiguration } from 'chart.js';
+	import { finiteSpectrumPoints, paddedSpectrumBounds } from './spectrum-points';
 	import { Chart } from './annotation-chart-registry';
 	import type { SpectrumData } from '#lib/types/types.ts';
 	import { theme } from '#lib/stores/theme.svelte.ts';
 
 	let { data }: { data: SpectrumData } = $props();
-	let chartCanvas: HTMLCanvasElement;
-	let chart: Chart | null = null;
+	const points = $derived(finiteSpectrumPoints(data.spectrum));
 
-	onMount(() => {
-		return () => {
-			destroyChart();
-		};
-	});
-
-	$effect(() => {
-		if (!chartCanvas?.parentElement) {
-			return;
-		}
-
-		const observer = new ResizeObserver(() => {
-			chart?.resize();
-		});
-		observer.observe(chartCanvas.parentElement);
-
-		return () => {
-			observer.disconnect();
-		};
-	});
-
-	$effect(() => {
+	function attachChart(canvas: HTMLCanvasElement) {
 		void theme.dark;
-		if (!chartCanvas) {
-			return;
-		}
-
-		if (data?.spectrum?.length > 0) {
-			updateChart();
-			return;
-		}
-
-		destroyChart();
-	});
+		const chart = new Chart(canvas, buildConfig());
+		return () => chart.destroy();
+	}
 
 	function getChartColors() {
 		const style = getComputedStyle(document.documentElement);
@@ -54,21 +25,14 @@
 		};
 	}
 
-	function destroyChart() {
-		if (chart) {
-			chart.destroy();
-			chart = null;
-		}
-	}
-
-	function updateChart() {
-		const points = data.spectrum;
+	function buildConfig(): ChartConfiguration<'line'> {
 		const { textColor, gridColor, tooltipBackgroundColor, tooltipTextColor, tooltipBorderColor } =
 			getChartColors();
 
 		const alphaValues = points.map((p) => p.alpha);
 		const minAlpha = Math.min(...alphaValues);
 		const maxAlpha = Math.max(...alphaValues);
+		const bounds = paddedSpectrumBounds(minAlpha, maxAlpha);
 
 		const chartData = {
 			datasets: [
@@ -85,31 +49,11 @@
 					pointBorderWidth: 1,
 					fill: false,
 					tension: 0.3
-				},
-				{
-					label: 'y = x (reference)',
-					data: [
-						{
-							x: minAlpha - 0.02 * (maxAlpha - minAlpha),
-							y: minAlpha - 0.02 * (maxAlpha - minAlpha)
-						},
-						{
-							x: maxAlpha + 0.02 * (maxAlpha - minAlpha),
-							y: maxAlpha + 0.02 * (maxAlpha - minAlpha)
-						}
-					],
-					borderColor: 'rgba(128, 128, 128, 0.5)',
-					borderWidth: 1,
-					borderDash: [5, 5],
-					pointRadius: 0,
-					pointHoverRadius: 0,
-					fill: false,
-					tension: 0
 				}
 			]
 		};
 
-		const config = {
+		return {
 			type: 'line' as const,
 			data: chartData,
 			options: {
@@ -119,8 +63,8 @@
 				scales: {
 					x: {
 						type: 'linear' as const,
-						min: minAlpha - 0.02 * (maxAlpha - minAlpha),
-						max: maxAlpha + 0.02 * (maxAlpha - minAlpha),
+						min: bounds.min,
+						max: bounds.max,
 						title: {
 							display: true,
 							text: 'alpha',
@@ -148,7 +92,7 @@
 						labels: { color: textColor }
 					},
 					tooltip: {
-						mode: 'index' as const,
+						mode: 'nearest' as const,
 						intersect: false,
 						backgroundColor: tooltipBackgroundColor,
 						titleColor: tooltipTextColor,
@@ -156,42 +100,35 @@
 						borderColor: tooltipBorderColor,
 						borderWidth: 1,
 						callbacks: {
-							title: (items: { parsed: { x: number } }[]) =>
-								`alpha = ${items[0]?.parsed?.x?.toFixed(6)}`,
-							label: (item: {
-								dataset: { label: string };
-								parsed: { y: number };
-								dataIndex: number;
-							}) => {
-								const value = item.parsed.y.toFixed(6);
+							title: (items) => `alpha = ${items[0]?.parsed?.x?.toFixed(6)}`,
+							label: (item) => {
+								const value = item.parsed.y?.toFixed(6);
 								return `${item.dataset.label}: ${value}`;
 							}
 						}
 					},
-					verticalCrosshair: {
-						enabled: true,
-						tooltip: {
-							enabled: false
+					annotation: {
+						annotations: {
+							reference: {
+								type: 'line',
+								xMin: bounds.min,
+								xMax: bounds.max,
+								yMin: bounds.min,
+								yMax: bounds.max,
+								borderColor: 'rgba(128, 128, 128, 0.5)',
+								borderWidth: 1,
+								borderDash: [5, 5]
+							}
 						}
-					}
+					},
+					verticalCrosshair: false
 				},
 				interaction: {
-					mode: 'index' as const,
+					mode: 'nearest' as const,
 					intersect: false
 				}
 			}
 		};
-
-		if (!chart) {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chart = new Chart(chartCanvas, config as any);
-			return;
-		}
-
-		chart.data = chartData;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		chart.options = config.options as any;
-		chart.update('none');
 	}
 </script>
 
@@ -207,6 +144,15 @@
 		{/if}
 	</div>
 	<div class="relative h-72 w-full min-w-0 sm:h-96">
-		<canvas bind:this={chartCanvas}></canvas>
+		{#if points.length > 0}
+			<canvas {@attach attachChart} aria-label="Multifractal spectrum chart"></canvas>
+		{:else}
+			<p class="text-muted-foreground flex h-full items-center justify-center">
+				No finite spectrum data for this selection.
+			</p>
+		{/if}
 	</div>
+	{#if points.length > 0}
+		<p class="text-muted-foreground mt-1 text-xs">Dashed line: f(alpha) = alpha.</p>
+	{/if}
 </div>

@@ -1,4 +1,4 @@
-import type { Chart, ChartArea, Plugin, ChartEvent } from 'chart.js';
+import type { Chart, ChartArea, Plugin, ChartEvent, ChartType } from 'chart.js';
 import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 import { findNearestValueIndex } from './chart-utils';
 
@@ -37,6 +37,12 @@ interface CrosshairOptions {
 		/** Returns external hover label if another chart is being hovered */
 		getExternalLabel?: () => string | null;
 	};
+}
+
+declare module 'chart.js' {
+	interface PluginOptionsByType<TType extends ChartType> {
+		verticalCrosshair?: TType extends 'line' | 'bar' | 'scatter' ? CrosshairOptions | false : never;
+	}
 }
 
 // Store mouse state for each chart instance

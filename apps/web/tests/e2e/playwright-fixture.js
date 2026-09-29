@@ -71,6 +71,44 @@ export function seedPlaywrightDatabase() {
 			(4, -0.5, 0.125, 33),
 			(6, -0.5, 0.125, 33);
 	`);
+	database.exec(`
+		UPDATE datasets SET has_locality = 1 WHERE id = 'playwright';
+		INSERT INTO address_maad_stats (
+			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
+			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum
+		)
+		SELECT source_id, g.granularity,
+			CASE WHEN g.granularity = '1d' THEN 1740816000 ELSE 1740823200 END,
+			CASE WHEN g.granularity = '1d' THEN 1740902400 ELSE 1740823200 + g.duration END,
+			ip_version, src_locality, dst_locality, address_side, measure, total_addrs,
+			d0, d1, d2, tau, tau_sd, spectrum
+		FROM address_maad_stats CROSS JOIN (
+			SELECT '1d' AS granularity, 86400 AS duration UNION ALL SELECT '1h', 3600
+			UNION ALL SELECT '30m', 1800 UNION ALL SELECT '10m', 600
+		) g
+		WHERE address_maad_stats.granularity = '5m' AND measure = 'addresses';
+		INSERT INTO address_maad_stats (
+			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
+			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum
+		)
+		SELECT source_id, granularity, bucket_start, bucket_end, ip_version, l.src, l.dst,
+			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum
+		FROM address_maad_stats CROSS JOIN (
+			SELECT 'external' AS src, 'internal' AS dst UNION ALL SELECT 'internal', 'external'
+			UNION ALL SELECT 'internal', 'internal' UNION ALL SELECT 'external', 'external'
+		) l WHERE src_locality = 'all' AND measure = 'addresses';
+	`);
+
+	database.exec(`
+		INSERT INTO bucket_coverage (
+			source_id, granularity, bucket_start, bucket_end,
+			coverage_state, observed_units, expected_units, rejected_units
+		)
+		SELECT DISTINCT source_id, granularity, bucket_start, bucket_end,
+			'complete', (bucket_end - bucket_start) / 300, (bucket_end - bucket_start) / 300, 0
+		FROM address_maad_stats WHERE granularity IN ('1h', '30m', '10m');
+	`);
+
 	database.close();
 	return { databasePath, fixtureDirectory };
 }
