@@ -1,5 +1,4 @@
 import * as Alchemy from 'alchemy';
-import * as Cloudflare from 'alchemy/Cloudflare';
 import * as Docker from 'alchemy/Docker';
 import * as Config from 'effect/Config';
 import * as ConfigProvider from 'effect/ConfigProvider';
@@ -28,7 +27,7 @@ export default Alchemy.Stack(
 	selfHostedName,
 	{
 		providers: Docker.providers(),
-		state: Cloudflare.state()
+		state: Alchemy.localState()
 	},
 	Effect.gen(function* () {
 		const { stage } = yield* Alchemy.Stack;
