@@ -100,6 +100,10 @@ jobs:
 
       - run: cp datasets.json.example datasets.json
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json

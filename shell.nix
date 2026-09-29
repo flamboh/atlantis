@@ -1,8 +1,8 @@
 #with (import <nixpkgs> {});
 with (import (builtins.fetchTarball {
-  name = "nixos-25.05";
-  url = "https://github.com/nixos/nixpkgs/archive/ce01daebf8489ba97bd1609d185ea276efdeb121.tar.gz";
-  sha256 = "10cqhkqkifcgyibj9nwxrnq424crfl40kwr3daky83m2fisb4f6p";
+  name = "nixos-26.05";
+  url = "https://github.com/nixos/nixpkgs/archive/02e08985a27c65ffd33d434eeb2e660a2e4dc84d.tar.gz";
+  sha256 = "1959piz48qhaaqdyr2m5mf92gnxxhrzhls6z1ppy01ckh5wdrya2";
 }) {});
 let
   system = stdenv.hostPlatform.system;
