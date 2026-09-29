@@ -1,6 +1,6 @@
 # Query a database
 
-Each dataset uses one SQLite database at `data/<dataset-id>/netflow.sqlite`. A dataset that sets `db_path` uses that location instead.
+Each dataset is one SQLite database, by default at `data/<dataset-id>/netflow.sqlite`.
 
 ## Open a database
 
@@ -36,15 +36,15 @@ Show a table schema:
 
 The `granularity` value is `5m`, `10m`, `30m`, `1h`, or `1d`.
 
-Each stats table stores an endpoint locality pair per bucket: `src_locality` and `dst_locality`, each `all`, `internal`, or `external`. Only five pairs are ever stored — mixed pairs with `all` on only one side never occur:
+Each stats table splits every bucket by direction with `src_locality` and `dst_locality`. Filter on both, or rows from different directions add up twice:
 
-| Direction | `src_locality` | `dst_locality` | Meaning                                                              |
-| --------- | -------------- | -------------- | -------------------------------------------------------------------- |
-| `all`     | `all`          | `all`          | All traffic                                                          |
-| `ingress` | `external`     | `internal`     | external → internal                                                  |
-| `egress`  | `internal`     | `external`     | internal → external                                                  |
-| `lateral` | `internal`     | `internal`     | internal → internal                                                  |
-| `transit` | `external`     | `external`     | external → external (kept for visibility into misclassified records) |
+| Direction | `src_locality` | `dst_locality` |
+| --------- | -------------- | -------------- |
+| All       | `all`          | `all`          |
+| Ingress   | `external`     | `internal`     |
+| Egress    | `internal`     | `external`     |
+| Lateral   | `internal`     | `internal`     |
+| Transit   | `external`     | `external`     |
 
 ## Query traffic totals
 
@@ -120,26 +120,11 @@ ORDER BY source_id, bucket_start, ip_version, port_side, port_range;
 
 ## Query MAAD results
 
-`address_maad_stats` stores one MAAD analysis per bucket, IP version, locality pair, address side,
-and `measure`:
+`address_maad_stats` has one row per bucket, IP version, direction, address side, and `measure` (`addresses`, `packets`, or `bytes`). Always filter on `measure`.
 
-| `measure`   | Weights each address by                  | `spectrum`                   |
-| ----------- | ---------------------------------------- | ---------------------------- |
-| `addresses` | 1 (distinct addresses)                   | Stored, possibly zero-length |
-| `packets`   | Packets summed over the bucket and scope | `NULL` (not computed)        |
-| `bytes`     | Bytes summed over the bucket and scope   | `NULL` (not computed)        |
-
-Weighted measures keep the address-count prefix tests and weight only the moments and the entropy.
-The pipeline drops flows that report 0 packets before aggregation. Addresses with zero summed
-packets or bytes, such as CSV rows without a packet count, are left out of that measure, and
-`zero_weight_addrs` counts them. `total_addrs`, `min_prefix_length`, and `max_prefix_length`
-describe the analyzed set. Always filter on `measure`. Otherwise results for different measures mix.
-
-`d0`, `d1`, and `d2` are the generalized dimensions as `REAL`. `tau` and `tau_sd` are little-endian
-32-bit float arrays with one value per q. Element `i` is at `q = q_min + i * q_step`, from the
-`maad_q_grid` row of the same `ip_version`. `spectrum` holds little-endian 32-bit `(alpha, f)` pairs.
-A result with too few addresses has `NULL` dimensions and curves. The D0 and D2 standard deviations
-are the `tau_sd` values at q = 0 and q = 2. D1 has no standard deviation.
+- `d0`, `d1`, and `d2` are the generalized dimensions. They are `NULL` when a bucket has too few addresses.
+- `tau` and `tau_sd` are little-endian 32-bit float arrays. Element `i` is at `q = q_min + i * q_step` from the `maad_q_grid` row with the same `ip_version`.
+- `spectrum` holds little-endian 32-bit `(alpha, f)` pairs, and only for the `addresses` measure.
 
 ```sql
 SELECT
@@ -168,8 +153,6 @@ values = struct.unpack(f"<{len(blob) // 4}f", blob)
 ```
 
 ## Query observation averages
-
-The database stores sums and counts for safe rollup calculations. It also stores calculated averages for direct queries.
 
 ```sql
 SELECT

@@ -1,58 +1,36 @@
 # Requirements
 
-This document lists the required tools by concern. Install the tools for the parts that you use.
-
-For native setup, the repository has a `shell.nix` file that supplies every development tool below.
-
-On NixOS, run `nix-shell` and skip the manual installation.
-
-## Docker pipeline
-
-Running the pipeline with Docker needs only Git and Docker on the host. The image build supplies the Rust toolchain, the nfdump build tools, and the pinned fork, and it does not need initialized Git submodules.
-
-To run the dashboard in Docker on a server, see [Deploy the self-hosted dashboard](operations.md#deploy-the-self-hosted-dashboard). Otherwise the dashboard runs natively.
+Install only what your path needs. On NixOS, `nix-shell` supplies every tool below.
 
 ## Dashboard
 
-The dashboard and all `bun run` commands need these tools:
+| Tool    | Version | Pinned in       |
+| ------- | ------- | --------------- |
+| Git     | Any     |                 |
+| Bun     | 1.3.11  | `package.json`  |
+| Node.js | 24.18.1 | `.node-version` |
 
-| Tool    | Version                   | Source of truth |
-| ------- | ------------------------- | --------------- |
-| Git     | Current supported version | Git releases    |
-| Bun     | 1.3.11                    | `package.json`  |
-| Node.js | 24.18.1                   | `.node-version` |
+Node.js must be on `PATH` when you run `bun install`, or the SQLite driver fails to install (see [Troubleshooting](troubleshooting.md)).
 
-Node.js is necessary even though Bun installs the packages. The development server runs under Node.js, and `bun install` needs Node.js on `PATH` to download the prebuilt SQLite driver. Without it, the install prints a `better-sqlite3` warning and the dashboard cannot open a database (see [Troubleshooting](troubleshooting.md)).
+## Docker pipeline
+
+Git and Docker. The image supplies everything else.
 
 ## Native pipeline
 
-Building a database with `scripts/netflow-db.sh` also needs the Rust toolchain:
-
-| Tool   | Version                | Source of truth       |
-| ------ | ---------------------- | --------------------- |
-| rustup | Current stable version | rustup installation   |
-| Rust   | 1.97.1                 | `rust-toolchain.toml` |
-| cc     | gcc or clang           | Rust linker           |
-
-rustup reads `rust-toolchain.toml` and installs the pinned Rust version automatically on the first build.
+- [rustup](https://rustup.rs). It installs the pinned Rust version from `rust-toolchain.toml` on the first build.
+- A C compiler (gcc or clang).
 
 ## Native nfdump fork
 
-Processing nfcapd captures also needs the build tools for the pinned nfdump fork. CSV input does not.
-
-- autoconf, automake, libtool
-- flex (or lex) and bison (or yacc)
-- make, gcc or clang, `pkg-config`
-- Python 3 and `tar`
-
-`./vendor/scripts/compile-nfdump.sh` checks for these tools before it builds and names any tool that is missing.
-
-On Debian or Ubuntu, this command installs them:
+Needed for nfcapd captures on the native path, not for CSV. On Debian or Ubuntu:
 
 ```bash
 sudo apt install build-essential autoconf automake libtool flex bison pkg-config python3
 ```
 
+`./vendor/scripts/compile-nfdump.sh` names any missing tool.
+
 ## Development
 
-Contributors also need the Playwright browser dependencies for `bun run test:e2e`. `shell.nix` supplies them. Read [Development](../code/development.md) for the full workflow.
+Contributors also need the Playwright browser dependencies for `bun run test:e2e`. See [Development](../code/development.md).

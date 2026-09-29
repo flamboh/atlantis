@@ -63,7 +63,7 @@ ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node server in apps/web/build
 bun run --cwd apps/web preview              # SQLite build, then vite preview
 ```
 
-A D1 build has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
+A D1 build has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-to-cloudflare) describes the deploy.
 
 A SQLite build uses `@sveltejs/adapter-node` and writes a Node server to `apps/web/build`. Start it with `node build` from `apps/web`. The self-hosted deployment runs this build in a container. [Operations](../user/operations.md#deploy-the-self-hosted-dashboard) describes it.
 
@@ -151,8 +151,6 @@ The Drizzle schema is in `apps/web/src/lib/server/db/schema.ts`.
 5. Deploy a personal stage to apply the migration to a D1 database. The next production deploy applies it to production.
 
 Before shared use, you can replace an unapplied greenfield baseline. After shared use, always add a new migration.
-
-Do not apply the observation-metrics baseline to a database from the prior baseline. Create a new database for this product.
 
 ## Rust checks
 

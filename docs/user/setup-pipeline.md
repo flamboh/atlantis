@@ -1,8 +1,6 @@
 # Pipeline setup
 
-The pipeline is the Rust `atlantis-netflow-db` crate. It converts nfcapd or CSV input into a compatible SQLite database.
-
-Use a new output database when you change selection rules or result semantics. The pipeline rejects incompatible reuse.
+The pipeline turns nfcapd captures (or CSV) into the SQLite database that the dashboard reads.
 
 ## Choose a path
 
@@ -11,45 +9,32 @@ Use a new output database when you change selection rules or result semantics. T
 | Docker | `scripts/netflow-db-docker.sh` | [Git and Docker](requirements.md#docker-pipeline)                                                                  |
 | Native | `scripts/netflow-db.sh`        | [Rust toolchain](requirements.md#native-pipeline) and the [nfdump build tools](requirements.md#native-nfdump-fork) |
 
-Complete the one-time setup for your path, then follow the rest of this document. The examples below use `./scripts/netflow-db.sh`, and the native path adds `--nfdump` to every command that reads nfcapd input. To run an example with Docker, substitute `./scripts/netflow-db-docker.sh` and add `--capture-root <path>` for commands that read captures.
+The examples below use `./scripts/netflow-db.sh`. For Docker, use `./scripts/netflow-db-docker.sh --capture-root /path/to/captures` instead. For native runs that read captures, add `--nfdump target/nfdump/libexec/nfdump`.
 
 ### Docker setup
 
-Container options come before the pipeline command:
+Nothing to install beyond Docker. Put the container options before the pipeline command:
 
 ```bash
-./scripts/netflow-db-docker.sh --capture-root /absolute/path/to/captures pipeline ...
+./scripts/netflow-db-docker.sh --capture-root /path/to/captures pipeline ...
 ```
 
-The wrapper builds the image when it is missing or when its build inputs change, so pulling an update rebuilds automatically. Pass `--build` to force a rebuild. Each `--capture-root` mounts read-only at the same absolute path inside the container, so `root_path` in `datasets.json` needs no change. Output stays under the repository's `data/` directory, owned by you.
-
-On macOS, bind mounts over large capture trees are slower than native filesystem access.
+The first run builds the image and takes several minutes. Later runs rebuild only when the pipeline sources change. The capture root mounts read-only at the same path, and output goes to the repository's `data/` directory.
 
 ### Native setup
 
-`scripts/netflow-db.sh` runs the crate with `cargo run --locked --release`, which compiles it when necessary. Set `NETFLOW_DB_BIN` to run a prebuilt binary instead.
+Build the pinned nfdump fork. A system nfdump does not work.
 
-nfcapd input also needs the pinned ATLANTIS nfdump fork. A system nfdump installation does not work: the pipeline uses an output mode that only the fork has. CSV input does not need nfdump.
+```bash
+git submodule update --init --recursive
+./vendor/scripts/compile-nfdump.sh
+```
 
-1. Initialize the Git submodules.
+The fork is staged at `target/nfdump/libexec/nfdump`. The first pipeline command compiles the Rust crate, which takes several minutes.
 
-   ```bash
-   git submodule update --init --recursive
-   ```
+## Build a database
 
-2. Build the fork. The script checks for the [build tools](requirements.md#native-nfdump-fork) and names any tool that is missing.
-
-   ```bash
-   ./vendor/scripts/compile-nfdump.sh
-   ```
-
-The build stages the executable at `target/nfdump/libexec/nfdump`. The `target` directory is disposable and git-ignored. Pass this path with `--nfdump` to every command that reads nfcapd input; the pipeline does not find it automatically.
-
-## Process a dataset
-
-First, complete the [dataset configuration](datasets.md).
-
-Run a bounded import while you test the configuration:
+First, [configure the dataset](datasets.md). Then process a few days:
 
 ```bash
 ./scripts/netflow-db.sh pipeline \
@@ -58,261 +43,14 @@ Run a bounded import while you test the configuration:
   --end-date <YYYY-MM-DD>
 ```
 
-The start date and end date are inclusive; use the same date for both to process a single day. If you omit the end date, the pipeline processes each day through the latest available day.
+- Both dates are inclusive. Omit `--end-date` to process through the latest capture.
+- The output goes to `data/<dataset-id>/netflow.sqlite`.
+- Rerunning the same command skips days that are already done.
+- Add `--no-maad` to skip the address-structure (MAAD) statistics and finish faster.
 
-Dataset mode calculates MAAD statistics by default. MAAD statistics describe the multifractal structure of the observed IPv4 and IPv6 address sets, and they power the address-structure charts. IPv4 uses prefix lengths /8 to /24 and IPv6 uses /23 to /64, so the two families are separate results, not one comparable series. Use `--no-maad` to skip them.
-
-If a command fails, read [Troubleshooting](troubleshooting.md).
-
-## Process coordinated subsets
-
-Repeat `--dataset` for two or more registry entries that select subsets of one nfcapd tree.
-Native runs must name the pinned ATLANTIS nfdump fork explicitly:
-
-```bash
-./scripts/netflow-db.sh pipeline \
-  --nfdump target/nfdump/libexec/nfdump \
-  --dataset dataset-a \
-  --dataset dataset-b \
-  --start-date <YYYY-MM-DD> \
-  --end-date <YYYY-MM-DD>
-```
-
-Coordinated mode accepts only registry-backed `daily_active_sources` products. It rejects a run
-unless all selected entries have compatible inputs and execution settings:
-
-- Dataset IDs and output database paths must be unique.
-- Every entry must use the same canonical nfcapd root, logical source layout, and timezone.
-- Every entry must use the same whole local-day window, force setting, MAAD setting, coverage
-  setting, and nfdump executable revision.
-- Each entry supplies its own `daily_active_sources` prefix and `db_path`.
-- Output databases, locks, and sidecars must not overlap one another or the capture tree.
-
-Do not combine repeated `--dataset` with `--config`, `--database-path`, `--start-time`, `--end-time`,
-or command-line selection flags. Configure selection and output paths in `datasets.json`. The
-command has no parent dataset or `source_dataset` relation.
-
-The pipeline discovers the capture plan once, scans each day once, and fans the decoded flow stream
-out to the selected products. A missing required capture leaves that day unpublished for every
-product. Each product still has its own identity, active-source set, transaction, and completion
-marker, so overlapping prefixes may contain the same qualifying flow.
-
-After a successful run, repeating the exact command is a no-op. The report says
-`Published five-minute buckets: 0`, and the pipeline does not rewrite completed days. If a previous
-run stopped between product commits, the next run rebuilds only the unfinished day for the affected
-product.
-
-## Select flows
-
-Selection conditions use AND logic. The IP prefix can match the source endpoint or the destination endpoint.
-
-```bash
-./scripts/netflow-db.sh pipeline \
-  --dataset example \
-  --start-date <YYYY-MM-DD> \
-  --end-date <YYYY-MM-DD> \
-  --database-path data/example-public/netflow.sqlite \
-  --ip-prefix 192.0.2.0/24 \
-  --src-locality internal
-```
-
-A selected population is a different database product. Thus, selection options require an explicit `--database-path`.
-Dataset registry entries may instead persist a `selection` beside their dedicated `db_path`; dataset
-mode applies that selection automatically.
-
-Available selection options are:
-
-- `--ip-prefix`
-- `--daily-active-sources`
-- `--src-locality internal|external`
-- `--dst-locality internal|external`
-
-Locality filters use the dataset's [locality rules](datasets.md#classify-internal-and-external-endpoints).
-A pipeline configuration declares its rules in a top-level `locality` array, and relative address-file
-paths resolve from the configuration file's directory.
-
-`--daily-active-sources` applies the fixed active-user definition used to choose the UOregon
-candidate subnets. It requires an IPv4 `/16` and locality rules, and it cannot be combined with the locality flags:
-
-```bash
-./scripts/netflow-db.sh pipeline \
-  --dataset example \
-  --start-date <YYYY-MM-DD> \
-  --end-date <YYYY-MM-DD> \
-  --database-path data/example-active/netflow.sqlite \
-  --ip-prefix 0.220.0.0/16 \
-  --daily-active-sources
-```
-
-For each complete local day, the pipeline sums qualifying traffic by exact source address across
-each unique physical capture member. A source is active when it has at least 3 flows, 20 packets,
-and 2,000 bytes that day. Qualifying traffic is IPv4 TCP or UDP from an internal source in the
-target `/16`, with source port at least 1024. Destination ports and TCP flags are unrestricted.
-Only that qualifying traffic from active sources is published.
-
-This mode supports exactly one `nfcapd_tree` input and whole local days. A day missing any expected
-physical capture is skipped rather than published as zero. If input evidence changes after a day
-was published, rebuild the whole day with `--force`; a single five-minute repair is not safe because
-it can change the active-source set for every bucket in that day.
-
-## Use a pipeline configuration
-
-Configuration mode supports CSV input, nfcapd input, and mixed input. Explicit `csv` and `nfcapd` inputs and `csv_tree` and `nfcapd_tree` discovery inputs go in the top-level `inputs` list.
-
-```bash
-./scripts/netflow-db.sh pipeline \
-  --config /path/to/pipeline.json \
-  --database-path data/example/netflow.sqlite
-```
-
-Put flow selection in the top-level `selection` object:
-
-```json
-{
-  "selection": {
-    "ip_prefix": "192.0.2.0/24",
-    "src_locality": "internal",
-    "dst_locality": "external"
-  },
-  "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
-  "inputs": []
-}
-```
-
-The equivalent active-source selection is deliberately a named policy rather than configurable
-thresholds:
-
-```json
-{
-  "selection": {
-    "kind": "daily_active_sources",
-    "ip_prefix": "0.220.0.0/16"
-  },
-  "inputs": [
-    {
-      "input_kind": "nfcapd_tree",
-      "root_path": "/path/to/captures",
-      "source_ids": ["gateway-a", "gateway-b"],
-      "start_date": "2025-06-01",
-      "end_date": "2026-06-29"
-    }
-  ]
-}
-```
-
-On the native path, nfcapd input needs the fork path: set the top-level `"nfdump"` value to `"target/nfdump/libexec/nfdump"`, or pass `--nfdump` when the configuration does not set it.
-
-## Common options
-
-| Option            | Purpose                                    |
-| ----------------- | ------------------------------------------ |
-| `--database-path` | Changes the SQLite output path.            |
-| `--datasets`      | Reads a different dataset registry file.   |
-| `--start-time`    | Sets the start of a half-open time window. |
-| `--end-time`      | Sets the end of a half-open time window.   |
-| `--nfdump`        | Names the nfdump executable.               |
-| `--force`         | Rewrites selected nfcapd buckets.          |
-| `--no-maad`       | Skips the MAAD statistics.                 |
-| `--maad-workers`  | Sets MAAD threads (default: CPUs, max 8).  |
-
-Time limits must align with local-day boundaries.
-
-## Process a date range on several hosts
-
-Days are independent, so a long nfcapd range can be split into day shards that run on different
-hosts and then merged into one product.
-The [pipeline contract](../code/pipeline-contract.md#day-sharded-products) explains why the shards
-never overlap.
-
-Each host needs:
-
-- read access to the capture tree at the same absolute path, for example on a shared filesystem;
-- the same `netflow-db` binary, pinned nfdump fork, and dataset registry, all under one absolute
-  directory that has the same path on every host. The nfdump path is part of the product identity,
-  so a different path produces an incompatible shard;
-- enough host-local disk for its shard database. Write shards to local disk, not to a shared
-  network filesystem.
-
-`scripts/netflow-db-cluster.sh` runs the whole flow from one machine. It splits the inclusive date
-range into contiguous shards and starts `pipeline` on each host as a detached job, so a dropped
-ssh connection does not stop it. It polls each job, copies a consistent snapshot of each
-shard back, merges the snapshots, and runs `verify`:
-
-```bash
-./scripts/netflow-db-cluster.sh \
-  --hosts nodeA,nodeB,nodeC:2 \
-  --dataset example \
-  --start-date <YYYY-MM-DD> \
-  --end-date <YYYY-MM-DD> \
-  --output data/example/netflow.sqlite \
-  --deploy-bin target/release/netflow-db \
-  --deploy-nfdump target/nfdump/libexec/nfdump \
-  --deploy-datasets /path/to/datasets.json
-```
-
-- `host:N` gives that host N slots, so it runs up to N shards at once. A host without `:N` gets
-  one slot, which is how to give a busier host a lighter share.
-- The range splits into one shard per slot, or one per day when there are fewer days than slots.
-  Shard lengths differ by at most one day. Slots are assigned round-robin across hosts, so every
-  host gets a shard whenever the range has at least as many days as there are hosts. For example,
-  six days on `nodeA:4,nodeB` gives nodeA four shards and nodeB one, and the first shard gets
-  two days.
-- Hosts install into `--remote-dir` (or `NETFLOW_CLUSTER_REMOTE_DIR`). The default is
-  `$HOME/atlantis-cluster`, expanded with this machine's `$HOME`, so every host must be able to
-  use that absolute path. The directory holds `bin/`, `nfdump/`, `datasets.json`, and the shard
-  databases, logs, and exit-status files in `work/`.
-- The `--deploy-*` options replace files atomically. Do not replace nfdump while a shard is running
-  on that host: the running pipeline detects the change and stops, and a different nfdump build
-  produces an incompatible product.
-- Pipeline flags after `--` apply to every shard.
-- Each remote shard database is named after its dataset and day range. The script records the
-  host and day-range layout in `<output>.shards/layout` and refuses a rerun whose `--hosts`,
-  dates, or dataset differ. To start over with a different layout, delete that file.
-- If a shard fails or you interrupt the script, rerun the same command. A shard that is still
-  running is reattached instead of started twice, and a restarted shard resumes after its last
-  completed day. Ctrl-C stops only the local script; remote shards keep running.
-- The script merges with `merge-shards --consume`, which deletes each local shard copy in
-  `<output>.shards` as soon as its rows are committed, so local disk peaks near the output size
-  plus one shard. Pass `--keep-shards` to merge without consuming and keep the copies. The logs
-  and layout stay in `<output>.shards` either way.
-- If the merge fails, rerun the same command. The remote shard databases are the source of truth:
-  the rerun copies every shard back again and deletes the partial merge from the failed run
-  first. The script leaves the remote shard databases in place, so delete `work/` on each host
-  when you are finished.
-
-To merge shards by hand, build each one with identical flags and an explicit `--start-date` and
-`--end-date` over a different day range, then run:
-
-```bash
-./scripts/netflow-db.sh merge-shards --output data/example/netflow.sqlite shard-*.sqlite
-```
-
-The output must not exist yet. The command refuses shards with different product identities,
-schemas, source layouts, dataset metadata, or MAAD q grids, and shards whose completed days overlap. Each
-dataset's `default_start_date` must either match across all shards, which keeps a configured
-date, or be the date each shard inferred from its own traffic. In the second case the merged
-product takes the date of its earliest traffic. It also
-refuses rows outside a shard's completed days, and completed days without full five-minute
-coverage, which happens when a shard was built without `--end-date`. A merged product can be merged
-again. After the merge, rerunning `pipeline` over the merged days with the same flags and nfdump
-path publishes zero buckets.
-
-When disk is tight, add `--consume`. The command still runs every check on every shard before it
-changes anything. It then moves the first shard into the temporary output, or copies it if the
-output is on another filesystem, and deletes each other shard with its SQLite sidecars once that
-shard's rows are durably committed. Peak disk is about the output size plus one shard. If a
-consuming merge fails after it has consumed a shard, it keeps the temporary output: a valid
-partial product that holds exactly the consumed shards. The error names the consumed shards and
-the partial file, and prints the command that resumes the merge from the partial and the
-remaining shards, which are left untouched. If a shard's rows are merged but its files cannot be
-deleted, the error says so. That shard counts as consumed, so delete its leftover files instead
-of passing it again. If the merge has already renamed the output into place but cannot sync its
-directory, the error says the product is published. Run `verify` on it instead of merging
-again.
+The pipeline refuses to write into a database built with different settings. Pass a new `--database-path` or delete the old database.
 
 ## Verify the output
-
-Run the compatibility check after the pipeline finishes:
 
 ```bash
 ./scripts/netflow-db.sh verify data/example/netflow.sqlite \
@@ -324,6 +62,112 @@ Run the compatibility check after the pipeline finishes:
   --require-no-raw-ip
 ```
 
-The command prints an `OK` line when the database is compatible. A failed requirement returns a nonzero exit status.
+Success prints an `OK` line. Drop `--require-maad-data` for a `--no-maad` database.
 
-For pipeline identity and export rules, read the [pipeline contract](../code/pipeline-contract.md).
+## Select flows
+
+A filtered database is a separate product, so it needs its own output path:
+
+```bash
+./scripts/netflow-db.sh pipeline \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --database-path data/example-internal/netflow.sqlite \
+  --ip-prefix 192.0.2.0/24 \
+  --src-locality internal
+```
+
+Conditions combine with AND. `--ip-prefix` matches either endpoint. The locality flags need [locality rules](datasets.md#classify-internal-and-external-endpoints).
+
+`--daily-active-sources` keeps only traffic from sources that were active over each whole local day. It needs `--ip-prefix` with an IPv4 `/16` and locality rules, and it cannot be combined with the locality flags. The [pipeline contract](../code/pipeline-contract.md#flow-selection) defines "active".
+
+To keep a selection permanent, put it in the dataset's `selection` field with its own `db_path` (see [coordinated subsets](datasets.md#define-coordinated-subsets)).
+
+## Build several subsets in one pass
+
+Repeat `--dataset` to build several `daily_active_sources` subsets of the same capture tree while reading the captures once:
+
+```bash
+./scripts/netflow-db.sh pipeline \
+  --dataset dataset-a \
+  --dataset dataset-b \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD>
+```
+
+Each entry needs its own `selection` and `db_path` in `datasets.json`, and all entries must share the same `root_path` and sources. Do not add `--database-path`, `--config`, or selection flags.
+
+## Build from CSV or a config file
+
+CSV input, and any mix of CSV and nfcapd input, uses a pipeline configuration file:
+
+```bash
+./scripts/netflow-db.sh pipeline \
+  --config /path/to/pipeline.json \
+  --database-path data/example/netflow.sqlite
+```
+
+```json
+{
+  "locality": [{ "type": "prefixes", "prefixes": ["192.0.2.0/24"] }],
+  "selection": { "ip_prefix": "192.0.2.0/24" },
+  "inputs": [
+    {
+      "input_kind": "nfcapd_tree",
+      "root_path": "/path/to/captures",
+      "source_ids": ["router-a"],
+      "start_date": "<YYYY-MM-DD>",
+      "end_date": "<YYYY-MM-DD>"
+    }
+  ]
+}
+```
+
+Input kinds are `csv`, `nfcapd`, `csv_tree`, and `nfcapd_tree`. Relative paths resolve from the configuration file's directory. For native nfcapd input, set `"nfdump": "target/nfdump/libexec/nfdump"` or pass `--nfdump`.
+
+## Run a long range on several hosts
+
+`scripts/netflow-db-cluster.sh` splits a date range across hosts over plain SSH, builds each piece, copies the results back, merges them, and verifies the merged database.
+
+Each host needs:
+
+- SSH key access from your machine.
+- The captures at the same absolute path.
+- Local disk for its share of the output.
+
+Run from the machine that should hold the result:
+
+```bash
+./scripts/netflow-db-cluster.sh \
+  --hosts host-a:2,host-b,host-c \
+  --dataset example \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output data/example/netflow.sqlite \
+  --deploy-bin target/release/netflow-db \
+  --deploy-nfdump target/nfdump/libexec/nfdump \
+  --deploy-datasets /path/to/datasets.json
+```
+
+- `host:2` runs two shards on that host at once.
+- The `--deploy-*` options copy the binary, nfdump, and registry to `$HOME/atlantis-cluster` on every host. Change it with `--remote-dir`. It must be the same path on every host.
+- Pipeline flags after `--` apply to every shard.
+- Success ends with the `verify` output for the merged database.
+
+If a shard fails, the merge fails, or you press Ctrl-C, run the same command again. It resumes where it stopped, and shards on the hosts keep running after Ctrl-C.
+
+Common problems:
+
+- A rerun with different `--hosts`, dates, or dataset is refused. Delete `<output>.shards/layout` to start over.
+- Do not redeploy nfdump while shards are running. The shards stop, and a different nfdump build is incompatible with the finished shards.
+
+When you are finished, delete `work/` under the remote directory on each host.
+
+To merge shards by hand, build each one with identical flags and an explicit `--end-date` over its own day range, then run:
+
+```bash
+./scripts/netflow-db.sh merge-shards --output data/example/netflow.sqlite shard-*.sqlite
+```
+
+The output must not exist. Add `--consume` to delete each shard as it is merged when disk is tight. If a consuming merge fails, the error prints the command that resumes it.
