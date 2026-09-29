@@ -1,14 +1,13 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { SpectrumStatsPayload, SpectrumStatsResponse } from '$lib/types/spectrum-stats';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
+import type { SpectrumStatsPayload, SpectrumStatsResponse } from '#lib/types/spectrum-stats.ts';
+import { buildCoverageTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 import {
 	buildSpectrumPoints,
 	parseMaadStatsParams,
 	placeholders,
 	spectrumMeasureError
-} from '$lib/server/netflow-v3';
+} from '#lib/server/netflow-v3.ts';
 
 type SpectrumStatsRow = SpectrumStatsPayload & {
 	router: string;
@@ -24,20 +23,20 @@ type RawSpectrumStatsRow = {
 	daSpectrum: Uint8Array | null;
 };
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const params = parseMaadStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 	const measureError = spectrumMeasureError(params.measure);
 	if (measureError) {
-		return json({ error: measureError.error }, { status: measureError.status });
+		return Response.json({ error: measureError.error }, { status: measureError.status });
 	}
 	const { routers, granularity, start, end, srcLocality, dstLocality, ipVersion, measure } = params;
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const tableName = 'address_maad_stats';
 			const sourceColumn = 'source_id';
 			const queryParams = [
@@ -99,10 +98,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				requestedRouters: routers
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query spectrum_stats:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };

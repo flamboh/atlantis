@@ -37,15 +37,15 @@ export default defineConfig({
 	],
 	webServer: shouldManageServer
 		? {
-				command: 'bun run preview --host 127.0.0.1 --port 4173',
+				command: 'bun run build && bun run preview --host 127.0.0.1 --port 4173',
 				env: {
 					...process.env,
-					ATLANTIS_DB_DRIVER: 'sqlite',
+					ATLANTIS_DB_DRIVER: 'd1',
 					LOCAL_SQLITE_PATH: playwrightFixture?.databasePath
 				},
 				port: 4173,
 				reuseExistingServer: false,
-				timeout: 120_000
+				timeout: 180_000
 			}
 		: undefined
 });

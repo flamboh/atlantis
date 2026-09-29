@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
-	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
 	import ChartCard from './ChartCard.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import {
@@ -8,14 +8,14 @@
 		indexPortTimelines,
 		type IndexedPortBucket
 	} from './flow-characteristics';
-	import type { GroupByOption } from '$lib/components/netflow/types';
+	import type { GroupByOption } from '#lib/components/netflow/types.ts';
 	import type {
 		FlowCharacteristicsResponse,
 		IpGranularity,
 		NetflowIpFamily,
 		PortRange,
 		PortSide
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 
 	type Props = {
 		data: FlowCharacteristicsResponse | null;

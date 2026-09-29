@@ -448,7 +448,7 @@ mod tests {
         fs::write(
             &list,
             serde_json::json!([{
-                "dataset_id": "campus",
+                "dataset_id": "dataset-a",
                 "root_path": "/captures",
                 "locality": [
                     {"type": "tos_anonymized"},
@@ -462,7 +462,7 @@ mod tests {
         .unwrap();
 
         let registry = DatasetRegistry::load(&list, root.path()).unwrap();
-        let dataset = registry.get("campus").unwrap();
+        let dataset = registry.get("dataset-a").unwrap();
         let rules = dataset.locality_rules().unwrap();
 
         assert_eq!(

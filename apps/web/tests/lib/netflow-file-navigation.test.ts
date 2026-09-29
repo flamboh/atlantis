@@ -6,7 +6,7 @@ vi.mock('$app/paths', () => ({
 
 describe('buildNetflowFileHref', () => {
 	it('builds only the dataset search when provided', async () => {
-		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileSearch } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon')).toBe('?dataset=uoregon');
 		expect(buildNetflowFileSearch(' uoregon ')).toBe('?dataset=uoregon');
@@ -15,7 +15,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('includes a non-all direction when provided', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon', 'ingress')).toBe('?dataset=uoregon&direction=ingress');
 		expect(buildNetflowFileHref('202506192010', 'uoregon', 'ingress')).toBe(
@@ -24,13 +24,13 @@ describe('buildNetflowFileHref', () => {
 	});
 
 	it('omits an all direction', async () => {
-		const { buildNetflowFileSearch } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileSearch } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon', 'all')).toBe('?dataset=uoregon');
 	});
 
 	it('includes dataset query when provided', async () => {
-		const { buildNetflowFileHref } = await import('$lib/utils/netflow-file-navigation');
+		const { buildNetflowFileHref } = await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileHref('202506192010', 'uoregon')).toBe(
 			'/netflow/files/202506192010?dataset=uoregon'
@@ -45,7 +45,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('omits query when dataset is empty', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileHref('202506192010', '')).toBe('/netflow/files/202506192010');
 		expect(buildNetflowFileSearch('')).toBe('');
@@ -54,7 +54,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('adds a non-default MAAD IP family to file links', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon', 'all', 4)).toBe('?dataset=uoregon');
 		expect(buildNetflowFileSearch('uoregon', 'ingress', 6)).toBe(
@@ -66,7 +66,7 @@ describe('buildNetflowFileHref', () => {
 	});
 
 	it('delegates navigation to the built href', async () => {
-		const { navigateToNetflowFile } = await import('$lib/utils/netflow-file-navigation');
+		const { navigateToNetflowFile } = await import('#lib/utils/netflow-file-navigation.ts');
 		const navigate = vi.fn().mockResolvedValue(undefined);
 
 		await navigateToNetflowFile(navigate, '202506192010', 'uoregon');
@@ -92,7 +92,7 @@ describe('buildNetflowFileHref', () => {
 
 	it('carries a weighted MAAD measure and omits the default', async () => {
 		const { buildNetflowFileHref, buildNetflowFileSearch, navigateToNetflowFile } =
-			await import('$lib/utils/netflow-file-navigation');
+			await import('#lib/utils/netflow-file-navigation.ts');
 
 		expect(buildNetflowFileSearch('uoregon', 'all', 4, 'addresses')).toBe('?dataset=uoregon');
 		expect(buildNetflowFileSearch('uoregon', 'all', 4, 'packets')).toBe(

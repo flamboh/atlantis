@@ -12,9 +12,9 @@ import {
 	type IpGranularity,
 	type MaadIpVersion,
 	type MaadMeasure
-} from '$lib/types/types';
-import type { ReadonlyDatasetDb, SourceDefinition } from '$lib/server/datasets';
-import type { SpectrumPoint, StructureFunctionPoint } from '$lib/types/types';
+} from '#lib/types/types.ts';
+import type { ReadonlyDatasetDb, SourceDefinition } from '#lib/server/datasets.ts';
+import type { SpectrumPoint, StructureFunctionPoint } from '#lib/types/types.ts';
 
 export type MaadBlob = Uint8Array | ArrayBuffer | number[] | null;
 

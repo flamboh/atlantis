@@ -1,7 +1,7 @@
 <script lang="ts">
 	import NetflowFileRouterAnalysisSection from './NetflowFileRouterAnalysisSection.svelte';
 	import NetflowFileRouterSummary from './NetflowFileRouterSummary.svelte';
-	import * as Card from '$lib/components/ui/card';
+	import * as Card from '#lib/components/ui/card/index.ts';
 	import type { NetflowFileRouterRow } from './file-detail-loader.svelte';
 
 	let {

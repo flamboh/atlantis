@@ -1,8 +1,8 @@
 <script lang="ts">
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import type { ChartTypeOption, DataOption } from '$lib/components/netflow/types.ts';
-	import type { NetflowIpFamily } from '$lib/types/types';
+	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import type { ChartTypeOption, DataOption } from '#lib/components/netflow/types.ts';
+	import type { NetflowIpFamily } from '#lib/types/types.ts';
 
 	type QuickSelectOption = 'flows' | 'packets' | 'bytes' | 'all' | 'none';
 	type MetricFamily = 'flows' | 'packets' | 'bytes';

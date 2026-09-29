@@ -1,7 +1,7 @@
 <script lang="ts">
 	import NetflowFileAnalysisPane from './NetflowFileAnalysisPane.svelte';
 	import type { FileDetailResourceView } from './file-detail-loader.svelte';
-	import type { SpectrumData, StructureFunctionData } from '$lib/types/types';
+	import type { SpectrumData, StructureFunctionData } from '#lib/types/types.ts';
 
 	type AnalysisKind = 'structure' | 'spectrum';
 

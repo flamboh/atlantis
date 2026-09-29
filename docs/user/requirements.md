@@ -10,7 +10,7 @@ On NixOS, run `nix-shell` and skip the manual installation.
 
 Running the pipeline with Docker needs only Git and Docker on the host. The image build supplies the Rust toolchain, the nfdump build tools, and the pinned fork, and it does not need initialized Git submodules.
 
-Docker covers the pipeline only; the dashboard runs natively.
+To run the dashboard in Docker on a server, see [Deploy the self-hosted dashboard](operations.md#deploy-the-self-hosted-dashboard). Otherwise the dashboard runs natively.
 
 ## Dashboard
 
@@ -19,8 +19,8 @@ The dashboard and all `bun run` commands need these tools:
 | Tool    | Version                   | Source of truth |
 | ------- | ------------------------- | --------------- |
 | Git     | Current supported version | Git releases    |
-| Bun     | 1.2.16                    | `package.json`  |
-| Node.js | 22.16.0                   | `.node-version` |
+| Bun     | 1.3.11                    | `package.json`  |
+| Node.js | 24.18.1                   | `.node-version` |
 
 Node.js is necessary even though Bun installs the packages. The development server runs under Node.js, and `bun install` needs Node.js on `PATH` to download the prebuilt SQLite driver. Without it, the install prints a `better-sqlite3` warning and the dashboard cannot open a database (see [Troubleshooting](troubleshooting.md)).
 

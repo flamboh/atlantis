@@ -28,11 +28,25 @@ export function seedPlaywrightDatabase() {
 			0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0
+		), (
+			'fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all',
+			10, 10, 0, 0, 0,
+			0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0
 		);
+		INSERT INTO address_count_stats (
+			source_id, granularity, bucket_start, bucket_end,
+			ip_version, src_locality, dst_locality, address_side, unique_address_count
+		) VALUES
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'source', 5),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'destination', 5);
 		INSERT INTO bucket_coverage (
 			source_id, granularity, bucket_start, bucket_end,
 			coverage_state, observed_units, expected_units, rejected_units
-		) VALUES ('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0);
+		) VALUES
+			('fixture-router', '5m', 1740823200, 1740823500, 'complete', 1, 1, 0),
+			('fixture-router', '1d', 1740816000, 1740902400, 'complete', 288, 288, 0);
 		INSERT INTO address_maad_stats (
 			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
 			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum
@@ -48,7 +62,11 @@ export function seedPlaywrightDatabase() {
 			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'source', 'bytes',
 				40, 0.92, 0.64, 0.55, ${tau}, ${tauSd}, NULL),
 			('fixture-router', '5m', 1740823200, 1740823500, 4, 'all', 'all', 'destination', 'bytes',
-				40, 0.9, 0.61, 0.52, ${tau}, ${tauSd}, NULL);
+				40, 0.9, 0.61, 0.52, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'source', 'packets',
+				40, 0.92, 0.71, 0.63, ${tau}, ${tauSd}, NULL),
+			('fixture-router', '1d', 1740816000, 1740902400, 4, 'all', 'all', 'destination', 'packets',
+				40, 0.9, 0.69, 0.6, ${tau}, ${tauSd}, NULL);
 		INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES
 			(4, -0.5, 0.125, 33),
 			(6, -0.5, 0.125, 33);

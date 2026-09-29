@@ -1,20 +1,19 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import type { IpStatsBucket, IpStatsResponse } from '$lib/types/types';
-import { buildCoverageTimelines } from '$lib/server/db/coverage';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { parseAggregateStatsParams, placeholders } from '$lib/server/netflow-v3';
+import type { IpStatsBucket, IpStatsResponse } from '#lib/types/types.ts';
+import { buildCoverageTimelines } from '#lib/server/db/coverage.ts';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import { parseAggregateStatsParams, placeholders } from '#lib/server/netflow-v3.ts';
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const params = parseAggregateStatsParams(url);
 	if ('error' in params) {
-		return json({ error: params.error }, { status: params.status });
+		return Response.json({ error: params.error }, { status: params.status });
 	}
 	const { routers, granularity, start, end, srcLocality, dstLocality } = params;
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
-		return await withDatasetDb(dataset, platform, async ({ db }) => {
+		const dataset = await getRequestedDataset(url);
+		return await withDatasetDb(dataset, async ({ db }) => {
 			const tableName = 'address_count_stats';
 			const sourceColumn = 'source_id';
 			const queryParams = [granularity, ...routers, srcLocality, dstLocality, start, end];
@@ -70,10 +69,10 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 				}))
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to query ip_stats:', error);
-		return json({ error: 'Database query failed' }, { status: 500 });
+		return Response.json({ error: 'Database query failed' }, { status: 500 });
 	}
 };

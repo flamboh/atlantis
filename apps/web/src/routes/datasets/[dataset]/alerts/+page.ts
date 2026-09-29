@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageLoad } from './$types';
-import { loadDatasetSummariesFromFetch } from '$lib/datasets';
-import type { AlertsFeedResponse } from '$lib/types/types';
+import { loadDatasetSummariesFromFetch } from '#lib/datasets.ts';
+import type { AlertsFeedResponse } from '#lib/types/types.ts';
 
 type ErrorResponse = {
 	data: null;

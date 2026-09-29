@@ -6,7 +6,7 @@ import {
 	type FlowDirection,
 	type MaadIpVersion,
 	type MaadMeasure
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 
 export function buildNetflowFileSearch(
 	dataset?: string,

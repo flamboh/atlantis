@@ -1,4 +1,3 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type {
 	FileIpCounts,
@@ -9,7 +8,7 @@ import type {
 	SpectrumPoint,
 	StructureFunctionData,
 	StructureFunctionPoint
-} from '$lib/types/types';
+} from '#lib/types/types.ts';
 import { getDatasetFromRequest, slugToBucketStart, withDb } from '../utils';
 import {
 	buildSpectrumPoints,
@@ -17,7 +16,7 @@ import {
 	getMaadQGrid,
 	parseFlowDirectionParams,
 	parseMaadParams
-} from '$lib/server/netflow-v3';
+} from '#lib/server/netflow-v3.ts';
 
 const FIVE_MINUTES = '5m';
 
@@ -106,31 +105,31 @@ function buildIpCounts(ipv4Count: number | null, ipv6Count: number | null): File
 	};
 }
 
-export const GET: RequestHandler = async ({ params, url, platform }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const { slug } = params;
-	const dataset = await getDatasetFromRequest(url, platform);
+	const dataset = await getDatasetFromRequest(url);
 	const flowDirection = parseFlowDirectionParams(url);
 
 	if ('error' in flowDirection) {
-		return json({ error: flowDirection.error }, { status: flowDirection.status });
+		return Response.json({ error: flowDirection.error }, { status: flowDirection.status });
 	}
 
 	const maad = parseMaadParams(url);
 	if ('error' in maad) {
-		return json({ error: maad.error }, { status: maad.status });
+		return Response.json({ error: maad.error }, { status: maad.status });
 	}
 
 	if (!slug || slug.length !== 12 || !/^\d{12}$/.test(slug)) {
-		return json({ error: 'Invalid slug format' }, { status: 400 });
+		return Response.json({ error: 'Invalid slug format' }, { status: 400 });
 	}
 
 	const bucketStart = slugToBucketStart(slug);
 	if (bucketStart === null) {
-		return json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
+		return Response.json({ error: 'Unable to parse slug timestamp' }, { status: 400 });
 	}
 
 	try {
-		return await withDb(dataset, platform, async (db) => {
+		return await withDb(dataset, async (db) => {
 			const qGrid = await getMaadQGrid(db, maad.ipVersion);
 
 			const rows = await db.all<FileDetailsRow>(
@@ -262,7 +261,7 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 			);
 
 			if (rows.length === 0) {
-				return json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
+				return Response.json({ error: `No data found for bucket: ${slug}` }, { status: 404 });
 			}
 
 			const routers: NetflowFileDetailsRouter[] = rows.map((row) => {
@@ -326,10 +325,10 @@ export const GET: RequestHandler = async ({ params, url, platform }) => {
 				routers
 			};
 
-			return json(response);
+			return Response.json(response);
 		});
 	} catch (error) {
 		console.error('Failed to fetch file details from database:', error);
-		return json({ error: 'Failed to fetch file details' }, { status: 500 });
+		return Response.json({ error: 'Failed to fetch file details' }, { status: 500 });
 	}
 };

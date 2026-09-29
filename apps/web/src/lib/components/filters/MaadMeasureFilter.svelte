@@ -1,8 +1,8 @@
 <script lang="ts">
 	import SegmentedControl, {
 		type SegmentedControlOption
-	} from '$lib/components/common/SegmentedControl.svelte';
-	import { MAAD_MEASURE_OPTIONS, type MaadMeasure } from '$lib/types/types';
+	} from '#lib/components/common/SegmentedControl.svelte';
+	import { MAAD_MEASURE_OPTIONS, type MaadMeasure } from '#lib/types/types.ts';
 
 	const props = $props<{
 		measure: MaadMeasure;

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Chart } from './annotation-chart-registry';
-	import type { SpectrumData } from '$lib/types/types';
-	import { theme } from '$lib/stores/theme.svelte';
+	import type { SpectrumData } from '#lib/types/types.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
 
 	let { data }: { data: SpectrumData } = $props();
 	let chartCanvas: HTMLCanvasElement;

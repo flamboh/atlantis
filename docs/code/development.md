@@ -43,6 +43,49 @@ bun run dev
 
 The root `dev` command starts both applications. It does not start the pipeline.
 
+## Choose the database driver
+
+The dashboard has two database drivers. Each build and each development server includes only one of them.
+
+| `ATLANTIS_DB_DRIVER` | Driver                                                                                                           | Default for                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `sqlite`             | `src/lib/server/db/sqlite.ts` reads `data/<dataset-id>/netflow.sqlite`, `LOCAL_DATA_DIR`, or `LOCAL_SQLITE_PATH` | `vite dev`, `vite preview` (always) |
+| `d1`                 | `src/lib/server/db/d1.ts` reads the `DB` binding from `cloudflare:workers`                                       | `vite build`                        |
+
+Server code imports the driver as `#db`. The `imports` field in `apps/web/package.json` maps `#db` to the D1 driver under the `atlantis-d1` export condition, and to the SQLite driver otherwise. `apps/web/vite.config.ts` adds that condition to the server environments and keeps `cloudflare:workers` external when the driver is `d1`. Both drivers implement `DatabaseDriver` in `src/lib/server/db/driver.ts`.
+
+Set `ATLANTIS_DB_DRIVER` in the shell. The value in `.env` does not select the driver, so a deploy build cannot pick up a local SQLite setting.
+
+```bash
+bun run dev:web                             # SQLite
+bun run build:web                           # D1 server bundle, no adapter
+ATLANTIS_DB_DRIVER=sqlite bun run build:web # Node server in apps/web/build
+bun run --cwd apps/web preview              # SQLite build, then vite preview
+```
+
+A D1 build has no SvelteKit adapter. `bun run build:web` checks that the D1 bundle compiles. The Cloudflare worker is built by Alchemy during a deploy, which injects its own adapter into the `sveltekit()` call. [Operations](../user/operations.md#deploy-the-dashboard) describes the deploy.
+
+A SQLite build uses `@sveltejs/adapter-node` and writes a Node server to `apps/web/build`. Start it with `node build` from `apps/web`. The self-hosted deployment runs this build in a container. [Operations](../user/operations.md#deploy-the-self-hosted-dashboard) describes it.
+
+The build leaves `paths.origin` unset. SvelteKit 3 replaced adapter-node's runtime `ORIGIN` variable with this build-time option, and a fixed origin would break SSH port forwarding, where each user picks a local port. Adapter-node then builds the request URL from the `Host` header and the `https` protocol, so a request to `http://localhost:8080` has the origin `https://localhost:8080`. The dashboard has no form actions, remote functions, or mutating endpoints, so SvelteKit's CSRF origin check never runs. Before you add a `POST` form, set `PROTOCOL_HEADER` or `paths.origin` so that the origin check sees the browser's real origin.
+
+`preview` always rebuilds with SQLite before it serves, because `vite preview` runs the server in Node and cannot load the D1 bundle.
+
+The D1 driver runs only in a deployed worker. `vite dev` rejects `ATLANTIS_DB_DRIVER=d1`. `alchemy dev` does not help here, because it runs SvelteKit's server code in Node and exposes bindings only on `platform.env`. It does not provide the `cloudflare:workers` module. To test D1 behavior, deploy a personal stage:
+
+```bash
+bun run deploy:cloudflare --stage <your-name>
+bun run destroy:cloudflare --stage <your-name>
+```
+
+## Configure the dashboard
+
+SvelteKit options are in the `sveltekit()` call in `apps/web/vite.config.ts`. The project has no `svelte.config.js`.
+
+The dashboard loads `.env` from the repository root. `apps/web/src/env.ts` declares the runtime variables, and server code imports them from `$app/env/private`. Add a variable to `src/env.ts` before you use it.
+
+Import library modules through `#lib` with the file extension, for example `#lib/utils.ts` or `#lib/components/charts/ChartCard.svelte`.
+
 ## Run required checks
 
 Run these commands before you complete a change:
@@ -76,6 +119,8 @@ Run the Playwright suite when a browser flow changes:
 bun run test:e2e
 ```
 
+The suite first builds the default D1 bundle, then runs `preview`, which rebuilds with SQLite and serves it against a seeded fixture database. This checks that `preview` works after a deploy build.
+
 Always use `bun run test`. Do not use `bun test` in this repository.
 
 ## Build applications
@@ -99,15 +144,11 @@ The Drizzle schema is in `apps/web/src/lib/server/db/schema.ts`.
    bun run --cwd apps/web db:generate
    ```
 
-3. Review the generated SQL in `apps/web/drizzle`.
+3. Review the generated `migration.sql` in the new `apps/web/drizzle/<timestamp>_<name>/` directory.
 
-4. Apply the migration to a local D1 database.
+4. Run the schema and route tests. `tests/lib/server/migrations.test.ts` applies every migration to an empty SQLite database.
 
-   ```bash
-   bun run --cwd apps/web d1:migrations:apply:local
-   ```
-
-5. Run the schema and route tests.
+5. Deploy a personal stage to apply the migration to a D1 database. The next production deploy applies it to production.
 
 Before shared use, you can replace an unapplied greenfield baseline. After shared use, always add a new migration.
 

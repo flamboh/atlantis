@@ -2,10 +2,10 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GET as getDimensionStats } from '../../src/routes/api/netflow/dimension-stats/+server';
 import { GET as getMaadStatus } from '../../src/routes/api/netflow/maad-status/+server';
-import { getRequestedDataset, withDatasetDb } from '$lib/server/datasets';
-import { localSchemaSql } from '$lib/server/db/local-schema';
+import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import { localSchemaSql } from '#lib/server/db/local-schema.ts';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	getRequestedDataset: vi.fn(),
 	withDatasetDb: vi.fn()
 }));
@@ -17,7 +17,7 @@ function openDatabase(): Database.Database {
 	database.exec(localSchemaSql);
 	databases.push(database);
 	vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
-	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, _platform, run) =>
+	vi.mocked(withDatasetDb).mockImplementation(async (_datasetId, run) =>
 		run({
 			db: {
 				get: async (query: string, params: unknown[] = []) =>

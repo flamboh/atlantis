@@ -18,9 +18,9 @@
 </script>
 
 <script lang="ts" generics="T extends string">
-	import { Button } from '$lib/components/ui/button';
-	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { cn } from '$lib/utils';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
+	import { cn } from '#lib/utils.ts';
 
 	interface Props {
 		options: readonly SegmentedControlOption<T>[];

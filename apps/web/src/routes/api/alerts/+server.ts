@@ -1,8 +1,7 @@
-import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getAlertsFeedForDataset } from '$lib/server/alerts';
-import { getRequestedDataset } from '$lib/server/datasets';
-import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '$lib/types/types';
+import { getAlertsFeedForDataset } from '#lib/server/alerts.ts';
+import { getRequestedDataset } from '#lib/server/datasets.ts';
+import type { AlertHorizon, AlertsFeedResponse, AlertSort, AlertTail } from '#lib/types/types.ts';
 
 type ErrorResponse = {
 	data: null;
@@ -24,10 +23,10 @@ function parseInteger(value: string | null): number | undefined | null {
 
 function errorResponse(message: string, status: number): Response {
 	const response: ErrorResponse = { data: null, error: message };
-	return json(response, { status });
+	return Response.json(response, { status });
 }
 
-export const GET: RequestHandler = async ({ url, platform }) => {
+export const GET: RequestHandler = async ({ url }) => {
 	const tailParam = url.searchParams.get('tail');
 	if (tailParam !== null && tailParam !== 'high' && tailParam !== 'low') {
 		return errorResponse('Invalid tail parameter', 400);
@@ -58,15 +57,14 @@ export const GET: RequestHandler = async ({ url, platform }) => {
 	const limit = Math.min(500, Math.max(1, parsedLimit ?? 100));
 
 	try {
-		const dataset = await getRequestedDataset(url, platform);
+		const dataset = await getRequestedDataset(url);
 		const response: AlertsFeedResponse = await getAlertsFeedForDataset(dataset, {
-			platform,
 			tail: tail ?? undefined,
 			horizon,
 			sort,
 			limit
 		});
-		return json(response);
+		return Response.json(response);
 	} catch (error) {
 		console.error('Failed to load alerts feed:', error);
 		return errorResponse('Failed to load alerts feed', 500);

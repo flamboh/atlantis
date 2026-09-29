@@ -37,6 +37,8 @@ First, [configure a dataset](datasets.md). Then, [set up the data pipeline](setu
 
 2. In `.env`, set `DEFAULT_DATASET` to your dataset ID. This step is optional. Without it, the dashboard uses the first discovered dataset.
 
+   The dashboard reads `DEFAULT_DATASET`, `LOCAL_SQLITE_PATH`, `DATABASE_PATH`, and `LOCAL_DATA_DIR` from `.env`. `LOCAL_DATA_DIR` replaces `data/` as the directory that holds `<dataset-id>/netflow.sqlite`. `apps/web/src/env.ts` lists these variables.
+
 3. Start the dashboard.
 
    ```bash

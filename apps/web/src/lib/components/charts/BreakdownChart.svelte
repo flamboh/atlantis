@@ -5,12 +5,12 @@
 	import { buildCoveragePointStyle } from './coverage-line-style';
 	import { getRelativePosition } from 'chart.js/helpers';
 	import type { ActiveElement, ChartEvent } from 'chart.js';
-	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
+	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import ChartCard from './ChartCard.svelte';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
+	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
 		DEFAULT_MAAD_IP_VERSION,
 		MAAD_IP_VERSION_OPTIONS,
@@ -23,9 +23,9 @@
 		type ProtocolMetricKey,
 		type SpectrumPoint,
 		type TimeBucket
-	} from '$lib/types/types';
-	import type { SpectrumStatsPayload } from '$lib/types/spectrum-stats';
-	import type { DimensionMetricKey } from '$lib/types/dimension-stats';
+	} from '#lib/types/types.ts';
+	import type { SpectrumStatsPayload } from '#lib/types/spectrum-stats.ts';
+	import type { DimensionMetricKey } from '#lib/types/dimension-stats.ts';
 	import {
 		BREAKDOWN_CHART_CONFIGS,
 		DIMENSION_ORDER_OPTIONS,
@@ -66,17 +66,17 @@
 		shouldHighlightIpGranularityGrid,
 		placeTicksOnBucketStarts
 	} from './ip-time-axis';
-	import { dateStringToEpochPST, formatDateAsPSTDateString } from '$lib/utils/timezone';
-	import { crosshairStore } from '$lib/stores/crosshair';
-	import { rangeSelection } from '$lib/stores/rangeSelection.svelte';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+	import { dateStringToEpochPST, formatDateAsPSTDateString } from '#lib/utils/timezone.ts';
+	import { crosshairStore } from '#lib/stores/crosshair.ts';
+	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
-	} from '$lib/utils/window-cache';
+	} from '#lib/utils/window-cache.ts';
 
 	const IP_TO_GROUP_BY: Record<IpGranularity, GroupByOption> = {
 		'1d': 'date',
@@ -117,8 +117,7 @@
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
 		direction?: FlowDirection;
-		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
-		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onDrillDown?: (payload: { groupBy: GroupByOption; startDate: string; endDate: string }) => void;
 		onRouterChange?: (payload: { router: string }) => void;
 		onAddressTypeChange?: (payload: { addressType: 'sa' | 'da' }) => void;
 		onMetricsChange?: (payload: { metrics: MetricsForKind<Kind> }) => void;
@@ -507,8 +506,8 @@
 	}
 
 	function emitDrilldown(nextGroupBy: GroupByOption, start: Date, end: Date) {
-		props.onGroupByChange?.({ groupBy: nextGroupBy });
-		props.onDateChange?.({
+		props.onDrillDown?.({
+			groupBy: nextGroupBy,
 			startDate: formatDate(start),
 			endDate: formatDate(end)
 		});

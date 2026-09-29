@@ -1,21 +1,21 @@
 <script lang="ts">
-	import { isGranularityAllowedForDateRange } from '$lib/components/charts/chart-utils';
-	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
-	import DateRangeFilter from '$lib/components/filters/DateRangeFilter.svelte';
-	import DirectionFilter from '$lib/components/filters/DirectionFilter.svelte';
-	import MaadIpVersionFilter from '$lib/components/filters/MaadIpVersionFilter.svelte';
-	import MaadMeasureFilter from '$lib/components/filters/MaadMeasureFilter.svelte';
-	import RouterFilter from '$lib/components/filters/RouterFilter.svelte';
-	import type { GroupByOption, RouterConfig } from '$lib/components/netflow/types.ts';
-	import { Button } from '$lib/components/ui/button';
-	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { isGranularityAllowedForDateRange } from '#lib/components/charts/chart-utils.ts';
+	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
+	import DirectionFilter from '#lib/components/filters/DirectionFilter.svelte';
+	import MaadIpVersionFilter from '#lib/components/filters/MaadIpVersionFilter.svelte';
+	import MaadMeasureFilter from '#lib/components/filters/MaadMeasureFilter.svelte';
+	import RouterFilter from '#lib/components/filters/RouterFilter.svelte';
+	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
 	import {
 		DEFAULT_MAAD_IP_VERSION,
 		type FlowDirection,
 		type MaadIpVersion,
 		type MaadMeasure
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 
 	interface GroupBySelectOption {
 		value: GroupByOption;

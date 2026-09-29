@@ -72,8 +72,8 @@ Native runs must name the pinned ATLANTIS nfdump fork explicitly:
 ```bash
 ./scripts/netflow-db.sh pipeline \
   --nfdump target/nfdump/libexec/nfdump \
-  --dataset campus-a \
-  --dataset campus-b \
+  --dataset dataset-a \
+  --dataset dataset-b \
   --start-date <YYYY-MM-DD> \
   --end-date <YYYY-MM-DD>
 ```

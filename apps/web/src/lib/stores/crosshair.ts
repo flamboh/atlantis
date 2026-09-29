@@ -1,5 +1,5 @@
 import type { Chart } from 'chart.js';
-import { cancelDrawFrame, requestDrawFrame } from '$lib/utils/animation-frame';
+import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
 
 export interface CrosshairSnapshot {
 	label: string | null;

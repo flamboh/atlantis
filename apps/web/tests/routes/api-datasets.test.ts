@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/datasets/+server';
-import { listDatasetSummaries } from '$lib/server/datasets';
+import { listDatasetSummaries } from '#lib/server/datasets.ts';
 
-vi.mock('$lib/server/datasets', () => ({
+vi.mock('#lib/server/datasets.ts', () => ({
 	listDatasetSummaries: vi.fn()
 }));
 

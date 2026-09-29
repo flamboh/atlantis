@@ -4,19 +4,40 @@ with (import (builtins.fetchTarball {
   url = "https://github.com/nixos/nixpkgs/archive/ce01daebf8489ba97bd1609d185ea276efdeb121.tar.gz";
   sha256 = "10cqhkqkifcgyibj9nwxrnq424crfl40kwr3daky83m2fisb4f6p";
 }) {});
+let
+  system = stdenv.hostPlatform.system;
+
+  bunVersion = "1.3.11";
+  bunPlatform =
+    {
+      x86_64-linux = { name = "linux-x64"; hash = "sha256-hhG6k1r4hvBabzh0ChUWAybBXl1dB63vlmEwtEk2B+0="; };
+      aarch64-linux = { name = "linux-aarch64"; hash = "sha256-0TlE2hKlPsx0v2pyC9HQTEVVwDjf5CI2U1anvkdpH98="; };
+      x86_64-darwin = { name = "darwin-x64"; hash = "sha256-xP4rkkchiwKV8k6JWq7I/uYudEUmeakCa2fqy9YRooY="; };
+      aarch64-darwin = { name = "darwin-aarch64"; hash = "sha256-b1o0Z+2crsR5W/eM1HZQfZ+HDH1XuGyUX8szgSZ3L/w="; };
+    }
+    .${system} or (throw "Unsupported system: ${system}");
+  bun = pkgs.bun.overrideAttrs {
+    version = bunVersion;
+    src = fetchurl {
+      url = "https://github.com/oven-sh/bun/releases/download/bun-v${bunVersion}/bun-${bunPlatform.name}.zip";
+      inherit (bunPlatform) hash;
+    };
+    sourceRoot = "bun-${bunPlatform.name}";
+  };
+in
 mkShell {
   buildInputs = [
     pkgs.autoconf
     pkgs.automake
     pkgs.bison
-    pkgs.bun
+    bun
     pkgs.flex
     pkgs.gcc
     pkgs.git
     pkgs.gnumake
     pkgs.gnutar
     pkgs.libtool
-    pkgs.nodejs
+    pkgs.nodejs_24
     pkgs.pkg-config
     pkgs.python3
     pkgs.rustup

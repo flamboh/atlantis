@@ -5,8 +5,8 @@
 		segmentedControlGroupClass,
 		segmentedControlInactiveClass,
 		segmentedControlItemClass
-	} from '$lib/components/common/SegmentedControl.svelte';
-	import { cn } from '$lib/utils';
+	} from '#lib/components/common/SegmentedControl.svelte';
+	import { cn } from '#lib/utils.ts';
 
 	let { datasetId, active }: { datasetId: string; active: 'dashboard' | 'alerts' } = $props();
 </script>

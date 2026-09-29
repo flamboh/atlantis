@@ -23,6 +23,10 @@ jobs:
 
       - run: cp datasets.json.example datasets.json
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
@@ -43,13 +47,13 @@ jobs:
         run: bun run check:web
 
       - name: Lint
-        run: bun run --cwd apps/web lint
+        run: bun run --cwd apps/web lint && bun run --cwd infra lint
 
       - name: Typecheck
-        run: bun run --cwd apps/web typecheck
+        run: bun run --cwd apps/web typecheck && bun run --cwd infra typecheck
 
       - name: Test
-        run: bun run test:web
+        run: bun run test:web && bun run test:infra
 
       - name: Build
         run: bun run build:web
@@ -115,8 +119,6 @@ jobs:
             ${{ runner.os }}-playwright-
 
       - run: bun install --frozen-lockfile
-
-      - run: bun run build:web
 
       - run: cd apps/web && bunx playwright install --with-deps chromium
 

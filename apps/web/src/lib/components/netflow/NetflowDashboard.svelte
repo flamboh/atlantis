@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import DragGrip from '$lib/components/common/DragGrip.svelte';
-	import * as Card from '$lib/components/ui/card';
+	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import * as Card from '#lib/components/ui/card/index.ts';
 	import { goto } from '$app/navigation';
-	import ChartContainer from '$lib/components/charts/ChartContainer.svelte';
-	import MetricSelector from '$lib/components/filters/MetricSelector.svelte';
-	import { dateStringToEpochPST } from '$lib/utils/timezone';
-	import { navigateToNetflowFile } from '$lib/utils/netflow-file-navigation';
+	import ChartContainer from '#lib/components/charts/ChartContainer.svelte';
+	import MetricSelector from '#lib/components/filters/MetricSelector.svelte';
+	import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
+	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
 		ensureCachedWindow,
 		getMissingWindowRanges,
 		readCachedWindow,
 		type TimeRange
-	} from '$lib/utils/window-cache';
+	} from '#lib/utils/window-cache.ts';
 	import type {
 		DataOption,
 		GroupByOption,
@@ -29,7 +29,7 @@
 		NetflowStatsResponse,
 		NetflowStatsResult,
 		TimeBucket
-	} from '$lib/types/types';
+	} from '#lib/types/types.ts';
 
 	const props = $props<{
 		dataset: string;
@@ -42,8 +42,7 @@
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
-		onDateChange?: (payload: { startDate: string; endDate: string }) => void;
-		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
+		onDrillDown?: (payload: { groupBy: GroupByOption; startDate: string; endDate: string }) => void;
 		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
 	}>();
 	const IP_FAMILY_LABELS: Record<NetflowIpFamily, string> = {
@@ -236,8 +235,7 @@
 	}
 
 	function handleDrillDown(newGroupBy: GroupByOption, newStartDate: string, newEndDate: string) {
-		props.onGroupByChange?.({ groupBy: newGroupBy });
-		props.onDateChange?.({ startDate: newStartDate, endDate: newEndDate });
+		props.onDrillDown?.({ groupBy: newGroupBy, startDate: newStartDate, endDate: newEndDate });
 	}
 
 	function handleNavigateToFile(slug: string) {
