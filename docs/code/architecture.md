@@ -45,7 +45,7 @@ The data mount is writable because the pipeline publishes WAL-mode databases. SQ
 
 The container names its image as a plain `<name>:<hash>` string. Alchemy compares a container's properties at plan time only when every property is resolved, and an output of an image that is being rebuilt stays unresolved until apply, so the plan would record an in-place update that never swaps the image. The container instead binds to the image's `imageId` output. The binding orders the container after the image on create and before it on destroy, and it is not one of the properties that the container compares. The plan also builds the new image while it compares the image, so the tagged image exists before apply replaces the container.
 
-`.node-version`, the image, and the CI web job pin Node.js 24.18.1. Node.js 24.19.0 and later abort the process when the garbage collector frees a `better-sqlite3` statement ([nodejs/node#65446](https://github.com/nodejs/node/issues/65446)). `shell.nix` and the CI e2e job stay on an earlier Node.js 24, because Playwright 1.52 hangs while loading its config on Node.js 24.18.1; Playwright 1.53 fixes this.
+`.node-version`, `shell.nix`, the image, and the CI jobs pin Node.js 24.18.1. Node.js 24.19.0 and later abort the process when the garbage collector frees a `better-sqlite3` statement ([nodejs/node#65446](https://github.com/nodejs/node/issues/65446)).
 
 The build selects one database driver. `apps/web/src/lib/server/db/d1.ts` reads D1, and `apps/web/src/lib/server/db/sqlite.ts` reads the pipeline SQLite files. Server code imports the driver as `#db`. [Development](development.md#choose-the-database-driver) explains the selection.
 
