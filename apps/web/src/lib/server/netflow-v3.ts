@@ -437,7 +437,9 @@ export function buildSpectrumPoints(spectrum: MaadBlob): SpectrumPoint[] | null 
 
 	const points: SpectrumPoint[] = [];
 	for (let i = 0; i < values.length; i += 2) {
-		points.push({ alpha: values[i], f: values[i + 1] });
+		if (Number.isFinite(values[i]) && Number.isFinite(values[i + 1])) {
+			points.push({ alpha: values[i], f: values[i + 1] });
+		}
 	}
 	return points;
 }

@@ -1,6 +1,9 @@
+import type { Chart } from 'chart.js';
 import { describe, expect, it } from 'vitest';
 import {
 	clampGroupByToDateRange,
+	indexFromPixelX,
+	buildMirroredSelectionStyle,
 	buildTemporalChartPoints,
 	findTemporalDataBounds,
 	findNearestValueIndex,
@@ -90,6 +93,12 @@ describe('shared IP granularity chart labels', () => {
 		).toEqual(['Mon 3/2', 'Tue 3/3']);
 	});
 
+	it('can show one bucket tick when the caller pads singleton bounds', () => {
+		const axis = { min: 99, max: 101, ticks: [{ value: 99 }, { value: 100 }, { value: 101 }] };
+		placeTicksOnBucketStarts([100], 1)(axis);
+		expect(axis.ticks).toEqual([{ value: 100 }]);
+	});
+
 	it('keeps the default linear ticks when fewer than two buckets fall inside the axis', () => {
 		const axis = { min: 99, max: 101, ticks: [{ value: 99 }, { value: 100 }, { value: 101 }] };
 
@@ -160,5 +169,53 @@ describe('coverage-aware chart data', () => {
 
 		expect(isCoverageSegmentDashed(partialPoint, completePoint)).toBe(true);
 		expect(isCoverageSegmentDashed(completePoint, completePoint)).toBe(false);
+	});
+});
+
+describe('spectrum time buckets', () => {
+	it('expands a singleton time bucket by its duration', () => {
+		expect(
+			findTemporalDataBounds(
+				[1000],
+				(value) => value,
+				() => true,
+				300
+			)
+		).toEqual({ min: 850, max: 1150 });
+		expect(
+			findTemporalDataBounds(
+				[1000, 1600],
+				(value) => value,
+				() => true,
+				300
+			)
+		).toEqual({ min: 1000, max: 1600 });
+	});
+
+	it('uses bucket positions for selection even when scatter points repeat or skip buckets', () => {
+		const chart = {
+			data: {
+				labels: ['a', 'b', 'c'],
+				datasets: [{ data: [{ x: 100 }, { x: 100 }, { x: 300 }, { x: 300 }] }]
+			},
+			scales: {
+				x: {
+					options: { type: 'linear' },
+					getValueForPixel: (value: number) => value,
+					getPixelForValue: (value: number) => value
+				}
+			},
+			chartArea: { left: 0, right: 400, top: 0, bottom: 200 }
+		} as unknown as Chart;
+		expect(indexFromPixelX(chart, 200, [100, 200, 300])).toBe(1);
+		expect(indexFromPixelX(chart, 300, [100, 200, 300])).toBe(2);
+		expect(
+			buildMirroredSelectionStyle(
+				chart,
+				{ sourceChartId: 'another-chart', startLabel: 'a', endLabel: 'b' },
+				'spectrum',
+				[100, 200, 300]
+			)
+		).toBe('left:100px; width:100px; top:0px; height:200px;');
 	});
 });

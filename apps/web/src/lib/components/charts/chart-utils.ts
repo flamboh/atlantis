@@ -64,13 +64,18 @@ export function clampToChartX(chart: Chart | null, x: number): number {
 	return Math.max(area.left, Math.min(area.right, x));
 }
 
-export function indexFromPixelX(chart: Chart | null, pixelX: number): number | null {
+export function indexFromPixelX(
+	chart: Chart | null,
+	pixelX: number,
+	bucketStarts?: readonly number[]
+): number | null {
 	if (!chart?.data.labels) return null;
 	const labels = chart.data.labels;
 	if (!labels || labels.length === 0) return null;
 	const value = chart.scales.x.getValueForPixel(pixelX);
 	if (typeof value !== 'number' || Number.isNaN(value)) return null;
 	if ((chart.scales.x.options as { type?: string }).type === 'linear') {
+		if (bucketStarts) return findNearestValueIndex(bucketStarts, value);
 		const points = chart.data.datasets[0]?.data ?? [];
 		let closestIndex: number | null = null;
 		let closestDistance = Infinity;
@@ -115,7 +120,8 @@ export function beginRangeDrag(
 	event: MouseEvent,
 	chartCanvas: HTMLCanvasElement | null,
 	chart: Chart | null,
-	onPreviewRange?: (startIndex: number, endIndex: number) => void
+	onPreviewRange?: (startIndex: number, endIndex: number) => void,
+	bucketStarts?: readonly number[]
 ): void {
 	if (event.button !== 0 || !chartCanvas) return;
 	const rect = chartCanvas.getBoundingClientRect();
@@ -129,7 +135,7 @@ export function beginRangeDrag(
 	state.dragCurrentX = state.dragStartX;
 	state.selectionTop = area.top;
 	state.selectionHeight = area.bottom - area.top;
-	const startIndex = indexFromPixelX(chart, state.dragStartX);
+	const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
 	if (startIndex !== null) {
 		onPreviewRange?.(startIndex, startIndex);
 	}
@@ -140,14 +146,15 @@ export function updateRangeDrag(
 	event: MouseEvent,
 	chartCanvas: HTMLCanvasElement | null,
 	chart: Chart | null,
-	onPreviewRange?: (startIndex: number, endIndex: number) => void
+	onPreviewRange?: (startIndex: number, endIndex: number) => void,
+	bucketStarts?: readonly number[]
 ): void {
 	if (!state.isDraggingRange || !chartCanvas) return;
 	const rect = chartCanvas.getBoundingClientRect();
 	const x = event.clientX - rect.left;
 	state.dragCurrentX = clampToChartX(chart, x);
-	const startIndex = indexFromPixelX(chart, state.dragStartX);
-	const endIndex = indexFromPixelX(chart, state.dragCurrentX);
+	const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
+	const endIndex = indexFromPixelX(chart, state.dragCurrentX, bucketStarts);
 	if (startIndex !== null && endIndex !== null) {
 		onPreviewRange?.(startIndex, endIndex);
 	}
@@ -156,13 +163,14 @@ export function updateRangeDrag(
 export function endRangeDrag(
 	state: RangeDragState,
 	chart: Chart | null,
-	onCommitRange: (startIndex: number, endIndex: number) => void
+	onCommitRange: (startIndex: number, endIndex: number) => void,
+	bucketStarts?: readonly number[]
 ): void {
 	if (!state.isDraggingRange) return;
 	const wasDrag = Math.abs(state.dragCurrentX - state.dragStartX) >= MIN_DRAG_PIXELS;
 	if (wasDrag) {
-		const startIndex = indexFromPixelX(chart, state.dragStartX);
-		const endIndex = indexFromPixelX(chart, state.dragCurrentX);
+		const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
+		const endIndex = indexFromPixelX(chart, state.dragCurrentX, bucketStarts);
 		if (startIndex !== null && endIndex !== null) {
 			onCommitRange(startIndex, endIndex);
 			state.suppressNextClick = true;
@@ -174,7 +182,8 @@ export function endRangeDrag(
 export function buildMirroredSelectionStyle(
 	chart: Chart | null,
 	mirroredRange: RangeSelectionState | null,
-	sourceChartId: string
+	sourceChartId: string,
+	bucketStarts?: readonly number[]
 ): string | null {
 	if (!mirroredRange || mirroredRange.sourceChartId === sourceChartId || !chart?.data.labels)
 		return null;
@@ -187,20 +196,22 @@ export function buildMirroredSelectionStyle(
 	const from = Math.min(startIndex, endIndex);
 	const to = Math.max(startIndex, endIndex);
 	const firstDataset = chart.data.datasets[0]?.data ?? [];
-	const xValues = firstDataset.reduce<number[]>((values, point) => {
-		if (
-			typeof point === 'object' &&
-			point !== null &&
-			!Array.isArray(point) &&
-			'x' in point &&
-			typeof point.x === 'number' &&
-			Number.isFinite(point.x) &&
-			!values.includes(point.x)
-		) {
-			values.push(point.x);
-		}
-		return values;
-	}, []);
+	const xValues =
+		bucketStarts ??
+		firstDataset.reduce<number[]>((values, point) => {
+			if (
+				typeof point === 'object' &&
+				point !== null &&
+				!Array.isArray(point) &&
+				'x' in point &&
+				typeof point.x === 'number' &&
+				Number.isFinite(point.x) &&
+				!values.includes(point.x)
+			) {
+				values.push(point.x);
+			}
+			return values;
+		}, []);
 	const xValueAt = (index: number): number => {
 		if ((chart.scales.x.options as { type?: string }).type === 'linear') {
 			const uniqueX = xValues[index];
@@ -271,7 +282,8 @@ export type TemporalDataBounds = {
 export function findTemporalDataBounds<T>(
 	items: readonly T[],
 	getTimestamp: (item: T) => number,
-	hasData: (item: T) => boolean
+	hasData: (item: T) => boolean,
+	singleBucketDuration = 0
 ): TemporalDataBounds | null {
 	let min = Infinity;
 	let max = -Infinity;
@@ -284,7 +296,10 @@ export function findTemporalDataBounds<T>(
 		max = Math.max(max, timestamp);
 	}
 
-	return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+	if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+	return min === max
+		? { min: min - singleBucketDuration / 2, max: max + singleBucketDuration / 2 }
+		: { min, max };
 }
 
 export function getXAxisTitle(groupBy: GroupByOption): string {

@@ -76,10 +76,10 @@ export function shouldHighlightIpGranularityGrid(
 	return index === 0;
 }
 
-export function placeTicksOnBucketStarts(bucketStarts: number[]) {
+export function placeTicksOnBucketStarts(bucketStarts: number[], minimumTickCount = 2) {
 	return (axis: { min: number; max: number; ticks: Array<{ value: number }> }) => {
 		const visibleStarts = bucketStarts.filter((value) => value >= axis.min && value <= axis.max);
-		if (visibleStarts.length < 2) {
+		if (visibleStarts.length < minimumTickCount) {
 			return;
 		}
 		axis.ticks = visibleStarts.map((value) => ({ value }));

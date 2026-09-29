@@ -1,5 +1,7 @@
 <script lang="ts" generics="Kind extends BreakdownChartKind">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
+	import { createSubscriber } from 'svelte/reactivity';
+	import { finiteSpectrumPoints, paddedSpectrumBounds } from './spectrum-points';
 	import { goto } from '$app/navigation';
 	import { Chart } from './chart-registry';
 	import { buildCoveragePointStyle } from './coverage-line-style';
@@ -71,12 +73,7 @@
 	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
 	import { theme } from '#lib/stores/theme.svelte.ts';
 	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
-	import {
-		ensureCachedWindow,
-		getMissingWindowRanges,
-		readCachedWindow,
-		type TimeRange
-	} from '#lib/utils/window-cache.ts';
+	import { ensureCachedWindow, readCachedWindow, type TimeRange } from '#lib/utils/window-cache.ts';
 
 	const IP_TO_GROUP_BY: Record<IpGranularity, GroupByOption> = {
 		'1d': 'date',
@@ -131,10 +128,6 @@
 
 	const today = new Date();
 	const formatDate = (date: Date): string => formatDateAsPSTDateString(date);
-	const getInitialAddressType = () => props.addressType ?? 'sa';
-	const getInitialRouter = () => (props.router ?? '').trim();
-	const getInitialGranularity = () => props.granularity ?? config.defaultGranularity;
-	const getInitialMetrics = () => props.activeMetrics ?? config.defaultMetrics;
 
 	type BreakdownBucketData = LineBucketData | SpectrumStatsPayload;
 	type BreakdownChartBucket = TimeBucket<BreakdownBucketData>;
@@ -143,18 +136,72 @@
 		bucket: BreakdownChartBucket;
 	};
 
-	let currentRouter = $state(getInitialRouter());
-	let cachedBuckets = $state.raw<CachedBreakdownBucket[]>([]);
-	let buckets = $derived(
+	const currentRouter = $derived(
+		props.availableRouters?.includes(props.router ?? '')
+			? (props.router ?? '')
+			: (props.availableRouters?.[0] ?? '')
+	);
+	const currentGranularity = $derived<IpGranularity>(
+		props.granularity ?? config.defaultGranularity
+	);
+
+	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
+	type FilterInputs = {
+		startDate: string;
+		endDate: string;
+		granularity: IpGranularity;
+		routers: string[];
+		direction: FlowDirection;
+		ipVersion?: MaadIpVersion;
+		measure?: MaadMeasure;
+	};
+
+	const filters = $derived<FilterInputs>({
+		startDate: props.startDate ?? '2025-01-01',
+		endDate: props.endDate ?? formatDate(today),
+		granularity: currentGranularity,
+		routers:
+			props.kind === 'spectrum'
+				? currentRouter
+					? [currentRouter]
+					: []
+				: deriveSelectedRouters(props.routers),
+		direction: props.direction ?? 'all',
+		...(config.usesMaad ? { ipVersion, measure: props.measure } : {})
+	});
+	const requestKey = $derived(
+		JSON.stringify({
+			dataset: props.dataset ?? '',
+			kind: props.kind,
+			unavailable: props.unavailableCopy,
+			...filters
+		})
+	);
+	let settled = $state.raw<{
+		key: string;
+		records: CachedBreakdownBucket[];
+		error: string | null;
+	} | null>(null);
+
+	const cachedBuckets = $derived(settled?.key === requestKey ? settled.records : []);
+	const buckets = $derived(
 		cachedBuckets
 			.filter((record) => props.kind !== 'spectrum' || record.router === currentRouter)
 			.map((record) => record.bucket)
 	);
-	let activeMetrics = $state<BreakdownMetricKey[]>([...getInitialMetrics()]);
-	let loading = $state(false);
-	let error = $state<string | null>(null);
-	let addressType = $state<'sa' | 'da'>(getInitialAddressType());
-	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
+	let activeMetrics = $derived<BreakdownMetricKey[]>(props.activeMetrics ?? config.defaultMetrics);
+	const loading = $derived(
+		!props.unavailableCopy && filters.routers.length > 0 && settled?.key !== requestKey
+	);
+	const error = $derived(
+		filters.routers.length === 0
+			? config.noSourceCopy
+			: settled?.key === requestKey
+				? settled.error
+				: null
+	);
+	let addressType = $derived(props.addressType ?? 'sa');
+
 	const maadSubtitle = $derived(
 		config.usesMaad && !props.unavailableCopy
 			? [
@@ -167,7 +214,7 @@
 	);
 	let bucketStarts: number[] = [];
 
-	let chartCanvas = $state<HTMLCanvasElement | null>(null);
+	let chartCanvas: HTMLCanvasElement | null = null;
 	let chart: Chart | null = null;
 	let rangeDrag = $state(createRangeDragState());
 	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
@@ -175,17 +222,19 @@
 	let mirroredRange = $derived(rangeSelection.selection);
 	let pointerMoveFrame: number | null = null;
 	let pendingPointerMoveEvent: MouseEvent | null = null;
-	let localHoverLabel = $state<string | null>(null);
-	let externalHoverLabel = $state<string | null>(null);
-	let localHoverX = $state<number | null>(null);
-	let externalHoverX = $state<number | null>(null);
-	let activeCrosshairX = $derived(localHoverX ?? externalHoverX);
-	let showLocalTooltip = $state(false);
+	let localHoverLabel: string | null = null;
+	let externalHoverLabel: string | null = null;
+	let localHoverX: number | null = null;
+	let externalHoverX: number | null = null;
+	let notifyHover = () => {};
+	let showLocalTooltip = false;
 	let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	function pointsForBucket(bucket: BreakdownChartBucket): SpectrumPoint[] {
 		if (!bucket.data || !('spectrumSa' in bucket.data)) return [];
-		return addressType === 'sa' ? bucket.data.spectrumSa : bucket.data.spectrumDa;
+		return finiteSpectrumPoints(
+			addressType === 'sa' ? bucket.data.spectrumSa : bucket.data.spectrumDa
+		);
 	}
 
 	function nearestBucketIndex(value: number): number | null {
@@ -209,17 +258,26 @@
 		})
 	);
 
-	$effect(() => {
+	const subscribeHover = createSubscriber((update) => {
+		notifyHover = update;
 		const unsubscribe = crosshairStore.subscribe(({ label, sourceChartId }) => {
-			if (sourceChartId === CHART_ID) {
-				externalHoverLabel = null;
-				externalHoverX = null;
-				return;
-			}
-			externalHoverLabel = label;
-			externalHoverX = getPixelForLabel(label);
+			externalHoverLabel = sourceChartId === CHART_ID ? null : label;
+			externalHoverX = getPixelForLabel(externalHoverLabel);
+			update();
 		});
-		return unsubscribe;
+		return () => {
+			unsubscribe();
+			notifyHover = () => {};
+		};
+	});
+	const hover = $derived.by(() => {
+		subscribeHover();
+		return {
+			localHoverLabel,
+			localHoverX,
+			showLocalTooltip,
+			activeCrosshairX: localHoverX ?? externalHoverX
+		};
 	});
 
 	function toEpochSeconds(dateString: string, isEnd = false): number {
@@ -246,72 +304,6 @@
 		};
 	}
 
-	function applyChartTheme() {
-		if (!chart) {
-			return;
-		}
-
-		const {
-			textColor,
-			gridColor,
-			gridHighlightColor,
-			tooltipBackgroundColor,
-			tooltipTextColor,
-			tooltipBorderColor
-		} = getChartColors();
-		type ThemeableScale = {
-			title?: Record<string, unknown>;
-			ticks?: Record<string, unknown>;
-			grid?: Record<string, unknown>;
-		};
-		const scales = chart.options.scales as { x?: ThemeableScale; y?: ThemeableScale } | undefined;
-
-		if (scales?.x) {
-			scales.x.title = { ...scales.x.title, color: textColor };
-			scales.x.ticks = { ...scales.x.ticks, color: textColor };
-			scales.x.grid = { ...scales.x.grid, color: scales.x.grid?.color ?? gridHighlightColor };
-		}
-
-		if (scales?.y) {
-			scales.y.title = { ...scales.y.title, color: textColor };
-			scales.y.ticks = { ...scales.y.ticks, color: textColor };
-			scales.y.grid = { ...scales.y.grid, color: gridColor };
-		}
-
-		if (props.kind !== 'spectrum') {
-			chart.options.plugins = {
-				...chart.options.plugins,
-				legend: { position: 'top', labels: { color: textColor } },
-				verticalCrosshair: {
-					enabled: true,
-					line: {
-						color: 'rgba(100, 100, 100, 0.8)',
-						width: 1,
-						dash: [3, 3]
-					},
-					tooltip: {
-						enabled: true,
-						delay: 500,
-						backgroundColor: tooltipBackgroundColor,
-						textColor: tooltipTextColor,
-						borderColor: tooltipBorderColor,
-						borderWidth: 1,
-						borderRadius: 4,
-						padding: 8,
-						fontSize: 12,
-						fontFamily: 'system-ui, sans-serif'
-					},
-					sync: {
-						onHover: (label: string | null) => crosshairStore.setHover(label, CHART_ID),
-						getExternalLabel: () => crosshairStore.getExternalLabel(CHART_ID)
-					}
-				}
-			} as Record<string, unknown>;
-		}
-
-		chart.update('none');
-	}
-
 	function getPixelForLabel(label: string | null): number | null {
 		if (!chart || !label || !chart.data.labels) {
 			return null;
@@ -328,6 +320,7 @@
 	function syncCrosshairPositions() {
 		localHoverX = getPixelForLabel(localHoverLabel);
 		externalHoverX = getPixelForLabel(externalHoverLabel);
+		notifyHover();
 	}
 
 	function clearTooltipDelay() {
@@ -345,6 +338,7 @@
 		}
 		tooltipTimeout = setTimeout(() => {
 			showLocalTooltip = true;
+			notifyHover();
 		}, 500);
 	}
 
@@ -354,6 +348,7 @@
 		localHoverX = null;
 		showLocalTooltip = false;
 		clearTooltipDelay();
+		notifyHover();
 		if (hadLocalHover && crosshairStore.sourceChartId === CHART_ID) {
 			crosshairStore.clearHover();
 		}
@@ -362,6 +357,7 @@
 	function hideCrosshairOverlay() {
 		clearLocalHover();
 		externalHoverX = getPixelForLabel(externalHoverLabel);
+		notifyHover();
 	}
 
 	function updateLocalCrosshair(event: MouseEvent) {
@@ -406,6 +402,7 @@
 			scheduleTooltip();
 			crosshairStore.setHover(nextLabel, CHART_ID);
 		}
+		notifyHover();
 	}
 
 	function getCrosshairLineStyle(x: number | null): string | null {
@@ -459,6 +456,7 @@
 		localHoverX = null;
 		showLocalTooltip = false;
 		externalHoverX = null;
+		notifyHover();
 	}
 
 	function deriveSelectedRouters(routerConfig: RouterConfig | undefined): string[] {
@@ -525,9 +523,6 @@
 			return;
 		}
 		addressType = nextAddressType;
-		if (chart) {
-			renderChart();
-		}
 		props.onAddressTypeChange?.({ addressType: nextAddressType });
 	}
 
@@ -569,7 +564,7 @@
 		if (props.kind === 'spectrum') {
 			clearLocalHover();
 		}
-		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection, bucketStarts);
 	}
 
 	function applyPendingPointerMove() {
@@ -579,7 +574,7 @@
 		if (!event) {
 			return;
 		}
-		updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
+		updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection, bucketStarts);
 		if (props.kind === 'spectrum') {
 			updateLocalCrosshair(event);
 		}
@@ -613,7 +608,7 @@
 
 	function finishRangeSelection() {
 		flushPendingPointerMove();
-		endRangeDrag(rangeDrag, chart, applyRangeDrilldown);
+		endRangeDrag(rangeDrag, chart, applyRangeDrilldown, bucketStarts);
 		rangeSelection.clear();
 	}
 
@@ -622,9 +617,10 @@
 		hideCrosshairOverlay();
 	}
 
-	let mirroredSelectionStyle = $derived(
-		buildMirroredSelectionStyle(chart, mirroredRange, CHART_ID)
-	);
+	const mirroredSelectionStyle = $derived.by(() => {
+		subscribeHover();
+		return buildMirroredSelectionStyle(chart, mirroredRange, CHART_ID, bucketStarts);
+	});
 
 	function getLabelFromIndex(index: number): string | null {
 		if (!chart || !chart.data.labels) {
@@ -668,9 +664,7 @@
 			activeElements.length === 0
 				? null
 				: props.kind === 'spectrum'
-					? nearestBucketIndex(
-							bucketStarts[Math.min(activeElements[0]?.index ?? 0, bucketStarts.length - 1)] ?? 0
-						)
+					? labelIndex
 					: activeElements[0].index;
 		const targetIndex = labelIndex ?? fallbackIndex;
 		const label = targetIndex !== null ? getLabelFromIndex(targetIndex) : labels[0];
@@ -802,7 +796,7 @@
 				type: 'linear' as const,
 				min: dataBounds.min,
 				max: dataBounds.max,
-				afterBuildTicks: placeTicksOnBucketStarts(tickBucketStarts),
+				afterBuildTicks: placeTicksOnBucketStarts(tickBucketStarts, 1),
 				title: { display: true, text: `Time (${currentGranularity})`, color: textColor },
 				ticks: {
 					color: textColor,
@@ -919,7 +913,8 @@
 		const dataBounds = findTemporalDataBounds(
 			selectedBuckets,
 			(record) => record.bucket.bucketStart,
-			(record) => record.bucket.data !== null
+			(record) => record.bucket.data !== null,
+			groupByBucketDurationMs(IP_TO_GROUP_BY[currentGranularity]) / 1000
 		);
 		if (!dataBounds) {
 			destroyChart();
@@ -1022,30 +1017,21 @@
 			tooltipTextColor,
 			tooltipBorderColor
 		);
-		if (!chart) {
-			chart = new Chart(canvas, {
-				type: 'line',
-				data: { labels, datasets },
-				options: {
-					onClick: handleChartClick,
-					responsive: true,
-					maintainAspectRatio: false,
-					animation: false,
-					normalized: true,
-					interaction: { mode: 'index', intersect: false },
-					plugins,
-					scales
-				}
-			} as never);
-			crosshairStore.register(CHART_ID, chart);
-		} else {
-			chart.data.labels = labels;
-			chart.data.datasets = datasets as never[];
-			chart.options.scales = scales as never;
-			chart.options.onClick = handleChartClick;
-			chart.options.plugins = plugins;
-			chart.update('none');
-		}
+		chart = new Chart(canvas, {
+			type: 'line',
+			data: { labels, datasets },
+			options: {
+				onClick: handleChartClick,
+				responsive: true,
+				maintainAspectRatio: false,
+				animation: false,
+				normalized: true,
+				interaction: { mode: 'index', intersect: false },
+				plugins,
+				scales
+			}
+		} as never);
+		crosshairStore.register(CHART_ID, chart);
 	}
 
 	function renderSpectrumChart() {
@@ -1063,28 +1049,19 @@
 		);
 
 		if (bucketStarts.length === 0) {
-			if (chart) {
-				chart.data.datasets = [];
-				chart.update('none');
-			}
-			syncCrosshairPositions();
 			return;
 		}
 
 		const { data, minF, maxF, minAlpha, maxAlpha } = buildDatasets(selectedBuckets, bucketStarts);
 
 		if (data.length === 0) {
-			if (chart) {
-				chart.data.datasets = [];
-				chart.update('none');
-			}
-			syncCrosshairPositions();
 			return;
 		}
 		const dataBounds = findTemporalDataBounds(
 			data,
 			(point) => point.x,
-			() => true
+			() => true,
+			groupByBucketDurationMs(IP_TO_GROUP_BY[currentGranularity]) / 1000
 		);
 		if (!dataBounds) return;
 
@@ -1100,156 +1077,97 @@
 		}));
 
 		const granularity = currentGranularity;
-		const alphaPadding = (maxAlpha - minAlpha) * 0.05;
+		const alphaBounds = paddedSpectrumBounds(minAlpha, maxAlpha);
 
-		if (!chart) {
-			chart = new Chart(canvas, {
-				type: 'scatter',
-				data: {
-					labels,
-					datasets: [
-						{
-							data: chartPoints,
-							backgroundColor: pointColors,
-							borderColor: pointColors,
-							pointRadius: 1,
-							pointHoverRadius: 2
-						}
-					]
+		chart = new Chart(canvas, {
+			type: 'scatter',
+			data: {
+				labels,
+				datasets: [
+					{
+						data: chartPoints,
+						backgroundColor: pointColors,
+						borderColor: pointColors,
+						pointRadius: 1,
+						pointHoverRadius: 2
+					}
+				]
+			},
+			options: {
+				onClick: handleChartClick,
+				animation: false as const,
+				responsive: true,
+				maintainAspectRatio: false,
+				events: ['click'],
+				interaction: {
+					mode: 'nearest',
+					intersect: true
 				},
-				options: {
-					onClick: handleChartClick,
-					animation: false as const,
-					responsive: true,
-					maintainAspectRatio: false,
-					events: ['click'],
-					interaction: {
-						mode: 'nearest',
-						intersect: true
+				plugins: {
+					verticalCrosshair: false,
+					legend: {
+						display: false
 					},
-					plugins: {
-						legend: {
-							display: false
+					tooltip: {
+						enabled: false
+					}
+				} as Record<string, unknown>,
+				scales: {
+					x: {
+						type: 'linear',
+						min: dataBounds.min,
+						max: dataBounds.max,
+						afterBuildTicks: placeTicksOnBucketStarts(bucketStarts, 1),
+						title: {
+							display: true,
+							text: `Time (${granularity})`,
+							color: textColor
 						},
-						tooltip: {
-							enabled: false
-						}
-					} as Record<string, unknown>,
-					scales: {
-						x: {
-							type: 'linear',
-							min: dataBounds.min,
-							max: dataBounds.max,
-							afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
-							title: {
-								display: true,
-								text: `Time (${granularity})`,
-								color: textColor
-							},
-							ticks: {
-								color: textColor,
-								autoSkip: false,
-								maxRotation: 45,
-								minRotation: 45,
-								sampleSize: 12,
-								callback: (value: unknown) => {
-									const bucketStart = getBucketStartForTickValue(value);
-									if (bucketStart === null) return '';
-									const index = typeof value === 'number' ? (nearestBucketIndex(value) ?? 0) : 0;
-									return formatIpGranularityTick(bucketStart, granularity, index);
-								}
-							},
-							grid: {
-								color: (ctx: { tick?: { value?: number } }) => {
-									const tickValue = ctx.tick?.value;
-									const bucketStart = getBucketStartForTickValue(tickValue);
-									if (bucketStart === null || typeof tickValue !== 'number') {
-										return gridHighlightColor;
-									}
-									const index = nearestBucketIndex(tickValue) ?? 0;
-									return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
-										? gridColor
-										: gridHighlightColor;
-								}
+						ticks: {
+							color: textColor,
+							autoSkip: false,
+							maxRotation: 45,
+							minRotation: 45,
+							sampleSize: 12,
+							callback: (value: unknown) => {
+								const bucketStart = getBucketStartForTickValue(value);
+								if (bucketStart === null) return '';
+								const index = typeof value === 'number' ? (nearestBucketIndex(value) ?? 0) : 0;
+								return formatIpGranularityTick(bucketStart, granularity, index);
 							}
 						},
-						y: {
-							type: 'linear',
-							min: minAlpha - alphaPadding,
-							max: maxAlpha + alphaPadding,
-							afterFit(axis: { width: number }) {
-								axis.width = Y_AXIS_WIDTH;
-							},
-							title: {
-								display: true,
-								text: 'alpha',
-								color: textColor
-							},
-							ticks: { color: textColor },
-							grid: { color: gridColor }
-						}
-					}
-				}
-			});
-		} else {
-			chart.data.labels = labels;
-			chart.data.datasets = [
-				{
-					data: chartPoints,
-					backgroundColor: pointColors,
-					borderColor: pointColors,
-					pointRadius: 1,
-					pointHoverRadius: 2
-				}
-			];
-			chart.options.scales = {
-				x: {
-					type: 'linear',
-					min: dataBounds.min,
-					max: dataBounds.max,
-					afterBuildTicks: placeTicksOnBucketStarts(bucketStarts),
-					title: { display: true, text: `Time (${granularity})`, color: textColor },
-					ticks: {
-						color: textColor,
-						autoSkip: false,
-						maxRotation: 45,
-						minRotation: 45,
-						sampleSize: 12,
-						callback: (value: unknown) => {
-							const bucketStart = getBucketStartForTickValue(value);
-							if (bucketStart === null) return '';
-							const index = typeof value === 'number' ? (nearestBucketIndex(value) ?? 0) : 0;
-							return formatIpGranularityTick(bucketStart, granularity, index);
-						}
-					},
-					grid: {
-						color: (ctx: { tick?: { value?: number } }) => {
-							const tickValue = ctx.tick?.value;
-							const bucketStart = getBucketStartForTickValue(tickValue);
-							if (bucketStart === null || typeof tickValue !== 'number') {
-								return gridHighlightColor;
+						grid: {
+							color: (ctx: { tick?: { value?: number } }) => {
+								const tickValue = ctx.tick?.value;
+								const bucketStart = getBucketStartForTickValue(tickValue);
+								if (bucketStart === null || typeof tickValue !== 'number') {
+									return gridHighlightColor;
+								}
+								const index = nearestBucketIndex(tickValue) ?? 0;
+								return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
+									? gridColor
+									: gridHighlightColor;
 							}
-							const index = nearestBucketIndex(tickValue) ?? 0;
-							return shouldHighlightIpGranularityGrid(bucketStart, granularity, index)
-								? gridColor
-								: gridHighlightColor;
 						}
-					}
-				},
-				y: {
-					min: minAlpha - alphaPadding,
-					max: maxAlpha + alphaPadding,
-					afterFit(axis: { width: number }) {
-						axis.width = Y_AXIS_WIDTH;
 					},
-					title: { display: true, text: 'alpha', color: textColor },
-					ticks: { color: textColor },
-					grid: { color: gridColor }
+					y: {
+						type: 'linear',
+						min: alphaBounds.min,
+						max: alphaBounds.max,
+						afterFit(axis: { width: number }) {
+							axis.width = Y_AXIS_WIDTH;
+						},
+						title: {
+							display: true,
+							text: 'alpha',
+							color: textColor
+						},
+						ticks: { color: textColor },
+						grid: { color: gridColor }
+					}
 				}
-			};
-			chart.options.onClick = handleChartClick;
-			chart.update('none');
-		}
+			}
+		});
 		syncCrosshairPositions();
 	}
 
@@ -1261,277 +1179,99 @@
 		}
 	}
 
-	type FilterInputs = {
-		startDate: string;
-		endDate: string;
-		granularity: IpGranularity;
-		routers: string[];
-		direction: FlowDirection;
-		ipVersion?: MaadIpVersion;
-		measure?: MaadMeasure;
-	};
-
-	let lastFiltersKey = '';
-	let lastIncomingMetricsKey = '';
-	let requestToken = 0;
-	let requestController: AbortController | null = null;
-
-	function getRequestedRange(filters: FilterInputs): TimeRange {
-		return {
+	async function loadData(filters: FilterInputs, dataset: string, signal: AbortSignal) {
+		const requestedRange: TimeRange = {
 			start: toEpochSeconds(filters.startDate),
 			end: toEpochSeconds(filters.endDate, true)
 		};
-	}
-
-	function getCacheKey(filters: FilterInputs): string {
-		return JSON.stringify({
-			chart: CHART_ID,
-			dataset: props.dataset ?? '',
-			granularity: filters.granularity,
-			routers: filters.routers,
-			direction: filters.direction,
-			ipVersion: filters.ipVersion ?? null,
-			measure: filters.measure ?? null
-		});
-	}
-
-	async function loadData(filters: FilterInputs, token: number) {
-		requestController?.abort();
-		const controller = new AbortController();
-		requestController = controller;
-		const requestedRange = getRequestedRange(filters);
-		const cacheKey = getCacheKey(filters);
-		loading = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
-		error = null;
-		if (loading) {
-			destroyChart();
-		}
-
 		const params = new URLSearchParams({
-			dataset: props.dataset ?? '',
+			dataset,
 			granularity: filters.granularity,
 			routers: filters.routers.join(','),
 			direction: filters.direction,
 			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {}),
 			...(filters.measure !== undefined ? { measure: filters.measure } : {})
 		});
+		const cacheKey = `${config.endpoint}?${params}`;
+		await ensureCachedWindow<CachedBreakdownBucket>({
+			key: cacheKey,
+			requestedRange,
+			signal,
+			fetchRange: async (range, signal) => {
+				const response = await fetch(
+					`${config.endpoint}?${new URLSearchParams({
+						...Object.fromEntries(params.entries()),
+						startDate: range.start.toString(),
+						endDate: range.end.toString()
+					})}`,
+					{ signal }
+				);
+				if (!response.ok) throw new Error((await response.text()) || config.fetchErrorCopy);
+				const data = (await response.json()) as {
+					timelines: Array<{ router: string; buckets: BreakdownChartBucket[] }>;
+				};
+				return data.timelines.flatMap((timeline) =>
+					timeline.buckets.map((bucket) => ({ router: timeline.router, bucket }))
+				);
+			},
+			getRecordKey: (record) => `${record.router}-${record.bucket.bucketStart}`,
+			compareRecords: (left, right) =>
+				left.bucket.bucketStart - right.bucket.bucketStart ||
+				left.router.localeCompare(right.router)
+		});
+		return readCachedWindow<CachedBreakdownBucket>(
+			cacheKey,
+			requestedRange,
+			(record, range) =>
+				record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end
+		);
+	}
 
-		try {
-			await ensureCachedWindow<CachedBreakdownBucket>({
-				key: cacheKey,
-				requestedRange,
-				signal: controller.signal,
-				fetchRange: async (range, signal) => {
-					const response = await fetch(
-						`${config.endpoint}?${new URLSearchParams({
-							...Object.fromEntries(params.entries()),
-							startDate: range.start.toString(),
-							endDate: range.end.toString()
-						}).toString()}`,
-						{ signal }
-					);
-					if (!response.ok) {
-						const message = await response.text();
-						throw new Error(message || config.fetchErrorCopy);
-					}
-					const data = (await response.json()) as {
-						timelines: Array<{ router: string; buckets: BreakdownChartBucket[] }>;
+	$effect(() => {
+		const key = requestKey;
+		if (props.unavailableCopy || filters.routers.length === 0) return;
+		const controller = new AbortController();
+		loadData(filters, props.dataset ?? '', controller.signal).then(
+			(records) => {
+				if (!controller.signal.aborted) settled = { key, records, error: null };
+			},
+			(reason: unknown) => {
+				if (!controller.signal.aborted)
+					settled = {
+						key,
+						records: [],
+						error: reason instanceof Error ? reason.message : config.unexpectedErrorCopy
 					};
-					return data.timelines.flatMap((timeline) =>
-						timeline.buckets.map((bucket) => ({
-							router: timeline.router,
-							bucket
-						}))
-					);
-				},
-				getRecordKey: (record) => `${record.router}-${record.bucket.bucketStart}`,
-				compareRecords: (left, right) =>
-					left.bucket.bucketStart - right.bucket.bucketStart ||
-					left.router.localeCompare(right.router)
-			});
-			if (token !== requestToken) {
-				return;
 			}
-			cachedBuckets = readCachedWindow<CachedBreakdownBucket>(
-				cacheKey,
-				requestedRange,
-				(record, range) => {
-					return record.bucket.bucketStart >= range.start && record.bucket.bucketStart < range.end;
-				}
-			);
-			loading = false;
-			await tick();
+		);
+		return () => controller.abort();
+	});
+
+	function attachChart(canvas: HTMLCanvasElement) {
+		void cachedBuckets;
+		void addressType;
+		void activeMetrics;
+		void theme.dark;
+		untrack(() => {
+			chartCanvas = canvas;
 			renderChart();
-		} catch (err) {
-			if (token !== requestToken) {
-				return;
-			}
-			if (err instanceof DOMException && err.name === 'AbortError') return;
-			error = err instanceof Error ? err.message : config.unexpectedErrorCopy;
-			cachedBuckets = [];
-			loading = false;
+			syncCrosshairPositions();
+		});
+		const observer = new ResizeObserver(() => {
+			chart?.resize();
+			syncCrosshairPositions();
+		});
+		observer.observe(canvas);
+		return () => {
+			observer.disconnect();
+			cancelPendingPointerMove();
 			destroyChart();
-		} finally {
-			if (token === requestToken && requestController === controller) {
-				requestController = null;
-			}
-		}
+			chartCanvas = null;
+		};
 	}
 
 	onDestroy(() => {
-		requestToken += 1;
-		requestController?.abort();
-		cancelPendingPointerMove();
-		if (mirroredRange?.sourceChartId === CHART_ID) {
-			rangeSelection.clear();
-		}
-		destroyChart();
-	});
-
-	let currentGranularity = $state<IpGranularity>(getInitialGranularity());
-
-	$effect(() => {
-		void theme.dark;
-		if (chart) {
-			if (config.seriesByRouter) {
-				renderChart();
-			} else {
-				applyChartTheme();
-			}
-		}
-	});
-
-	$effect(() => {
-		if (props.kind === 'spectrum') {
-			return;
-		}
-		const incomingMetrics = props.activeMetrics ?? config.defaultMetrics;
-		const nextKey = JSON.stringify(incomingMetrics);
-		if (nextKey === lastIncomingMetricsKey) {
-			return;
-		}
-		lastIncomingMetricsKey = nextKey;
-		activeMetrics = [...incomingMetrics];
-		void (async () => {
-			await tick();
-			renderChart();
-		})();
-	});
-
-	function releaseUnavailableChart() {
-		requestToken += 1;
-		requestController?.abort();
-		requestController = null;
-		destroyChart();
-		lastFiltersKey = '';
-	}
-
-	$effect(() => {
-		if (props.unavailableCopy) {
-			releaseUnavailableChart();
-			return;
-		}
-		if (props.kind !== 'spectrum') {
-			const routerConfig = props.routers;
-			if (!routerConfig || Object.keys(routerConfig).length === 0) {
-				return;
-			}
-			const selectedRouters = deriveSelectedRouters(routerConfig);
-			const filters: FilterInputs = {
-				startDate: props.startDate ?? '2025-01-01',
-				endDate: props.endDate ?? formatDate(today),
-				granularity: props.granularity ?? config.defaultGranularity,
-				routers: selectedRouters,
-				direction: props.direction ?? 'all',
-				...(config.usesMaad
-					? { ipVersion: props.ipVersion ?? DEFAULT_MAAD_IP_VERSION, measure: props.measure }
-					: {})
-			};
-
-			currentGranularity = filters.granularity;
-			if (selectedRouters.length === 0) {
-				requestToken += 1;
-				requestController?.abort();
-				requestController = null;
-				error = config.noSourceCopy;
-				cachedBuckets = [];
-				destroyChart();
-				lastFiltersKey = JSON.stringify({ ...filters, selectedRouters });
-				loading = false;
-				return;
-			}
-
-			error = null;
-			const nextKey = JSON.stringify({ ...filters, selectedRouters });
-			if (nextKey === lastFiltersKey) {
-				return;
-			}
-			lastFiltersKey = nextKey;
-			const token = ++requestToken;
-			loadData(filters, token);
-			return;
-		}
-
-		const availableRouters = (props.availableRouters ?? [])
-			.map((router: string) => router.trim())
-			.filter((router: string) => router.length > 0);
-		const requestedRouter = props.router?.trim() ?? '';
-		const nextRouter = availableRouters.includes(requestedRouter)
-			? requestedRouter
-			: (availableRouters[0] ?? '');
-		const startDateProp = props.startDate;
-		const endDateProp = props.endDate;
-		const granularityProp = props.granularity;
-		const nextAddressType = props.addressType ?? 'sa';
-		const nextIpVersion = props.ipVersion ?? DEFAULT_MAAD_IP_VERSION;
-		const direction = props.direction ?? 'all';
-
-		if (nextAddressType !== addressType) {
-			addressType = nextAddressType;
-			if (chart) {
-				renderChart();
-			}
-		}
-		if (nextRouter !== currentRouter) {
-			currentRouter = nextRouter;
-			if (chart) {
-				renderChart();
-			}
-		}
-
-		const filters: FilterInputs = {
-			startDate: startDateProp ?? '2025-01-01',
-			endDate: endDateProp ?? formatDate(today),
-			granularity: granularityProp ?? config.defaultGranularity,
-			// The spectrum card displays one source at a time. Fetching every available source
-			// multiplied its SQL work and response size while the client discarded all but this one.
-			routers: nextRouter ? [nextRouter] : [],
-			direction,
-			ipVersion: nextIpVersion
-		};
-
-		currentGranularity = filters.granularity;
-
-		if (filters.routers.length === 0) {
-			requestToken += 1;
-			requestController?.abort();
-			requestController = null;
-			error = config.noSourceCopy;
-			cachedBuckets = [];
-			destroyChart();
-			lastFiltersKey = JSON.stringify(filters);
-			loading = false;
-			return;
-		}
-
-		const nextKey = JSON.stringify(filters);
-		if (nextKey === lastFiltersKey) {
-			return;
-		}
-
-		lastFiltersKey = nextKey;
-		const token = ++requestToken;
-		loadData(filters, token);
+		if (mirroredRange?.sourceChartId === CHART_ID) rangeSelection.clear();
 	});
 </script>
 
@@ -1627,22 +1367,23 @@
 		{/if}
 	{/snippet}
 
-	<canvas bind:this={chartCanvas} aria-label={config.canvasLabel}></canvas>
+	<canvas {@attach attachChart} aria-label={config.canvasLabel}></canvas>
 
 	{#snippet overlay()}
 		{#if props.kind === 'spectrum'}
-			{#if !rangeDrag.isDraggingRange && activeCrosshairX !== null}
+			{#if !rangeDrag.isDraggingRange && hover.activeCrosshairX !== null}
 				<div
 					class="pointer-events-none absolute z-20"
-					style={getCrosshairLineStyle(activeCrosshairX)}
+					style={getCrosshairLineStyle(hover.activeCrosshairX)}
 				></div>
 			{/if}
-			{#if !rangeDrag.isDraggingRange && localHoverX !== null && showLocalTooltip && localHoverLabel}
+			{#if !rangeDrag.isDraggingRange && hover.localHoverX !== null && hover.showLocalTooltip && hover.localHoverLabel}
 				<div
+					role="tooltip"
 					class="pointer-events-none absolute z-20 rounded border px-2 py-1 text-xs whitespace-nowrap shadow-sm"
-					style={`${getCrosshairTooltipStyle(localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
+					style={`${getCrosshairTooltipStyle(hover.localHoverX)} background:${getChartColors().tooltipBackgroundColor}; color:${getChartColors().tooltipTextColor}; border-color:${getChartColors().tooltipBorderColor};`}
 				>
-					<div>{localHoverLabel}</div>
+					<div>{hover.localHoverLabel}</div>
 				</div>
 			{/if}
 		{/if}

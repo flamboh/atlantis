@@ -274,6 +274,14 @@ describe('netflow v3 helpers', () => {
 		expect(buildSpectrumPoints(null)).toBeNull();
 	});
 
+	it('omits non-finite spectrum pairs before JSON serialization can turn them into null coordinates', () => {
+		expect(buildSpectrumPoints(f32([0, 0, NaN, 1, 2, Infinity, -1, -2]))).toEqual([
+			{ alpha: 0, f: 0 },
+			{ alpha: -1, f: -2 }
+		]);
+		expect(buildSpectrumPoints(f32([Infinity, NaN]))).toEqual([]);
+	});
+
 	it('rejects spectrum blobs that do not hold whole alpha/f pairs', () => {
 		expect(() => buildSpectrumPoints(f32([1, 2, 3]))).toThrow(MaadDataError);
 		expect(() => buildSpectrumPoints(Uint8Array.from([0, 0, 128, 63, 0, 0]))).toThrow(

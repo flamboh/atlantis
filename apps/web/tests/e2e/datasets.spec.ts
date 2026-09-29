@@ -11,7 +11,7 @@ test('dataset metadata is served from the fixture product', async ({ request }) 
 				label: 'Playwright Fixture',
 				defaultStartDate: '2025-03-01',
 				discoveryMode: 'static',
-				hasLocality: false,
+				hasLocality: true,
 				isDefault: true
 			}
 		],

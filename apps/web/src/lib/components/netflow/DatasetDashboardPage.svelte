@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
 	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
@@ -61,8 +61,7 @@
 		}
 		return routerConfig;
 	}
-	let selectedRouters = $state<RouterConfig>({});
-	let selectedSpectrumRouter = $state('');
+	let requestedSpectrumRouter = $state('');
 	let selectedSpectrumAddressType = $state<'sa' | 'da'>('sa');
 	let dataOptions = $state<DataOption[]>(DEFAULT_DATA_OPTIONS.map((option) => ({ ...option })));
 	const defaultIpMetrics: IpMetricKey[] = IP_METRIC_OPTIONS.slice(0, 2).map((option) => option.key);
@@ -186,7 +185,16 @@
 	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
+	let selectedRouters = $derived.by(() => {
+		void routerStateKey;
+		return createRouterConfig(untrack(() => routers));
+	});
 	const availableSpectrumRouters = $derived(getEnabledRouters(selectedRouters));
+	const selectedSpectrumRouter = $derived(
+		availableSpectrumRouters.includes(requestedSpectrumRouter)
+			? requestedSpectrumRouter
+			: (availableSpectrumRouters[0] ?? '')
+	);
 	const routersLoaded = $derived(Array.isArray(props.routers));
 	const flowCharacteristics = createFlowCharacteristicsData(() => ({
 		enabled: activatedCharts.characteristics || activatedCharts.ports,
@@ -342,29 +350,6 @@
 		activateChart(chartOrder[0] ?? 'dashboard');
 	});
 
-	let lastRouterStateKey = $state('');
-
-	$effect(() => {
-		const nextKey = routerStateKey;
-		if (nextKey === lastRouterStateKey) {
-			return;
-		}
-		lastRouterStateKey = nextKey;
-
-		const nextRouters = routers;
-		const nextSelectedRouters = createRouterConfig(nextRouters);
-		selectedRouters = nextSelectedRouters;
-
-		const enabledRouters = getEnabledRouters(nextSelectedRouters);
-		selectedSpectrumRouter = nextRouters[0] ?? enabledRouters[0] ?? '';
-	});
-
-	$effect(() => {
-		if (!availableSpectrumRouters.includes(selectedSpectrumRouter)) {
-			selectedSpectrumRouter = availableSpectrumRouters[0] ?? '';
-		}
-	});
-
 	function handleStartDateChange(payload: { startDate: string }) {
 		updateSearch({ startDate: payload.startDate });
 	}
@@ -396,10 +381,6 @@
 	function handleRoutersChange(payload: { routers: RouterConfig }) {
 		const nextRouters = payload.routers;
 		selectedRouters = nextRouters;
-		const enabledRouters = getEnabledRouters(nextRouters);
-		if (!enabledRouters.includes(selectedSpectrumRouter)) {
-			selectedSpectrumRouter = enabledRouters[0] ?? '';
-		}
 	}
 
 	function handleDataOptionsChange(payload: { options: DataOption[] }) {
@@ -612,7 +593,7 @@
 						{direction}
 						onDrillDown={handleDrillDown}
 						onRouterChange={(payload) => {
-							selectedSpectrumRouter = payload.router;
+							requestedSpectrumRouter = payload.router;
 						}}
 						onAddressTypeChange={(payload) => {
 							selectedSpectrumAddressType = payload.addressType;
