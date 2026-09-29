@@ -13,6 +13,15 @@ ATLANTIS uses progressive disclosure. Each reader starts with a small index and 
 
 Do not put current setup instructions in an agent document. Agent documents can become obsolete.
 
+## User documents
+
+- Write for a reader who wants the system running, not an explanation of it.
+- Give prerequisites, the commands, the success signal, and the one or two common failures.
+- Prefer one working example over a list of every flag.
+- Put internals, rationale, and history in `docs/code`, or leave them out.
+- Use neutral placeholders such as `host-a`, `server.example.com`, and `/path/to/captures`. Do not name real hosts, internal URLs, private paths, or private addresses.
+- Do not describe dataset contents or private address lists.
+
 ## Language standard
 
 Use [ASD-STE100 Simplified Technical English, Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf) as the writing source.

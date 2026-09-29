@@ -27,8 +27,8 @@ Coverage is observed before selection. Thus, selected-out buckets remain as dens
 
 Native nfcapd input pushes the IP prefix condition into the nfdump filter. Locality conditions apply before statistics accumulate.
 
-`daily_active_sources` is a separate, fixed selection policy for the UOregon `/16` candidate
-products. It accepts exactly one IPv4 `/16` and exactly one `nfcapd_tree` input. For each complete
+`daily_active_sources` is a separate, fixed selection policy for per-`/16` active-source products.
+It accepts exactly one IPv4 `/16` and exactly one `nfcapd_tree` input. For each complete
 local calendar day, it makes two bounded passes over every unique physical member:
 
 1. Select IPv4 traffic from an internal source in the `/16` that uses TCP or UDP and source port
@@ -50,7 +50,7 @@ in a day, so repair requires a whole-day `--force` rebuild inside the existing d
 
 Each dataset declares locality rules (see [dataset configuration](../user/datasets.md#classify-internal-and-external-endpoints)).
 An endpoint is `internal` when any rule matches: a listed CIDR prefix, a listed address, or, with
-`tos_anonymized`, the UOregon anonymizer flag in the low two source-ToS bits (bit 1 for the source,
+`tos_anonymized`, the capture anonymizer's flag in the low two source-ToS bits (bit 1 for the source,
 bit 0 for the destination). Every other endpoint is `external`. Adapters classify each flow once,
 before selection and aggregation. CSV and native nfcapd input use the same rules, and the native
 stream carries the ToS flags in its record tag.
@@ -242,10 +242,22 @@ output and reports it with the consumed shards. This includes a failed directory
 failed shard-file deletion, which is reported as its own cleanup error. The completed days of
 the temporary output are exactly the consumed shards, and merging it with the remaining shards
 resumes the job. Tests cover failures during a shard insert, and deletion failures right after
-the first shard's rename and after a later shard's commit. Crash durability rests on SQLite's
-rollback journal and the explicit file and directory syncs, and is not tested. Once the output
+the first shard's rename and after a later shard's commit. Crash durability is not tested. Once the output
 has been renamed into place, a failed directory sync is reported as a published product, not as
 a partial merge.
+
+### Cluster launcher
+
+`scripts/netflow-db-cluster.sh` drives a sharded build over plain SSH (`BatchMode`); every host uses
+the same `--remote-dir` path, so the deployed nfdump path, and with it the product identity, is
+identical on all shards. It splits the inclusive range into `min(days, slots)` contiguous shards
+that differ by at most one day and assigns them to slots round-robin across hosts. Each shard runs
+as a detached remote job named by dataset and day range, with its log and exit status in
+`<remote-dir>/work`. The launcher records the host and range layout in `<work-dir>/layout` and
+refuses a rerun with a different layout. A rerun reattaches running shards, lets finished days
+resume as no-ops, copies every shard back as a consistent SQLite snapshot, deletes any partial
+merge from an earlier run, merges with `--consume` unless `--keep-shards` is set, and runs
+`verify`. The remote shard databases remain the source of truth until the user deletes them.
 
 ## Native decoder contract
 
@@ -273,8 +285,8 @@ The `extract-window` command creates bounded SQLite or Parquet analysis artifact
 
 ```bash
 ./scripts/netflow-db.sh extract-window \
-  --source-db data/uoregon/netflow.sqlite \
-  --output-dir data/uoregon/extracts/<YYYY-MM> \
+  --source-db data/example/netflow.sqlite \
+  --output-dir data/example/extracts/<YYYY-MM> \
   --start <YYYY-MM-DD> \
   --end <YYYY-MM-DD> \
   --output sqlite \
