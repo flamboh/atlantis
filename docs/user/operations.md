@@ -46,7 +46,8 @@ On your machine:
 
 - The repository with `bun install` done, and the Docker CLI (the image builds on the server, so no local daemon is needed).
 - `ssh <server> docker info` works without a password prompt.
-- `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Alchemy stores its deploy state in Cloudflare and creates nothing else there.
+
+Alchemy keeps the deploy state in `.alchemy/` in your checkout. Deploy and tear down from the same checkout, or it loses track of the container.
 
 ### Deploy
 
