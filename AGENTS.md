@@ -2,7 +2,7 @@
 
 ATLANTIS turns NetFlow captures and CSV imports into queryable aggregate databases, then visualizes them in a web dashboard.
 
-## Repository Map
+## Repository map
 
 - `tools/netflow-db`: Rust pipeline (`atlantis-netflow-db` crate) for ingestion, aggregation, verification, and analysis-window exports. Native `nfcapd` ingestion uses the pinned `nfdump` fork in `vendor/nfdump`.
 - `apps/web`: Svelte 5/SvelteKit 3 dashboard and API routes. It reads local SQLite during development and Cloudflare D1 in deployment.
@@ -14,7 +14,7 @@ ATLANTIS turns NetFlow captures and CSV imports into queryable aggregate databas
 - `docs/code`: Architecture and development documentation.
 - `docs/agent`: Generated plans and analysis artifacts.
 
-## Engineering Contracts
+## Engineering contracts
 
 - Treat ingestion, storage, API queries, and charts as one data contract. When a stored field or dimension changes, account for every Rust writer and verifier, the local SQLite schema, the Drizzle schema and migrations, TypeScript query code, and focused tests.
 - A pipeline database is a product bound to its schema, flow selection, result configuration, and logical source membership. Semantic changes produce a fresh product database; never silently mix incompatible results in an existing one.
@@ -30,19 +30,13 @@ Reuse the existing chart registries, chart utilities, and shared filter componen
 
 ## Verification
 
-- Before completion, run `bun run format`, `bun run lint`, and `bun run typecheck` successfully.
+- For code changes, run `bun run format`, `bun run lint`, and `bun run typecheck` successfully. For documentation-only changes, run the applicable formatter check.
 - Run focused tests for the changed surface: `bun run test:web` for dashboard/API behavior, `bun run test:db` for pipeline behavior, and `bun run test:e2e` for user flows that need browser coverage.
 - Use `bun run test`, not `bun test`; the latter invokes Bun's test runner instead of the repository's Vitest orchestration.
 - When editing the landing site, also run `bun run --cwd apps/landing lint` and `bun run build:landing`; the root lint script does not cover `apps/landing`.
 
-## Pull Requests
+## Pull requests
 
 Use the Conventional Commit style for PR titles.
 
-Every PR description must give a reviewer a fast path to approval:
-
-- Name the flows to exercise, required setup or test data, and expected results.
-- Call out important edge cases, failure states, and business-logic decisions.
-- List automated verification and any remaining manual verification.
-
-Keep this focused on observable behavior and decisions rather than an exhaustive implementation summary.
+Include a short human review guide with relevant flows, setup or test data, expected behavior, important edge cases, and decisions needing review. Distinguish automated verification from remaining manual checks.
