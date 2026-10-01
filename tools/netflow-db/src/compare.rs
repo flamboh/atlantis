@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::{
     maad::decode_f32,
-    storage::{MaadQGridRow, StorageError, connect_readonly},
+    storage::{MaadQGridRow, StorageError, connect_readonly, stored_maad_internal_side},
 };
 
 const TABLES: &[TableSpec] = &[
@@ -155,6 +155,8 @@ pub struct TableComparison {
     pub candidate_only_rows: i64,
     pub unexpected_candidate_only_rows: i64,
     pub reference_only_rows: i64,
+    /// Reference rows for internal-side MAAD scopes that the candidate does not compute.
+    pub skipped_reference_rows: i64,
     pub mismatched_rows: i64,
     pub max_maad_absolute_delta: f64,
 }
@@ -185,10 +187,12 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
     validate_options(options)?;
     let candidate = connect_readonly(&options.candidate)?;
     let reference = connect_readonly(&options.reference)?;
+    let candidate_skips_internal_side = !stored_maad_internal_side(&candidate)?;
     let mut compatible = true;
     let mut tables = BTreeMap::new();
     for spec in TABLES {
-        let comparison = compare_table(&candidate, &reference, spec, options)?;
+        let skip_internal_side = candidate_skips_internal_side && spec.name == "address_maad_stats";
+        let comparison = compare_table(&candidate, &reference, spec, skip_internal_side, options)?;
         compatible &= comparison.reference_only_rows == 0
             && comparison.unexpected_candidate_only_rows == 0
             && comparison.mismatched_rows == 0;
@@ -294,6 +298,7 @@ fn compare_table(
     candidate: &Connection,
     reference: &Connection,
     spec: &TableSpec,
+    skip_internal_side: bool,
     options: &CompareOptions,
 ) -> Result<TableComparison, CompareError> {
     let candidate_columns = table_columns(candidate, spec.name)?;
@@ -362,6 +367,7 @@ fn compare_table(
         spec,
         &columns,
         &reference_coverage,
+        skip_internal_side,
         options,
     )
 }
@@ -372,6 +378,7 @@ fn compare_shared_rows(
     spec: &TableSpec,
     columns: &[String],
     reference_coverage: &ReferenceCoverage,
+    skip_internal_side: bool,
     options: &CompareOptions,
 ) -> Result<TableComparison, CompareError> {
     let query = ordered_query(spec, columns);
@@ -388,6 +395,29 @@ fn compare_shared_rows(
         ..TableComparison::default()
     };
     while candidate_row.is_some() || reference_row.is_some() {
+        if skip_internal_side {
+            if candidate_row
+                .as_ref()
+                .is_some_and(|row| is_internal_side_row(spec, row))
+            {
+                report.candidate_rows += 1;
+                report.candidate_only_rows += 1;
+                report.unexpected_candidate_only_rows += 1;
+                candidate_row =
+                    next_row(&mut candidate_rows, columns.len(), spec.key_columns.len())?;
+                continue;
+            }
+            if reference_row
+                .as_ref()
+                .is_some_and(|row| is_internal_side_row(spec, row))
+            {
+                report.reference_rows += 1;
+                report.skipped_reference_rows += 1;
+                reference_row =
+                    next_row(&mut reference_rows, columns.len(), spec.key_columns.len())?;
+                continue;
+            }
+        }
         match (&candidate_row, &reference_row) {
             (Some(candidate_value), Some(reference_value)) => {
                 match candidate_value.key.cmp(&reference_value.key) {
@@ -604,6 +634,15 @@ fn reference_bucket_missing(
             granularity.clone(),
             bucket_start.clone(),
         ])
+}
+
+fn is_internal_side_row(spec: &TableSpec, row: &ComparableRow) -> bool {
+    let internal = |column| matches!(key_component(spec, row, column), KeyValue::Text(locality) if locality == "internal");
+    match key_component(spec, row, "address_side") {
+        KeyValue::Text(side) if side == "source" => internal("src_locality"),
+        KeyValue::Text(side) if side == "destination" => internal("dst_locality"),
+        _ => false,
+    }
 }
 
 fn is_dense_zero_value(value: &SqlValue) -> bool {

@@ -1,0 +1,1 @@
+ALTER TABLE `datasets` ADD `maad_internal_side` integer DEFAULT true NOT NULL;

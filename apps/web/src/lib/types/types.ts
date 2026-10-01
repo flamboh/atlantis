@@ -302,6 +302,32 @@ export function flowDirectionLocalities(direction: FlowDirection): FlowLocalityP
 	return FLOW_DIRECTION_LOCALITIES[direction];
 }
 
+export type MaadAddressSide = 'source' | 'destination';
+
+export const MAAD_ADDRESS_SIDES: readonly MaadAddressSide[] = ['source', 'destination'];
+
+export function maadSideComputed(
+	direction: FlowDirection,
+	side: MaadAddressSide,
+	internalSide: boolean
+): boolean {
+	if (internalSide) {
+		return true;
+	}
+	const { srcLocality, dstLocality } = flowDirectionLocalities(direction);
+	return (side === 'source' ? srcLocality : dstLocality) !== 'internal';
+}
+
+export function maadInternalSideCopy(
+	direction: FlowDirection,
+	sides: readonly MaadAddressSide[]
+): string {
+	const label = FLOW_DIRECTION_OPTIONS.find((option) => option.value === direction)?.label;
+	const addresses =
+		sides.length === 1 ? `${sides[0]} addresses are` : 'source and destination addresses are both';
+	return `MAAD is not computed for internal addresses. The ${addresses} internal for ${label?.toLowerCase()} traffic.`;
+}
+
 export type IpMetricKey = 'saIpv4Count' | 'daIpv4Count' | 'saIpv6Count' | 'daIpv6Count';
 
 export type IpMetricFamily = 'ipv4' | 'ipv6';

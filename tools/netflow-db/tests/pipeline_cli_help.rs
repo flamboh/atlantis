@@ -1,4 +1,4 @@
-use std::{fs, process::Command};
+use std::{fs, path::Path, process::Command};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -519,4 +519,111 @@ fn csv_pipeline_drops_and_logs_zero_packet_flows_but_keeps_coverage() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(rows, [(0, 1, 4, 1), (300, 0, 0, 1)]);
+}
+
+#[test]
+fn csv_pipeline_skips_internal_side_maad_unless_the_config_opts_in() {
+    let temporary = tempdir().unwrap();
+    let csv = temporary.path().join("flows.csv");
+    let mapping = temporary.path().join("mapping.json");
+    fs::write(
+        &csv,
+        "received,src,dst\n0,192.0.2.1,203.0.113.1\n1,203.0.113.1,192.0.2.2\n",
+    )
+    .unwrap();
+    fs::write(
+        &mapping,
+        serde_json::to_vec(&serde_json::json!({
+            "timestamp_format": "unix",
+            "timestamp_timezone": "UTC",
+            "columns": {"time_received": "received", "src_ip": "src", "dst_ip": "dst"},
+            "source_id": {"value": "edge"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let netflow_db = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let build = |database: &Path, settings: serde_json::Value| {
+        let mut config = serde_json::json!({
+            "database_path": database,
+            "timezone": "UTC",
+            "locality": [{"type": "prefixes", "prefixes": ["192.0.2.0/24"]}],
+            "inputs": [{"input_kind": "csv", "path": csv, "mapping_path": mapping}],
+            "datasets": [{"dataset_id": "edge", "root_path": temporary.path()}]
+        });
+        for (key, value) in settings.as_object().unwrap() {
+            config[key] = value.clone();
+        }
+        let path = database.with_extension("json");
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        netflow_db(&["pipeline", "--config", path.to_str().unwrap()])
+    };
+    let verified = |database: &Path, flags: &[&str]| {
+        let mut args = vec!["verify", database.to_str().unwrap(), "--require-data"];
+        args.extend(flags);
+        netflow_db(&args).status.success()
+    };
+    let scopes = |database: &Path| -> Vec<String> {
+        Connection::open(database)
+            .unwrap()
+            .prepare(
+                "SELECT DISTINCT src_locality || '->' || dst_locality || ':' || address_side
+                 FROM address_maad_stats WHERE ip_version = 4 AND measure = 'bytes' ORDER BY 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+
+    let skipped = temporary.path().join("skipped.sqlite");
+    assert!(build(&skipped, serde_json::json!({})).status.success());
+    assert_eq!(
+        scopes(&skipped),
+        [
+            "all->all:destination",
+            "all->all:source",
+            "external->external:destination",
+            "external->external:source",
+            "external->internal:source",
+            "internal->external:destination",
+        ]
+    );
+    let config_json: String = Connection::open(&skipped)
+        .unwrap()
+        .query_row("SELECT config_json FROM pipeline_product", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(
+        config_json.contains("\"internal_side\":false"),
+        "{config_json}"
+    );
+    assert!(verified(&skipped, &["--require-maad-data"]));
+    let output = build(&skipped, serde_json::json!({"maad_internal_side": true}));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("identity"));
+
+    let computed = temporary.path().join("computed.sqlite");
+    assert!(
+        build(&computed, serde_json::json!({"maad_internal_side": true}))
+            .status
+            .success()
+    );
+    assert_eq!(scopes(&computed).len(), 10);
+    assert!(verified(&computed, &["--require-maad-data"]));
+
+    let disabled = temporary.path().join("disabled.sqlite");
+    assert!(
+        build(&disabled, serde_json::json!({"run_maad": false}))
+            .status
+            .success()
+    );
+    assert!(verified(&disabled, &[]));
 }

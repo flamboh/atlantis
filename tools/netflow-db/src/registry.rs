@@ -67,6 +67,9 @@ pub struct Dataset {
     pub selection: Value,
     #[serde(default)]
     pub locality: Vec<LocalityRuleConfig>,
+    /// Whether MAAD covers internal-side address sets. Unset means they are skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maad_internal_side: Option<bool>,
 }
 
 impl Dataset {

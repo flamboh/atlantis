@@ -38,6 +38,19 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 		throw error(400, `Invalid slug format. Expected 12 digits (YYYYMMDDHHmm) ${slug}`);
 	}
 
+	let maadInternalSide = true;
+	if (flowDirection.direction !== 'all') {
+		const response = await fetch(`/api/netflow/maad-status?dataset=${encodeURIComponent(dataset)}`);
+		const payload = await response.json();
+		if (!response.ok || typeof payload?.internalSide !== 'boolean') {
+			throw error(
+				response.ok ? 500 : response.status,
+				typeof payload?.error === 'string' ? payload.error : 'Invalid MAAD status response'
+			);
+		}
+		maadInternalSide = payload.internalSide;
+	}
+
 	const year = slug.slice(0, 4);
 	const month = slug.slice(4, 6);
 	const day = slug.slice(6, 8);
@@ -50,6 +63,7 @@ export const load: PageServerLoad = async ({ params, url, fetch }) => {
 		direction: flowDirection.direction,
 		ipVersion,
 		measure,
+		maadInternalSide,
 		fileInfo: {
 			year,
 			month,

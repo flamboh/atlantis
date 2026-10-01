@@ -3,15 +3,18 @@
 	import NetflowFileRouterSummary from './NetflowFileRouterSummary.svelte';
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import type { NetflowFileRouterRow } from './file-detail-loader.svelte';
+	import type { MaadAddressSide } from '#lib/types/types.ts';
 
 	let {
 		row,
 		showSpectrum = true,
+		unavailableCopy = { source: null, destination: null },
 		formatCount,
 		formatTimestampAsPST
 	}: {
 		row: NetflowFileRouterRow;
 		showSpectrum?: boolean;
+		unavailableCopy?: Record<MaadAddressSide, string | null>;
 		formatCount: (value: number | null | undefined) => string;
 		formatTimestampAsPST: (timestamp: number) => string;
 	} = $props();
@@ -36,6 +39,7 @@
 				kind="structure"
 				source={row.source.structure}
 				destination={row.destination.structure}
+				{unavailableCopy}
 			/>
 			{#if showSpectrum}
 				<NetflowFileRouterAnalysisSection
@@ -43,6 +47,7 @@
 					kind="spectrum"
 					source={row.source.spectrum}
 					destination={row.destination.spectrum}
+					{unavailableCopy}
 				/>
 			{:else}
 				<p class="text-muted-foreground text-sm">

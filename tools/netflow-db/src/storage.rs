@@ -2424,6 +2424,8 @@ pub struct DatasetMetadata {
     pub discovery_mode: String,
     pub sort_order: i64,
     pub has_locality: bool,
+    /// Whether the product computes MAAD for internal-side address sets.
+    pub maad_internal_side: bool,
     pub sources: Vec<SourceDefinition>,
 }
 
@@ -2438,6 +2440,7 @@ impl DatasetMetadata {
             discovery_mode: "static".to_owned(),
             sort_order: 0,
             has_locality: false,
+            maad_internal_side: false,
             sources: Vec::new(),
         }
     }
@@ -2461,7 +2464,8 @@ pub fn init_datasets_table(connection: &Connection) -> Result<(), StorageError> 
             source_mode TEXT NOT NULL DEFAULT 'static',
             discovery_mode TEXT NOT NULL DEFAULT 'static',
             sort_order INTEGER NOT NULL DEFAULT 0,
-            has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1))
+            has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1)),
+            maad_internal_side INTEGER NOT NULL DEFAULT 1 CHECK (maad_internal_side IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS source_members (
             dataset_id TEXT NOT NULL,
@@ -2471,7 +2475,72 @@ pub fn init_datasets_table(connection: &Connection) -> Result<(), StorageError> 
         );
         ",
     )?;
-    Ok(())
+    ensure_column(
+        connection,
+        "datasets",
+        "maad_internal_side",
+        "INTEGER NOT NULL DEFAULT 1 CHECK (maad_internal_side IN (0, 1))",
+    )
+}
+
+/// SQL predicate matching `address_maad_stats` rows of internal-side address sets.
+pub const INTERNAL_SIDE_MAAD_SQL: &str = "((address_side = 'source' AND src_locality = 'internal') \
+     OR (address_side = 'destination' AND dst_locality = 'internal'))";
+
+/// Whether this database's product computed MAAD for internal-side address sets.
+///
+/// The bound product identity decides; without one, the datasets metadata does. Databases from
+/// before the setting existed computed every address set.
+pub fn stored_maad_internal_side(connection: &Connection) -> Result<bool, StorageError> {
+    let has_product: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_product')",
+        [],
+        |row| row.get(0),
+    )?;
+    let config_json = if has_product {
+        connection
+            .query_row(
+                "SELECT config_json FROM pipeline_product WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+    } else {
+        None
+    };
+    match config_json {
+        Some(config_json) => {
+            let config: serde_json::Value =
+                serde_json::from_str(&config_json).map_err(|error| {
+                    StorageError::InvalidInput(format!("invalid product config_json: {error}"))
+                })?;
+            Ok(config["maad"]["internal_side"].as_bool().unwrap_or(true))
+        }
+        None => Ok(datasets_maad_internal_side(connection)?.unwrap_or(true)),
+    }
+}
+
+/// The internal-side MAAD setting recorded in datasets metadata for the dashboard, if any.
+pub fn datasets_maad_internal_side(connection: &Connection) -> Result<Option<bool>, StorageError> {
+    let has_column: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('datasets') WHERE name = 'maad_internal_side')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_column {
+        return Ok(None);
+    }
+    let values = connection
+        .prepare("SELECT DISTINCT maad_internal_side FROM datasets")?
+        .query_map([], |row| row.get::<_, bool>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match values.as_slice() {
+        [] => Ok(None),
+        [value] => Ok(Some(*value)),
+        _ => Err(StorageError::InvalidInput(
+            "datasets disagree on maad_internal_side".into(),
+        )),
+    }
 }
 
 pub fn upsert_dataset_metadata(
@@ -2503,16 +2572,18 @@ pub fn upsert_dataset_metadata(
     connection.execute(
         "
         INSERT INTO datasets (
-            id, label, default_start_date, source_mode, discovery_mode, sort_order, has_locality
+            id, label, default_start_date, source_mode, discovery_mode, sort_order, has_locality,
+            maad_internal_side
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         ON CONFLICT(id) DO UPDATE SET
             label = excluded.label,
             default_start_date = excluded.default_start_date,
             source_mode = excluded.source_mode,
             discovery_mode = excluded.discovery_mode,
             sort_order = excluded.sort_order,
-            has_locality = excluded.has_locality
+            has_locality = excluded.has_locality,
+            maad_internal_side = excluded.maad_internal_side
         ",
         params![
             dataset_id,
@@ -2521,7 +2592,8 @@ pub fn upsert_dataset_metadata(
             source_mode,
             discovery_mode,
             dataset.sort_order,
-            dataset.has_locality
+            dataset.has_locality,
+            dataset.maad_internal_side
         ],
     )?;
     upsert_source_members(connection, dataset_id, &dataset.sources)
@@ -3625,6 +3697,64 @@ mod tests {
         dataset.has_locality = true;
         upsert_dataset_metadata(&connection, &dataset).unwrap();
         assert!(has_locality(&connection));
+    }
+
+    #[test]
+    fn datasets_record_the_maad_internal_side_setting_and_upgrade_legacy_tables() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE datasets (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     label TEXT NOT NULL,
+                     default_start_date TEXT NOT NULL,
+                     source_mode TEXT NOT NULL DEFAULT 'static',
+                     discovery_mode TEXT NOT NULL DEFAULT 'static',
+                     sort_order INTEGER NOT NULL DEFAULT 0,
+                     has_locality INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO datasets (id, label, default_start_date) VALUES ('legacy', 'Legacy', '2025-01-01');",
+            )
+            .unwrap();
+        assert!(stored_maad_internal_side(&connection).unwrap());
+
+        init_datasets_table(&connection).unwrap();
+        assert!(stored_maad_internal_side(&connection).unwrap());
+
+        let mut dataset = DatasetMetadata::new("d1");
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        let error = datasets_maad_internal_side(&connection).unwrap_err();
+        assert!(error.to_string().contains("disagree"), "{error}");
+
+        connection
+            .execute("DELETE FROM datasets WHERE id = 'legacy'", [])
+            .unwrap();
+        assert!(!stored_maad_internal_side(&connection).unwrap());
+        dataset.maad_internal_side = true;
+        upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(stored_maad_internal_side(&connection).unwrap());
+
+        for (config, internal_side) in [
+            (json!({"maad": {"enabled": true}}), true),
+            (
+                json!({"maad": {"enabled": true, "internal_side": false}}),
+                false,
+            ),
+        ] {
+            connection
+                .execute_batch("DROP TABLE IF EXISTS pipeline_product")
+                .unwrap();
+            bind_product_identity(
+                &connection,
+                &ProductIdentity::create(&json!({}), &json!({}), &config).unwrap(),
+                &[],
+            )
+            .unwrap();
+            assert_eq!(
+                stored_maad_internal_side(&connection).unwrap(),
+                internal_side
+            );
+        }
     }
 
     #[test]

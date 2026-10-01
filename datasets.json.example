@@ -9,6 +9,7 @@
     ],
     "locality": [
       { "type": "prefixes", "prefixes": ["192.0.2.0/24", "2001:db8::/32"] }
-    ]
+    ],
+    "maad_internal_side": false
   }
 ]

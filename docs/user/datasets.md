@@ -72,6 +72,7 @@ Renaming a source or changing its members needs a new database.
 - Relative `path` values resolve from the repository root. Keep address files under the git-ignored `data/` directory, which the Docker wrapper can also read.
 - Without `locality`, all traffic shows as transit. A large transit share usually means the rules miss part of your address space.
 - Changing a rule, or the contents of an address file, needs a new database.
+- MAAD is not computed for address sets that hold only internal addresses unless the dataset sets `"maad_internal_side": true`. For ingress, egress, and lateral traffic, the dashboard's MAAD cards say so for the internal side instead of drawing an empty chart. Changing the setting needs a new database.
 
 ## Define coordinated subsets
 
@@ -116,6 +117,7 @@ To build several [`daily_active_sources`](setup-pipeline.md#build-several-subset
 | `db_path`            | `data/<dataset-id>/netflow.sqlite` | Output database. Set it for filtered products.                                     |
 | `selection`          | All flows                          | Flow filter applied on every run. Needs its own `db_path`.                         |
 | `locality`           | None                               | [Internal address rules](#classify-internal-and-external-endpoints).               |
+| `maad_internal_side` | `false`                            | Compute MAAD for address sets that hold only internal addresses.                   |
 | `default_start_date` | Earliest processed day             | First day the dashboard shows.                                                     |
 | `discovery_mode`     | `static`                           | `live` for a dataset that still receives captures, `static` for a finished one.    |
 | `sort_order`         | `0`                                | Dashboard order. Lower sorts first.                                                |

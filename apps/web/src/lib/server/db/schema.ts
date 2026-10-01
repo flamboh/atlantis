@@ -23,7 +23,8 @@ export const datasets = sqliteTable('datasets', {
 		.notNull()
 		.default('static'),
 	sortOrder: integer('sort_order').notNull().default(0),
-	hasLocality: integer('has_locality', { mode: 'boolean' }).notNull().default(false)
+	hasLocality: integer('has_locality', { mode: 'boolean' }).notNull().default(false),
+	maadInternalSide: integer('maad_internal_side', { mode: 'boolean' }).notNull().default(true)
 });
 
 export const sourceMembers = sqliteTable(

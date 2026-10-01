@@ -78,7 +78,8 @@ fn ten_minute_rollups_match_their_five_minute_children() {
     Connection::open(&database)
         .unwrap()
         .execute(
-            "INSERT INTO datasets (id, label, default_start_date) VALUES ('csv', 'CSV', '1970-01-01')",
+            "INSERT INTO datasets (id, label, default_start_date, maad_internal_side)
+             VALUES ('csv', 'CSV', '1970-01-01', 0)",
             [],
         )
         .unwrap();

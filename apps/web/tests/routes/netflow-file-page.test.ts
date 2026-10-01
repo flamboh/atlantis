@@ -3,23 +3,26 @@ import { load } from '../../src/routes/netflow/files/[slug]/+page.server';
 
 describe('/netflow/files/[slug] page load', () => {
 	it('returns page props for stored file stats', async () => {
-		const fetch = vi.fn().mockResolvedValue({
+		const fetch = vi.fn(async (input: string) => ({
 			ok: true,
 			status: 200,
-			json: async () => ({
-				data: [
-					{
-						datasetId: 'alpha',
-						label: 'Alpha',
-						defaultStartDate: '2025-02-11',
-						discoveryMode: 'db',
-						hasLocality: false,
-						isDefault: true
-					}
-				],
-				error: null
-			})
-		});
+			json: async () =>
+				input === '/api/datasets'
+					? {
+							data: [
+								{
+									datasetId: 'alpha',
+									label: 'Alpha',
+									defaultStartDate: '2025-02-11',
+									discoveryMode: 'db',
+									hasLocality: false,
+									isDefault: true
+								}
+							],
+							error: null
+						}
+					: { computed: true, internalSide: false }
+		}));
 
 		const result = await load({
 			params: { slug: '202503010005' },
@@ -28,12 +31,14 @@ describe('/netflow/files/[slug] page load', () => {
 		} as never);
 
 		expect(fetch).toHaveBeenCalledWith('/api/datasets');
+		expect(fetch).toHaveBeenCalledWith('/api/netflow/maad-status?dataset=alpha');
 		expect(result).toEqual({
 			dataset: 'alpha',
 			slug: '202503010005',
 			direction: 'ingress',
 			ipVersion: 4,
 			measure: 'addresses',
+			maadInternalSide: false,
 			fileInfo: {
 				year: '2025',
 				month: '03',
@@ -52,7 +57,12 @@ describe('/netflow/files/[slug] page load', () => {
 			fetch: vi.fn()
 		} as never);
 
-		expect(result).toMatchObject({ dataset: 'alpha', direction: 'all', ipVersion: 6 });
+		expect(result).toMatchObject({
+			dataset: 'alpha',
+			direction: 'all',
+			ipVersion: 6,
+			maadInternalSide: true
+		});
 	});
 
 	it('rejects invalid ipVersion params', async () => {

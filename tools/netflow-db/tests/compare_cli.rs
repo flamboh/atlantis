@@ -236,6 +236,66 @@ fn compare_rejects_ipv6_maad_rows_for_an_unrelated_source() {
     );
 }
 
+#[test]
+fn compare_skips_reference_internal_side_maad_the_candidate_does_not_compute() {
+    let temporary = tempdir().unwrap();
+    let candidate = temporary.path().join("candidate.sqlite");
+    let reference = temporary.path().join("reference.sqlite");
+    create_shared_database(&candidate, 42, 0.5, &[0.5], false);
+    create_shared_database(&reference, 42, 0.5, &[0.5], false);
+    Connection::open(&candidate)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE datasets (id TEXT PRIMARY KEY, maad_internal_side INTEGER NOT NULL);
+             INSERT INTO datasets VALUES ('d1', 0);",
+        )
+        .unwrap();
+    let internal_side_row = "INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,4,'internal','external','source','addresses',0,NULL,NULL)";
+    Connection::open(&reference)
+        .unwrap()
+        .execute_batch(&format!(
+            "{internal_side_row};
+             INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,4,'internal','external','destination','addresses',0,NULL,NULL);"
+        ))
+        .unwrap();
+
+    let (success, report) = run_compare(&candidate, &reference);
+    assert!(!success, "{report}");
+    assert_eq!(
+        report["tables"]["address_maad_stats"]["skipped_reference_rows"],
+        1
+    );
+    assert_eq!(
+        report["tables"]["address_maad_stats"]["reference_only_rows"],
+        1
+    );
+
+    Connection::open(&candidate)
+        .unwrap()
+        .execute(
+            "INSERT INTO address_maad_stats VALUES ('r1','5m',0,300,4,'internal','external','destination','addresses',0,NULL,NULL)",
+            [],
+        )
+        .unwrap();
+    let (success, report) = run_compare(&candidate, &reference);
+    assert!(success, "{report}");
+    assert_eq!(
+        report["tables"]["address_maad_stats"]["skipped_reference_rows"],
+        1
+    );
+
+    Connection::open(&candidate)
+        .unwrap()
+        .execute(internal_side_row, [])
+        .unwrap();
+    let (success, report) = run_compare(&candidate, &reference);
+    assert!(!success, "{report}");
+    assert_eq!(
+        report["tables"]["address_maad_stats"]["unexpected_candidate_only_rows"],
+        1
+    );
+}
+
 fn run_compare(
     candidate: &std::path::Path,
     reference: &std::path::Path,

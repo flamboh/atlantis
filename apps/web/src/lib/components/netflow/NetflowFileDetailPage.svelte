@@ -9,8 +9,12 @@
 	import MaadMeasureFilter from '#lib/components/filters/MaadMeasureFilter.svelte';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
+		MAAD_ADDRESS_SIDES,
+		maadInternalSideCopy,
 		maadMeasureHasSpectrum,
+		maadSideComputed,
 		type FlowDirection,
+		type MaadAddressSide,
 		type MaadIpVersion,
 		type MaadMeasure
 	} from '#lib/types/types.ts';
@@ -27,6 +31,7 @@
 		direction: FlowDirection;
 		ipVersion: MaadIpVersion;
 		measure: MaadMeasure;
+		maadInternalSide: boolean;
 		fileInfo: {
 			year: string;
 			month: string;
@@ -41,6 +46,16 @@
 	let loader = $state.raw<ReturnType<typeof getNetflowFileDetailLoader> | null>(null);
 	const maadMeasure = $derived(data.measure);
 	const showSpectrum = $derived(maadMeasureHasSpectrum(maadMeasure));
+	const maadUnavailableCopy = $derived(
+		Object.fromEntries(
+			MAAD_ADDRESS_SIDES.map((side) => [
+				side,
+				maadSideComputed(data.direction, side, data.maadInternalSide)
+					? null
+					: maadInternalSideCopy(data.direction, [side])
+			])
+		) as Record<MaadAddressSide, string | null>
+	);
 
 	const formatCount = (value: number | null | undefined) =>
 		typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'N/A';
@@ -175,7 +190,13 @@
 				/>
 			{/if}
 			{#each loader.rows as row (row.key)}
-				<NetflowFileRouterCard {row} {showSpectrum} {formatCount} {formatTimestampAsPST} />
+				<NetflowFileRouterCard
+					{row}
+					{showSpectrum}
+					unavailableCopy={maadUnavailableCopy}
+					{formatCount}
+					{formatTimestampAsPST}
+				/>
 			{/each}
 		</div>
 	{/if}

@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::{
     domain::{
         AddressSetRow, AddressTraffic, BucketKey, CanonicalBucket, CanonicalRows, DomainError,
-        Granularity, IpVersion, MaadMeasure,
+        Granularity, IpVersion, MaadMeasure, MaadScopes,
     },
     maad,
     storage::{
@@ -105,15 +105,15 @@ struct ScalarRowsProfile {
 pub fn write_buckets(
     connection: &Connection,
     buckets: &[CanonicalBucket],
-    run_maad: bool,
+    maad: MaadScopes,
 ) -> Result<(), PublishError> {
-    write_buckets_profiled(connection, buckets, run_maad).map(|_| ())
+    write_buckets_profiled(connection, buckets, maad).map(|_| ())
 }
 
 pub(crate) fn write_buckets_profiled(
     connection: &Connection,
     buckets: &[CanonicalBucket],
-    run_maad: bool,
+    maad: MaadScopes,
 ) -> Result<WriteBucketsProfile, PublishError> {
     let total_started = Instant::now();
     let mut profile = WriteBucketsProfile {
@@ -149,7 +149,7 @@ pub(crate) fn write_buckets_profiled(
         })
         .collect::<Vec<_>>();
     insert_bucket_coverage_rows(connection, &coverage_rows)?;
-    if run_maad {
+    if maad.enabled() {
         insert_maad_q_grid_rows(connection, &maad_q_grid_rows())?;
     }
     for bucket in buckets {
@@ -179,15 +179,20 @@ pub(crate) fn write_buckets_profiled(
         profile.protocol_insert_elapsed += scalar.protocol_insert_elapsed;
         profile.address_count_insert_elapsed += scalar.address_count_insert_elapsed;
         profile.port_count_insert_elapsed += scalar.port_count_insert_elapsed;
-        if run_maad {
-            profile.maad_address_sets += count(rows.address_sets.len());
-            profile.maad_addresses += rows
+        if maad.enabled() {
+            let address_sets = rows
                 .address_sets
+                .iter()
+                .filter(|addresses| maad.includes(addresses.scope, addresses.address_side))
+                .cloned()
+                .collect::<Vec<_>>();
+            profile.maad_address_sets += count(address_sets.len());
+            profile.maad_addresses += address_sets
                 .iter()
                 .map(|addresses| count(addresses.addresses.len()))
                 .sum::<u64>();
             let maad_started = Instant::now();
-            let (address_maad, zero_weight_addresses) = maad_rows(&rows.address_sets)?;
+            let (address_maad, zero_weight_addresses) = maad_rows(&address_sets)?;
             profile.maad_elapsed += maad_started.elapsed();
             profile.maad_zero_weight_addresses += zero_weight_addresses;
             if zero_weight_addresses > 0 {
@@ -574,7 +579,8 @@ mod tests {
             )
             .unwrap();
 
-        let profile = write_buckets_profiled(&connection, &[builder.finish()], true).unwrap();
+        let profile =
+            write_buckets_profiled(&connection, &[builder.finish()], MaadScopes::All).unwrap();
 
         assert_eq!(
             connection
@@ -620,6 +626,60 @@ mod tests {
     }
 
     #[test]
+    fn internal_side_address_sets_are_skipped_unless_requested() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        let mut builder =
+            StatisticalBucket::dense(BucketKey::new("r1", Granularity::FiveMinutes, 0, 300));
+        builder
+            .add(
+                FlowObservation::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                    IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+                    6,
+                    2,
+                    128,
+                    0,
+                )
+                .unwrap()
+                .with_locality(EndpointLocality::Internal, EndpointLocality::External),
+            )
+            .unwrap();
+
+        let profile = write_buckets_profiled(
+            &connection,
+            &[builder.finish()],
+            MaadScopes::ExceptInternalSide,
+        )
+        .unwrap();
+
+        let scopes = connection
+            .prepare(
+                "SELECT DISTINCT ip_version || ':' || src_locality || '->' || dst_locality || ':' || address_side
+                 FROM address_maad_stats WHERE ip_version = 4 ORDER BY 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            scopes,
+            [
+                "4:all->all:destination",
+                "4:all->all:source",
+                "4:external->external:destination",
+                "4:external->external:source",
+                "4:external->internal:source",
+                "4:internal->external:destination",
+            ]
+        );
+        assert_eq!(profile.address_count_rows, 20);
+        assert_eq!(profile.maad_address_sets, 12);
+        assert_eq!(profile.address_maad_rows, 36);
+    }
+
+    #[test]
     fn maad_workers_cannot_resize_an_initialized_pool() {
         assert!(maad_pool().unwrap().current_num_threads() >= 1);
         let error = set_maad_workers(NonZeroUsize::new(2).unwrap()).unwrap_err();
@@ -640,7 +700,7 @@ mod tests {
                     addresses,
                 ))
                 .unwrap();
-            write_buckets(&connection, &[builder.finish()], true).unwrap();
+            write_buckets(&connection, &[builder.finish()], MaadScopes::All).unwrap();
             connection
         }
 

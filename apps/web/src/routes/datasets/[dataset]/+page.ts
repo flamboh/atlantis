@@ -42,7 +42,11 @@ export const load: PageLoad = async ({ params, fetch }) => {
 	}
 
 	const maadStatusPayload = await maadStatusResponse.json();
-	if (!maadStatusResponse.ok || typeof maadStatusPayload?.computed !== 'boolean') {
+	if (
+		!maadStatusResponse.ok ||
+		typeof maadStatusPayload?.computed !== 'boolean' ||
+		typeof maadStatusPayload?.internalSide !== 'boolean'
+	) {
 		throw error(
 			maadStatusResponse.ok ? 500 : maadStatusResponse.status,
 			typeof maadStatusPayload?.error === 'string'
@@ -57,6 +61,7 @@ export const load: PageLoad = async ({ params, fetch }) => {
 		defaultStartDate: selectedDataset.defaultStartDate,
 		hasLocality: selectedDataset.hasLocality,
 		maadComputed: maadStatusPayload.computed,
+		maadInternalSide: maadStatusPayload.internalSide,
 		routers: routersPayload
 	};
 };

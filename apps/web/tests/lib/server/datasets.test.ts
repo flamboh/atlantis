@@ -176,6 +176,9 @@ describe('dataset server helpers', () => {
 				isDefault: true
 			}
 		]);
+		await expect(datasets.getDatasetConfig('alpha')).resolves.toMatchObject({
+			maadInternalSide: 1
+		});
 		await expect(datasets.listDatasetSources('alpha')).resolves.toEqual(['router-a', 'router-b']);
 		await expect(
 			datasets.getRequestedDataset(new URL('http://localhost/api?dataset=alpha'))
