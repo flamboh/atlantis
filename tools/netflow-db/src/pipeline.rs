@@ -4014,6 +4014,29 @@ mod tests {
     }
 
     #[test]
+    fn config_datasets_cannot_set_maad_internal_side() {
+        let temporary = tempdir().unwrap();
+        let config = temporary.path().join("pipeline.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "database_path": temporary.path().join("out.sqlite"),
+                "inputs": [],
+                "datasets": [{
+                    "dataset_id": "edge",
+                    "root_path": temporary.path(),
+                    "maad_internal_side": true
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = resolve_request(&PipelineRequest::config(&config)).unwrap_err();
+        assert!(error.to_string().contains("top level"), "{error}");
+    }
+
+    #[test]
     fn locality_filters_require_locality_rules() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("captures");

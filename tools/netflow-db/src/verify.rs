@@ -101,14 +101,7 @@ pub fn verify_database(
         }
     }
     assert_maad_encoding(&connection)?;
-    let maad_internal_side = stored_maad_internal_side(&connection)?;
-    if datasets_maad_internal_side(&connection)?
-        .is_some_and(|recorded| recorded != maad_internal_side)
-    {
-        return Err(VerifyError::Incompatible(
-            "datasets.maad_internal_side disagrees with the product's MAAD setting".into(),
-        ));
-    }
+    let maad_internal_side = maad_internal_side(&connection)?;
     if !maad_internal_side {
         assert_no_internal_side_maad(&connection)?;
     }
@@ -587,6 +580,17 @@ fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyErr
         Some(message) => Err(VerifyError::Incompatible(message)),
         None => Ok(()),
     }
+}
+
+/// The product's internal-side MAAD setting, which the datasets metadata must mirror.
+fn maad_internal_side(connection: &Connection) -> Result<bool, VerifyError> {
+    let internal_side = stored_maad_internal_side(connection)?;
+    if datasets_maad_internal_side(connection)?.is_some_and(|recorded| recorded != internal_side) {
+        return Err(VerifyError::Incompatible(
+            "datasets.maad_internal_side disagrees with the product's MAAD setting".into(),
+        ));
+    }
+    Ok(internal_side)
 }
 
 /// A product that skips internal-side MAAD must store none.
@@ -1319,5 +1323,30 @@ mod tests {
         assert!(assert_maad_scopes_present(&connection, true).is_ok());
         let error = assert_no_internal_side_maad(&connection).unwrap_err();
         assert!(error.to_string().contains("internal-side rows"), "{error}");
+    }
+
+    #[test]
+    fn datasets_must_mirror_the_product_maad_setting() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        crate::storage::bind_product_identity(
+            &connection,
+            &crate::storage::ProductIdentity::create(
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                &serde_json::json!({"maad": {"enabled": true, "internal_side": false}}),
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+        let mut dataset = crate::storage::DatasetMetadata::new("d1");
+        crate::storage::upsert_dataset_metadata(&connection, &dataset).unwrap();
+        assert!(!maad_internal_side(&connection).unwrap());
+
+        dataset.maad_internal_side = true;
+        crate::storage::upsert_dataset_metadata(&connection, &dataset).unwrap();
+        let error = maad_internal_side(&connection).unwrap_err();
+        assert!(error.to_string().contains("disagrees"), "{error}");
     }
 }

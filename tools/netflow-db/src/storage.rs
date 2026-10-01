@@ -2465,7 +2465,7 @@ pub fn init_datasets_table(connection: &Connection) -> Result<(), StorageError> 
             discovery_mode TEXT NOT NULL DEFAULT 'static',
             sort_order INTEGER NOT NULL DEFAULT 0,
             has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1)),
-            maad_internal_side INTEGER NOT NULL DEFAULT 0 CHECK (maad_internal_side IN (0, 1))
+            maad_internal_side INTEGER NOT NULL DEFAULT 1 CHECK (maad_internal_side IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS source_members (
             dataset_id TEXT NOT NULL,

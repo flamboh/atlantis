@@ -115,7 +115,7 @@ the setting turned on, and a database built with one setting rejects runs with t
 subset runs must agree on it.
 
 The `datasets.maad_internal_side` column mirrors the setting for the dashboard, which cannot read
-the product identity in D1. The pipeline adds the column, defaulting to 1, when it opens a database
+the product identity in D1. The column defaults to 1 everywhere. The pipeline always writes it explicitly, and adds it when it opens a database
 from before the setting existed. `verify` reads the setting from the product identity, fails when
 the column disagrees, rejects any internal-side MAAD row in a skipping product, and with
 `--require-maad-data` requires a MAAD row for every address set the product computes. `compare`
@@ -240,7 +240,8 @@ when every run names an explicit end date.
 `netflow-db merge-shards` relies on this. It combines pipeline products built over disjoint
 local-day ranges into a new product and refuses before it writes anything unless:
 
-- every shard has the same SQLite schema, the table contract this build writes, the same product
+- every shard has the same SQLite schema (the `datasets` table is compared by its columns, so a
+  table upgraded in place matches a fresh one), the table contract this build writes, the same product
   identity (schema, selection, and result configuration, including the nfdump path and digest),
   the same nfcapd source layout, and the same dataset metadata;
 - every shard has identical `maad_q_grid` rows, including none at all when MAAD is disabled. The

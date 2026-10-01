@@ -257,7 +257,17 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
              WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
         )?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<Vec<(String, String, Option<String>)>>>()?;
+        .collect::<rusqlite::Result<Vec<(String, String, Option<String>)>>>()?
+        .into_iter()
+        .map(|(kind, name, sql)| {
+            let sql = if kind == "table" && name == "datasets" {
+                Some(structural_table_schema(&connection, &name)?)
+            } else {
+                sql
+            };
+            Ok((kind, name, sql))
+        })
+        .collect::<Result<Vec<_>, MergeError>>()?;
     let tables = schema
         .iter()
         .filter(|(kind, _, _)| kind == "table")
@@ -435,6 +445,27 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
         days,
         table_rows,
     })
+}
+
+/// Describe a table by its columns, so a table upgraded with `ALTER TABLE ADD COLUMN` matches a
+/// freshly created one with the same columns.
+fn structural_table_schema(connection: &Connection, table: &str) -> Result<String, MergeError> {
+    let columns = connection
+        .prepare(
+            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1) ORDER BY cid",
+        )?
+        .query_map([table], |row| {
+            Ok(format!(
+                "{} {} notnull={} default={:?} pk={}",
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(columns.join(", "))
 }
 
 fn inferred_start_date(connection: &Connection, timezone: &str) -> Result<String, MergeError> {
@@ -1071,6 +1102,45 @@ mod tests {
                 .unwrap();
             assert_eq!(rows, 0, "{table}");
         }
+    }
+
+    #[test]
+    fn an_upgraded_shard_merges_with_a_fresh_one() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let (upgraded, fresh) = two_day_shards(&fixture);
+        let connection = Connection::open(&upgraded).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE legacy_datasets (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     label TEXT NOT NULL,
+                     default_start_date TEXT NOT NULL,
+                     source_mode TEXT NOT NULL DEFAULT 'static',
+                     discovery_mode TEXT NOT NULL DEFAULT 'static',
+                     sort_order INTEGER NOT NULL DEFAULT 0,
+                     has_locality INTEGER NOT NULL DEFAULT 0 CHECK (has_locality IN (0, 1))
+                 );
+                 INSERT INTO legacy_datasets
+                 SELECT id, label, default_start_date, source_mode, discovery_mode, sort_order,
+                        has_locality
+                 FROM datasets;
+                 DROP TABLE datasets;
+                 ALTER TABLE legacy_datasets RENAME TO datasets;",
+            )
+            .unwrap();
+        crate::storage::init_datasets_table(&connection).unwrap();
+        drop(connection);
+
+        let merged = fixture.path("merged.sqlite");
+        fixture.merge(&merged, &[&upgraded, &fresh]).unwrap();
+
+        let internal_side: i64 = Connection::open(&merged)
+            .unwrap()
+            .query_row("SELECT maad_internal_side FROM datasets", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(internal_side, 1);
     }
 
     #[test]
