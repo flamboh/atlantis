@@ -21,7 +21,7 @@ use crate::{
     coverage::BucketCoverage,
     domain::{
         AddressSet, BucketKey, CanonicalBucket, DomainError, FlowSelection, Granularity,
-        StatisticalBucket,
+        MaadScopes, StatisticalBucket,
     },
     ingest::{self, IngestError, ProducerError},
     locality::{LocalityRuleConfig, LocalityRules},
@@ -175,6 +175,8 @@ struct PipelineConfigFile {
     #[serde(default)]
     run_maad: Option<bool>,
     #[serde(default)]
+    maad_internal_side: Option<bool>,
+    #[serde(default)]
     nfdump: Option<String>,
     #[serde(default)]
     selection: Value,
@@ -228,7 +230,7 @@ enum InputSpec {
 struct ResolvedPipeline {
     database_path: PathBuf,
     timezone: String,
-    run_maad: bool,
+    maad: MaadScopes,
     nfdump: PathBuf,
     nfdump_revision: Option<ExecutableRevision>,
     selection: FlowSelection,
@@ -509,9 +511,9 @@ fn validate_compatible_pipelines(
                 "coordinated datasets must use the same timezone".into(),
             ));
         }
-        if first.run_maad != pipeline.run_maad {
+        if first.maad != pipeline.maad {
             return Err(PipelineError::InvalidConfig(
-                "coordinated datasets must use the same MAAD setting".into(),
+                "coordinated datasets must use the same MAAD settings".into(),
             ));
         }
         if first.nfdump != pipeline.nfdump {
@@ -815,6 +817,16 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
                 dataset.dataset_id
             )));
         }
+        if let Some(dataset) = config
+            .datasets
+            .iter()
+            .find(|dataset| dataset.maad_internal_side.is_some())
+        {
+            return Err(PipelineError::InvalidConfig(format!(
+                "dataset {:?} declares maad_internal_side inside a pipeline config; declare `maad_internal_side` at the top level of the config",
+                dataset.dataset_id
+            )));
+        }
         let config_directory = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -851,7 +863,10 @@ fn resolve_request(request: &PipelineRequest) -> Result<ResolvedPipeline, Pipeli
         return Ok(ResolvedPipeline {
             database_path: config.database_path,
             timezone: config.timezone,
-            run_maad: config.run_maad.unwrap_or(true) && request.run_maad,
+            maad: MaadScopes::new(
+                config.run_maad.unwrap_or(true) && request.run_maad,
+                config.maad_internal_side.unwrap_or(false),
+            ),
             nfdump,
             nfdump_revision,
             selection,
@@ -916,7 +931,10 @@ fn resolve_dataset_request(
             .clone()
             .unwrap_or_else(|| dataset.db_path.clone()),
         timezone: DEFAULT_TIMEZONE.into(),
-        run_maad: request.run_maad,
+        maad: MaadScopes::new(
+            request.run_maad,
+            dataset.maad_internal_side.unwrap_or(false),
+        ),
         nfdump,
         nfdump_revision,
         selection,
@@ -1234,12 +1252,7 @@ fn initialize_metadata_in_transaction_with_layouts(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(
-            connection,
-            dataset,
-            sources,
-            !pipeline.selection.locality().is_empty(),
-        )?;
+        upsert_dataset_with_sources(connection, dataset, sources, pipeline)?;
     }
     if !layouts.is_empty() {
         let layout = layouts
@@ -1265,12 +1278,7 @@ fn initialize_coordinated_metadata_in_transaction(
                 dataset.dataset_id
             ))
         })?;
-        upsert_dataset_with_sources(
-            connection,
-            dataset,
-            sources,
-            !pipeline.selection.locality().is_empty(),
-        )?;
+        upsert_dataset_with_sources(connection, dataset, sources, pipeline)?;
     }
     if !layout.is_empty() {
         let layout = layout
@@ -1513,6 +1521,16 @@ fn bind_identity(
             "content_fingerprint": revision.content_fingerprint,
         })
     });
+    let mut maad = json!({
+        "enabled": pipeline.maad.enabled(),
+        "backend": "in-process",
+        "contract_version": 6,
+        "config": maad_config,
+        "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
+    });
+    if pipeline.maad == MaadScopes::ExceptInternalSide {
+        maad["internal_side"] = json!(false);
+    }
     let result_config = json!({
         "version": 6,
         "timezone": pipeline.timezone,
@@ -1529,13 +1547,7 @@ fn bind_identity(
             "decoder_fingerprint": pipeline.nfdump_revision.as_ref().map(|revision| revision.decoder_fingerprint.clone()),
             "executable": nfdump_executable,
         },
-        "maad": {
-            "enabled": pipeline.run_maad,
-            "backend": "in-process",
-            "contract_version": 6,
-            "config": maad_config,
-            "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
-        }
+        "maad": maad,
     });
     let identity = ProductIdentity::create(
         &schema,
@@ -1550,7 +1562,7 @@ fn upsert_dataset_with_sources(
     connection: &Connection,
     dataset: &Dataset,
     logical_sources: &[DatasetSource],
-    has_locality: bool,
+    pipeline: &ResolvedPipeline,
 ) -> Result<(), PipelineError> {
     let sources = logical_sources
         .iter()
@@ -1562,7 +1574,8 @@ fn upsert_dataset_with_sources(
     metadata.source_mode = dataset.source_mode.clone();
     metadata.discovery_mode = dataset.discovery_mode.clone();
     metadata.sort_order = dataset.sort_order;
-    metadata.has_locality = has_locality;
+    metadata.has_locality = !pipeline.selection.locality().is_empty();
+    metadata.maad_internal_side = pipeline.maad != MaadScopes::ExceptInternalSide;
     metadata.sources = sources;
     upsert_dataset_metadata(connection, &metadata)?;
     Ok(())
@@ -1950,7 +1963,7 @@ fn publish_csv_bucket(
 ) -> Result<(), PipelineError> {
     reject_cross_kind_overlap(connection, bucket, InputKind::Csv)?;
     aggregates.reject_persisted_csv_siblings(connection, bucket, &pipeline.timezone)?;
-    write_buckets(connection, std::slice::from_ref(bucket), pipeline.run_maad)?;
+    write_buckets(connection, std::slice::from_ref(bucket), pipeline.maad)?;
     replace_input_evidence(
         connection,
         &bucket.key.source_id,
@@ -1958,7 +1971,7 @@ fn publish_csv_bucket(
         std::slice::from_ref(evidence),
     )?;
     aggregates.include(bucket, &pipeline.timezone)?;
-    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.run_maad)?;
+    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.maad)?;
     report.five_minute_buckets += 1;
     Ok(())
 }
@@ -2010,7 +2023,7 @@ fn nfcapd_day_is_complete(
             start,
             end,
             &product_fingerprint,
-            sink.pipeline.run_maad,
+            sink.pipeline.maad.enabled(),
         )? {
             return Ok(false);
         }
@@ -2143,7 +2156,7 @@ fn process_nfcapd_tree(
                     &tree.sources,
                     day_start,
                     day_end,
-                    sinks[index].pipeline.run_maad,
+                    sinks[index].pipeline.maad,
                 ) {
                     rollback_sink_transactions(sinks, &transactions);
                     return Err(error);
@@ -2218,7 +2231,7 @@ fn mark_nfcapd_day_complete(
     sources: &[DatasetSource],
     start: i64,
     end: i64,
-    run_maad: bool,
+    maad: MaadScopes,
 ) -> Result<(), PipelineError> {
     let product_fingerprint = current_product_fingerprint(connection)?.ok_or_else(|| {
         PipelineError::InvalidConfig(
@@ -2233,7 +2246,7 @@ fn mark_nfcapd_day_complete(
             start,
             end,
             &product_fingerprint,
-            run_maad,
+            maad.enabled(),
         )?;
     }
     Ok(())
@@ -2756,12 +2769,12 @@ fn publish_nfcapd_tree_batch(
                     &job.absences,
                     &job.evidence,
                     true,
-                    sinks[sink_index].pipeline.run_maad,
+                    sinks[sink_index].pipeline.maad,
                 )?;
                 aggregate.include(&logical, timezone)?;
                 sinks[sink_index].report.rollup_buckets += aggregate.flush_complete(
                     sinks[sink_index].connection,
-                    sinks[sink_index].pipeline.run_maad,
+                    sinks[sink_index].pipeline.maad,
                 )?;
                 sinks[sink_index].report.five_minute_buckets += 1;
             }
@@ -2915,10 +2928,10 @@ fn process_nfcapd(
             Some(owner.revision.fingerprint.clone()),
         )],
         false,
-        pipeline.run_maad,
+        pipeline.maad,
     )?;
     aggregates.include(&bucket, &pipeline.timezone)?;
-    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.run_maad)?;
+    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.maad)?;
     report.five_minute_buckets += 1;
     Ok(())
 }
@@ -2969,10 +2982,10 @@ fn process_nfcapd_gap(
         &[absence],
         &evidence,
         false,
-        pipeline.run_maad,
+        pipeline.maad,
     )?;
     aggregates.include(&bucket, &pipeline.timezone)?;
-    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.run_maad)?;
+    report.rollup_buckets += aggregates.flush_complete(connection, pipeline.maad)?;
     report.five_minute_buckets += 1;
     Ok(())
 }
@@ -3145,7 +3158,7 @@ fn publish_nfcapd_bucket(
     absences: &[ExpectedAbsence],
     evidence: &[InputEvidenceRow],
     replace_existing: bool,
-    run_maad: bool,
+    maad: MaadScopes,
 ) -> Result<(), PipelineError> {
     for prepared in owners {
         if let Some(snapshot) = &prepared.snapshot {
@@ -3182,7 +3195,7 @@ fn publish_nfcapd_bucket(
             replace_existing,
         )?;
     }
-    write_buckets(connection, std::slice::from_ref(bucket), run_maad)?;
+    write_buckets(connection, std::slice::from_ref(bucket), maad)?;
     replace_input_evidence(
         connection,
         &bucket.key.source_id,
@@ -3385,7 +3398,7 @@ impl AggregateBuckets {
     fn flush_complete(
         &mut self,
         connection: &Connection,
-        run_maad: bool,
+        maad: MaadScopes,
     ) -> Result<usize, PipelineError> {
         let complete_keys = self
             .builders
@@ -3399,7 +3412,7 @@ impl AggregateBuckets {
             .map(StatisticalBucket::finish_owned)
             .collect::<Vec<_>>();
         let count = buckets.len();
-        write_buckets(connection, &buckets, run_maad)?;
+        write_buckets(connection, &buckets, maad)?;
         Ok(count)
     }
 
@@ -3418,7 +3431,7 @@ fn publish_rollups(
     report: &mut PipelineReport,
 ) -> Result<(), PipelineError> {
     let rollups = aggregates.finish();
-    write_buckets(connection, &rollups, pipeline.run_maad)?;
+    write_buckets(connection, &rollups, pipeline.maad)?;
     report.rollup_buckets += rollups.len();
     Ok(())
 }
@@ -3820,7 +3833,7 @@ mod tests {
         ResolvedPipeline {
             database_path: database,
             timezone: timezone.into(),
-            run_maad: false,
+            maad: MaadScopes::None,
             nfdump: PathBuf::from("/bin/true"),
             nfdump_revision: None,
             selection: daily_selection("192.0.0.0/16"),
@@ -3899,6 +3912,15 @@ mod tests {
             resolved_pipeline(&first_root, second_db.clone(), "edge", "UTC"),
         ]);
         assert!(timezones.contains("same timezone"), "{timezones}");
+
+        let mut opted_in =
+            resolved_pipeline(&first_root, second_db.clone(), "edge", DEFAULT_TIMEZONE);
+        opted_in.maad = MaadScopes::All;
+        let maad = incompatibility(vec![
+            resolved_pipeline(&first_root, first_db.clone(), "edge", DEFAULT_TIMEZONE),
+            opted_in,
+        ]);
+        assert!(maad.contains("same MAAD settings"), "{maad}");
 
         let outputs = incompatibility(vec![
             resolved_pipeline(&first_root, first_db.clone(), "edge", DEFAULT_TIMEZONE),
@@ -3988,6 +4010,7 @@ mod tests {
         assert!(resolved.selection.selects_daily_active_sources());
         assert!(!resolved.selection.locality().is_empty());
         assert_eq!(resolved.database_path, database);
+        assert_eq!(resolved.maad, MaadScopes::ExceptInternalSide);
     }
 
     #[test]

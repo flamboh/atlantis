@@ -21,11 +21,15 @@
 		IP_METRIC_OPTIONS,
 		type IpGranularity,
 		type IpMetricKey,
+		MAAD_ADDRESS_SIDES,
+		maadInternalSideCopy,
 		type MaadIpVersion,
 		type MaadMeasure,
 		maadMeasureHasSpectrum,
+		maadSideComputed,
 		type ProtocolMetricKey
 	} from '#lib/types/types.ts';
+	import type { DimensionSide } from '#lib/components/charts/breakdown-chart-config.ts';
 	import type { DimensionMetricKey } from '#lib/types/dimension-stats.ts';
 	import { createDateRangeSearch, type DateRangeSearch } from '#lib/schemas.ts';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
@@ -36,6 +40,7 @@
 		defaultStartDate: string;
 		hasLocality?: boolean;
 		maadComputed?: boolean;
+		maadInternalSide?: boolean;
 		routers?: string[];
 		title?: string;
 	}>();
@@ -172,10 +177,25 @@
 	const direction = $derived<FlowDirection>(hasLocality ? search.direction : 'all');
 	const measure = $derived<MaadMeasure>(search.measure);
 	const maadComputed = $derived(props.maadComputed ?? true);
+	const maadSkippedSides = $derived(
+		MAAD_ADDRESS_SIDES.filter(
+			(side) => !maadSideComputed(direction, side, props.maadInternalSide ?? true)
+		)
+	);
 	const maadUnavailableCopy = $derived(
-		maadComputed
-			? null
-			: 'MAAD was not computed for this dataset. Rebuild it without --no-maad to chart MAAD results.'
+		!maadComputed
+			? 'MAAD was not computed for this dataset. Rebuild it without --no-maad to chart MAAD results.'
+			: maadSkippedSides.length === MAAD_ADDRESS_SIDES.length
+				? maadInternalSideCopy(direction, maadSkippedSides)
+				: null
+	);
+	const maadSideUnavailableCopy = $derived<Partial<Record<DimensionSide, string>>>(
+		Object.fromEntries(
+			maadSkippedSides.map((side) => [
+				side === 'source' ? 'sa' : 'da',
+				maadInternalSideCopy(direction, [side])
+			])
+		)
 	);
 	const spectrumUnavailableCopy = $derived(
 		maadUnavailableCopy ??
@@ -571,6 +591,7 @@
 						{ipVersion}
 						{measure}
 						unavailableCopy={maadUnavailableCopy}
+						unavailableSideCopy={maadSideUnavailableCopy}
 						{direction}
 						onDrillDown={handleDrillDown}
 						onMetricsChange={(payload) => {
@@ -589,6 +610,7 @@
 						{ipVersion}
 						{measure}
 						unavailableCopy={spectrumUnavailableCopy}
+						unavailableSideCopy={maadSideUnavailableCopy}
 						availableRouters={availableSpectrumRouters}
 						{direction}
 						onDrillDown={handleDrillDown}

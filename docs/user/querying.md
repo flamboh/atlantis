@@ -125,6 +125,7 @@ ORDER BY source_id, bucket_start, ip_version, port_side, port_range;
 - `d0`, `d1`, and `d2` are the generalized dimensions. They are `NULL` when a bucket has too few addresses.
 - `tau` and `tau_sd` are little-endian 32-bit float arrays. Element `i` is at `q = q_min + i * q_step` from the `maad_q_grid` row with the same `ip_version`.
 - `spectrum` holds little-endian 32-bit `(alpha, f)` pairs, and only for the `addresses` measure.
+- Unless the dataset sets `maad_internal_side`, there are no rows for internal-side address sets: the `source` side where `src_locality = 'internal'` and the `destination` side where `dst_locality = 'internal'`. `datasets.maad_internal_side` records which applies.
 
 ```sql
 SELECT

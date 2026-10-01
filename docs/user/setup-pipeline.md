@@ -47,6 +47,7 @@ First, [configure the dataset](datasets.md). Then process a few days:
 - The output goes to `data/<dataset-id>/netflow.sqlite`.
 - Rerunning the same command skips days that are already done.
 - Add `--no-maad` to skip the address-structure (MAAD) statistics and finish faster.
+- MAAD skips address sets that hold only internal addresses, such as the source addresses of egress traffic. Set `"maad_internal_side": true` on the dataset to compute them too. See [dataset fields](datasets.md#fields).
 
 The pipeline refuses to write into a database built with different settings. Pass a new `--database-path` or delete the old database.
 
@@ -124,7 +125,7 @@ CSV input, and any mix of CSV and nfcapd input, uses a pipeline configuration fi
 }
 ```
 
-Input kinds are `csv`, `nfcapd`, `csv_tree`, and `nfcapd_tree`. Relative paths resolve from the configuration file's directory. For native nfcapd input, set `"nfdump": "target/nfdump/libexec/nfdump"` or pass `--nfdump`.
+Input kinds are `csv`, `nfcapd`, `csv_tree`, and `nfcapd_tree`. Relative paths resolve from the configuration file's directory. Add `"maad_internal_side": true` at the top level to compute MAAD for internal-side address sets; entries in the config's `datasets` list cannot set it. For native nfcapd input, set `"nfdump": "target/nfdump/libexec/nfdump"` or pass `--nfdump`.
 
 ## Run a long range on several hosts
 

@@ -11,7 +11,8 @@ The pipeline binds each database to one product identity. The identity contains 
 - The canonical endpoint-locality rules
 - The pipeline timezone
 - The native decoder contract
-- The MAAD enabled state, contract version, configuration, and measure set
+- The MAAD enabled state, contract version, configuration, and measure set, plus
+  `"internal_side": false` when the product skips internal-side address sets
 
 The pipeline rejects a database when its identity differs. Build a new database for a different product identity.
 
@@ -89,6 +90,38 @@ granularity. `addresses` weighs each address as 1 and stores structure, spectrum
 dimensions only. Prefix validity always uses distinct-address counts. A weighted measure excludes
 addresses whose counter sums to 0 and records the excluded count in `zero_weight_addrs`. The
 measure set is part of the result configuration identity.
+
+## Internal-side MAAD scopes
+
+An internal-side address set holds only internal addresses: the source addresses of
+internal-source traffic (`src_locality = 'internal'`, `address_side = 'source'`) and the
+destination addresses of internal-destination traffic (`dst_locality = 'internal'`,
+`address_side = 'destination'`). By default the pipeline does not compute MAAD for these sets, for
+any measure. It skips the computation itself, not only the write. `all`/`all` scopes and every
+external-side set are still computed. The address-count rows of every scope are unaffected.
+
+Per IP version and bucket, the default computes six of the ten address sets: both sides of
+`all`/`all` and `external`/`external`, the source side of `external`/`internal`, and the
+destination side of `internal`/`external`. A `daily_active_sources` product selects only
+internal sources, so its traffic falls in `internal`/`internal` and `internal`/`external`; the
+default leaves it with MAAD for both sides of `all`/`all` and the destination side of
+`internal`/`external`. Its other computed scopes stay empty.
+
+Set `maad_internal_side: true` in the dataset entry or at the top level of a pipeline config to
+compute every set. Only the skipping product records the setting in its identity, as
+`"internal_side": false` inside the `maad` result configuration. A product that computes every set
+keeps the identity it had before the setting existed, so existing databases stay extendable with
+the setting turned on, and a database built with one setting rejects runs with the other. Coordinated
+subset runs must agree on it.
+
+The `datasets.maad_internal_side` column mirrors the setting for the dashboard, which cannot read
+the product identity in D1. The pipeline adds the column, defaulting to 1, when it opens a database
+from before the setting existed. `verify` reads the setting from the product identity, fails when
+the column disagrees, rejects any internal-side MAAD row in a skipping product, and with
+`--require-maad-data` requires a MAAD row for every address set the product computes. `compare`
+counts reference rows for skipped sets as `skipped_reference_rows` instead of reference-only rows
+and rejects candidate rows for them. `merge-shards` refuses a skipping shard that stores
+internal-side rows.
 
 ## MAAD storage
 

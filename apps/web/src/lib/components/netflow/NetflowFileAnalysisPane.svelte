@@ -10,11 +10,13 @@
 	let {
 		kind,
 		sideLabel,
-		slot
+		slot,
+		unavailableCopy = null
 	}: {
 		kind: AnalysisKind;
 		sideLabel: 'source' | 'destination';
 		slot: FileDetailResourceView<StructureFunctionData | SpectrumData>;
+		unavailableCopy?: string | null;
 	} = $props();
 
 	const kindLabel = $derived(kind === 'structure' ? 'structure' : 'spectrum');
@@ -23,7 +25,11 @@
 	const errorLabel = $derived(`Error loading ${sideLabel} ${kindLabel}:`);
 </script>
 
-{#if slot.loading && slot.data === null}
+{#if unavailableCopy}
+	<div class="text-muted-foreground text-sm" data-testid="maad-side-unavailable">
+		{unavailableCopy}
+	</div>
+{:else if slot.loading && slot.data === null}
 	<div class="flex items-center justify-center py-6">
 		<div class="text-muted-foreground">{loadingLabel}</div>
 	</div>

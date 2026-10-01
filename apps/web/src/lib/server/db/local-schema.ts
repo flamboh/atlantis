@@ -6,7 +6,8 @@ export const localSchemaSql = `
 		source_mode TEXT DEFAULT 'static' NOT NULL,
 		discovery_mode TEXT DEFAULT 'static' NOT NULL,
 		sort_order INTEGER DEFAULT 0 NOT NULL,
-		has_locality INTEGER DEFAULT 0 NOT NULL
+		has_locality INTEGER DEFAULT 0 NOT NULL,
+		maad_internal_side INTEGER DEFAULT 1 NOT NULL
 	);
 
 	CREATE TABLE IF NOT EXISTS source_members (

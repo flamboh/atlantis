@@ -182,6 +182,27 @@ describe('dataset server helpers', () => {
 		).resolves.toBe('alpha');
 	});
 
+	it('reads the internal-side MAAD setting and treats legacy products as computing it', async () => {
+		vi.stubEnv('LOCAL_SQLITE_PATH', createSqliteFixture());
+		const legacy = await loadDatasetsModule();
+		await expect(legacy.getDatasetConfig('alpha')).resolves.toMatchObject({
+			maadInternalSide: 1
+		});
+
+		const dbPath = createSqliteFixture();
+		const alterResult = spawnSync(
+			'sqlite3',
+			[dbPath, 'ALTER TABLE datasets ADD maad_internal_side INTEGER DEFAULT 0 NOT NULL;'],
+			{ encoding: 'utf-8' }
+		);
+		expect(alterResult.status, alterResult.stderr).toBe(0);
+		vi.stubEnv('LOCAL_SQLITE_PATH', dbPath);
+		const current = await loadDatasetsModule();
+		await expect(current.getDatasetConfig('alpha')).resolves.toMatchObject({
+			maadInternalSide: 0
+		});
+	});
+
 	it('lists dataset summaries without reading traffic statistics', async () => {
 		const dbPath = createSqliteFixture();
 		const dropResult = spawnSync('sqlite3', [dbPath, 'DROP TABLE traffic_stats;'], {

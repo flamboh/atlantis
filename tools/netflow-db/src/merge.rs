@@ -11,10 +11,11 @@ use thiserror::Error;
 use crate::{
     provenance::canonical_json,
     storage::{
-        DatabaseOperationLock, FALLBACK_DEFAULT_START_DATE, StorageError, atomic_replace_sqlite,
-        canonical_path, connect_local_writer, connect_readonly, database_operation_lock_path,
-        database_related_paths, earliest_traffic_bucket_start,
-        optimize_all_query_planner_statistics, validate_database_path_separation,
+        DatabaseOperationLock, FALLBACK_DEFAULT_START_DATE, INTERNAL_SIDE_MAAD_SQL, StorageError,
+        atomic_replace_sqlite, canonical_path, connect_local_writer, connect_readonly,
+        database_operation_lock_path, database_related_paths, earliest_traffic_bucket_start,
+        optimize_all_query_planner_statistics, stored_maad_internal_side,
+        validate_database_path_separation,
     },
 };
 
@@ -329,6 +330,19 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
     }
     drop(rows);
     drop(statement);
+    if !stored_maad_internal_side(&connection)?
+        && connection.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM address_maad_stats WHERE {INTERNAL_SIDE_MAAD_SQL})"
+            ),
+            [],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(refused(format!(
+            "{label} skips internal-side MAAD but stores internal-side MAAD rows"
+        )));
+    }
     let source_members = connection
         .prepare("SELECT dataset_id, source_id, member_id FROM source_members")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?

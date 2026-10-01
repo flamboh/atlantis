@@ -54,7 +54,8 @@ async function listDatasetRows(): Promise<DatasetRow[]> {
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
 				sort_order AS sortOrder,
-				has_locality AS hasLocality
+				has_locality AS hasLocality,
+				maad_internal_side AS maadInternalSide
 			FROM datasets
 			ORDER BY sort_order ASC, id ASC
 		`
@@ -71,7 +72,8 @@ async function getDatasetRow(datasetId: string): Promise<DatasetRow> {
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
 				sort_order AS sortOrder,
-				has_locality AS hasLocality
+				has_locality AS hasLocality,
+				maad_internal_side AS maadInternalSide
 			FROM datasets
 			WHERE id = ?
 			LIMIT 1

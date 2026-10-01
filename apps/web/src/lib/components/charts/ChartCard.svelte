@@ -8,6 +8,7 @@
 		subtitle = null,
 		size = 'default',
 		unavailableCopy = null,
+		selectionUnavailableCopy = null,
 		loading,
 		error,
 		noMetrics,
@@ -34,6 +35,7 @@
 		subtitle?: string | null;
 		size?: 'default' | 'spectrum' | 'split';
 		unavailableCopy?: string | null;
+		selectionUnavailableCopy?: string | null;
 		loading: boolean;
 		error: string | null;
 		noMetrics: boolean;
@@ -96,7 +98,14 @@
 				{onmouseup}
 				{onmouseleave}
 			>
-				{#if loading}
+				{#if selectionUnavailableCopy}
+					<div
+						class="text-muted-foreground flex h-full items-center justify-center px-6 text-center"
+						data-testid="chart-selection-unavailable"
+					>
+						{selectionUnavailableCopy}
+					</div>
+				{:else if loading}
 					<div class="text-muted-foreground flex h-full items-center justify-center">
 						{loadingCopy}
 					</div>

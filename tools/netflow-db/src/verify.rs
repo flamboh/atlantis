@@ -8,6 +8,10 @@ use std::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use thiserror::Error;
 
+use crate::storage::{
+    INTERNAL_SIDE_MAAD_SQL, StorageError, datasets_maad_internal_side, stored_maad_internal_side,
+};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VerifyOptions {
     pub source_id: Option<String>,
@@ -36,6 +40,8 @@ pub enum VerifyError {
     Incompatible(String),
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }
 
 pub fn verify_database(
@@ -95,8 +101,20 @@ pub fn verify_database(
         }
     }
     assert_maad_encoding(&connection)?;
+    let maad_internal_side = stored_maad_internal_side(&connection)?;
+    if datasets_maad_internal_side(&connection)?
+        .is_some_and(|recorded| recorded != maad_internal_side)
+    {
+        return Err(VerifyError::Incompatible(
+            "datasets.maad_internal_side disagrees with the product's MAAD setting".into(),
+        ));
+    }
+    if !maad_internal_side {
+        assert_no_internal_side_maad(&connection)?;
+    }
     if options.require_maad_data {
         assert_maad_measures_present(&connection)?;
+        assert_maad_scopes_present(&connection, maad_internal_side)?;
     }
     if options.require_processed {
         assert_processed_inputs_complete(&connection)?;
@@ -566,6 +584,71 @@ fn assert_maad_measures_present(connection: &Connection) -> Result<(), VerifyErr
         )
         .optional()?;
     match incomplete {
+        Some(message) => Err(VerifyError::Incompatible(message)),
+        None => Ok(()),
+    }
+}
+
+/// A product that skips internal-side MAAD must store none.
+fn assert_no_internal_side_maad(connection: &Connection) -> Result<(), VerifyError> {
+    let stored: bool = connection.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM address_maad_stats WHERE {INTERNAL_SIDE_MAAD_SQL})"),
+        [],
+        |row| row.get(0),
+    )?;
+    if stored {
+        return Err(VerifyError::Incompatible(
+            "address_maad_stats has internal-side rows but datasets skip internal-side MAAD".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Every address set the product computes MAAD for must have a MAAD row.
+fn assert_maad_scopes_present(
+    connection: &Connection,
+    internal_side: bool,
+) -> Result<(), VerifyError> {
+    let scope_filter = if internal_side {
+        String::new()
+    } else {
+        format!("AND NOT {INTERNAL_SIDE_MAAD_SQL}")
+    };
+    let missing = connection
+        .query_row(
+            &format!(
+                "SELECT source_id, granularity, bucket_start, ip_version, src_locality,
+                        dst_locality, address_side
+                 FROM address_count_stats AS counts
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM address_maad_stats AS maad
+                     WHERE maad.source_id = counts.source_id
+                       AND maad.granularity = counts.granularity
+                       AND maad.src_locality = counts.src_locality
+                       AND maad.dst_locality = counts.dst_locality
+                       AND maad.ip_version = counts.ip_version
+                       AND maad.measure = 'addresses'
+                       AND maad.bucket_start = counts.bucket_start
+                       AND maad.address_side = counts.address_side
+                 ) {scope_filter}
+                 LIMIT 1"
+            ),
+            [],
+            |row| {
+                Ok(format!(
+                    "address_maad_stats has no rows for source {} {} bucket {} IPv{} {}->{} {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    match missing {
         Some(message) => Err(VerifyError::Incompatible(message)),
         None => Ok(()),
     }
@@ -1187,5 +1270,54 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("192.0.2.8"));
+    }
+
+    #[test]
+    fn maad_scopes_follow_the_internal_side_setting() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        for (src_locality, dst_locality, address_side) in [
+            ("all", "all", "source"),
+            ("internal", "external", "source"),
+            ("internal", "external", "destination"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO address_count_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, unique_address_count
+                     ) VALUES ('r1', '5m', 0, 300, 4, ?1, ?2, ?3, 1)",
+                    params![src_locality, dst_locality, address_side],
+                )
+                .unwrap();
+        }
+        let insert_maad = |src_locality: &str, dst_locality: &str, address_side: &str| {
+            connection
+                .execute(
+                    "INSERT INTO address_maad_stats (
+                        source_id, granularity, bucket_start, bucket_end, ip_version,
+                        src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+                     ) VALUES ('r1', '5m', 0, 300, 4, ?1, ?2, ?3, 'addresses', 1, X'')",
+                    params![src_locality, dst_locality, address_side],
+                )
+                .unwrap();
+        };
+        insert_maad("all", "all", "source");
+        insert_maad("internal", "external", "destination");
+
+        assert!(assert_no_internal_side_maad(&connection).is_ok());
+        assert!(assert_maad_scopes_present(&connection, false).is_ok());
+        let error = assert_maad_scopes_present(&connection, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no rows for source r1 5m bucket 0 IPv4 internal->external source"),
+            "{error}"
+        );
+
+        insert_maad("internal", "external", "source");
+        assert!(assert_maad_scopes_present(&connection, true).is_ok());
+        let error = assert_no_internal_side_maad(&connection).unwrap_err();
+        assert!(error.to_string().contains("internal-side rows"), "{error}");
     }
 }

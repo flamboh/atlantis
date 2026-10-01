@@ -34,7 +34,7 @@ function mockDatasetFetch(maadStatus: ReturnType<typeof jsonResponse>) {
 
 describe('/datasets/[dataset] load', () => {
 	it('returns the dataset page props from dataset metadata', async () => {
-		const fetch = mockDatasetFetch(jsonResponse({ computed: true }));
+		const fetch = mockDatasetFetch(jsonResponse({ computed: true, internalSide: false }));
 
 		const result = await load({
 			params: { dataset: 'uoregon' },
@@ -50,6 +50,7 @@ describe('/datasets/[dataset] load', () => {
 			defaultStartDate: '2025-02-11',
 			hasLocality: false,
 			maadComputed: true,
+			maadInternalSide: false,
 			routers: ['router-a', 'router-b']
 		});
 	});
@@ -57,10 +58,10 @@ describe('/datasets/[dataset] load', () => {
 	it('reports a dataset built without MAAD', async () => {
 		const result = await load({
 			params: { dataset: 'uoregon' },
-			fetch: mockDatasetFetch(jsonResponse({ computed: false }))
+			fetch: mockDatasetFetch(jsonResponse({ computed: false, internalSide: true }))
 		} as never);
 
-		expect(result).toMatchObject({ maadComputed: false });
+		expect(result).toMatchObject({ maadComputed: false, maadInternalSide: true });
 	});
 
 	it('fails when the MAAD status cannot be read', async () => {
@@ -74,7 +75,14 @@ describe('/datasets/[dataset] load', () => {
 		await expect(
 			load({
 				params: { dataset: 'uoregon' },
-				fetch: mockDatasetFetch(jsonResponse({ computed: 'yes' }))
+				fetch: mockDatasetFetch(jsonResponse({ computed: 'yes', internalSide: true }))
+			} as never)
+		).rejects.toMatchObject({ status: 500, body: { message: 'Invalid MAAD status response' } });
+
+		await expect(
+			load({
+				params: { dataset: 'uoregon' },
+				fetch: mockDatasetFetch(jsonResponse({ computed: true }))
 			} as never)
 		).rejects.toMatchObject({ status: 500, body: { message: 'Invalid MAAD status response' } });
 	});

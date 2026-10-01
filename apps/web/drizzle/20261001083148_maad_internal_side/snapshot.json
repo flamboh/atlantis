@@ -1,0 +1,1773 @@
+{
+	"version": "7",
+	"dialect": "sqlite",
+	"id": "09dd8c45-29e1-4934-bd9c-e92174d89c92",
+	"prevIds": ["839fdf34-c740-42cc-acd4-da4c91124f3f"],
+	"ddl": [
+		{
+			"name": "address_count_stats",
+			"entityType": "tables"
+		},
+		{
+			"name": "address_maad_stats",
+			"entityType": "tables"
+		},
+		{
+			"name": "bucket_coverage",
+			"entityType": "tables"
+		},
+		{
+			"name": "datasets",
+			"entityType": "tables"
+		},
+		{
+			"name": "maad_q_grid",
+			"entityType": "tables"
+		},
+		{
+			"name": "port_count_stats",
+			"entityType": "tables"
+		},
+		{
+			"name": "processed_inputs",
+			"entityType": "tables"
+		},
+		{
+			"name": "protocol_stats",
+			"entityType": "tables"
+		},
+		{
+			"name": "source_members",
+			"entityType": "tables"
+		},
+		{
+			"name": "traffic_stats",
+			"entityType": "tables"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "src_locality",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dst_locality",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "address_side",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "unique_address_count",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": "CURRENT_TIMESTAMP",
+			"generated": null,
+			"name": "processed_at",
+			"entityType": "columns",
+			"table": "address_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "src_locality",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dst_locality",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "address_side",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "measure",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "total_addrs",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "0",
+			"generated": null,
+			"name": "zero_weight_addrs",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "min_prefix_length",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "max_prefix_length",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "d0",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "d1",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "d2",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "blob",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "tau",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "blob",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "tau_sd",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "blob",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "spectrum",
+			"entityType": "columns",
+			"table": "address_maad_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "coverage_state",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "observed_units",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "expected_units",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "rejected_units",
+			"entityType": "columns",
+			"table": "bucket_coverage"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "id",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "label",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "default_start_date",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "'static'",
+			"generated": null,
+			"name": "source_mode",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "'static'",
+			"generated": null,
+			"name": "discovery_mode",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "0",
+			"generated": null,
+			"name": "sort_order",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "false",
+			"generated": null,
+			"name": "has_locality",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "true",
+			"generated": null,
+			"name": "maad_internal_side",
+			"entityType": "columns",
+			"table": "datasets"
+		},
+		{
+			"type": "integer",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "maad_q_grid"
+		},
+		{
+			"type": "real",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "q_min",
+			"entityType": "columns",
+			"table": "maad_q_grid"
+		},
+		{
+			"type": "real",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "q_step",
+			"entityType": "columns",
+			"table": "maad_q_grid"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "q_count",
+			"entityType": "columns",
+			"table": "maad_q_grid"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "src_locality",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dst_locality",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "port_side",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "port_range",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "unique_port_count",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": "CURRENT_TIMESTAMP",
+			"generated": null,
+			"name": "processed_at",
+			"entityType": "columns",
+			"table": "port_count_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "input_kind",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "input_locator",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": "'pending'",
+			"generated": null,
+			"name": "status",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "error_message",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": "CURRENT_TIMESTAMP",
+			"generated": null,
+			"name": "discovered_at",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "processed_at",
+			"entityType": "columns",
+			"table": "processed_inputs"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "src_locality",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dst_locality",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "unique_protocols_count",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "protocols_list",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": "CURRENT_TIMESTAMP",
+			"generated": null,
+			"name": "processed_at",
+			"entityType": "columns",
+			"table": "protocol_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dataset_id",
+			"entityType": "columns",
+			"table": "source_members"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "source_members"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "member_id",
+			"entityType": "columns",
+			"table": "source_members"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "source_id",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "granularity",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_start",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bucket_end",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "ip_version",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "src_locality",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "text",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "dst_locality",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "flows",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "flows_tcp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "flows_udp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "flows_icmp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "flows_other",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "packets",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "packets_tcp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "packets_udp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "packets_icmp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "packets_other",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bytes",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bytes_tcp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bytes_udp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bytes_icmp",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "bytes_other",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "duration_sum_ms",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "duration_count",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "average_duration_ms",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "min_ttl_sum",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "min_ttl_count",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "average_min_ttl",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "max_ttl_sum",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "integer",
+			"notNull": true,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "max_ttl_count",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "real",
+			"notNull": false,
+			"autoincrement": false,
+			"default": null,
+			"generated": null,
+			"name": "average_max_ttl",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"type": "text",
+			"notNull": false,
+			"autoincrement": false,
+			"default": "CURRENT_TIMESTAMP",
+			"generated": null,
+			"name": "processed_at",
+			"entityType": "columns",
+			"table": "traffic_stats"
+		},
+		{
+			"columns": [
+				"source_id",
+				"granularity",
+				"bucket_start",
+				"ip_version",
+				"src_locality",
+				"dst_locality",
+				"address_side"
+			],
+			"nameExplicit": false,
+			"name": "address_count_stats_source_id_granularity_bucket_start_ip_version_src_locality_dst_locality_address_side_pk",
+			"entityType": "pks",
+			"table": "address_count_stats"
+		},
+		{
+			"columns": ["source_id", "granularity", "bucket_start"],
+			"nameExplicit": false,
+			"name": "bucket_coverage_source_id_granularity_bucket_start_pk",
+			"entityType": "pks",
+			"table": "bucket_coverage"
+		},
+		{
+			"columns": [
+				"source_id",
+				"granularity",
+				"bucket_start",
+				"ip_version",
+				"src_locality",
+				"dst_locality",
+				"port_side",
+				"port_range"
+			],
+			"nameExplicit": false,
+			"name": "port_count_stats_source_id_granularity_bucket_start_ip_version_src_locality_dst_locality_port_side_port_range_pk",
+			"entityType": "pks",
+			"table": "port_count_stats"
+		},
+		{
+			"columns": ["input_kind", "input_locator", "source_id", "bucket_start"],
+			"nameExplicit": false,
+			"name": "processed_inputs_input_kind_input_locator_source_id_bucket_start_pk",
+			"entityType": "pks",
+			"table": "processed_inputs"
+		},
+		{
+			"columns": [
+				"source_id",
+				"granularity",
+				"bucket_start",
+				"ip_version",
+				"src_locality",
+				"dst_locality"
+			],
+			"nameExplicit": false,
+			"name": "protocol_stats_source_id_granularity_bucket_start_ip_version_src_locality_dst_locality_pk",
+			"entityType": "pks",
+			"table": "protocol_stats"
+		},
+		{
+			"columns": ["dataset_id", "source_id", "member_id"],
+			"nameExplicit": false,
+			"name": "source_members_dataset_id_source_id_member_id_pk",
+			"entityType": "pks",
+			"table": "source_members"
+		},
+		{
+			"columns": [
+				"source_id",
+				"granularity",
+				"bucket_start",
+				"ip_version",
+				"src_locality",
+				"dst_locality"
+			],
+			"nameExplicit": false,
+			"name": "traffic_stats_source_id_granularity_bucket_start_ip_version_src_locality_dst_locality_pk",
+			"entityType": "pks",
+			"table": "traffic_stats"
+		},
+		{
+			"columns": ["id"],
+			"nameExplicit": false,
+			"name": "datasets_pk",
+			"table": "datasets",
+			"entityType": "pks"
+		},
+		{
+			"columns": ["ip_version"],
+			"nameExplicit": false,
+			"name": "maad_q_grid_pk",
+			"table": "maad_q_grid",
+			"entityType": "pks"
+		},
+		{
+			"columns": [
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				},
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "ip_version",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "address_side",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_address_count_stats_query",
+			"entityType": "indexes",
+			"table": "address_count_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_address_count_stats_timeseries",
+			"entityType": "indexes",
+			"table": "address_count_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "ip_version",
+					"isExpression": false
+				},
+				{
+					"value": "measure",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				},
+				{
+					"value": "address_side",
+					"isExpression": false
+				}
+			],
+			"isUnique": true,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_address_maad_stats_key",
+			"entityType": "indexes",
+			"table": "address_maad_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_address_maad_stats_bucket",
+			"entityType": "indexes",
+			"table": "address_maad_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				},
+				{
+					"value": "source_id",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_bucket_coverage_query",
+			"entityType": "indexes",
+			"table": "bucket_coverage"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_port_count_stats_timeseries",
+			"entityType": "indexes",
+			"table": "port_count_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_processed_inputs_source_bucket",
+			"entityType": "indexes",
+			"table": "processed_inputs"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_protocol_stats_timeseries",
+			"entityType": "indexes",
+			"table": "protocol_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				},
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "ip_version",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_traffic_stats_query",
+			"entityType": "indexes",
+			"table": "traffic_stats"
+		},
+		{
+			"columns": [
+				{
+					"value": "source_id",
+					"isExpression": false
+				},
+				{
+					"value": "granularity",
+					"isExpression": false
+				},
+				{
+					"value": "src_locality",
+					"isExpression": false
+				},
+				{
+					"value": "dst_locality",
+					"isExpression": false
+				},
+				{
+					"value": "bucket_start",
+					"isExpression": false
+				}
+			],
+			"isUnique": false,
+			"where": null,
+			"origin": "manual",
+			"name": "idx_traffic_stats_timeseries",
+			"entityType": "indexes",
+			"table": "traffic_stats"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "address_count_stats_ip_version_check",
+			"entityType": "checks",
+			"table": "address_count_stats"
+		},
+		{
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
+			"name": "address_count_stats_src_locality_check",
+			"entityType": "checks",
+			"table": "address_count_stats"
+		},
+		{
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
+			"name": "address_count_stats_dst_locality_check",
+			"entityType": "checks",
+			"table": "address_count_stats"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "address_maad_stats_ip_version_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
+			"name": "address_maad_stats_src_locality_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
+			"name": "address_maad_stats_dst_locality_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"measure\" IN ('addresses', 'packets', 'bytes')",
+			"name": "address_maad_stats_measure_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"bucket_end\" > \"bucket_start\"",
+			"name": "address_maad_stats_bucket_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"total_addrs\" >= 0",
+			"name": "address_maad_stats_total_addrs_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"zero_weight_addrs\" >= 0 AND (\"measure\" <> 'addresses' OR \"zero_weight_addrs\" = 0)",
+			"name": "address_maad_stats_zero_weight_addrs_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"max_prefix_length\" >= \"min_prefix_length\"",
+			"name": "address_maad_stats_prefix_length_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "typeof(\"tau\") IN ('null', 'blob') AND length(\"tau\") > 0 AND length(\"tau\") % 4 = 0",
+			"name": "address_maad_stats_tau_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "typeof(\"tau_sd\") = typeof(\"tau\") AND length(\"tau_sd\") IS length(\"tau\")",
+			"name": "address_maad_stats_tau_sd_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "typeof(\"spectrum\") IN ('null', 'blob') AND length(\"spectrum\") % 8 = 0",
+			"name": "address_maad_stats_spectrum_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"measure\" = 'addresses' OR \"spectrum\" IS NULL",
+			"name": "address_maad_stats_measure_spectrum_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "(\"tau\" IS NULL) = (\"d0\" IS NULL)",
+			"name": "address_maad_stats_tau_d0_check",
+			"entityType": "checks",
+			"table": "address_maad_stats"
+		},
+		{
+			"value": "\"bucket_end\" > \"bucket_start\"",
+			"name": "bucket_coverage_interval_check",
+			"entityType": "checks",
+			"table": "bucket_coverage"
+		},
+		{
+			"value": "\"expected_units\" > 0",
+			"name": "bucket_coverage_expected_check",
+			"entityType": "checks",
+			"table": "bucket_coverage"
+		},
+		{
+			"value": "\"observed_units\" >= 0 AND \"observed_units\" <= \"expected_units\"",
+			"name": "bucket_coverage_observed_check",
+			"entityType": "checks",
+			"table": "bucket_coverage"
+		},
+		{
+			"value": "\"rejected_units\" >= 0 AND \"rejected_units\" <= \"expected_units\"",
+			"name": "bucket_coverage_rejected_check",
+			"entityType": "checks",
+			"table": "bucket_coverage"
+		},
+		{
+			"value": "(\"coverage_state\" = 'complete' AND \"observed_units\" = \"expected_units\" AND \"rejected_units\" = 0) OR (\"coverage_state\" = 'unknown' AND \"observed_units\" = 0 AND \"rejected_units\" = 0) OR (\"coverage_state\" = 'partial' AND NOT (\"observed_units\" = \"expected_units\" AND \"rejected_units\" = 0) AND NOT (\"observed_units\" = 0 AND \"rejected_units\" = 0))",
+			"name": "bucket_coverage_state_check",
+			"entityType": "checks",
+			"table": "bucket_coverage"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "maad_q_grid_ip_version_check",
+			"entityType": "checks",
+			"table": "maad_q_grid"
+		},
+		{
+			"value": "\"q_step\" > 0",
+			"name": "maad_q_grid_q_step_check",
+			"entityType": "checks",
+			"table": "maad_q_grid"
+		},
+		{
+			"value": "\"q_count\" > 0",
+			"name": "maad_q_grid_q_count_check",
+			"entityType": "checks",
+			"table": "maad_q_grid"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "port_count_stats_ip_version_check",
+			"entityType": "checks",
+			"table": "port_count_stats"
+		},
+		{
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
+			"name": "port_count_stats_src_locality_check",
+			"entityType": "checks",
+			"table": "port_count_stats"
+		},
+		{
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
+			"name": "port_count_stats_dst_locality_check",
+			"entityType": "checks",
+			"table": "port_count_stats"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "protocol_stats_ip_version_check",
+			"entityType": "checks",
+			"table": "protocol_stats"
+		},
+		{
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
+			"name": "protocol_stats_src_locality_check",
+			"entityType": "checks",
+			"table": "protocol_stats"
+		},
+		{
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
+			"name": "protocol_stats_dst_locality_check",
+			"entityType": "checks",
+			"table": "protocol_stats"
+		},
+		{
+			"value": "\"ip_version\" IN (4, 6)",
+			"name": "traffic_stats_ip_version_check",
+			"entityType": "checks",
+			"table": "traffic_stats"
+		},
+		{
+			"value": "\"src_locality\" IN ('all', 'internal', 'external')",
+			"name": "traffic_stats_src_locality_check",
+			"entityType": "checks",
+			"table": "traffic_stats"
+		},
+		{
+			"value": "\"dst_locality\" IN ('all', 'internal', 'external')",
+			"name": "traffic_stats_dst_locality_check",
+			"entityType": "checks",
+			"table": "traffic_stats"
+		}
+	],
+	"renames": []
+}

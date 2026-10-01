@@ -110,6 +110,7 @@
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
 		unavailableCopy?: string | null;
+		unavailableSideCopy?: Partial<Record<DimensionSide, string>>;
 		availableRouters?: string[];
 		routers?: RouterConfig;
 		activeMetrics?: MetricsForKind<Kind>;
@@ -201,6 +202,18 @@
 				: null
 	);
 	let addressType = $derived(props.addressType ?? 'sa');
+	const selectedSide = $derived<DimensionSide | null>(
+		props.kind === 'spectrum'
+			? addressType
+			: props.kind === 'dimensions'
+				? splitDimensionMetricKey(
+						(activeMetrics[0] ?? config.defaultMetrics[0]) as DimensionMetricKey
+					).side
+				: null
+	);
+	const sideUnavailableCopy = $derived(
+		selectedSide ? (props.unavailableSideCopy?.[selectedSide] ?? null) : null
+	);
 
 	const maadSubtitle = $derived(
 		config.usesMaad && !props.unavailableCopy
@@ -1280,6 +1293,7 @@
 	subtitle={maadSubtitle}
 	size={props.kind === 'spectrum' ? 'spectrum' : 'default'}
 	unavailableCopy={props.unavailableCopy ?? null}
+	selectionUnavailableCopy={sideUnavailableCopy}
 	{loading}
 	{error}
 	noMetrics={props.kind === 'spectrum'

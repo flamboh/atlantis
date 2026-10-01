@@ -271,6 +271,11 @@ async function readDatasetRowsFromEntry(
 		return [];
 	}
 
+	const maadInternalSide = await entry.db.get<{ present: number }>(
+		`SELECT EXISTS(
+			SELECT 1 FROM pragma_table_info('datasets') WHERE name = 'maad_internal_side'
+		) AS present`
+	);
 	const rows = await entry.db.all<DatasetRow>(
 		`
 			SELECT
@@ -279,7 +284,8 @@ async function readDatasetRowsFromEntry(
 				default_start_date AS defaultStartDate,
 				discovery_mode AS discoveryMode,
 				sort_order AS sortOrder,
-				has_locality AS hasLocality
+				has_locality AS hasLocality,
+				${maadInternalSide?.present === 1 ? 'maad_internal_side' : '1'} AS maadInternalSide
 			FROM datasets
 			ORDER BY sort_order ASC, id ASC
 		`

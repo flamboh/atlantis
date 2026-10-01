@@ -20,6 +20,7 @@ export type DatasetRow = {
 	discoveryMode: string;
 	sortOrder: number;
 	hasLocality: number;
+	maadInternalSide: number;
 };
 
 export type SourceDefinition = {

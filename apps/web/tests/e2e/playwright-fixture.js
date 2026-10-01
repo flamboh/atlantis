@@ -73,6 +73,13 @@ export function seedPlaywrightDatabase() {
 	`);
 	database.exec(`
 		UPDATE datasets SET has_locality = 1 WHERE id = 'playwright';
+		INSERT INTO datasets (
+			id, label, default_start_date, source_mode, discovery_mode, sort_order, has_locality,
+			maad_internal_side
+		) VALUES (
+			'playwright-external-maad', 'Playwright External MAAD', '2025-03-01', 'static', 'static',
+			1, 1, 0
+		);
 		INSERT INTO address_maad_stats (
 			source_id, granularity, bucket_start, bucket_end, ip_version, src_locality, dst_locality,
 			address_side, measure, total_addrs, d0, d1, d2, tau, tau_sd, spectrum

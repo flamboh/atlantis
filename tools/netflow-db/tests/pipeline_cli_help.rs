@@ -1,4 +1,4 @@
-use std::{fs, process::Command};
+use std::{fs, path::Path, process::Command};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -519,4 +519,195 @@ fn csv_pipeline_drops_and_logs_zero_packet_flows_but_keeps_coverage() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(rows, [(0, 1, 4, 1), (300, 0, 0, 1)]);
+}
+
+#[test]
+fn csv_pipeline_skips_internal_side_maad_unless_the_config_opts_in() {
+    let temporary = tempdir().unwrap();
+    let csv = temporary.path().join("flows.csv");
+    let mapping = temporary.path().join("mapping.json");
+    fs::write(
+        &csv,
+        concat!(
+            "received,src,dst,packets,bytes\n",
+            "0,192.0.2.1,203.0.113.1,2,100\n",
+            "1,203.0.113.1,192.0.2.2,3,200\n",
+            "2,192.0.2.1,192.0.2.3,5,300\n",
+            "3,203.0.113.1,203.0.113.2,7,400\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &mapping,
+        serde_json::to_vec(&serde_json::json!({
+            "timestamp_format": "unix",
+            "timestamp_timezone": "UTC",
+            "columns": {
+                "time_received": "received",
+                "src_ip": "src",
+                "dst_ip": "dst",
+                "packets": "packets",
+                "bytes": "bytes"
+            },
+            "source_id": {"value": "edge"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let build = |name: &str, settings: serde_json::Value| {
+        let database = temporary.path().join(format!("{name}.sqlite"));
+        let config = temporary.path().join(format!("{name}.json"));
+        let mut payload = serde_json::json!({
+            "database_path": database,
+            "timezone": "UTC",
+            "locality": [{"type": "prefixes", "prefixes": ["192.0.2.0/24"]}],
+            "inputs": [{"input_kind": "csv", "path": csv, "mapping_path": mapping}],
+            "datasets": [{"dataset_id": "edge", "root_path": temporary.path()}]
+        });
+        for (key, value) in settings.as_object().unwrap() {
+            payload[key] = value.clone();
+        }
+        fs::write(&config, serde_json::to_vec(&payload).unwrap()).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+            .args(["pipeline", "--config", config.to_str().unwrap()])
+            .output()
+            .unwrap();
+        (database, config, output)
+    };
+    let scopes = |database: &Path| -> Vec<String> {
+        Connection::open(database)
+            .unwrap()
+            .prepare(
+                "SELECT DISTINCT src_locality || '->' || dst_locality || ':' || address_side
+                 FROM address_maad_stats WHERE ip_version = 4 AND measure = 'bytes' ORDER BY 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let stored = |database: &Path, query: &str| -> String {
+        Connection::open(database)
+            .unwrap()
+            .query_row(query, [], |row| row.get(0))
+            .unwrap()
+    };
+    let verify = |database: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+            .args([
+                "verify",
+                database.to_str().unwrap(),
+                "--require-data",
+                "--require-maad-data",
+            ])
+            .output()
+            .unwrap()
+    };
+
+    let (skipped, skipped_config, output) = build("skipped", serde_json::json!({}));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        scopes(&skipped),
+        [
+            "all->all:destination",
+            "all->all:source",
+            "external->external:destination",
+            "external->external:source",
+            "external->internal:source",
+            "internal->external:destination",
+        ]
+    );
+    assert_eq!(
+        stored(
+            &skipped,
+            "SELECT CAST(maad_internal_side AS TEXT) FROM datasets WHERE id = 'edge'"
+        ),
+        "0"
+    );
+    let config_json = stored(&skipped, "SELECT config_json FROM pipeline_product");
+    assert!(
+        config_json.contains("\"internal_side\":false"),
+        "{config_json}"
+    );
+    let output = verify(&skipped);
+    assert!(output.status.success(), "{output:?}");
+
+    let (disabled, _, output) = build("disabled", serde_json::json!({"run_maad": false}));
+    assert!(output.status.success(), "{output:?}");
+    assert!(scopes(&disabled).is_empty());
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args(["verify", disabled.to_str().unwrap(), "--require-data"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+
+    let (computed, _, output) = build("computed", serde_json::json!({"maad_internal_side": true}));
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(scopes(&computed).len(), 10);
+    assert_eq!(
+        stored(
+            &computed,
+            "SELECT CAST(maad_internal_side AS TEXT) FROM datasets WHERE id = 'edge'"
+        ),
+        "1"
+    );
+    let config_json = stored(&computed, "SELECT config_json FROM pipeline_product");
+    assert!(!config_json.contains("internal_side"), "{config_json}");
+    let output = verify(&computed);
+    assert!(output.status.success(), "{output:?}");
+
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(&fs::read(&skipped_config).unwrap()).unwrap();
+    payload["maad_internal_side"] = serde_json::json!(true);
+    fs::write(&skipped_config, serde_json::to_vec(&payload).unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args(["pipeline", "--config", skipped_config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("identity"), "stderr={stderr}");
+
+    payload["datasets"][0]["maad_internal_side"] = serde_json::json!(true);
+    fs::write(&skipped_config, serde_json::to_vec(&payload).unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_netflow-db"))
+        .args(["pipeline", "--config", skipped_config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("top level"), "stderr={stderr}");
+
+    let connection = Connection::open(&skipped).unwrap();
+    connection
+        .execute("UPDATE datasets SET maad_internal_side = 1", [])
+        .unwrap();
+    let output = verify(&skipped);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("disagrees"),
+        "{output:?}"
+    );
+    connection
+        .execute("UPDATE datasets SET maad_internal_side = 0", [])
+        .unwrap();
+    drop(connection);
+
+    Connection::open(&skipped)
+        .unwrap()
+        .execute(
+            "INSERT INTO address_maad_stats (
+                source_id, granularity, bucket_start, bucket_end, ip_version,
+                src_locality, dst_locality, address_side, measure, total_addrs, spectrum
+             ) VALUES ('edge', '5m', 0, 300, 4, 'internal', 'internal', 'source', 'addresses', 0, X'')",
+            [],
+        )
+        .unwrap();
+    let output = verify(&skipped);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("internal-side rows"),
+        "{output:?}"
+    );
 }

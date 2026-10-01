@@ -18,4 +18,5 @@ export interface DimensionStatsResponse {
 
 export interface MaadStatusResponse {
 	computed: boolean;
+	internalSide: boolean;
 }

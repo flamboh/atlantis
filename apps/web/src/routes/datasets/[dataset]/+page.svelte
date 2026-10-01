@@ -11,5 +11,6 @@
 	defaultStartDate={data.defaultStartDate}
 	hasLocality={data.hasLocality}
 	maadComputed={data.maadComputed}
+	maadInternalSide={data.maadInternalSide}
 	routers={data.routers}
 />

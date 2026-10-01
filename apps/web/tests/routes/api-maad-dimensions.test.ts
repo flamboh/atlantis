@@ -2,10 +2,11 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GET as getDimensionStats } from '../../src/routes/api/netflow/dimension-stats/+server';
 import { GET as getMaadStatus } from '../../src/routes/api/netflow/maad-status/+server';
-import { getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
+import { getDatasetConfig, getRequestedDataset, withDatasetDb } from '#lib/server/datasets.ts';
 import { localSchemaSql } from '#lib/server/db/local-schema.ts';
 
 vi.mock('#lib/server/datasets.ts', () => ({
+	getDatasetConfig: vi.fn(),
 	getRequestedDataset: vi.fn(),
 	withDatasetDb: vi.fn()
 }));
@@ -211,8 +212,11 @@ describe('/api/netflow/maad-status', () => {
 		const database = openDatabase();
 		const url = new URL('http://localhost/api/netflow/maad-status?dataset=alpha');
 
+		vi.mocked(getDatasetConfig).mockResolvedValue({ maadInternalSide: 1 } as never);
+
 		await expect((await getMaadStatus({ url } as never)).json()).resolves.toEqual({
-			computed: false
+			computed: false,
+			internalSide: true
 		});
 
 		database
@@ -221,7 +225,25 @@ describe('/api/netflow/maad-status', () => {
 			)
 			.run();
 		await expect((await getMaadStatus({ url } as never)).json()).resolves.toEqual({
-			computed: true
+			computed: true,
+			internalSide: true
 		});
+	});
+
+	it('reports a product that skipped internal-side MAAD', async () => {
+		const database = openDatabase();
+		database
+			.prepare(
+				'INSERT INTO maad_q_grid (ip_version, q_min, q_step, q_count) VALUES (4, -0.5, 0.125, 33)'
+			)
+			.run();
+		vi.mocked(getDatasetConfig).mockResolvedValue({ maadInternalSide: 0 } as never);
+		const url = new URL('http://localhost/api/netflow/maad-status?dataset=alpha');
+
+		await expect((await getMaadStatus({ url } as never)).json()).resolves.toEqual({
+			computed: true,
+			internalSide: false
+		});
+		expect(getDatasetConfig).toHaveBeenCalledWith('alpha');
 	});
 });

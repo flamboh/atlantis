@@ -13,6 +13,14 @@ test('dataset metadata is served from the fixture product', async ({ request }) 
 				discoveryMode: 'static',
 				hasLocality: true,
 				isDefault: true
+			},
+			{
+				datasetId: 'playwright-external-maad',
+				label: 'Playwright External MAAD',
+				defaultStartDate: '2025-03-01',
+				discoveryMode: 'static',
+				hasLocality: true,
+				isDefault: false
 			}
 		],
 		error: null

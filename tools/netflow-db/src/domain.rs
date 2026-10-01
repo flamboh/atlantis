@@ -831,6 +831,51 @@ impl MaadMeasure {
     }
 }
 
+/// The scoped address sets a product computes MAAD for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaadScopes {
+    None,
+    /// Every address set except internal-side ones.
+    ExceptInternalSide,
+    All,
+}
+
+impl MaadScopes {
+    #[must_use]
+    pub const fn new(enabled: bool, internal_side: bool) -> Self {
+        match (enabled, internal_side) {
+            (false, _) => Self::None,
+            (true, false) => Self::ExceptInternalSide,
+            (true, true) => Self::All,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    #[must_use]
+    pub const fn includes(self, scope: Scope, address_side: AddressSide) -> bool {
+        match self {
+            Self::None => false,
+            Self::ExceptInternalSide => !is_internal_side(scope, address_side),
+            Self::All => true,
+        }
+    }
+}
+
+/// Whether an address set holds only internal addresses: the source addresses of
+/// internal-source traffic or the destination addresses of internal-destination traffic.
+#[must_use]
+pub const fn is_internal_side(scope: Scope, address_side: AddressSide) -> bool {
+    matches!(
+        (address_side, scope.src_locality, scope.dst_locality),
+        (AddressSide::Source, Locality::Internal, _)
+            | (AddressSide::Destination, _, Locality::Internal)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedAddressesFact {
     pub scope: Scope,
