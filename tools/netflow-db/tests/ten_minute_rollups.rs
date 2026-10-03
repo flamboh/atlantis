@@ -122,6 +122,7 @@ fn ten_minute_rollups_match_their_five_minute_children() {
         "address_count_stats",
         "port_count_stats",
         "address_maad_stats",
+        "address_concentration_stats",
     ] {
         let rows: i64 = connection
             .query_row(

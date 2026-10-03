@@ -308,6 +308,57 @@ describe('D1 migrations', () => {
 		}
 	});
 
+	it.each([
+		[
+			'migrated',
+			(database: Database.Database) =>
+				migrationFiles().forEach((file) => applyMigration(database, file))
+		],
+		['local', (database: Database.Database) => database.exec(localSchemaSql)]
+	])('stores concentration with the same constraints in the %s schema', (_schema, createSchema) => {
+		const database = new Database(':memory:');
+		try {
+			createSchema(database);
+			const insert = database.prepare(`
+				INSERT INTO address_concentration_stats (
+				    source_id, granularity, bucket_start, bucket_end, ip_version,
+				    src_locality, dst_locality, address_side, measure, weight_total, entry_count,
+				    hhi, top1_share, top10_share, top100_share,
+				    entropy_p8, entropy_p16, entropy_p24, entropy_p32, entropy_p48, entropy_p64, entropy_p128
+				) VALUES ('edge', '5m', 0, 300, ?, 'all', 'all', 'source', 'addresses', 2, 2,
+				          0.5, 0.5, 1, 1, ?, ?, ?, 1, ?, ?, ?)
+			`);
+			insert.run(4, 0, 0, 0, null, null, null);
+			insert.run(6, null, null, null, 0, 0, 1);
+			expect(
+				database.prepare('SELECT COUNT(*) AS count FROM address_concentration_stats').get()
+			).toEqual({ count: 2 });
+			for (const change of [
+				'hhi = 1.1',
+				'hhi = NULL',
+				'weight_total = 0',
+				'top10_share = 0.1',
+				'entropy_p32 = NULL',
+				'entry_count = 1'
+			]) {
+				expect(() => database.exec(`UPDATE address_concentration_stats SET ${change}`)).toThrow(
+					/CHECK constraint failed/
+				);
+			}
+			expect(() =>
+				database.exec('UPDATE address_concentration_stats SET entropy_p8 = 0 WHERE ip_version = 6')
+			).toThrow(/CHECK constraint failed/);
+			expect(() =>
+				database.exec(
+					'UPDATE address_concentration_stats SET entropy_p128 = 0 WHERE ip_version = 4'
+				)
+			).toThrow(/CHECK constraint failed/);
+			expect(() => insert.run(4, 0, 0, 0, null, null, null)).toThrow(/UNIQUE constraint failed/);
+		} finally {
+			database.close();
+		}
+	});
+
 	it('upgrades the deployed coverage schema without retaining unused bucket-first indexes', () => {
 		const database = new Database(':memory:');
 		const migrations = migrationFiles();

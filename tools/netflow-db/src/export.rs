@@ -363,6 +363,31 @@ fn required_columns(table: &str) -> Vec<&'static str> {
         ]);
         return columns;
     }
+    if table == "address_concentration_stats" {
+        let mut columns = COMMON_COLUMNS
+            .iter()
+            .copied()
+            .filter(|column| *column != "processed_at")
+            .collect::<Vec<_>>();
+        columns.extend([
+            "address_side",
+            "measure",
+            "weight_total",
+            "entry_count",
+            "hhi",
+            "top1_share",
+            "top10_share",
+            "top100_share",
+            "entropy_p8",
+            "entropy_p16",
+            "entropy_p24",
+            "entropy_p32",
+            "entropy_p48",
+            "entropy_p64",
+            "entropy_p128",
+        ]);
+        return columns;
+    }
     if table == "bucket_coverage" {
         return vec![
             "source_id",

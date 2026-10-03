@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-const MIN_MAAD_ADDRESSES: usize = 2;
+pub(crate) const MIN_MAAD_ADDRESSES: usize = 2;
 const SCHEMA_VERSION: u32 = 3;
 const DEFAULT_FULL_THRESHOLD: f64 = 0.05;
 const DEFAULT_Q_STEP: f64 = 1.0 / 8.0;
@@ -291,11 +291,97 @@ pub fn compute_measures_with_config<A: MaadAddress, const K: usize>(
     ))
 }
 
-/// Validate, sort and sum weighted entries, then walk their prefix levels once.
+pub(crate) struct MeasuresWithConcentration<const K: usize> {
+    pub addresses: MaadResult,
+    pub weighted: [MaadResult; K],
+    pub concentration_addresses: crate::concentration::ConcentrationResult,
+    pub concentration_weighted: [crate::concentration::ConcentrationResult; K],
+}
+
+pub(crate) fn compute_measures_with_concentration<A: MaadAddress, const K: usize>(
+    entries: impl IntoIterator<Item = (A, [f64; K])>,
+) -> Result<MeasuresWithConcentration<K>, MaadError> {
+    let config = A::default_config();
+    let prepared = prepare_measures(entries, &config)?;
+    let concentration_addresses = crate::concentration::compute_sorted(
+        prepared.entries.iter().map(|&(address, _)| (address, 1.0)),
+        true,
+    );
+    let concentration_weighted = std::array::from_fn(|k| {
+        crate::concentration::compute_sorted(
+            prepared
+                .entries
+                .iter()
+                .map(|&(address, weights)| (address, weights[k])),
+            false,
+        )
+    });
+    let (analysis, q_values) = prepared.analyze(&config);
+    Ok(MeasuresWithConcentration {
+        addresses: analysis.address_result(&q_values, config.q_step),
+        weighted: std::array::from_fn(|k| analysis.weighted_result(k, &q_values)),
+        concentration_addresses,
+        concentration_weighted,
+    })
+}
+
+pub(crate) fn compute_weighted_with_concentration<A: MaadAddress>(
+    entries: impl IntoIterator<Item = (A, f64)>,
+) -> Result<(MaadResult, crate::concentration::ConcentrationResult), MaadError> {
+    let config = A::default_config();
+    let prepared = prepare_measures(
+        entries
+            .into_iter()
+            .map(|(address, weight)| (address, [weight])),
+        &config,
+    )?;
+    let concentration = crate::concentration::compute_sorted(
+        prepared
+            .entries
+            .iter()
+            .map(|&(address, weights)| (address, weights[0])),
+        false,
+    );
+    let (analysis, q_values) = prepared.analyze(&config);
+    Ok((analysis.weighted_result(0, &q_values), concentration))
+}
+
+struct PreparedMeasures<B, const K: usize> {
+    entries: Vec<(B, [f64; K])>,
+    totals: [f64; K],
+    q_values: Vec<f64>,
+}
+
+impl<B: PrefixBits, const K: usize> PreparedMeasures<B, K> {
+    fn analyze(self, config: &MaadConfig) -> (Analysis, Vec<f64>) {
+        if self.entries.len() < MIN_MAAD_ADDRESSES {
+            return (Analysis::empty(self.entries.len(), K), self.q_values);
+        }
+        let addresses: Vec<_> = self.entries.iter().map(|&(address, _)| address).collect();
+        let columns: Vec<Vec<f64>> = (0..K)
+            .map(|k| self.entries.iter().map(|(_, weights)| weights[k]).collect())
+            .collect();
+        drop(self.entries);
+        (
+            analyze(&addresses, &columns, &self.totals, config),
+            self.q_values,
+        )
+    }
+}
+
 fn analyze_measures<A: MaadAddress, const K: usize>(
     entries: impl IntoIterator<Item = (A, [f64; K])>,
     config: &MaadConfig,
 ) -> Result<(Analysis, Vec<f64>), MaadError> {
+    let prepared = prepare_measures(entries, config)?;
+    Ok(prepared.analyze(config))
+}
+
+/// Validate, sort and sum weighted entries.
+fn prepare_measures<A: MaadAddress, const K: usize>(
+    entries: impl IntoIterator<Item = (A, [f64; K])>,
+    config: &MaadConfig,
+) -> Result<PreparedMeasures<A::Bits, K>, MaadError> {
     let q_values = validate_config(config, A::Bits::WIDTH)?;
     let mut entries = entries
         .into_iter()
@@ -327,15 +413,11 @@ fn analyze_measures<A: MaadAddress, const K: usize>(
     if let Some(&total) = totals.iter().find(|total| !total.is_finite()) {
         return Err(MaadError::NonFiniteTotalWeight { total });
     }
-    if entries.len() < MIN_MAAD_ADDRESSES {
-        return Ok((Analysis::empty(entries.len(), K), q_values));
-    }
-    let addresses: Vec<_> = entries.iter().map(|&(address, _)| address).collect();
-    let columns: Vec<Vec<f64>> = (0..K)
-        .map(|k| entries.iter().map(|(_, weights)| weights[k]).collect())
-        .collect();
-    drop(entries);
-    Ok((analyze(&addresses, &columns, &totals, config), q_values))
+    Ok(PreparedMeasures {
+        entries,
+        totals,
+        q_values,
+    })
 }
 
 /// The uniform q grid on which a family's default configuration evaluates the structure function.

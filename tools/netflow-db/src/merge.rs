@@ -19,12 +19,13 @@ use crate::{
     },
 };
 
-const DAY_OWNED_TABLES: [&str; 8] = [
+const DAY_OWNED_TABLES: [&str; 9] = [
     "traffic_stats",
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
     "address_maad_stats",
+    "address_concentration_stats",
     "bucket_coverage",
     "input_evidence",
     "processed_inputs",
@@ -340,18 +341,18 @@ fn summarize_shard(path: &Path) -> Result<ShardSummary, MergeError> {
     }
     drop(rows);
     drop(statement);
-    if !stored_maad_internal_side(&connection)?
-        && connection.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM address_maad_stats WHERE {INTERNAL_SIDE_MAAD_SQL})"
-            ),
-            [],
-            |row| row.get::<_, bool>(0),
-        )?
-    {
-        return Err(refused(format!(
-            "{label} skips internal-side MAAD but stores internal-side MAAD rows"
-        )));
+    if !stored_maad_internal_side(&connection)? {
+        for table in ["address_maad_stats", "address_concentration_stats"] {
+            if connection.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {INTERNAL_SIDE_MAAD_SQL})"),
+                [],
+                |row| row.get::<_, bool>(0),
+            )? {
+                return Err(refused(format!(
+                    "{label} skips internal-side MAAD but stores internal-side rows in {table}"
+                )));
+            }
+        }
     }
     let source_members = connection
         .prepare("SELECT dataset_id, source_id, member_id FROM source_members")?
@@ -1094,7 +1095,11 @@ mod tests {
         fixture.merge(&merged, &[&first, &second]).unwrap();
 
         let connection = Connection::open(&merged).unwrap();
-        for table in ["maad_q_grid", "address_maad_stats"] {
+        for table in [
+            "maad_q_grid",
+            "address_maad_stats",
+            "address_concentration_stats",
+        ] {
             let rows: i64 = connection
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                     row.get(0)
@@ -1184,6 +1189,53 @@ mod tests {
             "{error}"
         );
         assert!(!merged.exists());
+    }
+
+    #[test]
+    fn concentration_rows_outside_completed_days_are_refused() {
+        let fixture = Fixture::new(&["2025-06-01", "2025-06-02"]);
+        let first = fixture.path("first.sqlite");
+        let second = fixture.path("second.sqlite");
+        let output = fixture.path("merged.sqlite");
+        fixture.run(&first, "2025-06-01", "2025-06-01", true);
+        fixture.run(&second, "2025-06-02", "2025-06-02", true);
+        Connection::open(&second).unwrap().execute(
+            "UPDATE address_concentration_stats SET bucket_start = bucket_start + 86400, bucket_end = bucket_end + 86400",
+            [],
+        ).unwrap();
+        assert_refused(
+            fixture.merge(&output, &[&first, &second]),
+            "address_concentration_stats rows",
+        );
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn skipping_shards_reject_internal_side_concentration_rows() {
+        let fixture = Fixture::new(&["2025-06-01"]);
+        let shard = fixture.path("shard.sqlite");
+        fixture.run(&shard, "2025-06-01", "2025-06-01", true);
+        let connection = Connection::open(&shard).unwrap();
+        let config: String = connection
+            .query_row("SELECT config_json FROM pipeline_product", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut config: serde_json::Value = serde_json::from_str(&config).unwrap();
+        config["maad"]["internal_side"] = false.into();
+        connection
+            .execute(
+                "UPDATE pipeline_product SET config_json = ?1",
+                [config.to_string()],
+            )
+            .unwrap();
+        connection.execute("UPDATE address_concentration_stats SET src_locality = 'internal' WHERE address_side = 'source' AND src_locality = 'all'", []).unwrap();
+        let output = fixture.path("merged.sqlite");
+        assert_refused(
+            fixture.merge(&output, &[&shard]),
+            "address_concentration_stats",
+        );
+        assert!(!output.exists());
     }
 
     fn assert_refused(result: Result<MergeReport, MergeError>, fragment: &str) {
