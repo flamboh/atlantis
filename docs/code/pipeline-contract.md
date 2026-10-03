@@ -11,6 +11,7 @@ The pipeline binds each database to one product identity. The identity contains 
 - The canonical endpoint-locality rules
 - The pipeline timezone
 - The native decoder contract
+- The concentration contract version, measure set, and fixed prefix lengths
 - The MAAD enabled state, contract version, configuration, and measure set, plus
   `"internal_side": false` when the product skips internal-side address sets
 
@@ -150,6 +151,34 @@ Native and CSV ingestion drop flows whose reported packet count is 0 before any 
 accumulates, so they add no traffic, protocols, ports, or addresses. The bucket keeps its observed
 coverage, and publishing logs the dropped flow count per bucket. A CSV row without a packet count
 has an unknown count rather than a reported zero, so it still contributes.
+
+## Concentration statistics
+
+`address_concentration_stats` stores conventional concentration controls for every address set and measure that MAAD computes.
+It uses the same bucket, locality scope, address side, and IP version keys as `address_maad_stats`.
+Disabling MAAD disables concentration statistics. The `maad_internal_side` setting applies to both tables.
+
+Each measure uses the same per-address weights as MAAD and excludes zero weights.
+`entry_count` counts the retained addresses. `weight_total` stores their summed weight, including below the minimum count of two.
+Below that minimum, all statistical columns are `NULL`.
+An empty MAAD curve caused by prefix pruning does not suppress concentration values above that minimum.
+
+- `hhi` is the sum of squared weight shares. For `addresses`, it equals `1 / entry_count`.
+- `top1_share`, `top10_share`, and `top100_share` sum the largest address weights and divide by `weight_total`.
+- Prefix entropy is Shannon entropy in bits after summing weights by fixed-length prefix.
+  IPv4 uses `/8`, `/16`, `/24`, and `/32`. IPv6 uses `/32`, `/48`, `/64`, and `/128`.
+  Columns for the other IP version are `NULL`. Both families use `entropy_p32`.
+
+The pipeline computes concentration from MAAD's sorted address entries without another flow scan or full weight sort.
+Rollups recompute from merged per-address child maps. They never average child statistics.
+All statistic columns and `weight_total` are `REAL` values without f32 rounding. `entry_count` is an integer.
+
+The schema and result configuration record this contract. Existing products require a fresh database path.
+`verify --require-maad-data` requires matching concentration rows for every computed MAAD set and measure.
+`verify` checks retained counts against MAAD and rejects skipped internal-side rows.
+`compare` applies `--maad-absolute-tolerance` to concentration values and `weight_total`, and compares `entry_count` exactly.
+`merge-shards` validates concentration day ownership and internal-side skipping before copying rows.
+Analysis-window exports include the new table.
 
 ## Coordinated subset runs
 

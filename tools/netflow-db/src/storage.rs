@@ -26,24 +26,26 @@ use crate::provenance::{
 
 pub const BUSY_TIMEOUT_MS: u64 = 60_000;
 /// Tables that form the portable pipeline product.
-pub const STATS_TABLE_NAMES: [&str; 6] = [
+pub const STATS_TABLE_NAMES: [&str; 7] = [
     "traffic_stats",
     "protocol_stats",
     "address_count_stats",
     "port_count_stats",
     "address_maad_stats",
+    "address_concentration_stats",
     "bucket_coverage",
 ];
 /// Versioned product schema bound into every pipeline database identity.
 pub fn product_schema() -> serde_json::Value {
     serde_json::json!({
-        "version": 7,
+        "version": 8,
         "tables": [
             {"name": "traffic_stats", "version": 4},
             {"name": "protocol_stats", "version": 3},
             {"name": "address_count_stats", "version": 3},
             {"name": "port_count_stats", "version": 3},
             {"name": "address_maad_stats", "version": 1},
+            {"name": "address_concentration_stats", "version": 1},
             {"name": "maad_q_grid", "version": 1},
             {"name": "bucket_coverage", "version": 2}
         ]
@@ -1535,6 +1537,51 @@ pub fn init_stats_tables(connection: &Connection) -> Result<(), StorageError> {
         CREATE INDEX IF NOT EXISTS idx_address_maad_stats_bucket
         ON address_maad_stats (granularity, bucket_start);
 
+        CREATE TABLE IF NOT EXISTS address_concentration_stats (
+            source_id TEXT NOT NULL,
+            granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
+            bucket_start INTEGER NOT NULL,
+            bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
+            ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
+            src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+            dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
+            address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
+            measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
+            weight_total REAL NOT NULL CHECK (weight_total >= 0 AND weight_total <= 1.7976931348623157e308),
+            entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
+            hhi REAL CHECK (hhi > 0 AND hhi <= 1),
+            top1_share REAL CHECK (top1_share >= 0 AND top1_share <= 1),
+            top10_share REAL CHECK (top10_share >= 0 AND top10_share <= 1),
+            top100_share REAL CHECK (top100_share >= 0 AND top100_share <= 1),
+            entropy_p8 REAL CHECK (entropy_p8 >= 0 AND entropy_p8 <= 1.7976931348623157e308),
+            entropy_p16 REAL CHECK (entropy_p16 >= 0 AND entropy_p16 <= 1.7976931348623157e308),
+            entropy_p24 REAL CHECK (entropy_p24 >= 0 AND entropy_p24 <= 1.7976931348623157e308),
+            entropy_p32 REAL CHECK (entropy_p32 >= 0 AND entropy_p32 <= 1.7976931348623157e308),
+            entropy_p48 REAL CHECK (entropy_p48 >= 0 AND entropy_p48 <= 1.7976931348623157e308),
+            entropy_p64 REAL CHECK (entropy_p64 >= 0 AND entropy_p64 <= 1.7976931348623157e308),
+            entropy_p128 REAL CHECK (entropy_p128 >= 0 AND entropy_p128 <= 1.7976931348623157e308),
+            CHECK ((entry_count = 0) = (weight_total = 0)),
+            CHECK ((hhi IS NOT NULL) = (entry_count >= 2)),
+            CHECK ((top1_share IS NULL) = (hhi IS NULL)),
+            CHECK ((top10_share IS NULL) = (hhi IS NULL)),
+            CHECK ((top100_share IS NULL) = (hhi IS NULL)),
+            CHECK ((entropy_p32 IS NULL) = (hhi IS NULL)),
+            CHECK ((entropy_p8 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+            CHECK ((entropy_p16 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+            CHECK ((entropy_p24 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+            CHECK ((entropy_p48 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+            CHECK ((entropy_p64 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+            CHECK ((entropy_p128 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+            CHECK (top10_share >= top1_share AND top100_share >= top10_share)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_address_concentration_stats_key
+        ON address_concentration_stats (
+            source_id, granularity, src_locality, dst_locality,
+            ip_version, measure, bucket_start, address_side
+        );
+        CREATE INDEX IF NOT EXISTS idx_address_concentration_stats_bucket
+        ON address_concentration_stats (granularity, bucket_start);
+
         CREATE TABLE IF NOT EXISTS maad_q_grid (
             ip_version INTEGER PRIMARY KEY CHECK (ip_version IN (4, 6)),
             q_min REAL NOT NULL,
@@ -1947,6 +1994,14 @@ pub struct AddressMaadStatsRow {
     pub spectrum: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AddressConcentrationStatsRow {
+    pub dimensions: StatsDimensions,
+    pub address_side: String,
+    pub measure: String,
+    pub result: crate::concentration::ConcentrationResult,
+}
+
 /// The dimensions and structure function of a non-empty MAAD result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaadCurve {
@@ -2153,6 +2208,55 @@ pub fn insert_address_maad_stats_rows(
     Ok(())
 }
 
+pub fn insert_address_concentration_stats_rows(
+    connection: &Connection,
+    rows: &[AddressConcentrationStatsRow],
+) -> Result<(), StorageError> {
+    let mut statement = connection.prepare_cached(
+        "INSERT OR REPLACE INTO address_concentration_stats (
+            source_id, granularity, bucket_start, bucket_end, ip_version,
+            src_locality, dst_locality, address_side, measure, weight_total, entry_count,
+            hhi, top1_share, top10_share, top100_share,
+            entropy_p8, entropy_p16, entropy_p24, entropy_p32, entropy_p48, entropy_p64, entropy_p128
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                  ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+    )?;
+    for row in rows {
+        let d = &row.dimensions;
+        let values = row.result.values.as_ref();
+        let entropy = |ip, index| {
+            values
+                .filter(|_| d.ip_version == ip)
+                .map(|v| v.entropy[index])
+        };
+        statement.execute(params![
+            d.source_id,
+            d.granularity,
+            d.bucket_start,
+            d.bucket_end,
+            d.ip_version,
+            d.src_locality,
+            d.dst_locality,
+            row.address_side,
+            row.measure,
+            row.result.weight_total,
+            i64::try_from(row.result.entry_count).unwrap_or(i64::MAX),
+            values.map(|v| v.hhi),
+            values.map(|v| v.top1_share),
+            values.map(|v| v.top10_share),
+            values.map(|v| v.top100_share),
+            entropy(4, 0),
+            entropy(4, 1),
+            entropy(4, 2),
+            values.map(|v| v.entropy[if d.ip_version == 4 { 3 } else { 0 }]),
+            entropy(6, 1),
+            entropy(6, 2),
+            entropy(6, 3)
+        ])?;
+    }
+    Ok(())
+}
+
 pub fn insert_maad_q_grid_rows(
     connection: &Connection,
     rows: &[MaadQGridRow],
@@ -2174,6 +2278,7 @@ pub struct StatsPayload {
     pub address_count_rows: Vec<AddressCountStatsRow>,
     pub port_count_rows: Vec<PortCountStatsRow>,
     pub address_maad_rows: Vec<AddressMaadStatsRow>,
+    pub address_concentration_rows: Vec<AddressConcentrationStatsRow>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2183,15 +2288,17 @@ pub enum StatsTable {
     AddressCount,
     PortCount,
     AddressMaad,
+    AddressConcentration,
 }
 
 impl StatsTable {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Traffic,
         Self::Protocol,
         Self::AddressCount,
         Self::PortCount,
         Self::AddressMaad,
+        Self::AddressConcentration,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -2201,6 +2308,7 @@ impl StatsTable {
             Self::AddressCount => "address_count_stats",
             Self::PortCount => "port_count_stats",
             Self::AddressMaad => "address_maad_stats",
+            Self::AddressConcentration => "address_concentration_stats",
         }
     }
 }
@@ -2224,6 +2332,10 @@ pub fn insert_stats_payload(
             StatsTable::AddressMaad => {
                 insert_address_maad_stats_rows(connection, &payload.address_maad_rows)?
             }
+            StatsTable::AddressConcentration => insert_address_concentration_stats_rows(
+                connection,
+                &payload.address_concentration_rows,
+            )?,
         }
     }
     Ok(())
@@ -3108,6 +3220,43 @@ mod tests {
         }
     }
 
+    fn concentration_example() -> AddressConcentrationStatsRow {
+        AddressConcentrationStatsRow {
+            dimensions: AddressMaadStatsRow::example().dimensions,
+            address_side: "source".into(),
+            measure: "addresses".into(),
+            result: crate::concentration::compute_sorted([(0u32, 1.0), (1, 1.0)].into_iter(), true),
+        }
+    }
+
+    #[test]
+    fn concentration_constraints_reject_invalid_statistics_and_prefix_families() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        insert_address_concentration_stats_rows(&connection, &[concentration_example()]).unwrap();
+        for change in [
+            "hhi = 1.1",
+            "hhi = NULL",
+            "top1_share = -0.1",
+            "top10_share = 0.1",
+            "entropy_p8 = NULL",
+            "entropy_p48 = 1",
+            "weight_total = 0",
+            "entry_count = 1",
+        ] {
+            let error = connection
+                .execute(
+                    &format!("UPDATE address_concentration_stats SET {change}"),
+                    [],
+                )
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("CHECK constraint failed"),
+                "{error}"
+            );
+        }
+    }
+
     #[test]
     fn stats_rows_upsert_and_bucket_deletion_cover_every_table() {
         let connection = Connection::open_in_memory().unwrap();
@@ -3117,6 +3266,7 @@ mod tests {
         insert_address_count_stats_rows(&connection, &[AddressCountStatsRow::example()]).unwrap();
         insert_port_count_stats_rows(&connection, &[PortCountStatsRow::example()]).unwrap();
         insert_address_maad_stats_rows(&connection, &[AddressMaadStatsRow::example()]).unwrap();
+        insert_address_concentration_stats_rows(&connection, &[concentration_example()]).unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT flows_tcp FROM traffic_stats", [], |row| row
@@ -3191,24 +3341,24 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap()
                 .join("\n");
-            let bounded_range = if table == "address_maad_stats" {
-                [
-                    "USING INDEX idx_address_maad_stats_bucket",
-                    "granularity=?",
-                    "bucket_start>?",
-                    "bucket_start<?",
-                ]
-                .as_slice()
-            } else {
-                [
-                    "USING PRIMARY KEY",
-                    "source_id=?",
-                    "granularity=?",
-                    "bucket_start>?",
-                    "bucket_start<?",
-                ]
-                .as_slice()
-            };
+            let index_clause = format!("USING INDEX idx_{table}_bucket");
+            let bounded_range =
+                if matches!(table, "address_maad_stats" | "address_concentration_stats") {
+                    vec![
+                        index_clause.as_str(),
+                        "granularity=?",
+                        "bucket_start>?",
+                        "bucket_start<?",
+                    ]
+                } else {
+                    vec![
+                        "USING PRIMARY KEY",
+                        "source_id=?",
+                        "granularity=?",
+                        "bucket_start>?",
+                        "bucket_start<?",
+                    ]
+                };
             for clause in bounded_range {
                 assert!(
                     plan.contains(clause),
@@ -3243,8 +3393,11 @@ mod tests {
                 port_count.dimensions = dimensions.clone();
                 insert_port_count_stats_rows(&connection, &[port_count]).unwrap();
                 let mut address_maad = AddressMaadStatsRow::example();
-                address_maad.dimensions = dimensions;
+                address_maad.dimensions = dimensions.clone();
                 insert_address_maad_stats_rows(&connection, &[address_maad]).unwrap();
+                let mut concentration = concentration_example();
+                concentration.dimensions = dimensions;
+                insert_address_concentration_stats_rows(&connection, &[concentration]).unwrap();
 
                 let coverage = BucketCoverageRow::new(
                     source_id,

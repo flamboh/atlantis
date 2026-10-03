@@ -18,9 +18,10 @@ use crate::{
     },
     maad,
     storage::{
-        AddressCountStatsRow, AddressMaadStatsRow, BucketCoverageRow, MaadCurve, MaadQGridRow,
-        PortCountStatsRow, ProtocolStatsRow, StatsBucketKey, StatsDimensions, StorageError,
-        TrafficStatsRow, delete_stats_bucket_keys, insert_address_count_stats_rows,
+        AddressConcentrationStatsRow, AddressCountStatsRow, AddressMaadStatsRow, BucketCoverageRow,
+        MaadCurve, MaadQGridRow, PortCountStatsRow, ProtocolStatsRow, StatsBucketKey,
+        StatsDimensions, StorageError, TrafficStatsRow, delete_stats_bucket_keys,
+        insert_address_concentration_stats_rows, insert_address_count_stats_rows,
         insert_address_maad_stats_rows, insert_bucket_coverage_rows, insert_maad_q_grid_rows,
         insert_port_count_stats_rows, insert_protocol_stats_rows, insert_traffic_stats_rows,
     },
@@ -192,7 +193,7 @@ pub(crate) fn write_buckets_profiled(
                 .map(|addresses| count(addresses.addresses.len()))
                 .sum::<u64>();
             let maad_started = Instant::now();
-            let (address_maad, zero_weight_addresses) = maad_rows(&address_sets)?;
+            let (address_maad, concentration, zero_weight_addresses) = maad_rows(&address_sets)?;
             profile.maad_elapsed += maad_started.elapsed();
             profile.maad_zero_weight_addresses += zero_weight_addresses;
             if zero_weight_addresses > 0 {
@@ -218,6 +219,7 @@ pub(crate) fn write_buckets_profiled(
                 .sum::<u64>();
             let insert_started = Instant::now();
             insert_address_maad_stats_rows(connection, &address_maad)?;
+            insert_address_concentration_stats_rows(connection, &concentration)?;
             profile.address_maad_insert_elapsed += insert_started.elapsed();
         }
     }
@@ -335,9 +337,16 @@ fn maad_q_grid_rows() -> [MaadQGridRow; 2] {
 /// because their summed weight was zero.
 fn maad_rows(
     address_sets: &[AddressSetRow<'_>],
-) -> Result<(Vec<AddressMaadStatsRow>, u64), PublishError> {
+) -> Result<
+    (
+        Vec<AddressMaadStatsRow>,
+        Vec<AddressConcentrationStatsRow>,
+        u64,
+    ),
+    PublishError,
+> {
     if address_sets.is_empty() {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), Vec::new(), 0));
     }
 
     let pool = maad_pool()?;
@@ -347,11 +356,17 @@ fn maad_rows(
             .map(scope_rows)
             .collect::<Result<Vec<_>, _>>()
     })?;
-    let zero_weight_addresses = measured.iter().map(|(_, excluded)| count(*excluded)).sum();
-    Ok((
-        measured.into_iter().flat_map(|(rows, _)| rows).collect(),
-        zero_weight_addresses,
-    ))
+    let zero_weight_addresses = measured
+        .iter()
+        .map(|(_, _, excluded)| count(*excluded))
+        .sum();
+    let mut maad = Vec::new();
+    let mut concentration = Vec::new();
+    for (rows, controls, _) in measured {
+        maad.extend(rows);
+        concentration.extend(controls);
+    }
+    Ok((maad, concentration, zero_weight_addresses))
 }
 
 /// One scope's MAAD results: distinct addresses, then packets and bytes with
@@ -359,11 +374,19 @@ fn maad_rows(
 struct ScopeResults {
     addresses: maad::MaadResult,
     weighted: [(maad::MaadResult, usize); 2],
+    concentration: [crate::concentration::ConcentrationResult; 3],
 }
 
 fn scope_rows(
     addresses: &AddressSetRow<'_>,
-) -> Result<(Vec<AddressMaadStatsRow>, usize), PublishError> {
+) -> Result<
+    (
+        Vec<AddressMaadStatsRow>,
+        Vec<AddressConcentrationStatsRow>,
+        usize,
+    ),
+    PublishError,
+> {
     let results = match addresses.scope.ip_version {
         IpVersion::V4 => scope_results(addresses.addresses.iter().filter_map(
             |(address, traffic)| match address {
@@ -397,7 +420,17 @@ fn scope_rows(
         rows.push(row(measure, result, *zero_weight_addrs));
         zero_weight_addresses += zero_weight_addrs;
     }
-    Ok((rows, zero_weight_addresses))
+    let concentration = MaadMeasure::ALL
+        .into_iter()
+        .zip(results.concentration)
+        .map(|(measure, result)| AddressConcentrationStatsRow {
+            dimensions: dimensions.clone(),
+            address_side: addresses.address_side.as_str().to_owned(),
+            measure: measure.as_str().to_owned(),
+            result,
+        })
+        .collect();
+    Ok((rows, concentration, zero_weight_addresses))
 }
 
 /// Store one measure's result with its curve rounded to f32. Only the addresses measure
@@ -449,28 +482,42 @@ fn scope_results<A: maad::MaadAddress>(
         .filter(|(_, traffic)| traffic.bytes == 0)
         .count();
     if zero_packets == 0 && zero_bytes == 0 {
-        let (addresses, [packets, bytes]) =
-            maad::compute_measures(entries.iter().map(|&(address, traffic)| {
-                (address, [traffic.packets as f64, traffic.bytes as f64])
-            }))?;
+        let measured =
+            maad::compute_measures_with_concentration(entries.iter().map(
+                |&(address, traffic)| (address, [traffic.packets as f64, traffic.bytes as f64]),
+            ))?;
+        let [packets, bytes] = measured.weighted;
+        let [concentration_packets, concentration_bytes] = measured.concentration_weighted;
         return Ok(ScopeResults {
-            addresses,
+            addresses: measured.addresses,
             weighted: [(packets, 0), (bytes, 0)],
+            concentration: [
+                measured.concentration_addresses,
+                concentration_packets,
+                concentration_bytes,
+            ],
         });
     }
     let weighted = |weight: fn(AddressTraffic) -> u64| {
-        maad::compute_weighted(entries.iter().filter_map(|&(address, traffic)| {
-            match weight(traffic) {
+        maad::compute_weighted_with_concentration(entries.iter().filter_map(
+            |&(address, traffic)| match weight(traffic) {
                 0 => None,
                 value => Some((address, value as f64)),
-            }
-        }))
+            },
+        ))
     };
+    let addresses = maad::compute_measures_with_concentration(
+        entries.iter().map(|&(address, _)| (address, [])),
+    )?;
+    let (packet_result, packet_concentration) = weighted(|traffic| traffic.packets)?;
+    let (byte_result, byte_concentration) = weighted(|traffic| traffic.bytes)?;
     Ok(ScopeResults {
-        addresses: maad::compute(entries.iter().map(|&(address, _)| address)),
-        weighted: [
-            (weighted(|traffic| traffic.packets)?, zero_packets),
-            (weighted(|traffic| traffic.bytes)?, zero_bytes),
+        addresses: addresses.addresses,
+        weighted: [(packet_result, zero_packets), (byte_result, zero_bytes)],
+        concentration: [
+            addresses.concentration_addresses,
+            packet_concentration,
+            byte_concentration,
         ],
     })
 }
@@ -674,9 +721,108 @@ mod tests {
                 "4:internal->external:destination",
             ]
         );
+        let concentration_scopes = connection.prepare(
+            "SELECT DISTINCT ip_version || ':' || src_locality || '->' || dst_locality || ':' || address_side
+             FROM address_concentration_stats WHERE ip_version = 4 ORDER BY 1",
+        ).unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(concentration_scopes, scopes);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM address_concentration_stats",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            36
+        );
         assert_eq!(profile.address_count_rows, 20);
         assert_eq!(profile.maad_address_sets, 12);
         assert_eq!(profile.address_maad_rows, 36);
+    }
+
+    #[test]
+    fn concentration_rollups_recompute_after_merging_repeated_addresses() {
+        let address = |last| IpAddr::V4(Ipv4Addr::new(10, 0, 0, last));
+        let first = [
+            (address(1), AddressTraffic::new(1, 10)),
+            (address(2), AddressTraffic::new(3, 30)),
+        ]
+        .into_iter()
+        .collect::<AddressTotals>();
+        let second = [
+            (address(1), AddressTraffic::new(5, 50)),
+            (address(3), AddressTraffic::new(3, 30)),
+        ]
+        .into_iter()
+        .collect::<AddressTotals>();
+        let child = |start, totals: AddressTotals| {
+            let mut bucket = StatisticalBucket::dense(BucketKey::new(
+                "r1",
+                Granularity::FiveMinutes,
+                start,
+                start + 300,
+            ));
+            bucket
+                .add(ScopedAddressesFact::new(
+                    Scope::new(IpVersion::V4, Locality::All, Locality::All),
+                    AddressSide::Source,
+                    totals.iter(),
+                ))
+                .unwrap();
+            bucket.finish()
+        };
+        let mut rollup =
+            StatisticalBucket::new(BucketKey::new("r1", Granularity::TenMinutes, 0, 600));
+        rollup.include(&child(0, first.clone())).unwrap();
+        rollup.include(&child(300, second.clone())).unwrap();
+        let connection = Connection::open_in_memory().unwrap();
+        init_stats_tables(&connection).unwrap();
+        write_buckets(&connection, &[rollup.finish()], MaadScopes::All).unwrap();
+        let mut merged = first;
+        merged.merge(&second);
+        let recomputed = scope_results(merged.iter().map(|(a, t)| {
+            let IpAddr::V4(a) = a else { unreachable!() };
+            (a, t)
+        }))
+        .unwrap();
+        let (hhi, top, total, count): (f64, f64, f64, i64) = connection
+            .query_row(
+                "SELECT hhi, top1_share, weight_total, entry_count FROM address_concentration_stats
+             WHERE ip_version = 4 AND src_locality = 'all' AND dst_locality = 'all'
+               AND address_side = 'source' AND measure = 'packets'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let control = &recomputed.concentration[1];
+        let values = connection
+            .query_row(
+                "SELECT hhi, top1_share, top10_share, top100_share,
+                    entropy_p8, entropy_p16, entropy_p24, entropy_p32
+             FROM address_concentration_stats WHERE ip_version = 4
+               AND src_locality = 'all' AND dst_locality = 'all'
+               AND address_side = 'source' AND measure = 'packets'",
+                [],
+                |row| {
+                    Ok(crate::concentration::ConcentrationValues {
+                        hhi: row.get(0)?,
+                        top1_share: row.get(1)?,
+                        top10_share: row.get(2)?,
+                        top100_share: row.get(3)?,
+                        entropy: [row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?],
+                    })
+                },
+            )
+            .unwrap();
+        assert_eq!(control.values.as_ref(), Some(&values));
+        assert_eq!(values.entropy, [0.0, 0.0, 0.0, 1.5]);
+        assert_eq!((total, count), (12.0, 3));
+        assert_eq!(hhi, control.values.as_ref().unwrap().hhi);
+        assert!((hhi - 0.375).abs() < 1e-12);
+        assert_eq!(top, 0.5);
+        assert!((hhi - (0.625 + 0.53125) / 2.0).abs() > 0.1);
     }
 
     #[test]
@@ -704,7 +850,7 @@ mod tests {
             connection
         }
 
-        fn product_rows(connection: &Connection) -> (Vec<String>, Vec<String>) {
+        fn product_rows(connection: &Connection) -> (Vec<String>, Vec<String>, Vec<String>) {
             fn query(connection: &Connection, sql: &str) -> Vec<String> {
                 connection
                     .prepare(sql)
@@ -723,6 +869,10 @@ mod tests {
                 query(
                     connection,
                     "SELECT printf('%s|%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s', ip_version, src_locality, dst_locality, address_side, measure, total_addrs, zero_weight_addrs, min_prefix_length, max_prefix_length, d0, d1, d2, hex(tau), hex(tau_sd), hex(spectrum)) FROM address_maad_stats ORDER BY ip_version, src_locality, dst_locality, address_side, measure",
+                ),
+                query(
+                    connection,
+                    "SELECT printf('%s|%s|%s|%s|%s|%d|%.17g|%.17g|%.17g|%.17g|%.17g|%.17g|%.17g|%.17g|%.17g', ip_version, src_locality, dst_locality, address_side, measure, entry_count, weight_total, hhi, top1_share, top10_share, top100_share, entropy_p8, entropy_p16, entropy_p24, entropy_p32) FROM address_concentration_stats ORDER BY ip_version, src_locality, dst_locality, address_side, measure",
                 ),
             )
         }
@@ -781,10 +931,11 @@ mod tests {
             },
         ];
 
-        let (first, first_excluded) = maad_rows(&rows).unwrap();
-        let (second, second_excluded) = maad_rows(&rows).unwrap();
+        let (first, first_controls, first_excluded) = maad_rows(&rows).unwrap();
+        let (second, second_controls, second_excluded) = maad_rows(&rows).unwrap();
 
         assert_eq!(first, second);
+        assert_eq!(first_controls, second_controls);
         assert_eq!((first_excluded, second_excluded), (0, 0));
         let measures = |src_locality: &str, side: &str| {
             ["addresses", "packets", "bytes"]
@@ -916,9 +1067,10 @@ mod tests {
             addresses: &addresses,
         }];
 
-        let (rows, _) = maad_rows(&rows).unwrap();
+        let (rows, controls, _) = maad_rows(&rows).unwrap();
 
         assert_eq!(rows.len(), 3);
+        assert!(controls.iter().all(|row| row.result.entry_count == 256));
         assert!(rows.iter().all(|row| row.dimensions.ip_version == 6));
         for row in &rows {
             assert_eq!(row.total_addrs, 256, "{}", row.measure);
@@ -950,11 +1102,18 @@ mod tests {
             addresses: &addresses,
         }];
 
-        let (rows, excluded) = maad_rows(&rows).unwrap();
+        let (rows, controls, excluded) = maad_rows(&rows).unwrap();
 
         let row = |measure: &str| rows.iter().find(|row| row.measure == measure).unwrap();
         let counts = |measure: &str| (row(measure).total_addrs, row(measure).zero_weight_addrs);
         assert_eq!(excluded, 64 + 10);
+        assert_eq!(
+            controls
+                .iter()
+                .map(|row| row.result.entry_count)
+                .collect::<Vec<_>>(),
+            [256, 192, 246]
+        );
         assert_eq!(counts("addresses"), (256, 0));
         assert_eq!(counts("packets"), (192, 64));
         assert_eq!(counts("bytes"), (246, 10));

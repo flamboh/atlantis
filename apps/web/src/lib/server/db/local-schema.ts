@@ -136,6 +136,51 @@ export const localSchemaSql = `
 		CHECK ((tau IS NULL) = (d0 IS NULL))
 	);
 
+	CREATE TABLE IF NOT EXISTS address_concentration_stats (
+		source_id TEXT NOT NULL,
+		granularity TEXT NOT NULL CHECK (granularity IN ('5m', '10m', '30m', '1h', '1d')),
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL CHECK (bucket_end > bucket_start),
+		ip_version INTEGER NOT NULL CHECK (ip_version IN (4, 6)),
+		src_locality TEXT NOT NULL CHECK (src_locality IN ('all', 'internal', 'external')),
+		dst_locality TEXT NOT NULL CHECK (dst_locality IN ('all', 'internal', 'external')),
+		address_side TEXT NOT NULL CHECK (address_side IN ('source', 'destination')),
+		measure TEXT NOT NULL CHECK (measure IN ('addresses', 'packets', 'bytes')),
+		weight_total REAL NOT NULL CHECK (weight_total >= 0 AND weight_total <= 1.7976931348623157e308),
+		entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
+		hhi REAL CHECK (hhi > 0 AND hhi <= 1),
+		top1_share REAL CHECK (top1_share >= 0 AND top1_share <= 1),
+		top10_share REAL CHECK (top10_share >= 0 AND top10_share <= 1),
+		top100_share REAL CHECK (top100_share >= 0 AND top100_share <= 1),
+		entropy_p8 REAL CHECK (entropy_p8 >= 0 AND entropy_p8 <= 1.7976931348623157e308),
+		entropy_p16 REAL CHECK (entropy_p16 >= 0 AND entropy_p16 <= 1.7976931348623157e308),
+		entropy_p24 REAL CHECK (entropy_p24 >= 0 AND entropy_p24 <= 1.7976931348623157e308),
+		entropy_p32 REAL CHECK (entropy_p32 >= 0 AND entropy_p32 <= 1.7976931348623157e308),
+		entropy_p48 REAL CHECK (entropy_p48 >= 0 AND entropy_p48 <= 1.7976931348623157e308),
+		entropy_p64 REAL CHECK (entropy_p64 >= 0 AND entropy_p64 <= 1.7976931348623157e308),
+		entropy_p128 REAL CHECK (entropy_p128 >= 0 AND entropy_p128 <= 1.7976931348623157e308),
+		CHECK ((entry_count = 0) = (weight_total = 0)),
+		CHECK ((hhi IS NOT NULL) = (entry_count >= 2)),
+		CHECK ((top1_share IS NULL) = (hhi IS NULL)),
+		CHECK ((top10_share IS NULL) = (hhi IS NULL)),
+		CHECK ((top100_share IS NULL) = (hhi IS NULL)),
+		CHECK ((entropy_p32 IS NULL) = (hhi IS NULL)),
+		CHECK ((entropy_p8 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+		CHECK ((entropy_p16 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+		CHECK ((entropy_p24 IS NOT NULL) = (ip_version = 4 AND hhi IS NOT NULL)),
+		CHECK ((entropy_p48 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+		CHECK ((entropy_p64 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+		CHECK ((entropy_p128 IS NOT NULL) = (ip_version = 6 AND hhi IS NOT NULL)),
+		CHECK (top10_share >= top1_share AND top100_share >= top10_share)
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_address_concentration_stats_key
+	ON address_concentration_stats (
+		source_id, granularity, src_locality, dst_locality,
+		ip_version, measure, bucket_start, address_side
+	);
+	CREATE INDEX IF NOT EXISTS idx_address_concentration_stats_bucket
+	ON address_concentration_stats (granularity, bucket_start);
+
 	CREATE TABLE IF NOT EXISTS maad_q_grid (
 		ip_version INTEGER PRIMARY KEY CHECK (ip_version IN (4, 6)),
 		q_min REAL NOT NULL,

@@ -1532,7 +1532,7 @@ fn bind_identity(
         maad["internal_side"] = json!(false);
     }
     let result_config = json!({
-        "version": 6,
+        "version": 7,
         "timezone": pipeline.timezone,
         "locality": pipeline
             .selection
@@ -1548,6 +1548,15 @@ fn bind_identity(
             "executable": nfdump_executable,
         },
         "maad": maad,
+        "concentration": {
+            "enabled": pipeline.maad.enabled(),
+            "contract_version": 1,
+            "measures": crate::domain::MaadMeasure::ALL.map(crate::domain::MaadMeasure::as_str),
+            "ipv4_prefix_lengths": [8, 16, 24, 32],
+            "ipv6_prefix_lengths": [32, 48, 64, 128],
+            "minimum_addresses": crate::maad::MIN_MAAD_ADDRESSES,
+            "zero_weight_exclusion": true,
+        },
     });
     let identity = ProductIdentity::create(
         &schema,

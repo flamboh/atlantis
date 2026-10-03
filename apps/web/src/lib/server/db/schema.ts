@@ -401,6 +401,170 @@ export const addressMaadStats = sqliteTable(
 	]
 );
 
+export const addressConcentrationStats = sqliteTable(
+	'address_concentration_stats',
+	{
+		sourceId: text('source_id').notNull(),
+		granularity: text('granularity', { enum: ['5m', '10m', '30m', '1h', '1d'] }).notNull(),
+		bucketStart: integer('bucket_start').notNull(),
+		bucketEnd: integer('bucket_end').notNull(),
+		ipVersion: integer('ip_version').notNull(),
+		srcLocality: text('src_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		dstLocality: text('dst_locality', { enum: ['all', 'internal', 'external'] }).notNull(),
+		addressSide: text('address_side', { enum: ['source', 'destination'] }).notNull(),
+		measure: text('measure', { enum: ['addresses', 'packets', 'bytes'] }).notNull(),
+		weightTotal: real('weight_total').notNull(),
+		entryCount: integer('entry_count').notNull(),
+		hhi: real('hhi'),
+		top1Share: real('top1_share'),
+		top10Share: real('top10_share'),
+		top100Share: real('top100_share'),
+		entropyP8: real('entropy_p8'),
+		entropyP16: real('entropy_p16'),
+		entropyP24: real('entropy_p24'),
+		entropyP32: real('entropy_p32'),
+		entropyP48: real('entropy_p48'),
+		entropyP64: real('entropy_p64'),
+		entropyP128: real('entropy_p128')
+	},
+	(table) => [
+		uniqueIndex('idx_address_concentration_stats_key').on(
+			table.sourceId,
+			table.granularity,
+			table.srcLocality,
+			table.dstLocality,
+			table.ipVersion,
+			table.measure,
+			table.bucketStart,
+			table.addressSide
+		),
+		index('idx_address_concentration_stats_bucket').on(table.granularity, table.bucketStart),
+		check(
+			'address_concentration_stats_granularity_check',
+			sql`${table.granularity} IN ('5m', '10m', '30m', '1h', '1d')`
+		),
+		check(
+			'address_concentration_stats_bucket_check',
+			sql`${table.bucketEnd} > ${table.bucketStart}`
+		),
+		check('address_concentration_stats_ip_version_check', sql`${table.ipVersion} IN (4, 6)`),
+		check(
+			'address_concentration_stats_src_locality_check',
+			sql`${table.srcLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_concentration_stats_dst_locality_check',
+			sql`${table.dstLocality} IN ('all', 'internal', 'external')`
+		),
+		check(
+			'address_concentration_stats_address_side_check',
+			sql`${table.addressSide} IN ('source', 'destination')`
+		),
+		check(
+			'address_concentration_stats_measure_check',
+			sql`${table.measure} IN ('addresses', 'packets', 'bytes')`
+		),
+		check(
+			'address_concentration_stats_weight_total_check',
+			sql`${table.weightTotal} >= 0 AND ${table.weightTotal} <= 1.7976931348623157e308`
+		),
+		check('address_concentration_stats_entry_count_check', sql`${table.entryCount} >= 0`),
+		check(
+			'address_concentration_stats_empty_weight_check',
+			sql`(${table.entryCount} = 0) = (${table.weightTotal} = 0)`
+		),
+		check(
+			'address_concentration_stats_minimum_count_check',
+			sql`(${table.hhi} IS NOT NULL) = (${table.entryCount} >= 2)`
+		),
+		check('address_concentration_stats_hhi_check', sql`${table.hhi} > 0 AND ${table.hhi} <= 1`),
+		check(
+			'address_concentration_stats_top1_share_check',
+			sql`${table.top1Share} >= 0 AND ${table.top1Share} <= 1`
+		),
+		check(
+			'address_concentration_stats_top10_share_check',
+			sql`${table.top10Share} >= 0 AND ${table.top10Share} <= 1`
+		),
+		check(
+			'address_concentration_stats_top100_share_check',
+			sql`${table.top100Share} >= 0 AND ${table.top100Share} <= 1`
+		),
+		check(
+			'address_concentration_stats_entropy_p8_check',
+			sql`${table.entropyP8} >= 0 AND ${table.entropyP8} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p16_check',
+			sql`${table.entropyP16} >= 0 AND ${table.entropyP16} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p24_check',
+			sql`${table.entropyP24} >= 0 AND ${table.entropyP24} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p32_check',
+			sql`${table.entropyP32} >= 0 AND ${table.entropyP32} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p48_check',
+			sql`${table.entropyP48} >= 0 AND ${table.entropyP48} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p64_check',
+			sql`${table.entropyP64} >= 0 AND ${table.entropyP64} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_entropy_p128_check',
+			sql`${table.entropyP128} >= 0 AND ${table.entropyP128} <= 1.7976931348623157e308`
+		),
+		check(
+			'address_concentration_stats_top1_share_presence_check',
+			sql`(${table.top1Share} IS NULL) = (${table.hhi} IS NULL)`
+		),
+		check(
+			'address_concentration_stats_top10_share_presence_check',
+			sql`(${table.top10Share} IS NULL) = (${table.hhi} IS NULL)`
+		),
+		check(
+			'address_concentration_stats_top100_share_presence_check',
+			sql`(${table.top100Share} IS NULL) = (${table.hhi} IS NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p32_presence_check',
+			sql`(${table.entropyP32} IS NULL) = (${table.hhi} IS NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p8_presence_check',
+			sql`(${table.entropyP8} IS NOT NULL) = (${table.ipVersion} = 4 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p16_presence_check',
+			sql`(${table.entropyP16} IS NOT NULL) = (${table.ipVersion} = 4 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p24_presence_check',
+			sql`(${table.entropyP24} IS NOT NULL) = (${table.ipVersion} = 4 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p48_presence_check',
+			sql`(${table.entropyP48} IS NOT NULL) = (${table.ipVersion} = 6 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p64_presence_check',
+			sql`(${table.entropyP64} IS NOT NULL) = (${table.ipVersion} = 6 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_entropy_p128_presence_check',
+			sql`(${table.entropyP128} IS NOT NULL) = (${table.ipVersion} = 6 AND ${table.hhi} IS NOT NULL)`
+		),
+		check(
+			'address_concentration_stats_top_order_check',
+			sql`${table.top10Share} >= ${table.top1Share} AND ${table.top100Share} >= ${table.top10Share}`
+		)
+	]
+);
+
 export const maadQGrid = sqliteTable(
 	'maad_q_grid',
 	{

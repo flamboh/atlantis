@@ -109,6 +109,7 @@ pub fn verify_database(
         assert_maad_measures_present(&connection)?;
         assert_maad_scopes_present(&connection, maad_internal_side)?;
     }
+    assert_concentration_data(&connection, options.require_maad_data)?;
     if options.require_processed {
         assert_processed_inputs_complete(&connection)?;
     }
@@ -360,6 +361,33 @@ const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
             "spectrum",
         ],
     ),
+    (
+        "address_concentration_stats",
+        &[
+            "source_id",
+            "granularity",
+            "bucket_start",
+            "bucket_end",
+            "ip_version",
+            "src_locality",
+            "dst_locality",
+            "address_side",
+            "measure",
+            "weight_total",
+            "entry_count",
+            "hhi",
+            "top1_share",
+            "top10_share",
+            "top100_share",
+            "entropy_p8",
+            "entropy_p16",
+            "entropy_p24",
+            "entropy_p32",
+            "entropy_p48",
+            "entropy_p64",
+            "entropy_p128",
+        ],
+    ),
     ("maad_q_grid", &["ip_version", "q_min", "q_step", "q_count"]),
 ];
 
@@ -595,15 +623,17 @@ fn maad_internal_side(connection: &Connection) -> Result<bool, VerifyError> {
 
 /// A product that skips internal-side MAAD must store none.
 fn assert_no_internal_side_maad(connection: &Connection) -> Result<(), VerifyError> {
-    let stored: bool = connection.query_row(
-        &format!("SELECT EXISTS (SELECT 1 FROM address_maad_stats WHERE {INTERNAL_SIDE_MAAD_SQL})"),
-        [],
-        |row| row.get(0),
-    )?;
-    if stored {
-        return Err(VerifyError::Incompatible(
-            "address_maad_stats has internal-side rows but datasets skip internal-side MAAD".into(),
-        ));
+    for table in ["address_maad_stats", "address_concentration_stats"] {
+        let stored: bool = connection.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM {table} WHERE {INTERNAL_SIDE_MAAD_SQL})"),
+            [],
+            |row| row.get(0),
+        )?;
+        if stored {
+            return Err(VerifyError::Incompatible(format!(
+                "{table} has internal-side rows but datasets skip internal-side MAAD"
+            )));
+        }
     }
     Ok(())
 }
@@ -690,6 +720,58 @@ fn assert_maad_encoding(connection: &Connection) -> Result<(), VerifyError> {
         return Err(VerifyError::Incompatible(format!(
             "address_maad_stats has {bad_spectrum} rows whose spectrum presence does not match the measure"
         )));
+    }
+    Ok(())
+}
+
+fn assert_concentration_data(
+    connection: &Connection,
+    require_coverage: bool,
+) -> Result<(), VerifyError> {
+    let key = "s.source_id = m.source_id AND s.granularity = m.granularity
+        AND s.bucket_start = m.bucket_start AND s.bucket_end = m.bucket_end
+        AND s.ip_version = m.ip_version AND s.src_locality = m.src_locality
+        AND s.dst_locality = m.dst_locality AND s.address_side = m.address_side
+        AND s.measure = m.measure";
+    let invalid: bool = connection.query_row(
+        &format!(
+            "SELECT EXISTS (
+            SELECT 1 FROM address_concentration_stats s
+            LEFT JOIN address_maad_stats m ON {key}
+            WHERE m.source_id IS NULL OR s.entry_count <> m.total_addrs
+               OR (s.entry_count < 2) <> (s.hhi IS NULL)
+               OR (s.measure = 'addresses' AND (
+                   s.weight_total <> s.entry_count OR
+                   abs(s.hhi - 1.0 / s.entry_count) > 1e-12
+               ))
+        )"
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(VerifyError::Incompatible(
+            "address_concentration_stats has an unmatched MAAD set, count, or invalid result"
+                .into(),
+        ));
+    }
+    if require_coverage {
+        let missing: bool = connection.query_row(
+            &format!(
+                "SELECT EXISTS (
+                SELECT 1 FROM address_maad_stats m
+                WHERE NOT EXISTS (SELECT 1 FROM address_concentration_stats s WHERE {key})
+            )"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if missing {
+            return Err(VerifyError::Incompatible(
+                "address_concentration_stats is missing rows for computed MAAD sets or measures"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }

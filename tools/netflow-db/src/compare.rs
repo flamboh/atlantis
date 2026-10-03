@@ -104,6 +104,36 @@ const TABLES: &[TableSpec] = &[
         CandidateOnlyPolicy::MissingReferenceBucket,
     ),
     TableSpec::new(
+        "address_concentration_stats",
+        &[
+            "granularity",
+            "bucket_start",
+            "source_id",
+            "ip_version",
+            "src_locality",
+            "dst_locality",
+            "address_side",
+            "measure",
+            "bucket_end",
+        ],
+        &[],
+        &[
+            "hhi",
+            "top1_share",
+            "top10_share",
+            "top100_share",
+            "entropy_p8",
+            "entropy_p16",
+            "entropy_p24",
+            "entropy_p32",
+            "entropy_p48",
+            "entropy_p64",
+            "entropy_p128",
+            "weight_total",
+        ],
+        CandidateOnlyPolicy::MissingReferenceBucket,
+    ),
+    TableSpec::new(
         "processed_inputs",
         &[
             "input_kind",
@@ -191,7 +221,11 @@ pub fn compare_databases(options: &CompareOptions) -> Result<ComparisonReport, C
     let mut compatible = true;
     let mut tables = BTreeMap::new();
     for spec in TABLES {
-        let skip_internal_side = candidate_skips_internal_side && spec.name == "address_maad_stats";
+        let skip_internal_side = candidate_skips_internal_side
+            && matches!(
+                spec.name,
+                "address_maad_stats" | "address_concentration_stats"
+            );
         let comparison = compare_table(&candidate, &reference, spec, skip_internal_side, options)?;
         compatible &= comparison.reference_only_rows == 0
             && comparison.unexpected_candidate_only_rows == 0
