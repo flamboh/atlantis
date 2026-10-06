@@ -6,6 +6,7 @@
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
 	import { theme } from '#lib/stores/theme.svelte.ts';
+	import Logo from '#lib/components/Logo.svelte';
 
 	let { children } = $props();
 
@@ -22,7 +23,7 @@
 				<div class="flex items-center justify-between py-4">
 					<div>
 						<h1 class="text-foreground text-3xl font-bold hover:underline">
-							<a href={resolve('/')}>ATLANTIS</a>
+							<a href={resolve('/')}><Logo /></a>
 						</h1>
 					</div>
 					<div class="flex items-center gap-4">

@@ -1,0 +1,25 @@
+import { expect, test } from '@playwright/test';
+
+for (const colorScheme of ['light', 'dark'] as const) {
+	test(`brand is accessible and its icons resolve in ${colorScheme} mode`, async ({ page }) => {
+		await page.emulateMedia({ colorScheme });
+		await page.goto('/netflow/files');
+		const home = page.getByRole('link', { name: 'ATLANTIS', exact: true });
+		await expect(home.getByRole('img', { name: 'ATLANTIS', exact: true })).toBeVisible();
+		await home.focus();
+		await page.keyboard.press('Enter');
+		await expect(page).toHaveURL(/\/$/);
+		for (const selector of [
+			'link[rel="icon"][type="image/svg+xml"]',
+			'link[rel="icon"][type="image/x-icon"]',
+			'link[rel="apple-touch-icon"]'
+		]) {
+			const href = await page.locator(selector).getAttribute('href');
+			expect(href).toBeTruthy();
+			const response = await page.request.get(href!);
+			expect(response.status()).toBe(200);
+			expect(response.headers()['content-type']).toMatch(/image\//);
+			expect((await response.body()).length).toBeGreaterThan(0);
+		}
+	});
+}
