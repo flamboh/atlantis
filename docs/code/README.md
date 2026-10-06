@@ -8,6 +8,7 @@ These documents explain how ATLANTIS is built and how to change it.
 2. Complete the [development setup](development.md).
 3. Read the [pipeline contract](pipeline-contract.md) before you change pipeline semantics.
 4. Read [MAAD conformance](maad-conformance.md) before you change the MAAD estimator.
+5. Use [Dashboard performance](performance.md) to deploy an isolated benchmark stage and compare production measurements.
 
 ## Documentation maintenance
 

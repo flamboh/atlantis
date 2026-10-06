@@ -61,6 +61,10 @@ Optional variables:
 
 - `ATLANTIS_SELF_HOSTED_PORT`: server loopback port, default `8080`.
 - `ATLANTIS_SELF_HOSTED_DATA_USER`: `<uid>:<gid>` that owns the data files, default `1000:1000`. Get it with `id -u` and `id -g` on the server.
+- `ATLANTIS_SELF_HOSTED_READ_ONLY`: mount the data directory read-only, default `false`. Serve completed products without a live WAL when enabling this.
+- `ATLANTIS_SELF_HOSTED_STATE_DIR`: absolute directory for Alchemy state and logs, default the checkout. Reuse it for every plan, deploy, and destroy of the stage.
+
+The isolated `perf` stage defaults to port `8090` and read-only data. It requires an external state directory. See [Dashboard performance](../code/performance.md) for setup and benchmark commands.
 
 The deploy asks for approval (`--yes` skips it) and prints the tunnel command. Deploy again after pulling new code. An unchanged checkout leaves the container alone. `bun run plan:self-hosted --stage prod` previews the change.
 
