@@ -332,9 +332,15 @@ export function buildChartDefinition(
 			? scaleLinear
 			: scaleLinear().domain([minY, maxY === minY ? maxY + 1 : maxY]);
 	const labels = series.map((item) => item.label);
-	const labeledTicks = options.xTicks?.filter(
-		(value) => !options.xFormat || options.xFormat(value)
-	);
+	const formattedTicks = new Map<number, string>();
+	const formatter = options.xFormat;
+	const formatX = formatter
+		? (value: number) => {
+				if (!formattedTicks.has(value)) formattedTicks.set(value, formatter(value));
+				return formattedTicks.get(value) ?? '';
+			}
+		: undefined;
+	const labeledTicks = options.xTicks?.filter((value) => !formatX || formatX(value));
 	const xTicks = labeledTicks?.length ? labeledTicks : options.xTicks;
 	const legend = interactiveColorLegend({
 		placement: 'top',
@@ -371,7 +377,7 @@ export function buildChartDefinition(
 								label: options.compact ? undefined : options.xTitle,
 								ticks: {
 									...(xTicks ? { values: xTicks } : { count: options.compact ? 4 : 8 }),
-									format: options.xFormat
+									format: formatX
 								},
 								tickLabels: { rotate: options.compact ? 0 : -30, thin: { minGap: 8 } }
 							}

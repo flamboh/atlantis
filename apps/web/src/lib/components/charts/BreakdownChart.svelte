@@ -221,6 +221,11 @@
 	const bucketStarts = $derived(
 		[...new Set(buckets.map((bucket) => bucket.bucketStart))].sort((a, b) => a - b)
 	);
+	const bucketLabels = $derived(
+		new Map(
+			bucketStarts.map((start) => [start, formatTemporalBucketLabel(start, currentGranularity)])
+		)
+	);
 	const series = $derived.by((): PlotSeries[] => {
 		if (props.kind === 'spectrum')
 			return [
@@ -232,7 +237,7 @@
 							x: bucket.bucketStart,
 							y: point.alpha,
 							f: point.f,
-							label: formatTemporalBucketLabel(bucket.bucketStart, currentGranularity),
+							label: bucketLabels.get(bucket.bucketStart),
 							coverage: bucket.coverage
 						}))
 					)
@@ -264,7 +269,7 @@
 							return {
 								x: start,
 								y: readLineMetric((bucket?.data as LineBucketData | null) ?? null, metric.key),
-								label: formatTemporalBucketLabel(start, currentGranularity),
+								label: bucketLabels.get(start),
 								coverage: getChartBucketCoverage(bucket) ?? {
 									state: 'unknown',
 									observedUnits: 0,
@@ -281,7 +286,8 @@
 		plotBounds(series, groupByBucketDurationMs(IP_TO_GROUP_BY[currentGranularity]) / 1000)
 	);
 	const chartOptions = $derived.by((): PlotOptions => {
-		const points = series.flatMap((item) => item.data).filter(finitePoint);
+		const points =
+			props.kind === 'spectrum' ? series.flatMap((item) => item.data).filter(finitePoint) : [];
 		let minAlpha = Infinity;
 		let maxAlpha = -Infinity;
 		let minF = Infinity;
