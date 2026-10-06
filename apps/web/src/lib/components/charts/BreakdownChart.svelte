@@ -104,6 +104,7 @@
 		props.granularity ?? config.defaultGranularity
 	);
 
+	let addressType = $derived(props.addressType ?? 'sa');
 	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
 	type FilterInputs = {
 		startDate: string;
@@ -113,6 +114,7 @@
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
+		addressSide?: 'source' | 'destination';
 	};
 
 	const filters = $derived<FilterInputs>({
@@ -126,7 +128,10 @@
 					: []
 				: deriveSelectedRouters(props.routers),
 		direction: props.direction ?? 'all',
-		...(config.usesMaad ? { ipVersion, measure: props.measure } : {})
+		...(config.usesMaad ? { ipVersion, measure: props.measure } : {}),
+		...(props.kind === 'spectrum'
+			? { addressSide: addressType === 'sa' ? ('source' as const) : ('destination' as const) }
+			: {})
 	});
 	const requestKey = $derived(
 		JSON.stringify({
@@ -159,7 +164,6 @@
 				? settled.error
 				: null
 	);
-	let addressType = $derived(props.addressType ?? 'sa');
 	const selectedSide = $derived<DimensionSide | null>(
 		props.kind === 'spectrum'
 			? addressType
@@ -348,7 +352,8 @@
 			routers: filters.routers.join(','),
 			direction: filters.direction,
 			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {}),
-			...(filters.measure !== undefined ? { measure: filters.measure } : {})
+			...(filters.measure !== undefined ? { measure: filters.measure } : {}),
+			...(filters.addressSide ? { addressSide: filters.addressSide } : {})
 		});
 		const cacheKey = `${config.endpoint}?${params}`;
 		await ensureCachedWindow<CachedBreakdownBucket>({
