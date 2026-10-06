@@ -174,3 +174,68 @@ for (const width of [390, 768, 1280, 1920]) {
 		}
 	});
 }
+
+test('traffic stacks protocol values cumulatively and recomputes after legend toggles', async ({
+	page
+}) => {
+	await page.goto(FIXTURE_DASHBOARD);
+	const card = chartCard(page, 'dashboard');
+	await rendered(card.getByTestId('chart-surface'));
+	const positions = async () =>
+		Promise.all(
+			['TCP', 'UDP', 'ICMP', 'Other'].map(async (protocol) =>
+				Number(
+					await card
+						.getByTestId('chart-series')
+						.filter({ hasText: `Flows ${protocol}` })
+						.getAttribute('data-point-y')
+				)
+			)
+		);
+	const y = await positions();
+	for (let index = 1; index < y.length; index++) expect(y[index]).toBeLessThan(y[index - 1]);
+	expect((y[0] - y[1]) / (y[1] - y[2])).toBeCloseTo(40 / 16, 5);
+	expect((y[1] - y[2]) / (y[2] - y[3])).toBeCloseTo(16 / 4, 5);
+	await card.getByRole('button', { name: 'Toggle Flows TCP series', exact: true }).click();
+	await expect(card.getByTestId('chart-render-state')).toHaveAttribute('data-series-count', '3');
+	const hidden = await positions();
+	expect((hidden[1] - hidden[2]) / (hidden[2] - hidden[3])).toBeCloseTo(16 / 4, 5);
+	await card.getByRole('button', { name: 'Toggle Flows TCP series', exact: true }).click();
+	await expect.poll(positions).toEqual(y);
+});
+
+test('traffic aborts an obsolete request and retains the latest rendered grouping', async ({
+	page
+}) => {
+	await page.goto(FIXTURE_DASHBOARD);
+	const card = chartCard(page, 'dashboard');
+	await rendered(card.getByTestId('chart-surface'));
+	let release = () => {};
+	const blocked = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	await page.route('**/api/netflow/stats?*', async (route) => {
+		if (new URL(route.request().url()).searchParams.get('groupBy') === 'hour') await blocked;
+		await route.continue();
+	});
+	const requested = page.waitForRequest(
+		(request) =>
+			request.url().includes('/api/netflow/stats?') &&
+			new URL(request.url()).searchParams.get('groupBy') === 'hour'
+	);
+	await page.getByRole('button', { name: 'Hour', exact: true }).click();
+	const pending = await requested;
+	const aborted = page.waitForEvent('requestfailed', {
+		predicate: (request) => request === pending
+	});
+	await page.getByRole('button', { name: '10 min', exact: true }).click();
+	await expect(card.getByTestId('chart-axis').filter({ hasText: '10 Minutes' })).toBeAttached();
+	const tcp = card.getByTestId('chart-series').filter({ hasText: /^Flows TCP$/ });
+	await expect(tcp).toHaveAttribute('data-total', '100');
+	release();
+	await aborted;
+	await page.unrouteAll({ behavior: 'wait' });
+	await expect(page).toHaveURL(/groupBy=10min/);
+	await expect(card.getByTestId('chart-axis').filter({ hasText: '10 Minutes' })).toBeAttached();
+	await expect(tcp).toHaveAttribute('data-total', '100');
+});
