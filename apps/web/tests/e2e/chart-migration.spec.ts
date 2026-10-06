@@ -101,6 +101,41 @@ test('dense spectra retain one accessible interaction surface and positioned sum
 	await expect(surface).toHaveCount(1);
 	await rendered(surface);
 	await expect(card.getByTestId('chart-series')).toHaveAttribute('data-count', '20001');
+	for (const mode of ['dark', 'light']) {
+		await page.getByRole('button', { name: `Switch to ${mode} mode` }).click();
+		const canvas = surface.locator('canvas');
+		await expect(canvas).toHaveCount(1);
+		await expect(surface.locator('circle')).toHaveCount(0);
+		const colors = await canvas.evaluate((element: HTMLCanvasElement) => {
+			const pixels = element
+				.getContext('2d')!
+				.getImageData(0, 0, element.width, element.height).data;
+			const hues = new Set<string>();
+			let opaque = 0;
+			for (let index = 0; index < pixels.length; index += 4) {
+				if (pixels[index + 3] < 200) continue;
+				opaque++;
+				const [r, g, b] = [pixels[index], pixels[index + 1], pixels[index + 2]];
+				hues.add(
+					r > g && b > g
+						? 'purple'
+						: b > r && b > g
+							? 'blue'
+							: g > r && b > r
+								? 'cyan'
+								: g > r && g > b
+									? 'green'
+									: 'yellow'
+				);
+			}
+			return { hues: [...hues], opaque };
+		});
+		expect(colors.opaque).toBeGreaterThan(100);
+		expect(colors.hues).toEqual(
+			expect.arrayContaining(['purple', 'blue', 'cyan', 'green', 'yellow'])
+		);
+	}
+
 	await hoverChart(page, surface);
 	await expect(card.getByRole('tooltip')).toContainText('2025-03-01 02:00');
 	await surface.focus();

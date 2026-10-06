@@ -98,6 +98,10 @@
 	--chart-series-7: #7659b1;
 	--chart-series-8: #54616e;
 	--chart-series-other: #7d8999;
+	--chart-spectrum-low-hue: 270;
+	--chart-spectrum-high-hue: 60;
+	--chart-spectrum-saturation: 70;
+	--chart-spectrum-lightness: 50;
 	--chart-1: var(--chart-series-1);
 	--chart-2: var(--chart-series-2);
 	--chart-3: var(--chart-series-3);
@@ -127,6 +131,7 @@
 	--destructive: #f18d96;
 	--success: #62c6b1;
 	--warning: #e8b951;
+	--chart-spectrum-lightness: 60;
 	--chart-text-color: #a3b2c7;
 	--chart-grid-color: #303d50;
 	--chart-grid-highlight-color: #202b3b;

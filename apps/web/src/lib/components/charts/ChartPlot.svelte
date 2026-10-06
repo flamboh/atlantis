@@ -13,6 +13,8 @@
 		type PlotSeries
 	} from './chart-registry';
 	import { paintLegendSwatch } from './legend-swatch';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { readSpectrumColors } from './chart-colors';
 	import { paintSpectrumCloud } from './spectrum-cloud';
 	import { renderCoverageSvg } from './coverage-marks';
 	import { plotObservations, positionedScenePoints } from './chart-observations';
@@ -60,7 +62,16 @@
 	let observations: ReturnType<typeof plotObservations> | null = null;
 	const definition = $derived.by(() => {
 		const currentSeries = series;
-		const currentOptions = options;
+		const currentOptions =
+			options.colorDomain && typeof document !== 'undefined'
+				? {
+						...options,
+						spectrumColors: readSpectrumColors(
+							getComputedStyle(document.documentElement),
+							theme.dark
+						)
+					}
+				: options;
 		const currentHidden = new Set(hidden);
 		const formatter = formatTooltip;
 		const normal = buildChartDefinition(

@@ -14,6 +14,7 @@ import { scaleSequential } from 'd3-scale';
 import type { ChartMark, ChartPoint } from '@tanstack/charts';
 import { temporalTicks } from './temporal-ticks';
 import { temporalGrid } from './temporal-grid';
+import { spectrumInterpolator, type SpectrumColors } from './chart-colors';
 import { spectrumCloud } from './spectrum-cloud';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
@@ -123,6 +124,7 @@ export type PlotOptions = {
 	compact?: boolean;
 	annotations?: PlotAnnotation[];
 	colorDomain?: readonly [number, number];
+	spectrumColors?: SpectrumColors;
 };
 
 export function finitePoint(point: PlotPoint): boolean {
@@ -419,9 +421,9 @@ export function buildChartDefinition(
 		},
 		color: options.colorDomain
 			? {
-					scale: scaleSequential((value: number) => `hsl(218, 72%, ${78 - value * 43}%)`).domain(
-						options.colorDomain
-					)
+					scale: scaleSequential(spectrumInterpolator(options.spectrumColors))
+						.clamp(true)
+						.domain(options.colorDomain)
 				}
 			: {
 					domain: labels,
