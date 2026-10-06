@@ -316,7 +316,7 @@
 	/>
 </svelte:head>
 
-<main class="mx-auto flex max-w-[95vw] flex-col gap-4 px-4 py-8 sm:px-2 lg:px-4">
+<main class="page-layout flex flex-col gap-4">
 	<header>
 		<h1 class="text-foreground text-2xl font-semibold">Singularity alerts</h1>
 		<p class="text-foreground mt-1 text-sm">{selectedDatasetLabel}</p>

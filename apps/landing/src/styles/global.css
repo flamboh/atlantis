@@ -8,9 +8,9 @@
   --font-body: "IBM Plex Sans", system-ui, sans-serif;
 
   --color-brand-blue: #2563eb;
-  --color-dark-bg: #0a0a0a;
-  --color-dark-border: #2d2d2d;
-  --color-muted: #9ca3af;
+  --color-dark-bg: #101722;
+  --color-dark-border: #303d50;
+  --color-muted: #a3b2c7;
 }
 
 @layer base {

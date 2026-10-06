@@ -39,10 +39,10 @@
 	}
 </script>
 
-<div class="mx-auto max-w-[95vw] px-4 py-8 sm:px-2 lg:px-4">
-	<h1 class="text-foreground mb-4 text-2xl">NetFlow Files</h1>
+<div class="page-layout">
+	<h1 class="page-heading mb-6">NetFlow Files</h1>
 
-	<Card class="border-primary/20 bg-primary/5 mb-6 gap-3 rounded-lg border py-4 ring-0">
+	<Card class="border-border bg-card mb-6 gap-3 rounded-lg border py-4 ring-0">
 		<CardHeader class="px-4">
 			<CardTitle><h2 class="text-lg font-semibold">Navigate to File by Timestamp</h2></CardTitle>
 		</CardHeader>

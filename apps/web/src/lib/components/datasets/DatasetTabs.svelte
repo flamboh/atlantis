@@ -1,31 +1,17 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import {
-		segmentedControlActiveClass,
-		segmentedControlGroupClass,
-		segmentedControlInactiveClass,
-		segmentedControlItemClass
-	} from '#lib/components/common/SegmentedControl.svelte';
-	import { cn } from '#lib/utils.ts';
-
 	let { datasetId, active }: { datasetId: string; active: 'dashboard' | 'alerts' } = $props();
 </script>
 
-<nav aria-label="Dataset views" class={cn(segmentedControlGroupClass, 'grid-cols-2')}>
+<nav aria-label="Dataset views" class="dataset-tabs border-border flex gap-6 border-b">
 	<a
 		href={resolve('/datasets/[dataset]', { dataset: datasetId })}
-		class={cn(
-			segmentedControlItemClass,
-			active === 'dashboard' ? segmentedControlActiveClass : segmentedControlInactiveClass
-		)}
+		class="text-muted-foreground hover:text-foreground aria-[current=page]:border-primary aria-[current=page]:text-accent-foreground border-b-2 border-transparent px-1 py-2.5 text-sm"
 		aria-current={active === 'dashboard' ? 'page' : undefined}>Dashboard</a
 	>
 	<a
 		href={resolve('/datasets/[dataset]/alerts', { dataset: datasetId })}
-		class={cn(
-			segmentedControlItemClass,
-			active === 'alerts' ? segmentedControlActiveClass : segmentedControlInactiveClass
-		)}
+		class="text-muted-foreground hover:text-foreground aria-[current=page]:border-primary aria-[current=page]:text-accent-foreground border-b-2 border-transparent px-1 py-2.5 text-sm"
 		aria-current={active === 'alerts' ? 'page' : undefined}>Alerts</a
 	>
 </nav>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import ChartLoading from '#lib/components/charts/ChartLoading.svelte';
 	import DragGrip from '#lib/components/common/DragGrip.svelte';
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import { goto } from '$app/navigation';
@@ -342,18 +343,10 @@
 		/>
 
 		<div
-			class="border-border bg-background/60 h-[380px] min-h-[280px] resize-none overflow-hidden rounded-md border md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
+			class="chart-frame traffic-frame h-[380px] min-h-[280px] resize-none overflow-hidden rounded-md border md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
 		>
 			{#if loading}
-				<div class="flex h-full items-center justify-center">
-					<div class="text-muted-foreground flex items-center gap-3">
-						<div
-							class="border-border border-t-muted-foreground h-5 w-5 animate-spin rounded-full border-2"
-							aria-hidden="true"
-						></div>
-						<div>Loading data...</div>
-					</div>
-				</div>
+				<ChartLoading label="Loading data..." />
 			{:else if error}
 				<div class="flex h-full items-center justify-center">
 					<div class="text-destructive">{error}</div>

@@ -217,7 +217,7 @@ export function buildChartDefinition(
 						y1: (point) => (point.y ?? 0) - 0.055,
 						y2: (point) => (point.y ?? 0) + 0.055,
 						inset: 0,
-						fill: state === 'complete' ? 'rgb(16,185,129)' : 'transparent'
+						fill: state === 'complete' ? 'var(--success)' : 'transparent'
 					})
 				);
 				if (state === 'partial')
@@ -228,7 +228,7 @@ export function buildChartDefinition(
 									id: `${id}-coverage-dash-${position}`,
 									x: 'x',
 									y: 'y',
-									stroke: 'rgb(245,158,11)',
+									stroke: 'var(--warning)',
 									strokeWidth: 2,
 									strokeDasharray: '5 4'
 								})
@@ -419,7 +419,7 @@ export function buildChartDefinition(
 		},
 		color: options.colorDomain
 			? {
-					scale: scaleSequential((value: number) => `hsl(${270 - value * 210}, 70%, 50%)`).domain(
+					scale: scaleSequential((value: number) => `hsl(218, 72%, ${78 - value * 43}%)`).domain(
 						options.colorDomain
 					)
 				}

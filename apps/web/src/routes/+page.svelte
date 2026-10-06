@@ -17,7 +17,14 @@
 	<meta name="description" content="Select an ATLANTIS dataset dashboard" />
 </svelte:head>
 
-<main class="mx-auto flex max-w-[95vw] flex-col gap-4 px-4 py-8 sm:px-2 lg:px-4">
+<main class="page-layout flex flex-col gap-4">
+	<div>
+		<p class="page-eyebrow">ATLANTIS / Network analysis</p>
+		<h1 class="page-heading">Datasets</h1>
+		<p class="text-muted-foreground mt-2 text-sm">
+			Select a dataset to explore its traffic and analysis.
+		</p>
+	</div>
 	{#if data.datasets.length === 0}
 		<Card class="gap-0 rounded-lg border py-6 shadow-sm ring-0">
 			<CardHeader class="px-6">
@@ -38,7 +45,7 @@
 		<div class="grid gap-4 md:grid-cols-2">
 			{#each data.datasets as dataset (dataset.datasetId)}
 				<Card
-					class="hover:border-primary gap-0 rounded-lg border py-0 shadow-sm ring-0 transition hover:shadow"
+					class="hover:border-primary hover:bg-accent/30 gap-0 rounded-lg border py-0 shadow-sm ring-0 transition"
 				>
 					<Button
 						variant="ghost"
@@ -46,7 +53,7 @@
 						onclick={() => openDataset(dataset.datasetId)}
 					>
 						<div>
-							<h1 class="text-foreground text-xl font-semibold">{dataset.label}</h1>
+							<h2 class="text-foreground text-lg font-semibold">{dataset.label}</h2>
 							<p class="text-muted-foreground mt-3 text-sm">
 								<span class="font-mono">{dataset.datasetId}</span>
 								·

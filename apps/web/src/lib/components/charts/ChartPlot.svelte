@@ -448,7 +448,7 @@
 	:global(.ts-chart__interactive-legend) {
 		overflow: auto;
 		align-content: start;
-		grid-auto-rows: 44px;
+		grid-auto-rows: 32px;
 	}
 
 	:global(.ts-chart-host) {
