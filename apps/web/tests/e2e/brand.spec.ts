@@ -7,6 +7,9 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.goto('/netflow/files');
 		const home = page.getByRole('link', { name: 'ATLANTIS', exact: true });
 		await expect(home.getByRole('img', { name: 'ATLANTIS', exact: true })).toBeVisible();
+		const logoBounds = await home.boundingBox();
+		const navBounds = await page.getByRole('link', { name: 'Home', exact: true }).boundingBox();
+		expect(navBounds!.x - (logoBounds!.x + logoBounds!.width)).toBeGreaterThanOrEqual(8);
 		for (const control of await page.locator('header a, header button').all()) {
 			const bounds = await control.boundingBox();
 			expect(bounds).not.toBeNull();
