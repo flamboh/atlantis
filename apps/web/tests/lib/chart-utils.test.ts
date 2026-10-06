@@ -1,9 +1,6 @@
-import type { Chart } from 'chart.js';
 import { describe, expect, it } from 'vitest';
 import {
 	clampGroupByToDateRange,
-	indexFromPixelX,
-	buildMirroredSelectionStyle,
 	buildTemporalChartPoints,
 	findTemporalDataBounds,
 	findNearestValueIndex,
@@ -192,30 +189,8 @@ describe('spectrum time buckets', () => {
 		).toEqual({ min: 1000, max: 1600 });
 	});
 
-	it('uses bucket positions for selection even when scatter points repeat or skip buckets', () => {
-		const chart = {
-			data: {
-				labels: ['a', 'b', 'c'],
-				datasets: [{ data: [{ x: 100 }, { x: 100 }, { x: 300 }, { x: 300 }] }]
-			},
-			scales: {
-				x: {
-					options: { type: 'linear' },
-					getValueForPixel: (value: number) => value,
-					getPixelForValue: (value: number) => value
-				}
-			},
-			chartArea: { left: 0, right: 400, top: 0, bottom: 200 }
-		} as unknown as Chart;
-		expect(indexFromPixelX(chart, 200, [100, 200, 300])).toBe(1);
-		expect(indexFromPixelX(chart, 300, [100, 200, 300])).toBe(2);
-		expect(
-			buildMirroredSelectionStyle(
-				chart,
-				{ sourceChartId: 'another-chart', startLabel: 'a', endLabel: 'b' },
-				'spectrum',
-				[100, 200, 300]
-			)
-		).toBe('left:100px; width:100px; top:0px; height:200px;');
+	it('uses bucket identity even when spectrum observations repeat or skip buckets', () => {
+		expect(findNearestValueIndex([100, 200, 300], 200)).toBe(1);
+		expect(findNearestValueIndex([100, 100, 300, 300], 300)).toBe(2);
 	});
 });

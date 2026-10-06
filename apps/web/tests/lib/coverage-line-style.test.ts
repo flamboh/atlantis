@@ -1,52 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { buildCoveragePointStyle } from '../../src/lib/components/charts/coverage-line-style';
+import { coverageLineRuns } from '../../src/lib/components/charts/coverage-line-style';
 
-describe('coverage-aware line point styles', () => {
-	const completeCoverage = { state: 'complete' as const };
-	const partialCoverage = { state: 'partial' as const };
-	const unknownCoverage = { state: 'unknown' as const };
-
-	it('draws an isolated numeric partial bucket as a hollow point', () => {
+describe('coverage-aware line segments', () => {
+	const runs = (points: Array<{ y: number | null; partial: boolean }>) =>
+		coverageLineRuns(
+			points,
+			(point) => point.y,
+			(point) => point.partial
+		);
+	it('dashes both segments adjoining a partial observation without bridging unknown gaps', () => {
 		const points = [
-			{ value: null, coverage: unknownCoverage },
-			{ value: 4, coverage: partialCoverage },
-			{ value: null, coverage: unknownCoverage },
-			{ value: 0, coverage: completeCoverage },
-			{ value: null, coverage: partialCoverage }
+			{ y: 0, partial: false },
+			{ y: 4, partial: true },
+			{ y: 8, partial: false },
+			{ y: 9, partial: false },
+			{ y: null, partial: false },
+			{ y: 10, partial: false }
 		];
-
-		expect(
-			buildCoveragePointStyle(
-				points,
-				(point) => point.value,
-				(point) => point.coverage,
-				'rgb(54, 162, 235)'
-			)
-		).toEqual({
-			pointRadius: [0, 3, 0, 0, 0],
-			pointBackgroundColor: [
-				'rgb(54, 162, 235)',
-				'rgba(0, 0, 0, 0)',
-				'rgb(54, 162, 235)',
-				'rgb(54, 162, 235)',
-				'rgb(54, 162, 235)'
-			],
-			pointBorderColor: 'rgb(54, 162, 235)',
-			pointBorderWidth: [0, 2, 0, 0, 0]
-		});
+		expect(runs(points)).toEqual([
+			{ points: points.slice(0, 3), partial: true },
+			{ points: points.slice(2, 4), partial: false },
+			{ points: points.slice(5), partial: false }
+		]);
 	});
-
-	it('returns no point styles when no numeric partial bucket exists', () => {
-		expect(
-			buildCoveragePointStyle(
-				[
-					{ value: 0, coverage: completeCoverage },
-					{ value: null, coverage: unknownCoverage }
-				],
-				(point) => point.value,
-				(point) => point.coverage,
-				'blue'
-			)
-		).toBeNull();
+	it('retains singleton zero observations and breaks nonfinite gaps', () => {
+		const points = [
+			{ y: null, partial: false },
+			{ y: 0, partial: true },
+			{ y: NaN, partial: false }
+		];
+		expect(runs(points)).toEqual([{ points: [points[1]], partial: true }]);
 	});
 });

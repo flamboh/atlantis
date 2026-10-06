@@ -1,792 +1,142 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import type { TooltipItem } from 'chart.js';
-	import { getRelativePosition } from 'chart.js/helpers';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { Chart } from './chart-registry';
-	import { buildCoveragePointStyle } from './coverage-line-style';
-	import { crosshairStore } from '#lib/stores/crosshair.ts';
-	import { rangeSelection } from '#lib/stores/rangeSelection.svelte.ts';
-	import { theme } from '#lib/stores/theme.svelte.ts';
-	import { cancelDrawFrame, requestDrawFrame } from '#lib/utils/animation-frame.ts';
-	import { SvelteSet } from 'svelte/reactivity';
-	import { NETFLOW_DATA_OPTION_FIELDS } from '#lib/components/netflow/constants.ts';
+	import type { ChartPoint } from '@tanstack/charts';
+	import ChartPlot from './ChartPlot.svelte';
+	import { plotBounds, type PlotPoint, type PlotSeries } from './chart-registry';
 	import {
 		formatLabels,
+		formatNetflowTick,
+		formatNumber,
 		getXAxisTitle,
-		parseClickedLabel,
-		generateSlugFromLabel,
-		Y_AXIS_WIDTH,
-		MIN_DRAG_PIXELS,
-		groupByBucketDurationMs,
-		chooseAdaptiveGranularity,
-		createRangeDragState,
-		getSelectionLabels,
-		beginRangeDrag,
-		updateRangeDrag,
-		endRangeDrag,
-		buildMirroredSelectionStyle,
-		findTemporalDataBounds,
-		isCoverageSegmentDashed
+		groupByBucketDurationMs
 	} from './chart-utils';
-	import {
-		parseLabelToPSTComponents,
-		formatDateAsPSTDateString,
-		epochToPSTComponents,
-		getWeekdayName,
-		type PSTDateComponents
-	} from '#lib/utils/timezone.ts';
+	import { openTemporalPoint, openTemporalRange } from './temporal-navigation';
+	import { NETFLOW_DATA_OPTION_FIELDS } from '#lib/components/netflow/constants.ts';
 	import type {
 		NetflowDataPoint,
 		GroupByOption,
 		ChartTypeOption,
-		DataOption,
-		ClickedElement,
-		ChartConfig,
-		ChartDataset
+		DataOption
 	} from '#lib/components/netflow/types.ts';
 
-	interface Props {
+	let {
+		results,
+		groupBy,
+		chartType,
+		dataOptions,
+		onDrillDown,
+		onNavigateToFile
+	}: {
 		results: NetflowDataPoint[];
 		groupBy: GroupByOption;
 		chartType: ChartTypeOption;
 		dataOptions: DataOption[];
-		onDrillDown?: (newGroupBy: GroupByOption, newStartDate: string, newEndDate: string) => void;
+		onDrillDown?: (groupBy: GroupByOption, startDate: string, endDate: string) => void;
 		onNavigateToFile?: (slug: string) => void;
-	}
-
-	let { results, groupBy, chartType, dataOptions, onDrillDown, onNavigateToFile }: Props = $props();
-
-	const CHART_ID = 'netflow';
-	const COMPACT_CHART_WIDTH = 560;
-
-	let chartCanvas: HTMLCanvasElement;
-	let chart: Chart | null = null;
-	let resizeObserver: ResizeObserver | null = null;
-	let compactChartMode: boolean | null = null;
-	let rangeDrag = $state(createRangeDragState());
-	let selectionLeft = $derived(Math.min(rangeDrag.dragStartX, rangeDrag.dragCurrentX));
-	let selectionWidth = $derived(Math.abs(rangeDrag.dragCurrentX - rangeDrag.dragStartX));
-	let mirroredRange = $derived(rangeSelection.selection);
-	let rangeMoveFrame: number | null = null;
-	let pendingRangeMoveEvent: MouseEvent | null = null;
-
-	type MetricFamily = 'flows' | 'packets' | 'bytes';
-
-	function publishRangeSelection(startIndex: number, endIndex: number) {
-		const labels = getSelectionLabels(chart, startIndex, endIndex);
-		if (!labels) return;
-		rangeSelection.set({ sourceChartId: CHART_ID, ...labels });
-	}
-
-	function applyRangeDrilldown(startIndex: number, endIndex: number) {
-		if (!chart?.data.labels || !onDrillDown) return;
-		const labels = chart.data.labels as string[];
-		if (labels.length === 0) return;
-		const safeStart = Math.max(0, Math.min(labels.length - 1, startIndex));
-		const safeEnd = Math.max(0, Math.min(labels.length - 1, endIndex));
-		const from = Math.min(safeStart, safeEnd);
-		const to = Math.max(safeStart, safeEnd);
-		const startLabel = labels[from];
-		const endLabel = labels[to];
-		if (!startLabel || !endLabel) return;
-
-		const startDate = parseClickedLabel(startLabel, groupBy);
-		const endBucketStart = parseClickedLabel(endLabel, groupBy);
-		if (Number.isNaN(startDate.getTime()) || Number.isNaN(endBucketStart.getTime())) return;
-
-		const endExclusive = new Date(endBucketStart.getTime() + groupByBucketDurationMs(groupBy));
-		const selectedRangeMs = endExclusive.getTime() - startDate.getTime();
-		const nextGroupBy = chooseAdaptiveGranularity(selectedRangeMs);
-		onDrillDown(
-			nextGroupBy,
-			formatDateAsPSTDateString(startDate),
-			formatDateAsPSTDateString(endExclusive)
-		);
-	}
-
-	function handleRangeMouseDown(event: MouseEvent) {
-		cancelPendingRangeMove();
-		beginRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
-	}
-
-	function applyPendingRangeMove() {
-		rangeMoveFrame = null;
-		const event = pendingRangeMoveEvent;
-		pendingRangeMoveEvent = null;
-		if (event) {
-			updateRangeDrag(rangeDrag, event, chartCanvas, chart, publishRangeSelection);
-		}
-	}
-
-	function cancelPendingRangeMove() {
-		if (rangeMoveFrame !== null) {
-			cancelDrawFrame(rangeMoveFrame);
-			rangeMoveFrame = null;
-		}
-		pendingRangeMoveEvent = null;
-	}
-
-	function flushPendingRangeMove() {
-		if (rangeMoveFrame === null) {
-			return;
-		}
-		cancelDrawFrame(rangeMoveFrame);
-		applyPendingRangeMove();
-	}
-
-	function handleRangeMouseMove(event: MouseEvent) {
-		if (!rangeDrag.isDraggingRange) {
-			return;
-		}
-		pendingRangeMoveEvent = event;
-		if (rangeMoveFrame === null) {
-			rangeMoveFrame = requestDrawFrame(applyPendingRangeMove);
-		}
-	}
-
-	function finishRangeSelection() {
-		flushPendingRangeMove();
-		endRangeDrag(rangeDrag, chart, applyRangeDrilldown);
-		rangeSelection.clear();
-	}
-
-	let mirroredSelectionStyle = $derived(
-		buildMirroredSelectionStyle(chart, mirroredRange, CHART_ID)
+	} = $props();
+	const colors = [
+		'rgb(75, 192, 192)',
+		'rgb(255, 99, 132)',
+		'rgb(54, 162, 235)',
+		'rgb(255, 206, 86)',
+		'rgb(153, 102, 255)',
+		'rgb(255, 159, 64)',
+		'rgb(255, 99, 71)',
+		'rgb(0, 206, 209)',
+		'rgb(60, 179, 113)',
+		'rgb(218, 112, 214)',
+		'rgb(255, 215, 0)',
+		'rgb(128, 0, 128)'
+	];
+	const labels = $derived(formatLabels(results, groupBy));
+	const series = $derived<PlotSeries[]>(
+		dataOptions
+			.filter((option) => option.checked)
+			.map((option, index) => ({
+				label: option.label,
+				color: colors[index % colors.length],
+				data: results.map((result, index) => ({
+					x: result.bucketStart,
+					y: result.data?.[NETFLOW_DATA_OPTION_FIELDS[option.index]] ?? null,
+					coverage: result.coverage,
+					label: labels[index]
+				}))
+			}))
+	);
+	const bounds = $derived(plotBounds(series, groupByBucketDurationMs(groupBy) / 1000));
+	const visibleStarts = $derived(
+		results
+			.map((result) => result.bucketStart)
+			.filter((start) => start >= bounds[0] && start <= bounds[1])
+	);
+	const allBytes = $derived(
+		dataOptions.filter((option) => option.checked).every((option) => option.label.includes('Bytes'))
 	);
 
-	function formatTickLabel(
-		pst: PSTDateComponents | null,
-		currentGroupBy: GroupByOption,
-		index: number
-	): string {
-		if (!pst) {
-			return '';
-		}
-		const weekday = getWeekdayName(pst.dayOfWeek);
-		const month = pst.month;
-		const day = pst.day;
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-
-		if (currentGroupBy === 'date') {
-			return pst.dayOfWeek === 1 ? `${weekday} ${month}/${day}` : '';
-		}
-
-		if (currentGroupBy === 'hour') {
-			return hours === 0 ? `${weekday} ${month}/${day}` : '';
-		}
-
-		if (currentGroupBy === '30min' || currentGroupBy === '10min') {
-			if (minutes === 0 && (hours === 0 || hours === 12)) {
-				return `${weekday} ${month}/${day} ${hours.toString().padStart(2, '0')}:00`;
+	function formatMetric(value: number, label: string) {
+		if (label.includes('Bytes')) {
+			for (const [power, unit] of [
+				[5, 'PB'],
+				[4, 'TB'],
+				[3, 'GB'],
+				[2, 'MB'],
+				[1, 'KB']
+			] as const) {
+				if (value >= 1024 ** power) return `${(value / 1024 ** power).toFixed(1)} ${unit}`;
 			}
-			return '';
-		}
-
-		if (currentGroupBy === '5min') {
-			if (minutes === 0) {
-				return `${weekday} ${month}/${day} ${hours.toString().padStart(2, '0')}:00`;
-			}
-			return '';
-		}
-
-		return index === 0 ? `${weekday} ${month}/${day}` : '';
-	}
-
-	function shouldHighlightTick(
-		pst: PSTDateComponents | null,
-		currentGroupBy: GroupByOption,
-		index: number
-	): boolean {
-		if (!pst) {
-			return index === 0;
-		}
-		const hours = pst.hours;
-		const minutes = pst.minutes;
-
-		if (currentGroupBy === 'date') {
-			return pst.dayOfWeek === 1;
-		}
-		if (currentGroupBy === 'hour') {
-			return hours === 0;
-		}
-		if (currentGroupBy === '30min' || currentGroupBy === '10min') {
-			return minutes === 0 && (hours === 0 || hours === 12);
-		}
-		if (currentGroupBy === '5min') {
-			return minutes === 0;
-		}
-		return index === 0;
-	}
-
-	function getClickedElement(
-		activeElements: { datasetIndex: number; index: number }[]
-	): ClickedElement | null {
-		if (!chart) {
-			return null;
-		}
-		if (activeElements.length > 0) {
-			const element = activeElements[0];
-			const datasetIndex = element.datasetIndex;
-			const index = element.index;
-			const dataset = chart.data.datasets[datasetIndex] as ChartDataset;
-			const label = chart.data.labels?.[index] as string;
-			const value = dataset.data[index];
-			if (typeof value !== 'number') {
-				return null;
-			}
-			return {
-				dataset: {
-					label: dataset.label,
-					data: dataset.data,
-					backgroundColor: dataset.backgroundColor as string,
-					borderColor: dataset.borderColor as string
-				},
-				label,
-				value,
-				datasetIndex,
-				index
-			};
-		}
-		return null;
-	}
-
-	function getMetricFamily(label: string): MetricFamily | null {
-		const normalized = label.toLowerCase();
-		if (normalized.includes('flow')) return 'flows';
-		if (normalized.includes('packet')) return 'packets';
-		if (normalized.includes('byte')) return 'bytes';
-		return null;
-	}
-
-	function formatMetricValue(value: number, family: MetricFamily): string {
-		if (family === 'bytes') {
-			if (value >= 1024 ** 5) return `${(value / 1024 ** 5).toFixed(1)} PB`;
-			if (value >= 1024 ** 4) return `${(value / 1024 ** 4).toFixed(1)} TB`;
-			if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;
-			if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
-			if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
 			return `${value.toLocaleString()} bytes`;
 		}
-
 		return value.toLocaleString();
 	}
-
-	function getTooltipTotalLines(items: TooltipItem<'line'>[]): string[] {
-		const dataIndex = items[0]?.dataIndex;
-		if (dataIndex == null) {
-			return [];
-		}
-
-		const bucket = results[dataIndex];
-		if (!bucket) {
-			return [];
-		}
-		const payload = bucket.data;
-		if (!payload) {
-			return [];
-		}
-
-		const visibleFamilies = new SvelteSet<MetricFamily>();
-		for (const item of items) {
-			const family = getMetricFamily(item.dataset.label ?? '');
-			if (family) {
-				visibleFamilies.add(family);
-			}
-		}
-
-		const lines: string[] = [];
-		if (visibleFamilies.has('flows')) {
-			lines.push(`Total Flows: ${formatMetricValue(payload.flows, 'flows')}`);
-		}
-		if (visibleFamilies.has('packets')) {
-			lines.push(`Total Packets: ${formatMetricValue(payload.packets, 'packets')}`);
-		}
-		if (visibleFamilies.has('bytes')) {
-			lines.push(`Total Bytes: ${formatMetricValue(payload.bytes, 'bytes')}`);
-		}
-
-		return lines;
-	}
-
-	function handleChartClick(
-		e: MouseEvent,
-		activeElements: { datasetIndex: number; index: number }[]
-	) {
-		if (rangeDrag.suppressNextClick) {
-			rangeDrag.suppressNextClick = false;
-			return;
-		}
-		if (!chart) {
-			return;
-		}
-		// Always get the canvas position and convert to data values
-		const canvasPosition = getRelativePosition(e, chart);
-		const dataX = chart.scales.x.getValueForPixel(canvasPosition.x);
-
-		// Convert the x-axis data value to the appropriate date based on current groupBy
-		let clickedDate: Date;
-
-		if (typeof dataX === 'number') {
-			// dataX is the index in the labels array
-			const labelIndex = Math.round(dataX);
-			const labels = chart.data.labels;
-
-			if (labels && labelIndex >= 0 && labelIndex < labels.length) {
-				const clickedLabel = labels[labelIndex] as string;
-				clickedDate = parseClickedLabel(clickedLabel, groupBy);
-			} else {
-				// Handle clicks outside the data range
-				if (labels && labels.length > 0) {
-					let targetLabel: string;
-					if (labelIndex < 0) {
-						targetLabel = labels[0] as string;
-					} else {
-						targetLabel = labels[labels.length - 1] as string;
-					}
-					clickedDate = parseClickedLabel(targetLabel, groupBy);
-				} else {
-					return;
-				}
-			}
-		} else {
-			return;
-		}
-
-		const clickedElement = getClickedElement(activeElements);
-
-		if (groupBy === 'date') {
-			const startOfMonth = new Date(clickedDate.getTime() - 15 * 24 * 60 * 60 * 1000);
-			const endOfMonth = new Date(clickedDate.getTime() + 16 * 24 * 60 * 60 * 1000);
-			const startDateStr = formatDateAsPSTDateString(startOfMonth);
-			const endDateStr = formatDateAsPSTDateString(endOfMonth);
-			onDrillDown?.('hour', startDateStr, endDateStr);
-		} else if (groupBy === 'hour') {
-			const startOfWeek = new Date(clickedDate.getTime() - 3 * 24 * 60 * 60 * 1000);
-			const endOfWeek = new Date(clickedDate.getTime() + 4 * 24 * 60 * 60 * 1000);
-			const startDateStr = formatDateAsPSTDateString(startOfWeek);
-			const endDateStr = formatDateAsPSTDateString(endOfWeek);
-			onDrillDown?.('10min', startDateStr, endDateStr);
-		} else if (groupBy === '30min' || groupBy === '10min') {
-			const endDate = new Date(clickedDate.getTime() + 24 * 60 * 60 * 1000);
-			const startDateStr = formatDateAsPSTDateString(clickedDate);
-			const endDateStr = formatDateAsPSTDateString(endDate);
-			onDrillDown?.('5min', startDateStr, endDateStr);
-		} else if (groupBy === '5min') {
-			// For 5min level, we need to create a slug from the clicked date
-			// Convert the date back to a label format that generateSlugFromLabel expects
-			let labelForSlug: string;
-			if (clickedElement) {
-				labelForSlug = clickedElement.label;
-			} else {
-				// Format the date to match the label format for 5min grouping using PST
-				const pst = epochToPSTComponents(Math.floor(clickedDate.getTime() / 1000));
-				const year = pst.year;
-				const month = String(pst.month).padStart(2, '0');
-				const day = String(pst.day).padStart(2, '0');
-				const hour = String(pst.hours).padStart(2, '0');
-				const minute = String(pst.minutes).padStart(2, '0');
-				labelForSlug = `${year}-${month}-${day} ${hour}:${minute}`;
-			}
-
-			const slug = generateSlugFromLabel(labelForSlug, groupBy);
-			if (onNavigateToFile) {
-				onNavigateToFile(slug);
-			} else {
-				goto(resolve('/netflow/files/[slug]', { slug }));
-			}
-		}
-	}
-
-	function parseLabelToPST(label: string | undefined): PSTDateComponents | null {
-		if (!label) return null;
-		return parseLabelToPSTComponents(label);
-	}
-
-	function getChartColors() {
-		const style = getComputedStyle(document.documentElement);
-		return {
-			textColor: style.getPropertyValue('--chart-text-color').trim(),
-			gridColor: style.getPropertyValue('--chart-grid-color').trim(),
-			gridHighlightColor: style.getPropertyValue('--chart-grid-highlight-color').trim(),
-			tooltipBackgroundColor: style.getPropertyValue('--chart-tooltip-bg').trim(),
-			tooltipTextColor: style.getPropertyValue('--chart-tooltip-text-color').trim(),
-			tooltipBorderColor: style.getPropertyValue('--chart-tooltip-border-color').trim()
-		};
-	}
-
-	function isCompactChart(): boolean {
-		const width = chartCanvas.parentElement?.clientWidth ?? chartCanvas.clientWidth;
-		return width < COMPACT_CHART_WIDTH;
-	}
-
-	function getLabelPSTFromLabels(
-		labels: (string | number | null | undefined)[],
-		idx: number
-	): PSTDateComponents | null {
-		const label = labels[idx];
-		return typeof label === 'string' ? parseLabelToPST(label) : null;
-	}
-
-	function createChartConfig(): ChartConfig {
-		const {
-			textColor,
-			gridColor,
-			gridHighlightColor,
-			tooltipBackgroundColor,
-			tooltipTextColor,
-			tooltipBorderColor
-		} = getChartColors();
-		const dataBounds = findTemporalDataBounds(
-			results,
-			(result) => result.bucketStart,
-			(result) => result.data !== null
-		);
-		const visibleResults = dataBounds
-			? results.filter(
-					(result) => result.bucketStart >= dataBounds.min && result.bucketStart <= dataBounds.max
-				)
-			: [];
-		const labels = formatLabels(visibleResults, groupBy);
-		const getLabelPST = (idx: number): PSTDateComponents | null =>
-			getLabelPSTFromLabels(labels, idx);
-		const xAxisTitle = getXAxisTitle(groupBy);
-		const compactChart = isCompactChart();
-
-		// Use manual chart type selection - matches original logic
-		const isStackedChart = chartType === 'stacked';
-
-		// Original predefined colors
-		const predefinedColors = [
-			'rgb(75, 192, 192)',
-			'rgb(255, 99, 132)',
-			'rgb(54, 162, 235)',
-			'rgb(255, 206, 86)',
-			'rgb(153, 102, 255)',
-			'rgb(255, 159, 64)',
-			'rgb(255, 99, 71)',
-			'rgb(0, 206, 209)',
-			'rgb(60, 179, 113)',
-			'rgb(218, 112, 214)',
-			'rgb(255, 215, 0)',
-			'rgb(128, 0, 128)',
-			'rgb(0, 128, 128)',
-			'rgb(255, 0, 255)',
-			'rgb(0, 255, 0)',
-			'rgb(128, 128, 0)',
-			'rgb(0, 0, 128)',
-			'rgb(255, 140, 0)',
-			'rgb(34, 139, 34)',
-			'rgb(139, 0, 0)'
+	function tooltip(points: readonly ChartPoint<PlotPoint, number, number>[]) {
+		const bucket = results.find((result) => result.bucketStart === points[0]?.datum.x);
+		const lines = [
+			points[0]?.datum.label ?? '',
+			...points.map(
+				(point) => `${point.groupLabel}: ${formatMetric(point.datum.y ?? 0, point.groupLabel)}`
+			)
 		];
-
-		// Parse data from results - matches original parsing logic
-		const datasets: ChartDataset[] = [];
-		let colorIndex = 0;
-		const hasPartialCoverage = visibleResults.some((result) => result.coverage.state === 'partial');
-
-		for (const option of dataOptions) {
-			if (option.checked) {
-				const field = NETFLOW_DATA_OPTION_FIELDS[option.index];
-				if (!field) {
-					continue;
-				}
-				const data = visibleResults.map((item) => item.data?.[field] ?? null);
-				const color = predefinedColors[colorIndex % predefinedColors.length];
-				const pointStyle = hasPartialCoverage
-					? buildCoveragePointStyle(
-							visibleResults,
-							(_result, index) => data[index] ?? null,
-							(result) => result.coverage,
-							color
-						)
-					: null;
-				colorIndex++;
-
-				datasets.push({
-					label: option.label,
-					data: data,
-					borderColor: color,
-					backgroundColor: isStackedChart
-						? color.replace('rgb', 'rgba').replace(')', ', 0.6)')
-						: color,
-					fill: isStackedChart ? 'origin' : false,
-					tension: 0.1,
-					pointRadius: 0,
-					...(pointStyle ?? {}),
-					spanGaps: false,
-					...(hasPartialCoverage
-						? {
-								segment: {
-									borderDash: (context: { p0DataIndex: number; p1DataIndex: number }) =>
-										isCoverageSegmentDashed(
-											visibleResults[context.p0DataIndex],
-											visibleResults[context.p1DataIndex]
-										)
-											? [6, 4]
-											: []
-								}
-							}
-						: {}),
-					hitRadius: 2,
-					hoverRadius: 5
-				});
-			}
+		for (const [family, label] of [
+			['flows', 'Flows'],
+			['packets', 'Packets'],
+			['bytes', 'Bytes']
+		] as const) {
+			if (bucket?.data && points.some((point) => point.groupLabel.includes(label)))
+				lines.push(`Total ${label}: ${formatMetric(bucket.data[family], label)}`);
 		}
-
-		// Check if all selected metrics are bytes
-		const selectedOptions = dataOptions.filter((o) => o.checked);
-		const allAreBytesMetrics = selectedOptions.every((o) => o.label.includes('Bytes'));
-		const formatAxisValue = (value: string | number) => {
-			const num = Number(value);
-
-			if (allAreBytesMetrics) {
-				if (num >= Math.pow(1024, 5)) return (num / Math.pow(1024, 5)).toFixed(1) + 'PB';
-				if (num >= Math.pow(1024, 4)) return (num / Math.pow(1024, 4)).toFixed(1) + 'TB';
-				if (num >= Math.pow(1024, 3)) return (num / Math.pow(1024, 3)).toFixed(1) + 'GB';
-				if (num >= Math.pow(1024, 2)) return (num / Math.pow(1024, 2)).toFixed(1) + 'MB';
-				if (num >= 1024) return (num / 1024).toFixed(1) + 'KB';
-				return num.toString() + ' bytes';
-			}
-
-			if (num >= 1e15) return (num / 1e15).toFixed(1) + 'Q';
-			if (num >= 1e12) return (num / 1e12).toFixed(1) + 'T';
-			if (num >= 1e9) return (num / 1e9).toFixed(1) + 'B';
-			if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
-			if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
-			return num.toString();
-		};
-
-		// Original scales configuration
-		const scales: Record<string, object> = {
-			x: {
-				title: {
-					display: !compactChart,
-					text: xAxisTitle,
-					color: textColor
-				},
-				ticks: {
-					color: textColor,
-					autoSkip: compactChart,
-					maxRotation: compactChart ? 0 : 45,
-					maxTicksLimit: compactChart ? 4 : undefined,
-					minRotation: compactChart ? 0 : 45,
-					sampleSize: 12,
-					callback: (_val: string | number, idx: number) =>
-						formatTickLabel(getLabelPST(Number(idx)), groupBy, Number(idx))
-				},
-				grid: {
-					color: (ctx: { index?: number; tick?: { index?: number } }) => {
-						const tickIndex = ctx.index ?? ctx.tick?.index ?? 0;
-						const safeIndex = Number.isFinite(Number(tickIndex)) ? Number(tickIndex) : 0;
-						return shouldHighlightTick(getLabelPST(safeIndex), groupBy, safeIndex)
-							? gridColor
-							: gridHighlightColor;
-					}
-				}
-			},
-			y: isStackedChart
-				? {
-						display: true,
-						type: 'linear',
-						stacked: true,
-						beginAtZero: true,
-						afterFit(axis: { width: number }) {
-							axis.width = compactChart ? 56 : Y_AXIS_WIDTH;
-						},
-						title: {
-							display: !compactChart,
-							text: 'Value',
-							color: textColor
-						},
-						ticks: {
-							color: textColor,
-							callback: formatAxisValue
-						},
-						grid: {
-							color: gridColor
-						}
-					}
-				: {
-						display: true,
-						type: 'linear',
-						beginAtZero: true,
-						afterFit(axis: { width: number }) {
-							axis.width = compactChart ? 56 : Y_AXIS_WIDTH;
-						},
-						title: {
-							display: !compactChart,
-							text: 'Value',
-							color: textColor
-						},
-						ticks: {
-							color: textColor,
-							callback: formatAxisValue
-						},
-						grid: {
-							color: gridColor
-						}
-					}
-		};
-
-		return {
-			type: 'line',
-			data: {
-				labels,
-				datasets
-			},
-			options: {
-				onClick: handleChartClick,
-				responsive: true,
-				maintainAspectRatio: false,
-				animation: false,
-				normalized: true,
-				interaction: {
-					mode: 'index',
-					intersect: false
-				},
-				scales: scales,
-				plugins: {
-					legend: {
-						display: !compactChart,
-						position: 'top' as const,
-						labels: { color: textColor }
-					},
-					tooltip: {
-						mode: 'index',
-						intersect: false,
-						backgroundColor: tooltipBackgroundColor,
-						titleColor: tooltipTextColor,
-						bodyColor: tooltipTextColor,
-						footerColor: tooltipTextColor,
-						borderColor: tooltipBorderColor,
-						borderWidth: 1,
-						callbacks: {
-							label: (context: TooltipItem<'line'>) => {
-								if (context.parsed.y === null) {
-									return `${context.dataset.label}: No data`;
-								}
-								const family = getMetricFamily(context.dataset.label ?? '') ?? 'flows';
-								const value = context.parsed.y;
-								return `${context.dataset.label}: ${formatMetricValue(value, family)}`;
-							},
-							footer: (items: TooltipItem<'line'>[]) => getTooltipTotalLines(items)
-						}
-					},
-					verticalCrosshair: {
-						enabled: true,
-						line: {
-							color: 'rgba(100, 100, 100, 0.8)',
-							width: 1,
-							dash: [3, 3]
-						},
-						tooltip: {
-							enabled: true,
-							delay: 500,
-							backgroundColor: tooltipBackgroundColor,
-							textColor: tooltipTextColor,
-							borderColor: tooltipBorderColor,
-							borderWidth: 1,
-							borderRadius: 4,
-							padding: 8,
-							fontSize: 12,
-							fontFamily: 'system-ui, sans-serif'
-						},
-						sync: {
-							onHover: (label: string | null) => crosshairStore.setHover(label, CHART_ID),
-							getExternalLabel: () => crosshairStore.getExternalLabel(CHART_ID)
-						}
-					}
-				} as Record<string, object>
-			}
-		};
+		return lines.join('\n');
 	}
-
-	onMount(() => {
-		const container = chartCanvas.parentElement;
-		if (container) {
-			resizeObserver = new ResizeObserver(() => {
-				const nextCompactChartMode = isCompactChart();
-				if (chart && results.length > 0 && nextCompactChartMode !== compactChartMode) {
-					const config = createChartConfig();
-					chart.data = config.data;
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					chart.options = config.options as any;
-					compactChartMode = nextCompactChartMode;
-					chart.update('none');
-					return;
-				}
-				compactChartMode = nextCompactChartMode;
-				chart?.resize();
-			});
-			resizeObserver.observe(container);
-		}
-	});
-
-	onDestroy(() => {
-		cancelPendingRangeMove();
-		crosshairStore.unregister(CHART_ID);
-		if (mirroredRange?.sourceChartId === CHART_ID) {
-			rangeSelection.clear();
-		}
-		chart?.destroy();
-		chart = null;
-		resizeObserver?.disconnect();
-		resizeObserver = null;
-	});
-
-	$effect(() => {
-		void theme.dark;
-		if (!chartCanvas || results.length === 0) {
-			return;
-		}
-
-		const config = createChartConfig();
-		compactChartMode = isCompactChart();
-		if (!chart) {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chart = new Chart(chartCanvas, config as any);
-			crosshairStore.register(CHART_ID, chart);
-			return;
-		}
-
-		chart.data = config.data;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		chart.options = config.options as any;
-		chart.update('none');
-	});
+	function navigate(slug: string) {
+		if (onNavigateToFile) onNavigateToFile(slug);
+		else void goto(resolve('/netflow/files/[slug]', { slug }));
+	}
 </script>
 
-<div
-	class="chart-container"
-	role="presentation"
-	onmousedown={handleRangeMouseDown}
-	onmousemove={handleRangeMouseMove}
-	onmouseup={finishRangeSelection}
-	onmouseleave={finishRangeSelection}
->
-	<canvas bind:this={chartCanvas} class="h-full w-full" aria-label="Traffic overview chart"
-	></canvas>
-	{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}
-		<div
-			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
-			style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${rangeDrag.selectionTop}px; height:${rangeDrag.selectionHeight}px;`}
-		></div>
-	{/if}
-	{#if !rangeDrag.isDraggingRange && mirroredSelectionStyle !== null}
-		<div
-			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"
-			style={mirroredSelectionStyle}
-		></div>
-	{/if}
-</div>
-
-<style>
-	.chart-container {
-		position: relative;
-		height: 100%;
-		width: 100%;
-	}
-</style>
+<ChartPlot
+	retainEmptySurface
+	name="Traffic overview chart"
+	chartId="netflow"
+	{series}
+	options={{
+		kind: chartType,
+		xTitle: getXAxisTitle(groupBy),
+		yTitle: 'Value',
+		xDomain: bounds,
+		xTicks: visibleStarts,
+		xFormat: (start) =>
+			formatNetflowTick(
+				groupBy,
+				labels[results.findIndex((result) => result.bucketStart === start)],
+				0
+			),
+		yFormat: (value) => (allBytes ? formatMetric(value, 'Bytes') : formatNumber(value)),
+		compact: true
+	}}
+	formatTooltip={tooltip}
+	emptyCopy={series.length
+		? 'No traffic observations for the selected window.'
+		: 'Select at least one metric to display.'}
+	onSelect={(point) => openTemporalPoint(point, groupBy, onDrillDown, navigate)}
+	onRange={(start, end) => openTemporalRange(start, end, groupBy, onDrillDown)}
+/>

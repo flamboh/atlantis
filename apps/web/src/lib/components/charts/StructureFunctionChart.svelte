@@ -1,229 +1,45 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { Chart } from './annotation-chart-registry';
+	import ChartPlot from './ChartPlot.svelte';
 	import type { StructureFunctionData } from '#lib/types/types.ts';
-	import { theme } from '#lib/stores/theme.svelte.ts';
-
+	import type { PlotAnnotation } from './chart-registry';
 	let { data }: { data: StructureFunctionData } = $props();
-	let chartCanvas: HTMLCanvasElement;
-	let chart: Chart | null = null;
-
-	onMount(() => {
-		return () => {
-			destroyChart();
-		};
-	});
-
-	$effect(() => {
-		if (!chartCanvas?.parentElement) {
-			return;
+	const points = $derived(
+		data.structureFunction.filter((point) => Number.isFinite(point.q) && Number.isFinite(point.tau))
+	);
+	const series = $derived([
+		{
+			label: 'tau(q)',
+			color: 'rgb(59,130,246)',
+			data: points.map((point) => ({ x: point.q, y: point.tau, sd: point.sd }))
 		}
-
-		const observer = new ResizeObserver(() => {
-			chart?.resize();
-		});
-		observer.observe(chartCanvas.parentElement);
-
-		return () => {
-			observer.disconnect();
-		};
-	});
-
-	$effect(() => {
-		void theme.dark;
-		if (!chartCanvas) {
-			return;
-		}
-
-		if (data?.structureFunction?.length > 0) {
-			updateChart();
-			return;
-		}
-
-		destroyChart();
-	});
-
-	function getChartColors() {
-		const style = getComputedStyle(document.documentElement);
-		return {
-			textColor: style.getPropertyValue('--chart-text-color').trim(),
-			gridColor: style.getPropertyValue('--chart-grid-color').trim(),
-			tooltipBackgroundColor: style.getPropertyValue('--chart-tooltip-bg').trim(),
-			tooltipTextColor: style.getPropertyValue('--chart-tooltip-text-color').trim(),
-			tooltipBorderColor: style.getPropertyValue('--chart-tooltip-border-color').trim()
-		};
-	}
-
-	function destroyChart() {
-		if (chart) {
-			chart.destroy();
-			chart = null;
-		}
-	}
-
-	function updateChart() {
-		const points = data.structureFunction;
-		const { textColor, gridColor, tooltipBackgroundColor, tooltipTextColor, tooltipBorderColor } =
-			getChartColors();
-
-		const errorBarAnnotations: Record<
-			string,
-			{
-				type: 'line';
-				xMin: number;
-				xMax: number;
-				yMin: number;
-				yMax: number;
-				borderColor: string;
-				borderWidth: number;
-			}
-		> = {};
-
-		points.forEach((point, index) => {
-			const capWidth = 0.02;
-
-			errorBarAnnotations[`errorBar_${index}`] = {
-				type: 'line',
-				xMin: point.q,
-				xMax: point.q,
-				yMin: point.tau - point.sd,
-				yMax: point.tau + point.sd,
-				borderColor: 'rgba(128, 128, 128, 0.7)',
-				borderWidth: 1.5
-			};
-
-			errorBarAnnotations[`errorBarTop_${index}`] = {
-				type: 'line',
-				xMin: point.q - capWidth,
-				xMax: point.q + capWidth,
-				yMin: point.tau + point.sd,
-				yMax: point.tau + point.sd,
-				borderColor: 'rgba(128, 128, 128, 0.7)',
-				borderWidth: 1.5
-			};
-
-			errorBarAnnotations[`errorBarBottom_${index}`] = {
-				type: 'line',
-				xMin: point.q - capWidth,
-				xMax: point.q + capWidth,
-				yMin: point.tau - point.sd,
-				yMax: point.tau - point.sd,
-				borderColor: 'rgba(128, 128, 128, 0.7)',
-				borderWidth: 1.5
-			};
-		});
-
-		const chartData = {
-			datasets: [
+	]);
+	const annotations = $derived<PlotAnnotation[]>(
+		points
+			.filter((point) => Number.isFinite(point.sd))
+			.flatMap((point) => [
 				{
-					label: 'tau(q)',
-					data: points.map((p) => ({ x: p.q, y: p.tau })),
-					borderColor: 'rgb(59, 130, 246)',
-					backgroundColor: 'rgba(59, 130, 246, 0.1)',
-					borderWidth: 2,
-					pointRadius: 0,
-					pointHoverRadius: 0,
-					pointBackgroundColor: 'rgb(59, 130, 246)',
-					pointBorderColor: 'white',
-					pointBorderWidth: 1,
-					fill: false,
-					tension: 0.1
-				}
-			]
-		};
-
-		const config = {
-			type: 'line' as const,
-			data: chartData,
-			options: {
-				responsive: true,
-				maintainAspectRatio: false,
-				animation: false as const,
-				scales: {
-					x: {
-						type: 'linear' as const,
-						min: -2.1,
-						max: 4.1,
-						title: {
-							display: true,
-							text: 'q',
-							color: textColor
-						},
-						ticks: { color: textColor },
-						grid: { color: gridColor }
-					},
-					y: {
-						type: 'linear' as const,
-						title: {
-							display: true,
-							text: 'tau(q)',
-							color: textColor
-						},
-						position: 'left' as const,
-						ticks: { color: textColor },
-						grid: { color: gridColor }
-					}
+					color: 'rgba(128,128,128,0.7)',
+					data: [
+						{ x: point.q, y: point.tau - point.sd },
+						{ x: point.q, y: point.tau + point.sd }
+					]
 				},
-				plugins: {
-					legend: {
-						display: true,
-						position: 'top' as const,
-						labels: { color: textColor }
-					},
-					tooltip: {
-						mode: 'index' as const,
-						intersect: false,
-						backgroundColor: tooltipBackgroundColor,
-						titleColor: tooltipTextColor,
-						bodyColor: tooltipTextColor,
-						borderColor: tooltipBorderColor,
-						borderWidth: 1,
-						callbacks: {
-							title: (items: { parsed: { x: number } }[]) =>
-								`q = ${items[0]?.parsed?.x?.toFixed(3)}`,
-							label: (item: {
-								dataset: { label: string };
-								parsed: { y: number };
-								dataIndex: number;
-							}) => {
-								const value = item.parsed.y.toFixed(6);
-								const pointIndex = item.dataIndex;
-								const point = points[pointIndex];
-								return [
-									`${item.dataset.label}: ${value}`,
-									`Standard Deviation: ±${point.sd.toFixed(6)}`
-								];
-							}
-						}
-					},
-					annotation: {
-						annotations: errorBarAnnotations
-					},
-					verticalCrosshair: {
-						enabled: true,
-						tooltip: {
-							enabled: false
-						}
-					}
+				{
+					color: 'rgba(128,128,128,0.7)',
+					data: [
+						{ x: point.q - 0.02, y: point.tau - point.sd },
+						{ x: point.q + 0.02, y: point.tau - point.sd }
+					]
 				},
-				interaction: {
-					mode: 'index' as const,
-					intersect: false
+				{
+					color: 'rgba(128,128,128,0.7)',
+					data: [
+						{ x: point.q - 0.02, y: point.tau + point.sd },
+						{ x: point.q + 0.02, y: point.tau + point.sd }
+					]
 				}
-			}
-		};
-
-		if (!chart) {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			chart = new Chart(chartCanvas, config as any);
-			return;
-		}
-
-		chart.data = chartData;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		chart.options = config.options as any;
-		chart.update('none');
-	}
+			])
+	);
 </script>
 
 <div class="w-full">
@@ -238,6 +54,12 @@
 		{/if}
 	</div>
 	<div class="relative h-72 w-full min-w-0 sm:h-96">
-		<canvas bind:this={chartCanvas} aria-label="Structure function chart"></canvas>
+		<ChartPlot
+			name="Structure function chart"
+			{series}
+			options={{ xTitle: 'q', yTitle: 'tau(q)', xDomain: [-2.1, 4.1], zero: false, annotations }}
+			formatTooltip={(points) =>
+				`q = ${points[0]?.datum.x.toFixed(3)}\ntau(q): ${points[0]?.datum.y?.toFixed(6)}\nStandard Deviation: ±${points[0]?.datum.sd?.toFixed(6)}`}
+		/>
 	</div>
 </div>
