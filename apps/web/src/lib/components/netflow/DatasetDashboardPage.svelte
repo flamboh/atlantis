@@ -467,14 +467,15 @@
 			onStartDateChange={(date) => handleStartDateChange({ startDate: date })}
 			onEndDateChange={(date) => handleEndDateChange({ endDate: date })}
 		/>
-		<p class="filter-summary">
+		<p class="filter-summary" aria-label="Selected filters">
 			<span>{availableSpectrumRouters.length}/{routers.length} sources</span><span
 				>{direction === 'all' ? 'All directions' : direction}</span
 			><span>{selectedGroupBy === 'date' ? 'Daily' : selectedGroupBy}</span>{#if maadComputed}<span
 					>MAAD IPv{ipVersion} · {measure}</span
 				>{/if}
 		</p>
-		<Button onclick={handleResetView} size="sm" variant="outline" class="ml-auto">Reset View</Button
+		<Button onclick={handleResetView} size="sm" variant="outline" class="reset-view ml-auto"
+			>Reset View</Button
 		>
 		{#if startDate > endDate}<p class="text-destructive w-full text-sm" role="alert">
 				Start Date must be on or before End Date.

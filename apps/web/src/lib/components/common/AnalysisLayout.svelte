@@ -61,7 +61,8 @@
 				{#if desktop.current}
 					<Button
 						variant="outline"
-						size="icon-sm"
+						size="icon"
+						class="rail-toggle"
 						aria-label={collapsed
 							? `Show ${railLabel.toLowerCase()}`
 							: `Hide ${railLabel.toLowerCase()}`}
@@ -74,6 +75,7 @@
 					<Button
 						variant="outline"
 						size="sm"
+						class="rail-toggle"
 						aria-label={`Open ${railLabel.toLowerCase()}`}
 						aria-haspopup="dialog"
 						data-filter-trigger={id}

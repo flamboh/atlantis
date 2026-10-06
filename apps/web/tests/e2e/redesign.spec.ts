@@ -302,3 +302,46 @@ test('phone quick-selection labels fit inside their separate buttons', async ({ 
 		page.locator('[data-chart-id="dashboard"]').getByTestId('chart-render-state')
 	).toHaveAttribute('data-state', 'empty');
 });
+
+for (const width of [390, 768, 1280, 1920]) {
+	test(`toolbar controls align and fit at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		await page.goto(FIXTURE_DASHBOARD);
+		await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+		const toolbar = page.locator('.console-toolbar');
+		const geometry = await toolbar.evaluate((node) => {
+			const bounds = node.getBoundingClientRect();
+			const rect = (selector: string) => {
+				const element = node.querySelector(selector)!;
+				const box = element.getBoundingClientRect();
+				return { x: box.x, right: box.right, top: box.top, height: box.height, bottom: box.bottom };
+			};
+			return {
+				left: bounds.left,
+				right: bounds.right,
+				start: rect('#startDate'),
+				end: rect('#endDate'),
+				toggle: rect('.rail-toggle'),
+				reset: rect('.reset-view'),
+				chips: Array.from(node.querySelectorAll('.filter-summary span'), (chip) => {
+					const box = chip.getBoundingClientRect();
+					return { left: box.left, right: box.right, top: box.top };
+				})
+			};
+		});
+		expect(geometry.start.height).toBe(36);
+		for (const control of [geometry.end, geometry.toggle, geometry.reset]) {
+			expect(control.height).toBe(geometry.start.height);
+			expect(control.x).toBeGreaterThanOrEqual(geometry.left);
+			expect(control.right).toBeLessThanOrEqual(geometry.right);
+		}
+		expect(geometry.end.top).toBe(geometry.start.top);
+		expect(geometry.toggle.top).toBe(geometry.reset.top);
+		if (width >= 640) expect(geometry.start.top).toBe(geometry.toggle.top);
+		for (const chip of geometry.chips) {
+			expect(chip.left).toBeGreaterThanOrEqual(geometry.left);
+			expect(chip.right).toBeLessThanOrEqual(geometry.right);
+			expect(chip.top).toBeGreaterThanOrEqual(geometry.start.bottom);
+		}
+	});
+}
