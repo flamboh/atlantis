@@ -38,9 +38,15 @@ export type PlotSeries = {
 	data: PlotPoint[];
 	dash?: string;
 	radius?: number;
+	strokeWidth?: number;
+	pointFill?: string;
+	pointStroke?: string;
+	pointStrokeWidth?: number;
 };
 
 export type PlotAnnotation = {
+	opacity?: number;
+	strokeWidth?: number;
 	data: PlotPoint[];
 	color: string;
 	dash?: string;
@@ -193,7 +199,7 @@ export function buildChartDefinition(
 							id: `${id}-outline-${runIndex}`,
 							y: 'y2',
 							strokeDasharray: run.partial ? '6 4' : item.dash,
-							strokeWidth: 1
+							strokeWidth: item.strokeWidth ?? 3
 						})
 					)
 				);
@@ -209,7 +215,7 @@ export function buildChartDefinition(
 						...channels,
 						id: `${id}-run-${runIndex}`,
 						strokeDasharray: run.partial ? '6 4' : item.dash,
-						strokeWidth: 2
+						strokeWidth: item.strokeWidth ?? 3
 					})
 				);
 			}
@@ -230,9 +236,9 @@ export function buildChartDefinition(
 						y: (point) => (options.kind === 'stacked' ? (point.y2 ?? null) : point.y),
 						id: `${id}-dots`,
 						r: item.radius ?? 3,
-						fill: 'var(--background)',
-						stroke: item.color,
-						strokeWidth: 2
+						fill: item.pointFill ?? 'var(--card)',
+						stroke: item.pointStroke ?? item.color,
+						strokeWidth: item.pointStrokeWidth ?? 2
 					})
 				)
 			);
@@ -247,7 +253,8 @@ export function buildChartDefinition(
 					y: 'y',
 					stroke: annotation.color,
 					strokeDasharray: annotation.dash,
-					strokeWidth: 1.5
+					strokeWidth: annotation.strokeWidth ?? 1.5,
+					strokeOpacity: annotation.opacity ?? 1
 				})
 			)
 		);
@@ -304,7 +311,7 @@ export function buildChartDefinition(
 				: {
 						left: options.compact ? 56 : 80,
 						right: 18,
-						bottom: options.compact ? 35 : options.xTicks ? 80 : 62
+						bottom: options.compact ? 35 : timeAxis ? 110 : 62
 					},
 		clip: true,
 		theme: {
@@ -334,11 +341,11 @@ export function buildChartDefinition(
 			y: {
 				scale: yScale,
 				nice: !options.yDomain,
-				grid: options.kind !== 'coverage',
+				grid: options.kind === 'coverage' ? false : { strokeOpacity: 1 },
 				axis: {
 					label: options.compact ? undefined : options.yTitle,
 					ticks: {
-						...(options.yTicks ? { values: options.yTicks } : { count: 5 }),
+						...(options.yTicks ? { values: options.yTicks } : { count: options.compact ? 5 : 8 }),
 						format: options.yFormat
 					}
 				}

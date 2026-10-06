@@ -10,6 +10,7 @@
 		{
 			label: 'tau(q)',
 			color: 'rgb(59,130,246)',
+			strokeWidth: 2,
 			data: points.map((point) => ({ x: point.q, y: point.tau, sd: point.sd }))
 		}
 	]);
@@ -18,21 +19,24 @@
 			.filter((point) => Number.isFinite(point.sd))
 			.flatMap((point) => [
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'rgb(128,128,128)',
+					opacity: 0.7,
 					data: [
 						{ x: point.q, y: point.tau - point.sd },
 						{ x: point.q, y: point.tau + point.sd }
 					]
 				},
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'rgb(128,128,128)',
+					opacity: 0.7,
 					data: [
 						{ x: point.q - 0.02, y: point.tau - point.sd },
 						{ x: point.q + 0.02, y: point.tau - point.sd }
 					]
 				},
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'rgb(128,128,128)',
+					opacity: 0.7,
 					data: [
 						{ x: point.q - 0.02, y: point.tau + point.sd },
 						{ x: point.q + 0.02, y: point.tau + point.sd }
@@ -57,7 +61,14 @@
 		<ChartPlot
 			name="Structure function chart"
 			{series}
-			options={{ xTitle: 'q', yTitle: 'tau(q)', xDomain: [-2.1, 4.1], zero: false, annotations }}
+			options={{
+				xTitle: 'q',
+				yTitle: 'tau(q)',
+				xDomain: [-2.1, 4.1],
+				xTicks: [-2.1, -1, 0, 1, 2, 3, 4.1],
+				zero: false,
+				annotations
+			}}
 			formatTooltip={(points) =>
 				`q = ${points[0]?.datum.x.toFixed(3)}\ntau(q): ${points[0]?.datum.y?.toFixed(6)}\nStandard Deviation: ±${points[0]?.datum.sd?.toFixed(6)}`}
 		/>

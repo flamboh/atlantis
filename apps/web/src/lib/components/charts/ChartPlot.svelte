@@ -10,6 +10,7 @@
 		type PlotPoint,
 		type PlotSeries
 	} from './chart-registry';
+	import { paintLegendSwatch } from './legend-swatch';
 	import { createChartContract } from './chart-contract';
 	import { MIN_DRAG_PIXELS, findNearestValueIndex } from './chart-utils';
 	import { crosshairStore } from '#lib/stores/crosshair.ts';
@@ -138,6 +139,14 @@
 			points.push(point);
 			positioned.set(markId, points);
 		}
+		const buttons = Array.from(
+			next.container.querySelectorAll<HTMLButtonElement>('[data-chart-legend-value]')
+		);
+		for (const button of buttons) {
+			const item = series.find((item) => item.label === button.dataset.chartLegendValue);
+			if (item) paintLegendSwatch(button, item, options.kind);
+		}
+
 		contract?.render({
 			name,
 			kind: options.kind === 'coverage' ? 'line' : (options.kind ?? 'line'),

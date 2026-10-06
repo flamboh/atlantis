@@ -17,6 +17,10 @@
 		{
 			label: 'f(alpha)',
 			color: 'rgb(147, 51, 234)',
+			strokeWidth: 2,
+			pointFill: 'rgb(147, 51, 234)',
+			pointStroke: 'var(--card)',
+			pointStrokeWidth: 1,
 			radius: 3,
 			data: points.map((point) => ({ x: point.alpha, y: point.f }))
 		}
@@ -46,7 +50,9 @@
 				zero: false,
 				annotations: [
 					{
-						color: 'rgba(128,128,128,0.5)',
+						color: 'rgb(128,128,128)',
+						opacity: 0.5,
+						strokeWidth: 1,
 						dash: '5 5',
 						data: [
 							{ x: bounds.min, y: bounds.min },

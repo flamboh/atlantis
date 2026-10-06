@@ -27,3 +27,50 @@ test('time axes keep midnight and noon labels with bounded grid geometry', async
 	for (const tick of await ticks.all())
 		await expect(tick).toHaveAttribute('transform', /rotate\(-45/);
 });
+
+for (const mode of ['light', 'dark']) {
+	test(`file analysis preserves numeric axes and point styles in ${mode} mode`, async ({
+		page
+	}) => {
+		await page.addInitScript(
+			(dark) => localStorage.setItem('dark-mode', String(dark)),
+			mode === 'dark'
+		);
+		await page.goto('/netflow/files/202503010200?dataset=playwright');
+		const spectrum = page.getByRole('img', { name: 'Multifractal spectrum chart' }).first();
+		await expect(spectrum).toHaveAttribute('data-chart-rendered', 'true');
+		const points = spectrum.locator('circle[data-ts-key^="series-0-dots"]');
+		await expect(points.first()).toBeAttached();
+		const styles = await points.evaluateAll((points) =>
+			points.map((point) => ({
+				fill: getComputedStyle(point).fill,
+				stroke: getComputedStyle(point).stroke,
+				width: getComputedStyle(point).strokeWidth
+			}))
+		);
+		for (const style of styles) {
+			expect(style.fill).not.toBe(style.stroke);
+			expect(style.width).toBe('1px');
+		}
+		const numericLabels = spectrum.locator('text').filter({ hasText: /^0\.[0-9]/ });
+		expect(await numericLabels.count()).toBeGreaterThan(0);
+		for (const label of await numericLabels.all())
+			expect((await label.getAttribute('transform')) ?? '').not.toMatch(/rotate\(-(30|45)/);
+		const line = spectrum.locator('path[data-ts-key^="series-0-run"]').first();
+		await expect(line).toHaveAttribute('stroke-width', '2');
+		await expect(spectrum.locator('path[data-ts-key^="annotation-"]').first()).toHaveAttribute(
+			'stroke-opacity',
+			'0.5'
+		);
+		const swatch = spectrum
+			.locator('..')
+			.getByRole('button', { name: 'Toggle f(alpha) series' })
+			.locator('[data-chart-legend-swatch] svg');
+		await expect(swatch).toBeAttached();
+		await expect(swatch.locator('circle')).toHaveAttribute('r', '3');
+		const structure = page.getByRole('img', { name: 'Structure function chart' }).first();
+		await expect(structure).toHaveAttribute('data-chart-rendered', 'true');
+		await expect(structure.locator('text').filter({ hasText: /^-2\.1$/ })).toBeAttached();
+		await expect(structure.locator('text').filter({ hasText: /^4\.1$/ })).toBeAttached();
+	});
+}
