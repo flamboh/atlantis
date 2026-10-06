@@ -139,6 +139,7 @@
 			const item = series.find((item) => item.label === button.dataset.chartLegendValue);
 			if (item) paintLegendSwatch(button, item, options.kind);
 		}
+		const bounds = surface.getBoundingClientRect();
 		contract?.render({
 			name,
 			kind: options.kind === 'coverage' ? 'line' : (options.kind ?? 'line'),
@@ -167,11 +168,8 @@
 				const finite = values.filter(
 					(value): value is number => typeof value === 'number' && Number.isFinite(value)
 				);
-				const button = Array.from(
-					next.container.querySelectorAll<HTMLButtonElement>('[data-chart-legend-value]')
-				).find((button) => button.dataset.chartLegendValue === item.label);
+				const button = buttons.find((button) => button.dataset.chartLegendValue === item.label);
 				const box = button?.getBoundingClientRect();
-				const bounds = surface.getBoundingClientRect();
 				const target = points[0];
 				return {
 					label: item.label,

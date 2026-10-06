@@ -341,7 +341,14 @@ export function buildChartDefinition(
 			? scaleLinear
 			: scaleLinear().domain([minY, maxY === minY ? maxY + 1 : maxY]);
 	const labels = series.map((item) => item.label);
-	const formatX = options.xFormat;
+	const formattedTicks = new Map<number, string>();
+	const formatter = options.xFormat;
+	const formatX = formatter
+		? (value: number) => {
+				if (!formattedTicks.has(value)) formattedTicks.set(value, formatter(value));
+				return formattedTicks.get(value) ?? '';
+			}
+		: undefined;
 	const timeAxis = Boolean(options.xTicks && formatX);
 	const xTicks =
 		options.xTicks && formatX
