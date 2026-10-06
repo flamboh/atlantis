@@ -30,6 +30,19 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await home.focus();
 		await page.keyboard.press('Enter');
 		await expect(page).toHaveURL(/\/$/);
+		for (const path of [
+			'/logo-mark.svg',
+			'/logo-lockup.svg',
+			'/icon-192.png',
+			'/icon-512.png',
+			'/icon-maskable-192.png',
+			'/icon-maskable-512.png'
+		]) {
+			const response = await page.request.get(path);
+			expect(response.status()).toBe(200);
+			expect(response.headers()['content-type']).toMatch(/image\//);
+			expect((await response.body()).length).toBeGreaterThan(0);
+		}
 		for (const selector of [
 			'link[rel="icon"][type="image/svg+xml"]',
 			'link[rel="icon"][type="image/x-icon"]',
