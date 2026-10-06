@@ -5,6 +5,17 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.emulateMedia({ colorScheme });
 		await page.setViewportSize({ width: 320, height: 800 });
 		await page.goto('/netflow/files');
+		if (colorScheme === 'dark') {
+			await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+			await expect(page.locator('html')).toHaveClass(/(?:^|\s)dark(?:\s|$)/);
+		} else {
+			await expect(page.locator('html')).not.toHaveClass(/(?:^|\s)dark(?:\s|$)/);
+		}
+		await expect(
+			page.getByRole('button', {
+				name: colorScheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
+			})
+		).toBeVisible();
 		const home = page.getByRole('link', { name: 'ATLANTIS', exact: true });
 		await expect(home.getByRole('img', { name: 'ATLANTIS', exact: true })).toBeVisible();
 		const logoBounds = await home.boundingBox();
