@@ -3,6 +3,7 @@
 	import { untrack } from 'svelte';
 	import type { PageProps } from './$types';
 	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
 	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
@@ -316,15 +317,68 @@
 	/>
 </svelte:head>
 
-<main class="page-layout flex flex-col gap-4">
-	<header>
-		<h1 class="text-foreground text-2xl font-semibold">Singularity alerts</h1>
-		<p class="text-foreground mt-1 text-sm">{selectedDatasetLabel}</p>
-		<p class="text-muted-foreground mt-2 text-sm" aria-live="polite">
+<AnalysisLayout title="Singularity alerts" eyebrow={selectedDatasetLabel} railLabel="Alert filters">
+	{#snippet navigation()}<DatasetTabs datasetId={data.selectedDataset} active="alerts" />{/snippet}
+	{#snippet toolbar()}<p class="text-muted-foreground text-sm" aria-live="polite">
 			{statusText}
+		</p>{/snippet}
+	{#snippet rail()}
+		<h2 class="rail-heading">Alert feed</h2>
+		<p class="text-muted-foreground mb-4 text-xs leading-5">
+			Find addresses in sparse regions or dense clusters of address space.
 		</p>
-	</header>
-	<DatasetTabs datasetId={data.selectedDataset} active="alerts" />
+
+		{#if feedResponse.feed.present}
+			<div class="flex flex-col gap-4">
+				<div class="flex flex-col gap-4">
+					<div class="flex flex-col gap-1">
+						<span class="text-muted-foreground text-xs font-medium">Alpha</span>
+						<SegmentedControl
+							options={TAIL_OPTIONS}
+							value={selectedTail}
+							onValueChange={selectTail}
+							class="grid-cols-2"
+							ariaLabel="Filter alerts by alpha tail"
+						/>
+					</div>
+
+					<div class="flex flex-col gap-1">
+						<span class="text-muted-foreground text-xs font-medium">Horizon</span>
+						<SegmentedControl
+							options={HORIZON_OPTIONS}
+							value={selectedHorizon}
+							onValueChange={selectHorizon}
+							class="grid-cols-4"
+							ariaLabel="Select alert horizon"
+						/>
+					</div>
+
+					<div class="flex flex-col gap-1">
+						<span class="text-muted-foreground text-xs font-medium">Sort</span>
+						<SegmentedControl
+							options={SORT_OPTIONS}
+							value={selectedSort}
+							onValueChange={selectSort}
+							class="grid-cols-2"
+							ariaLabel="Sort alert addresses"
+						/>
+					</div>
+
+					{#if feedResponse.feed.present && feedResponse.feed.thresholds}
+						<div class="flex flex-col gap-1">
+							<span class="text-muted-foreground text-xs font-medium">Thresholds</span>
+							<p
+								class="text-muted-foreground flex min-h-7 items-center pb-1 text-sm tabular-nums"
+								title="The feed records an address when its alpha crosses either calibrated bound"
+							>
+								α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds.low}
+							</p>
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+	{/snippet}
 
 	{#if fetchError}
 		<Card
@@ -356,55 +410,6 @@
 			</CardContent>
 		</Card>
 	{:else}
-		<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-			<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-				<div class="flex flex-col gap-1">
-					<span class="text-muted-foreground text-xs font-medium">Alpha</span>
-					<SegmentedControl
-						options={TAIL_OPTIONS}
-						value={selectedTail}
-						onValueChange={selectTail}
-						class="grid-cols-2"
-						ariaLabel="Filter alerts by alpha tail"
-					/>
-				</div>
-
-				<div class="flex flex-col gap-1">
-					<span class="text-muted-foreground text-xs font-medium">Horizon</span>
-					<SegmentedControl
-						options={HORIZON_OPTIONS}
-						value={selectedHorizon}
-						onValueChange={selectHorizon}
-						class="grid-cols-4"
-						ariaLabel="Select alert horizon"
-					/>
-				</div>
-
-				<div class="flex flex-col gap-1">
-					<span class="text-muted-foreground text-xs font-medium">Sort</span>
-					<SegmentedControl
-						options={SORT_OPTIONS}
-						value={selectedSort}
-						onValueChange={selectSort}
-						class="grid-cols-2"
-						ariaLabel="Sort alert addresses"
-					/>
-				</div>
-
-				{#if feedResponse.feed.present && feedResponse.feed.thresholds}
-					<div class="flex flex-col gap-1">
-						<span class="text-muted-foreground text-xs font-medium">Thresholds</span>
-						<p
-							class="text-muted-foreground flex min-h-7 items-center pb-1 text-sm tabular-nums"
-							title="The feed records an address when its alpha crosses either calibrated bound"
-						>
-							α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds.low}
-						</p>
-					</div>
-				{/if}
-			</div>
-		</div>
-
 		{#if feedResponse.addresses.length === 0}
 			<Card class="text-muted-foreground gap-0 rounded-lg border py-3 text-sm shadow-sm ring-0">
 				<CardContent class="px-4">
@@ -528,4 +533,4 @@
 			</p>
 		</div>
 	{/if}
-</main>
+</AnalysisLayout>

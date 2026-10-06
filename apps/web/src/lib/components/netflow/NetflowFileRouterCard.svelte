@@ -20,7 +20,7 @@
 	} = $props();
 </script>
 
-<Card.Root size="sm" class="gap-0 py-0">
+<Card.Root size="sm" class="file-router-card gap-0 py-0">
 	<NetflowFileRouterSummary {row} {formatCount} {formatTimestampAsPST} />
 
 	<Card.Content class="py-4">

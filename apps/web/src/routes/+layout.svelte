@@ -19,11 +19,11 @@
 <!-- Single app-wide provider required by every Tooltip.Root (bits-ui) -->
 <Tooltip.Provider>
 	<div class="font-body bg-background text-foreground flex h-dvh flex-col overflow-hidden">
-		<header class="border-border bg-card shrink-0 border-b">
+		<header class="app-topbar border-border bg-card shrink-0 border-b">
 			<div class="shell-width">
-				<div class="flex items-center justify-between gap-3 py-3">
+				<div class="flex items-center justify-between gap-3 py-2">
 					<div>
-						<h1 class="text-foreground text-lg font-semibold tracking-tight min-[360px]:text-xl">
+						<h1 class="text-foreground text-base font-semibold tracking-tight">
 							<a href={resolve('/')}><Logo /></a>
 						</h1>
 					</div>

@@ -1,14 +1,12 @@
 <script lang="ts">
 	import { isGranularityAllowedForDateRange } from '#lib/components/charts/chart-utils.ts';
 	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
-	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
 	import DirectionFilter from '#lib/components/filters/DirectionFilter.svelte';
 	import MaadIpVersionFilter from '#lib/components/filters/MaadIpVersionFilter.svelte';
 	import MaadMeasureFilter from '#lib/components/filters/MaadMeasureFilter.svelte';
 	import RouterFilter from '#lib/components/filters/RouterFilter.svelte';
 	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
 	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
 	import {
 		DEFAULT_MAAD_IP_VERSION,
@@ -40,23 +38,12 @@
 		measure?: MaadMeasure;
 		maadIpVersion?: MaadIpVersion;
 		groupByOptions?: GroupBySelectOption[];
-		onStartDateChange?: (payload: { startDate: string }) => void;
-		onEndDateChange?: (payload: { endDate: string }) => void;
 		onGroupByChange?: (payload: { groupBy: GroupByOption }) => void;
 		onRoutersChange?: (payload: { routers: RouterConfig }) => void;
 		onDirectionChange?: (payload: { direction: FlowDirection }) => void;
 		onMeasureChange?: (payload: { measure: MaadMeasure }) => void;
 		onMaadIpVersionChange?: (payload: { ipVersion: MaadIpVersion }) => void;
-		onResetView?: () => void;
 	}>();
-
-	function handleStartDateChange(date: string) {
-		props.onStartDateChange?.({ startDate: date });
-	}
-
-	function handleEndDateChange(date: string) {
-		props.onEndDateChange?.({ endDate: date });
-	}
 
 	function handleRoutersChange(nextRouters: RouterConfig) {
 		props.onRoutersChange?.({ routers: nextRouters });
@@ -64,10 +51,6 @@
 
 	function handleDirectionChange(payload: { direction: FlowDirection }) {
 		props.onDirectionChange?.(payload);
-	}
-
-	function handleResetView() {
-		props.onResetView?.();
 	}
 
 	const toolbarButtonClass = 'px-2 text-xs sm:px-3';
@@ -94,100 +77,61 @@
 	);
 </script>
 
-<Card class="primary-filters gap-3 py-3">
-	<CardHeader class="flex items-center justify-between gap-2 px-3">
-		<div class="flex items-center gap-2">
-			<CardTitle class="text-sm font-semibold">Controls</CardTitle>
-			<Tooltip.Root>
-				<Tooltip.Trigger>
-					{#snippet child({ props: triggerProps })}
-						<Button
+<div class="primary-filters">
+	<div class="rail-section pt-0">
+		<div class="mb-3 flex items-center justify-between gap-2">
+			<h2 class="rail-heading">Controls</h2>
+			<Tooltip.Root
+				><Tooltip.Trigger
+					>{#snippet child({ props: triggerProps })}<Button
 							{...triggerProps}
-							variant="outline"
+							variant="ghost"
 							size="icon-xs"
-							class="text-muted-foreground hover:border-primary hover:text-primary size-5 rounded-full p-0 text-[11px] font-semibold"
 							aria-label="Show navigation tip"
-							title={navigationTip}
-						>
-							?
-						</Button>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content side="bottom" sideOffset={4} class="w-64 leading-5">
-					{navigationTip}
-				</Tooltip.Content>
-			</Tooltip.Root>
+							title={navigationTip}>?</Button
+						>{/snippet}</Tooltip.Trigger
+				><Tooltip.Content side="right" sideOffset={4} class="w-64 leading-5"
+					>{navigationTip}</Tooltip.Content
+				></Tooltip.Root
+			>
 		</div>
-		<Button onclick={handleResetView} size="sm" variant="outline" class="h-7 px-3"
-			>Reset View</Button
-		>
-	</CardHeader>
-
-	<CardContent class="flex flex-col gap-3 px-3">
-		<div class="flex flex-wrap items-end gap-x-6 gap-y-3">
-			<div class="flex w-full flex-wrap items-end gap-3 sm:w-auto">
-				<DateRangeFilter
-					startDate={props.startDate}
-					endDate={props.endDate}
-					onStartDateChange={handleStartDateChange}
-					onEndDateChange={handleEndDateChange}
-				/>
-
-				<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
-
-				<div class="w-full sm:w-auto">
-					<span class="text-muted-foreground mb-1 block text-xs">Granularity</span>
-					<SegmentedControl
-						options={segmentedGroupByOptions}
-						value={props.groupBy}
-						onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
-						ariaLabel="Granularity"
-						style={`grid-template-columns: repeat(${groupByOptions.length}, minmax(0, 1fr));`}
-						buttonClass={toolbarButtonClass}
-					/>
-				</div>
-			</div>
-
-			<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
-		</div>
-
-		{#if props.startDate > props.endDate}<p class="text-destructive text-sm" role="alert">
-				Start Date must be on or before End Date.
-			</p>{/if}
-
-		{#if (props.showDirection ?? true) || props.measure}
-			<div class="flex flex-wrap items-end gap-x-6 gap-y-3">
-				{#if props.showDirection ?? true}
-					<div class="flex w-full flex-col items-stretch gap-1.5 sm:w-auto">
-						<span class="text-muted-foreground text-xs font-medium">Direction:</span>
-						<DirectionFilter
-							direction={props.direction}
-							onDirectionChange={handleDirectionChange}
-							buttonClass={toolbarButtonClass}
-						/>
-					</div>
-				{/if}
-
-				{#if props.measure}
-					<div
-						class="flex w-full flex-col items-stretch gap-1.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center"
-						role="group"
-						aria-label="MAAD options"
-					>
-						<span class="text-muted-foreground text-xs font-medium">MAAD:</span>
-						<MaadMeasureFilter
-							measure={props.measure}
-							onMeasureChange={props.onMeasureChange}
-							buttonClass={toolbarButtonClass}
-						/>
-						<MaadIpVersionFilter
-							ipVersion={props.maadIpVersion ?? DEFAULT_MAAD_IP_VERSION}
-							onIpVersionChange={props.onMaadIpVersionChange}
-							buttonClass={toolbarButtonClass}
-						/>
-					</div>
-				{/if}
-			</div>
-		{/if}
-	</CardContent>
-</Card>
+		<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
+	</div>
+	<div class="rail-section">
+		<h2 class="rail-heading">Granularity</h2>
+		<SegmentedControl
+			options={segmentedGroupByOptions}
+			value={props.groupBy}
+			onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
+			ariaLabel="Granularity"
+			class="rail-segments grid-cols-3"
+			buttonClass={toolbarButtonClass}
+		/>
+	</div>
+	{#if props.showDirection ?? true}<div class="rail-section">
+			<h2 class="rail-heading">Direction</h2>
+			<DirectionFilter
+				direction={props.direction}
+				onDirectionChange={handleDirectionChange}
+				buttonClass={toolbarButtonClass}
+			/>
+		</div>{/if}
+	{#if props.measure}<div class="rail-section" role="group" aria-label="MAAD options">
+			<h2 class="rail-heading">MAAD</h2>
+			<p class="text-muted-foreground mb-2 text-xs">Measure</p>
+			<MaadMeasureFilter
+				measure={props.measure}
+				onMeasureChange={props.onMeasureChange}
+				buttonClass={toolbarButtonClass}
+			/>
+			<p class="text-muted-foreground mt-3 mb-2 text-xs">Address family</p>
+			<MaadIpVersionFilter
+				ipVersion={props.maadIpVersion ?? DEFAULT_MAAD_IP_VERSION}
+				onIpVersionChange={props.onMaadIpVersionChange}
+				buttonClass={toolbarButtonClass}
+			/>
+		</div>{/if}
+	<p class="text-muted-foreground mt-4 text-xs leading-5">
+		Click a chart to drill down. Drag across a chart to select a date range.
+	</p>
+</div>

@@ -3,6 +3,9 @@
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
 	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
+	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
 	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
 	import BreakdownChart from '#lib/components/charts/BreakdownChart.svelte';
@@ -455,31 +458,46 @@
 	<meta name="description" content="NetFlow analysis and visualization tool" />
 </svelte:head>
 
-<main class="page-layout flex flex-col gap-4">
-	<h1 class="page-heading">
-		{props.title ?? props.dataset}
-	</h1>
-	<DatasetTabs datasetId={props.dataset} active="dashboard" />
-
-	<PrimaryFilters
-		{startDate}
-		{endDate}
-		groupBy={selectedGroupBy}
-		routers={selectedRouters}
-		{direction}
-		showDirection={hasLocality}
-		measure={maadComputed ? measure : undefined}
-		maadIpVersion={ipVersion}
-		onStartDateChange={handleStartDateChange}
-		onEndDateChange={handleEndDateChange}
-		onGroupByChange={handleGroupByChange}
-		onRoutersChange={handleRoutersChange}
-		onDirectionChange={handleDirectionChange}
-		onMeasureChange={handleMeasureChange}
-		onMaadIpVersionChange={handleIpVersionChange}
-		onResetView={handleResetView}
-	/>
-	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-4">
+<AnalysisLayout title={props.title ?? props.dataset} eyebrow="Dataset / Network analysis">
+	{#snippet navigation()}<DatasetTabs datasetId={props.dataset} active="dashboard" />{/snippet}
+	{#snippet toolbar()}
+		<DateRangeFilter
+			{startDate}
+			{endDate}
+			onStartDateChange={(date) => handleStartDateChange({ startDate: date })}
+			onEndDateChange={(date) => handleEndDateChange({ endDate: date })}
+		/>
+		<p class="filter-summary">
+			<span>{availableSpectrumRouters.length}/{routers.length} sources</span><span
+				>{direction === 'all' ? 'All directions' : direction}</span
+			><span>{selectedGroupBy === 'date' ? 'Daily' : selectedGroupBy}</span>{#if maadComputed}<span
+					>MAAD IPv{ipVersion} · {measure}</span
+				>{/if}
+		</p>
+		<Button onclick={handleResetView} size="sm" variant="outline" class="ml-auto">Reset View</Button
+		>
+		{#if startDate > endDate}<p class="text-destructive w-full text-sm" role="alert">
+				Start Date must be on or before End Date.
+			</p>{/if}
+	{/snippet}
+	{#snippet rail()}
+		<PrimaryFilters
+			{startDate}
+			{endDate}
+			groupBy={selectedGroupBy}
+			routers={selectedRouters}
+			{direction}
+			showDirection={hasLocality}
+			measure={maadComputed ? measure : undefined}
+			maadIpVersion={ipVersion}
+			onGroupByChange={handleGroupByChange}
+			onRoutersChange={handleRoutersChange}
+			onDirectionChange={handleDirectionChange}
+			onMeasureChange={handleMeasureChange}
+			onMaadIpVersionChange={handleIpVersionChange}
+		/>
+	{/snippet}
+	<div role="list" aria-label="Reorderable charts" class="chart-panels flex flex-col gap-4">
 		{#each chartOrder as chartId, index (chartId)}
 			<section
 				role="listitem"
@@ -663,4 +681,4 @@
 			</section>
 		{/each}
 	</div>
-</main>
+</AnalysisLayout>

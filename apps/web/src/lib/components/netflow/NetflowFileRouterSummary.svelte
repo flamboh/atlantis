@@ -32,7 +32,7 @@
 </script>
 
 <Card.Header class="file-summary border-border bg-muted/30 border-b py-4 break-words">
-	<div class="mb-4 grid gap-3 lg:grid-cols-[1fr_auto]">
+	<div class="mb-4 grid gap-3">
 		<div class="min-w-0">
 			<Card.Title class="text-lg font-semibold">
 				<h3>Source: {row.router}</h3>
@@ -41,7 +41,7 @@
 				{row.summary.file_path ?? 'No input locator recorded'}
 			</p>
 		</div>
-		<div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:text-right">
+		<div class="grid grid-cols-2 gap-2 text-xs">
 			<div>
 				<p class="text-muted-foreground font-semibold uppercase">Kind</p>
 				<p>{row.summary.input_kind ?? 'unknown'}</p>
@@ -79,7 +79,7 @@
 			<div>IPv6: {formatIpCount(row.destination.ipCounts, 'ipv6')}</div>
 		</div>
 	</div>
-	<div class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+	<div class="file-metrics grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
 		<div>
 			<h4 class="font-medium">Flows</h4>
 			<p>Total: {row.summary.flows.toLocaleString()}</p>

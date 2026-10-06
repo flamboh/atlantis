@@ -316,7 +316,7 @@
 
 <Card.Root
 	size="sm"
-	class="gap-0 py-0"
+	class="gap-0 overflow-visible py-0"
 	data-testid="chart-card-state"
 	data-state={loading ? 'loading' : error ? 'error' : results.length === 0 ? 'empty' : 'ready'}
 >

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ControlPopover from '#lib/components/common/ControlPopover.svelte';
 	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
 	import type { ChartTypeOption, DataOption } from '#lib/components/netflow/types.ts';
@@ -116,28 +117,69 @@
 </script>
 
 <div class="metric-selector">
-	<div class="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-		<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+	<div class="metric-toolbar flex flex-wrap items-center gap-2">
+		<div class="metric-quickselect">
 			<SegmentedControl
 				options={QUICK_SELECT_OPTIONS}
 				value={selectedQuickSelectIndex === null
 					? null
 					: (QUICK_SELECT_OPTIONS[selectedQuickSelectIndex]?.value ?? null)}
 				onValueChange={handleQuickSelect}
-				class="grid-cols-3 sm:grid-cols-5"
-				buttonClass="sm:min-w-20"
+				class="grid-cols-5"
+				buttonClass="px-2"
 			/>
-
-			{#if ipFamilyOptions.length > 0}
-				<SegmentedControl
-					options={ipFamilyOptions}
-					value={selectedIpFamily}
-					onValueChange={(value) => onIpFamilyChange?.(value)}
-					buttonClass="sm:min-w-20"
-					style={`grid-template-columns: repeat(${ipFamilyOptions.length}, minmax(0, 1fr));`}
-				/>
-			{/if}
 		</div>
+		<ControlPopover
+			label="NetFlow metric series"
+			summary={`Series · ${dataOptions.filter((option) => option.checked).length}/12`}
+		>
+			<div
+				class="metric-matrix border-border bg-muted/20 max-w-xl rounded-md border"
+				role="group"
+				aria-label="NetFlow metric series"
+			>
+				<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
+					<div class="text-muted-foreground px-2 py-2 text-xs font-medium">Metric</div>
+					{#each PROTOCOL_COLUMNS as protocol (protocol.value)}
+						<div class="text-muted-foreground px-1 py-2 text-center text-xs font-medium">
+							{protocol.label}
+						</div>
+					{/each}
+				</div>
+				{#each metricMatrix as metric (metric.value)}
+					<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
+						<div class="text-foreground flex items-center px-2 py-2 text-sm font-medium">
+							{metric.label}
+						</div>
+						{#each metric.options as cell (cell.value)}
+							<label
+								class="flex min-h-9 cursor-pointer items-center justify-center"
+								aria-label={cell.option?.label ?? `${metric.label} ${cell.label}`}
+							>
+								{#if cell.option}
+									{@const option = cell.option}
+									<Checkbox
+										checked={option.checked}
+										onCheckedChange={() => handleMetricToggle(option.index)}
+									/>
+									<span class="sr-only">{option.label}</span>
+								{/if}
+							</label>
+						{/each}
+					</div>
+				{/each}
+			</div>
+		</ControlPopover>
+
+		{#if ipFamilyOptions.length > 0}
+			<SegmentedControl
+				options={ipFamilyOptions}
+				value={selectedIpFamily}
+				onValueChange={(value) => onIpFamilyChange?.(value)}
+				buttonClass="px-2"
+				style={`grid-template-columns: repeat(${ipFamilyOptions.length}, minmax(0, 1fr));`}
+			/>
+		{/if}
 
 		{#if chartType}
 			<SegmentedControl
@@ -145,46 +187,9 @@
 				value={chartType}
 				onValueChange={(value) => onChartTypeChange?.(value)}
 				class="grid-cols-2"
-				buttonClass="sm:min-w-20"
+				buttonClass="px-2"
 				ariaLabel="Select NetFlow chart type"
 			/>
 		{/if}
-	</div>
-
-	<div
-		class="metric-matrix border-border bg-muted/20 max-w-xl rounded-md border"
-		role="group"
-		aria-label="NetFlow metric series"
-	>
-		<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
-			<div class="text-muted-foreground px-2 py-2 text-xs font-medium">Metric</div>
-			{#each PROTOCOL_COLUMNS as protocol (protocol.value)}
-				<div class="text-muted-foreground px-1 py-2 text-center text-xs font-medium">
-					{protocol.label}
-				</div>
-			{/each}
-		</div>
-		{#each metricMatrix as metric (metric.value)}
-			<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
-				<div class="text-foreground flex items-center px-2 py-2 text-sm font-medium">
-					{metric.label}
-				</div>
-				{#each metric.options as cell (cell.value)}
-					<label
-						class="flex min-h-9 cursor-pointer items-center justify-center"
-						aria-label={cell.option?.label ?? `${metric.label} ${cell.label}`}
-					>
-						{#if cell.option}
-							{@const option = cell.option}
-							<Checkbox
-								checked={option.checked}
-								onCheckedChange={() => handleMetricToggle(option.index)}
-							/>
-							<span class="sr-only">{option.label}</span>
-						{/if}
-					</label>
-				{/each}
-			</div>
-		{/each}
 	</div>
 </div>
