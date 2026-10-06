@@ -64,6 +64,10 @@ for (const width of [390, 768, 1280, 1920]) {
 
 test('reversed dates explain the empty window and recover after correction', async ({ page }) => {
 	await page.goto('/datasets/playwright?startDate=2025-03-02&endDate=2025-03-01');
+	await expect(page.locator('[data-chart-id="dashboard"]')).toHaveAttribute(
+		'data-chart-activated',
+		'true'
+	);
 	await expect(page.getByRole('alert')).toHaveText('Start Date must be on or before End Date.');
 	await page.getByLabel('Start Date', { exact: true }).fill('2025-03-01');
 	await page.getByLabel('Start Date', { exact: true }).press('Tab');
