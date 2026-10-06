@@ -4,7 +4,12 @@ import * as Config from 'effect/Config';
 import * as ConfigProvider from 'effect/ConfigProvider';
 import * as Effect from 'effect/Effect';
 import { hashAllowlistedBuildContext } from './build-context.ts';
-import { appName, invalidStageMessage, repoRoot, stageName, webDockerfile } from './shared.ts';
+import { appName, invalidStageMessage, stageName, webDockerfile } from './shared.ts';
+import {
+	selfHostedContainerSettings,
+	selfHostedRepoRoot,
+	selfHostedStateDirectory
+} from './self-hosted-config.ts';
 import { parseSshDockerHost, sshTunnelCommand } from './ssh.ts';
 
 const selfHostedName = `${appName}-self-hosted`;
@@ -42,31 +47,42 @@ export default Alchemy.Stack(
 			Config.map(parseSshDockerHost)
 		);
 		const dataDir = yield* Config.String('ATLANTIS_SELF_HOSTED_DATA_DIR');
-		const port = yield* Config.Port('ATLANTIS_SELF_HOSTED_PORT').pipe(Config.withDefault(8080));
+		const port = yield* Config.Port('ATLANTIS_SELF_HOSTED_PORT').pipe(
+			Config.withDefault(stage === 'perf' ? 8090 : 8080)
+		);
+		const readOnly = yield* Config.Boolean('ATLANTIS_SELF_HOSTED_READ_ONLY').pipe(
+			Config.withDefault(stage === 'perf')
+		);
 		const dataUser = yield* Config.String('ATLANTIS_SELF_HOSTED_DATA_USER').pipe(
 			Config.withDefault('1000:1000'),
 			Config.map(parseDataUser)
 		);
 
-		if (!dataDir.startsWith('/') || dataDir === '/') {
-			return yield* Effect.die(
-				new Error(
-					`ATLANTIS_SELF_HOSTED_DATA_DIR must be an absolute host directory, got '${dataDir}'`
-				)
+		if (stage === 'perf') {
+			const stateDirectory = selfHostedStateDirectory(
+				process.env.ATLANTIS_SELF_HOSTED_STATE_DIR,
+				stage
 			);
+			if (process.cwd() !== stateDirectory)
+				return yield* Effect.die(
+					new Error(
+						'Deploy perf through bun run deploy:self-hosted so Alchemy uses the external state directory'
+					)
+				);
 		}
 
-		const webName = stageName(`${selfHostedName}-web`, stage);
+		const settings = selfHostedContainerSettings(stage, dataDir, port, readOnly);
+		const webName = settings.name;
 		const buildArgs = { RUNTIME_UID: dataUser.uid, RUNTIME_GID: dataUser.gid };
 		const buildHash = yield* hashAllowlistedBuildContext({
-			context: repoRoot,
+			context: selfHostedRepoRoot,
 			dockerfile: webDockerfile,
 			platform,
 			buildArgs
 		}).pipe(Effect.orDie);
 
 		const context = yield* Docker.Context('DockerHost', {
-			name: stageName(selfHostedName, stage),
+			name: stage === 'perf' ? `${appName}-perf` : stageName(selfHostedName, stage),
 			docker: `host=${dockerHost.url}`,
 			description: `ATLANTIS self-hosted deployment (${stage})`
 		});
@@ -76,7 +92,7 @@ export default Alchemy.Stack(
 			tag: buildHash,
 			context,
 			build: {
-				context: repoRoot,
+				context: selfHostedRepoRoot,
 				dockerfile: webDockerfile,
 				platform,
 				args: buildArgs
@@ -90,8 +106,8 @@ export default Alchemy.Stack(
 			environment: {
 				NODE_OPTIONS: '--max-old-space-size=768'
 			},
-			volumes: [{ hostPath: dataDir, containerPath: '/data' }],
-			ports: [{ external: `127.0.0.1:${port}`, internal: webPort }],
+			volumes: settings.volumes,
+			ports: settings.ports,
 			memory: '1g',
 			restart: 'unless-stopped',
 			stopTimeout: '30 seconds',
