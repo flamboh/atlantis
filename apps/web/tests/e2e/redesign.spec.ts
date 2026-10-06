@@ -345,3 +345,31 @@ for (const width of [390, 768, 1280, 1920]) {
 		}
 	});
 }
+
+for (const width of [1280, 1920]) {
+	test(`compact filter rail reserves plot width at ${width}px`, async ({ page }) => {
+		await page.setViewportSize({ width, height: 900 });
+		await page.goto(FIXTURE_DASHBOARD);
+		await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+		const rail = page.getByRole('complementary', { name: 'Filters', exact: true });
+		const box = await rail.boundingBox();
+		expect(box!.width).toBe(200);
+		for (const name of ['Granularity', 'Traffic direction', 'MAAD measure']) {
+			const group = rail.getByRole('group', { name, exact: true });
+			const geometry = await group.evaluate((node) =>
+				Array.from(node.querySelectorAll('button'), (button) => {
+					const box = button.getBoundingClientRect();
+					return { top: box.top, left: box.left, right: box.right, height: box.height };
+				})
+			);
+			expect(new Set(geometry.map((button) => button.top)).size).toBeGreaterThan(1);
+			for (const button of geometry) {
+				expect(button.height).toBeGreaterThanOrEqual(44);
+				expect(button.left).toBeGreaterThanOrEqual(box!.x);
+				expect(button.right).toBeLessThanOrEqual(box!.x + box!.width);
+			}
+		}
+		const plot = await page.locator('[data-chart-id="dashboard"]').boundingBox();
+		expect(plot!.width).toBeGreaterThan(width - 280);
+	});
+}
