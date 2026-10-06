@@ -23,7 +23,6 @@
 		epochToPSTComponents,
 		formatTimestampAsPST
 	} from '#lib/utils/timezone.ts';
-	import { onMount } from 'svelte';
 
 	type NetflowFileDetailData = {
 		dataset: string;
@@ -122,10 +121,6 @@
 			{ replace: true, reset: false }
 		);
 	}
-
-	onMount(() => {
-		syncLoader();
-	});
 
 	afterNavigate(() => {
 		syncLoader();
