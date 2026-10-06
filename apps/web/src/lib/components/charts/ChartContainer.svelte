@@ -41,7 +41,7 @@
 			.filter((option) => option.checked)
 			.map((option) => ({
 				label: option.label,
-				color: `var(--chart-series-${(option.index % 8) + 1})`,
+				color: `var(--chart-series-${(dataOptions.findIndex((item) => item.index === option.index) % 8) + 1})`,
 				data: results.map((result, index) => ({
 					x: result.bucketStart,
 					y: result.data?.[NETFLOW_DATA_OPTION_FIELDS[option.index]] ?? null,

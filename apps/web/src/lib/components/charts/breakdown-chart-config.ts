@@ -16,11 +16,7 @@ export interface LineMetricConfig {
 	key: BreakdownMetricKey;
 	label: string;
 	seriesLabel: string;
-	color?: {
-		hue: number;
-		saturation: number;
-		lightness: number;
-	};
+	color?: string;
 }
 
 export interface BreakdownChartConfig {
@@ -33,7 +29,6 @@ export interface BreakdownChartConfig {
 	defaultGranularity: IpGranularity;
 	defaultMetrics: BreakdownMetricKey[];
 	metrics: LineMetricConfig[];
-	routerHueStep: number;
 	fillAlpha: number;
 	yAxisTitle: string;
 	formatYAxisTicks: boolean;
@@ -54,11 +49,11 @@ const ipMetricLabels: Record<IpMetricKey, string> = {
 	daIpv6Count: 'Dst IPv6'
 };
 
-const ipColors: Record<IpMetricKey, { hue: number; saturation: number; lightness: number }> = {
-	saIpv4Count: { hue: 130, saturation: 65, lightness: 58 },
-	daIpv4Count: { hue: 130, saturation: 65, lightness: 38 },
-	saIpv6Count: { hue: 25, saturation: 72, lightness: 60 },
-	daIpv6Count: { hue: 25, saturation: 72, lightness: 40 }
+const ipColors: Record<IpMetricKey, string> = {
+	saIpv4Count: 'var(--chart-series-1)',
+	daIpv4Count: 'var(--chart-series-2)',
+	saIpv6Count: 'var(--chart-series-3)',
+	daIpv6Count: 'var(--chart-series-4)'
 };
 
 const IP_CONFIG: BreakdownChartConfig = {
@@ -76,7 +71,6 @@ const IP_CONFIG: BreakdownChartConfig = {
 		seriesLabel: ipMetricLabels[option.key],
 		color: ipColors[option.key]
 	})),
-	routerHueStep: 70,
 	fillAlpha: 0.18,
 	yAxisTitle: 'Unique IPs',
 	formatYAxisTicks: true,
@@ -104,16 +98,15 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 			key: 'uniqueProtocolsIpv4',
 			label: 'Unique Protocols IPv4',
 			seriesLabel: 'IPv4',
-			color: { hue: 210, saturation: 70, lightness: 50 }
+			color: 'var(--chart-series-1)'
 		},
 		{
 			key: 'uniqueProtocolsIpv6',
 			label: 'Unique Protocols IPv6',
 			seriesLabel: 'IPv6',
-			color: { hue: 35, saturation: 75, lightness: 48 }
+			color: 'var(--chart-series-2)'
 		}
 	],
-	routerHueStep: 110,
 	fillAlpha: 0.2,
 	yAxisTitle: 'Unique Protocols',
 	formatYAxisTicks: false,
@@ -175,7 +168,6 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 			};
 		})
 	),
-	routerHueStep: 0,
 	fillAlpha: 0,
 	yAxisTitle: 'Dimension',
 	formatYAxisTicks: false,
@@ -199,7 +191,6 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	defaultGranularity: '1h',
 	defaultMetrics: [],
 	metrics: [],
-	routerHueStep: 0,
 	fillAlpha: 0,
 	yAxisTitle: 'alpha',
 	formatYAxisTicks: false,

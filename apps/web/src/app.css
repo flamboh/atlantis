@@ -235,14 +235,16 @@ body {
 	font-variant-numeric: tabular-nums;
 }
 .ts-chart__interactive-legend button {
-	border: 0;
-	border-radius: 3px;
-	background: transparent;
-	color: var(--chart-text-color);
-	font-size: 12px;
+	border: 0 !important;
+	border-radius: 3px !important;
+	background: transparent !important;
+	color: var(--chart-text-color) !important;
+	font:
+		500 12px/1.25 system-ui,
+		sans-serif !important;
 }
 .ts-chart__interactive-legend button:hover {
-	background: var(--muted);
+	background: var(--muted) !important;
 }
 .ts-chart__interactive-legend button:focus-visible {
 	outline: 2px solid var(--ring);
