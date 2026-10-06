@@ -279,3 +279,10 @@ th {
 		transition-duration: 0.01ms !important;
 	}
 }
+
+.ts-chart__interactive-legend {
+	pointer-events: none !important;
+}
+.ts-chart__interactive-legend button {
+	pointer-events: auto !important;
+}

@@ -151,6 +151,10 @@
 			<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
 		</div>
 
+		{#if props.startDate > props.endDate}<p class="text-destructive text-sm" role="alert">
+				Start Date must be on or before End Date.
+			</p>{/if}
+
 		{#if (props.showDirection ?? true) || props.measure}
 			<div class="flex flex-wrap items-end gap-x-6 gap-y-3">
 				{#if props.showDirection ?? true}

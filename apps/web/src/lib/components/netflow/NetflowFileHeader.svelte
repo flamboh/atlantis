@@ -34,7 +34,11 @@
 </script>
 
 <div class="mb-4 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-	<h1 class="page-heading min-w-0 break-all">NetFlow File: {filename}</h1>
+	<h1 class="page-heading min-w-0">
+		<span class="page-eyebrow block">NetFlow File: </span><span class="font-mono text-lg sm:text-xl"
+			>{filename}</span
+		>
+	</h1>
 	<Button
 		href={buildNetflowFileHref(nextSlug, dataset, direction, ipVersion, measure)}
 		size="sm"
