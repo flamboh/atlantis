@@ -8,11 +8,11 @@
 	};
 
 	export const segmentedControlGroupClass =
-		'grid w-full gap-0.5 rounded-md border border-border bg-muted p-1 sm:w-fit';
+		'grid w-full gap-0.5 rounded-md border border-border bg-muted/50 p-0.5 sm:w-fit';
 	export const segmentedControlItemClass =
-		'flex h-auto min-h-7 w-full items-center justify-center rounded px-2.5 py-0.5 text-center text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none';
+		'flex h-auto min-h-8 w-full items-center justify-center rounded px-2.5 py-1 text-center text-xs font-medium leading-tight transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none';
 	export const segmentedControlActiveClass =
-		'bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:text-primary-foreground';
+		'bg-accent text-accent-foreground ring-1 ring-inset ring-primary/25 hover:bg-accent hover:text-accent-foreground';
 	export const segmentedControlInactiveClass =
 		'text-muted-foreground hover:bg-background/60 hover:text-foreground';
 </script>

@@ -33,12 +33,12 @@
 	} = $props();
 </script>
 
-<div class="text-foreground mb-2 flex items-center justify-between text-2xl">
-	<h1>NetFlow File: {filename}</h1>
+<div class="mb-4 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+	<h1 class="page-heading min-w-0 break-all">NetFlow File: {filename}</h1>
 	<Button
 		href={buildNetflowFileHref(nextSlug, dataset, direction, ipVersion, measure)}
 		size="sm"
-		class="w-24"
+		class="shrink-0"
 	>
 		Next File
 	</Button>
@@ -48,9 +48,9 @@
 	<Card.Header>
 		<Card.Title class="text-lg font-semibold"><h2>File Information</h2></Card.Title>
 	</Card.Header>
-	<Card.Content class="grid grid-cols-3 gap-2">
+	<Card.Content class="grid grid-cols-1 gap-3 sm:grid-cols-3">
 		<div>Date: {year}-{month}-{day}</div>
 		<div>Time: {hour}:{minute}</div>
-		<div>Processed in DB: {processedAt}</div>
+		<div class="min-w-0 break-words">Processed in DB: {processedAt}</div>
 	</Card.Content>
 </Card.Root>

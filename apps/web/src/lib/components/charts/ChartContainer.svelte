@@ -35,27 +35,13 @@
 		onDrillDown?: (groupBy: GroupByOption, startDate: string, endDate: string) => void;
 		onNavigateToFile?: (slug: string) => void;
 	} = $props();
-	const colors = [
-		'rgb(75, 192, 192)',
-		'rgb(255, 99, 132)',
-		'rgb(54, 162, 235)',
-		'rgb(255, 206, 86)',
-		'rgb(153, 102, 255)',
-		'rgb(255, 159, 64)',
-		'rgb(255, 99, 71)',
-		'rgb(0, 206, 209)',
-		'rgb(60, 179, 113)',
-		'rgb(218, 112, 214)',
-		'rgb(255, 215, 0)',
-		'rgb(128, 0, 128)'
-	];
 	const labels = $derived(formatLabels(results, groupBy));
 	const series = $derived<PlotSeries[]>(
 		dataOptions
 			.filter((option) => option.checked)
-			.map((option, index) => ({
+			.map((option) => ({
 				label: option.label,
-				color: colors[index % colors.length],
+				color: `var(--chart-series-${(option.index % 8) + 1})`,
 				data: results.map((result, index) => ({
 					x: result.bucketStart,
 					y: result.data?.[NETFLOW_DATA_OPTION_FIELDS[option.index]] ?? null,

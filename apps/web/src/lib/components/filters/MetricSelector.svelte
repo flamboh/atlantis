@@ -116,7 +116,7 @@
 </script>
 
 <div class="metric-selector">
-	<div class="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+	<div class="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 		<div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
 			<SegmentedControl
 				options={QUICK_SELECT_OPTIONS}
@@ -151,8 +151,12 @@
 		{/if}
 	</div>
 
-	<div role="group" aria-label="NetFlow metric series">
-		<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(3rem,1fr))]">
+	<div
+		class="metric-matrix border-border bg-muted/20 max-w-xl rounded-md border"
+		role="group"
+		aria-label="NetFlow metric series"
+	>
+		<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
 			<div class="text-muted-foreground px-2 py-2 text-xs font-medium">Metric</div>
 			{#each PROTOCOL_COLUMNS as protocol (protocol.value)}
 				<div class="text-muted-foreground px-1 py-2 text-center text-xs font-medium">
@@ -161,13 +165,13 @@
 			{/each}
 		</div>
 		{#each metricMatrix as metric (metric.value)}
-			<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(3rem,1fr))]">
+			<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
 				<div class="text-foreground flex items-center px-2 py-2 text-sm font-medium">
 					{metric.label}
 				</div>
 				{#each metric.options as cell (cell.value)}
 					<label
-						class="flex min-h-11 cursor-pointer items-center justify-center"
+						class="flex min-h-9 cursor-pointer items-center justify-center"
 						aria-label={cell.option?.label ?? `${metric.label} ${cell.label}`}
 					>
 						{#if cell.option}

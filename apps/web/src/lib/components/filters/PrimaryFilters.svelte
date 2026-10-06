@@ -70,7 +70,7 @@
 		props.onResetView?.();
 	}
 
-	const toolbarButtonClass = 'px-3 text-sm';
+	const toolbarButtonClass = 'px-2 text-xs sm:px-3';
 	const navigationTip = 'Click chart to drill down. Drag across chart to drill into a date range.';
 	const groupByOptions = $derived(props.groupByOptions ?? DEFAULT_GROUP_BY_OPTIONS);
 
@@ -94,7 +94,7 @@
 	);
 </script>
 
-<Card class="gap-3 rounded-lg border py-3 shadow-sm ring-0">
+<Card class="primary-filters gap-3 py-3">
 	<CardHeader class="flex items-center justify-between gap-2 px-3">
 		<div class="flex items-center gap-2">
 			<CardTitle class="text-sm font-semibold">Controls</CardTitle>
@@ -118,12 +118,14 @@
 				</Tooltip.Content>
 			</Tooltip.Root>
 		</div>
-		<Button onclick={handleResetView} size="sm" class="h-7 px-4">Reset View</Button>
+		<Button onclick={handleResetView} size="sm" variant="outline" class="h-7 px-3"
+			>Reset View</Button
+		>
 	</CardHeader>
 
 	<CardContent class="flex flex-col gap-3 px-3">
-		<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-			<div class="flex flex-wrap items-center gap-3">
+		<div class="flex flex-wrap items-end gap-x-6 gap-y-3">
+			<div class="flex w-full flex-wrap items-end gap-3 sm:w-auto">
 				<DateRangeFilter
 					startDate={props.startDate}
 					endDate={props.endDate}
@@ -133,24 +135,27 @@
 
 				<div class="bg-border hidden h-6 w-px sm:block" aria-hidden="true"></div>
 
-				<SegmentedControl
-					options={segmentedGroupByOptions}
-					value={props.groupBy}
-					onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
-					ariaLabel="Granularity"
-					style={`grid-template-columns: repeat(${groupByOptions.length}, minmax(0, 1fr));`}
-					buttonClass={toolbarButtonClass}
-				/>
+				<div class="w-full sm:w-auto">
+					<span class="text-muted-foreground mb-1 block text-xs">Granularity</span>
+					<SegmentedControl
+						options={segmentedGroupByOptions}
+						value={props.groupBy}
+						onValueChange={(value) => props.onGroupByChange?.({ groupBy: value })}
+						ariaLabel="Granularity"
+						style={`grid-template-columns: repeat(${groupByOptions.length}, minmax(0, 1fr));`}
+						buttonClass={toolbarButtonClass}
+					/>
+				</div>
 			</div>
 
 			<RouterFilter routers={props.routers} onRouterChange={handleRoutersChange} />
 		</div>
 
 		{#if (props.showDirection ?? true) || props.measure}
-			<div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+			<div class="flex flex-wrap items-end gap-x-6 gap-y-3">
 				{#if props.showDirection ?? true}
-					<div class="flex items-center gap-2">
-						<span class="text-foreground text-sm font-medium">Direction:</span>
+					<div class="flex w-full flex-col items-stretch gap-1.5 sm:w-auto">
+						<span class="text-muted-foreground text-xs font-medium">Direction:</span>
 						<DirectionFilter
 							direction={props.direction}
 							onDirectionChange={handleDirectionChange}
@@ -160,8 +165,12 @@
 				{/if}
 
 				{#if props.measure}
-					<div class="flex flex-wrap items-center gap-2" role="group" aria-label="MAAD options">
-						<span class="text-foreground text-sm font-medium">MAAD:</span>
+					<div
+						class="flex w-full flex-col items-stretch gap-1.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center"
+						role="group"
+						aria-label="MAAD options"
+					>
+						<span class="text-muted-foreground text-xs font-medium">MAAD:</span>
 						<MaadMeasureFilter
 							measure={props.measure}
 							onMeasureChange={props.onMeasureChange}

@@ -127,7 +127,9 @@
 	});
 </script>
 
-<div class="mx-auto max-w-[95vw] px-2 py-2 sm:px-2 lg:px-4">
+<svelte:head><title>{data.fileInfo.filename} · ATLANTIS</title></svelte:head>
+
+<div class="page-layout">
 	<NetflowFileHeader
 		dataset={data.dataset}
 		{nextSlug}
@@ -147,7 +149,7 @@
 				: 'N/A'}
 	/>
 
-	<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+	<div class="file-filters mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
 		<div class="flex items-center gap-2">
 			<span class="text-foreground text-sm font-medium">MAAD address family:</span>
 			<MaadIpVersionFilter

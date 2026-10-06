@@ -10,6 +10,7 @@
 	import PortCardinalityChart from '#lib/components/charts/PortCardinalityChart.svelte';
 	import CoverageStrip from '#lib/components/charts/CoverageStrip.svelte';
 	import { createFlowCharacteristicsData } from '#lib/components/charts/flow-characteristics-data.svelte.ts';
+	import CardLayoutControls from '#lib/components/common/CardLayoutControls.svelte';
 	import DragGrip from '#lib/components/common/DragGrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '#lib/components/netflow/constants.ts';
 	import { createNearViewportAttachment } from '#lib/components/netflow/near-viewport.ts';
@@ -115,6 +116,7 @@
 		spectrum: false,
 		coverage: false
 	});
+	let chartHeights = $state<Partial<Record<ChartCardId, number>>>({});
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
 	let dragPreviewElement: HTMLElement | null = null;
@@ -274,6 +276,23 @@
 		nextOrder.splice(draggedIndex, 1);
 		nextOrder.splice(targetIndex, 0, draggedId);
 		chartOrder = nextOrder;
+	}
+
+	function moveCardBy(chartId: ChartCardId, offset: number) {
+		const target = chartOrder[chartOrder.indexOf(chartId) + offset];
+		if (!target) return;
+		moveChartCard(chartId, target);
+		persistChartOrder();
+	}
+
+	function resizeCard(chartId: ChartCardId, offset: number) {
+		const frame = document.querySelector<HTMLElement>(`[data-chart-id="${chartId}"] .chart-frame`);
+		if (!frame) return;
+		const minimum = Number.parseFloat(getComputedStyle(frame).minHeight) || 160;
+		chartHeights[chartId] = Math.max(
+			minimum,
+			Math.min(1200, frame.getBoundingClientRect().height + offset)
+		);
 	}
 
 	function clearDragPreview() {
@@ -436,8 +455,8 @@
 	<meta name="description" content="NetFlow analysis and visualization tool" />
 </svelte:head>
 
-<main class="mx-auto flex max-w-[95vw] flex-col gap-2 px-4 py-4 sm:px-2 lg:px-4">
-	<h1 class="text-foreground px-1 text-2xl font-semibold">
+<main class="page-layout flex flex-col gap-4">
+	<h1 class="page-heading">
 		{props.title ?? props.dataset}
 	</h1>
 	<DatasetTabs datasetId={props.dataset} active="dashboard" />
@@ -460,15 +479,15 @@
 		onMaadIpVersionChange={handleIpVersionChange}
 		onResetView={handleResetView}
 	/>
-	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
-		{#each chartOrder as chartId (chartId)}
+	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-4">
+		{#each chartOrder as chartId, index (chartId)}
 			<section
 				role="listitem"
 				data-chart-card
 				data-chart-id={chartId}
 				data-chart-activated={activatedCharts[chartId]}
-				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
-				style={`min-height:${getCardMinimumHeight(chartId)}px`}
+				class={`relative rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
+				style={`min-height:${getCardMinimumHeight(chartId)}px;${chartHeights[chartId] ? `--chart-user-height:${chartHeights[chartId]}px` : ''}`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}
@@ -483,6 +502,16 @@
 					handleChartDrop(event, chartId);
 				}}
 			>
+				<CardLayoutControls
+					title={CHART_CARD_DETAILS[chartId].title}
+					first={index === 0}
+					last={index === chartOrder.length - 1}
+					onMove={(offset) => moveCardBy(chartId, offset)}
+					onResize={(offset) => {
+						activateChart(chartId);
+						resizeCard(chartId, offset);
+					}}
+				/>
 				{#if !activatedCharts[chartId]}
 					<div
 						class="border-border bg-card text-card-foreground relative flex h-full flex-col rounded-lg border shadow-sm"
