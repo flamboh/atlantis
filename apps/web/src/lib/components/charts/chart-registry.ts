@@ -33,6 +33,45 @@ const spectrumTooltip: typeof tooltip = {
 	}
 };
 
+const focusRings: ChartMark<never, never, never> = {
+	initialize: () => ({
+		id: 'focus-rings',
+		focusGuideOnly: true,
+		channels: {},
+		render: ({ chart, surface }) => ({
+			nodes: [],
+			focusGuides: [
+				{
+					key: 'focus-rings',
+					markId: 'focus-rings',
+					chart,
+					surface,
+					resolve: ({ focus }) =>
+						focus
+							? {
+									kind: 'group',
+									key: 'focus-rings',
+									ariaHidden: true,
+									children: [focus.primary].map((point) => ({
+										kind: 'dot',
+										key: point.key,
+										x: point.x,
+										y: point.y,
+										radius: 5,
+										style: {
+											fill: 'var(--ts-chart-focus-fill, Canvas)',
+											stroke: point.color,
+											strokeWidth: 2.5
+										}
+									}))
+								}
+							: undefined
+				}
+			]
+		})
+	})
+};
+
 export type PlotPoint = {
 	x: number;
 	y: number | null;
@@ -267,6 +306,7 @@ export function buildChartDefinition(
 		);
 	}
 	marks.push(
+		focusRings,
 		crosshair({ y: false, stroke: 'currentColor', strokeOpacity: 0.65, strokeDasharray: '3 3' })
 	);
 	const xDomain = options.xDomain ?? plotBounds(series);
@@ -363,6 +403,7 @@ export function buildChartDefinition(
 									height: (count, context) => Math.min(108, legend.height(count, context))
 								}
 				},
+		focusRing: false,
 		focus: options.kind === 'scatter' ? undefined : focusGroupX,
 		tooltip: {
 			use: options.kind === 'scatter' ? spectrumTooltip : tooltip,
