@@ -126,7 +126,7 @@
 					: (QUICK_SELECT_OPTIONS[selectedQuickSelectIndex]?.value ?? null)}
 				onValueChange={handleQuickSelect}
 				class="grid-cols-5"
-				buttonClass="px-2"
+				buttonClass="px-1 whitespace-normal"
 			/>
 		</div>
 		<ControlPopover

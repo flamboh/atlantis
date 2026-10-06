@@ -21,6 +21,7 @@
 		align="start"
 		sideOffset={6}
 		class="control-popover bg-popover text-popover-foreground z-40 w-[min(24rem,calc(100vw-2rem))] rounded-md border p-3 shadow-lg"
+		role="dialog"
 		aria-label={label}
 	>
 		<div class="mb-3 flex items-center justify-between gap-2">

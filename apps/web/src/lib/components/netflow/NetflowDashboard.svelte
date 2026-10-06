@@ -280,6 +280,7 @@
 		}
 
 		if (selectedRouters.length === 0) {
+			lastFiltersKey = '';
 			requestToken += 1;
 			requestController?.abort();
 			requestController = null;

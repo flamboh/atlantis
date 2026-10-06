@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { NetflowFileDetailsResponse } from '../../src/lib/types/types';
 import { expectRendered, FIXTURE_DASHBOARD } from './chart-helpers';
 
 test('keyboard layout controls reorder persistently and resize the rendered plot', async ({
@@ -123,7 +124,7 @@ test('collapsed desktop rail preserves sources and URL controls', async ({ page 
 	const rail = page.getByRole('complementary', { name: 'Filters', exact: true });
 	await rail
 		.getByRole('group', { name: 'MAAD address family' })
-		.getByRole('button', { name: 'IPv6', exact: true })
+		.getByRole('button', { name: 'IPv6 (/23–/64)', exact: true })
 		.click();
 	await rail.getByRole('checkbox', { name: 'fixture-router', exact: true }).uncheck();
 	await page.getByRole('button', { name: 'Hide filters', exact: true }).click();
@@ -137,7 +138,7 @@ test('collapsed desktop rail preserves sources and URL controls', async ({ page 
 	await expect(
 		rail
 			.getByRole('group', { name: 'MAAD address family' })
-			.getByRole('button', { name: 'IPv6', exact: true })
+			.getByRole('button', { name: 'IPv6 (/23–/64)', exact: true })
 	).toHaveAttribute('aria-pressed', 'true');
 	await rail.getByRole('checkbox', { name: 'fixture-router', exact: true }).check();
 	await expectRendered(page.locator('[data-chart-id="dashboard"]'));
@@ -174,3 +175,49 @@ for (const width of [390, 1280]) {
 		await expect(trigger).toBeFocused();
 	});
 }
+
+test('large byte totals remain on one line in the 1280px file sidebar', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await page.route('**/api/netflow/files/*/details?**', async (route) => {
+		const response = await route.fetch();
+		const body: NetflowFileDetailsResponse = await response.json();
+		body.routers[0].summary.bytes = 160824538431;
+		await route.fulfill({ response, json: body });
+	});
+	await page.goto('/netflow/files/202503010200?dataset=playwright');
+	const total = page.getByText('Total: 160,824,538,431', { exact: true });
+	await expect(total).toBeVisible();
+	expect(
+		await total.evaluate((node) => {
+			const range = document.createRange();
+			range.selectNodeContents(node);
+			return range.getClientRects().length;
+		})
+	).toBe(1);
+});
+
+test('phone quick-selection labels fit inside their separate buttons', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 900 });
+	await page.goto(FIXTURE_DASHBOARD);
+	await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+	for (const name of ['Select All', 'Select None']) {
+		const button = page
+			.locator('[data-chart-id="dashboard"]')
+			.getByRole('button', { name, exact: true });
+		await expect(button).toBeVisible();
+		expect(
+			await button.evaluate((node) => {
+				const range = document.createRange();
+				range.selectNodeContents(node);
+				const bounds = node.getBoundingClientRect();
+				return [...range.getClientRects()].every(
+					(rect) => rect.left >= bounds.left && rect.right <= bounds.right
+				);
+			})
+		).toBe(true);
+		await button.click();
+	}
+	await expect(
+		page.locator('[data-chart-id="dashboard"]').getByTestId('chart-render-state')
+	).toHaveAttribute('data-state', 'empty');
+});

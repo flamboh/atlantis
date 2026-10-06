@@ -454,7 +454,12 @@ th {
 	border-bottom: 0;
 }
 .file-router-card .file-metrics {
-	grid-template-columns: repeat(2, minmax(0, 1fr));
+	grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1600px) {
+	.file-router-card .file-metrics {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
 }
 .catalog {
 	border: 1px solid var(--border);
