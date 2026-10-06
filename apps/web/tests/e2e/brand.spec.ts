@@ -3,9 +3,16 @@ import { expect, test } from '@playwright/test';
 for (const colorScheme of ['light', 'dark'] as const) {
 	test(`brand is accessible and its icons resolve in ${colorScheme} mode`, async ({ page }) => {
 		await page.emulateMedia({ colorScheme });
+		await page.setViewportSize({ width: 320, height: 800 });
 		await page.goto('/netflow/files');
 		const home = page.getByRole('link', { name: 'ATLANTIS', exact: true });
 		await expect(home.getByRole('img', { name: 'ATLANTIS', exact: true })).toBeVisible();
+		for (const control of await page.locator('header a, header button').all()) {
+			const bounds = await control.boundingBox();
+			expect(bounds).not.toBeNull();
+			expect(bounds!.x).toBeGreaterThanOrEqual(0);
+			expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+		}
 		await home.focus();
 		await page.keyboard.press('Enter');
 		await expect(page).toHaveURL(/\/$/);
