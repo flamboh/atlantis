@@ -238,6 +238,6 @@
 		{/if}
 	</div>
 	<div class="relative h-72 w-full min-w-0 sm:h-96">
-		<canvas bind:this={chartCanvas}></canvas>
+		<canvas bind:this={chartCanvas} aria-label="Structure function chart"></canvas>
 	</div>
 </div>

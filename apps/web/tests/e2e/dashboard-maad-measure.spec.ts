@@ -126,13 +126,13 @@ test('rejects an unknown measure param in favor of addresses', async ({ page }) 
 test('keeps the weighted measure when drilling down to a file', async ({ page }) => {
 	await page.goto(`${DASHBOARD}&measure=bytes`);
 	await activateCard(page, 'dimensions');
-	const canvas = page.locator('[data-chart-id="dimensions"]').getByLabel('MAAD dimensions chart');
-	await expect(canvas).toBeVisible();
+	const surface = page.locator('[data-chart-id="dimensions"]').getByLabel('MAAD dimensions chart');
+	await expect(surface).toBeVisible();
 
 	const detailsRequest = page.waitForRequest(
 		(request) => new URL(request.url()).pathname === '/api/netflow/files/202503010200/details'
 	);
-	await canvas.click();
+	await surface.click();
 
 	await page.waitForURL(/\/netflow\/files\/202503010200\?/);
 	const url = new URL(page.url());

@@ -333,6 +333,11 @@
 		const datasets = visibleTimelines.map((timeline, sourceIndex) => ({
 			label: timeline.sourceId,
 			data: timeline.buckets.map(() => sourceIndex),
+			chartContractValues: timeline.buckets.map((bucket) =>
+				bucket.coverage.state === 'unknown'
+					? null
+					: bucket.coverage.observedUnits / bucket.coverage.expectedUnits
+			),
 			borderColor: 'transparent',
 			backgroundColor: 'transparent',
 			borderWidth: 0,
@@ -493,7 +498,17 @@
 	});
 </script>
 
-<div class="bg-card rounded-lg border shadow-sm" data-testid="coverage-strip-card">
+<div
+	class="bg-card rounded-lg border shadow-sm"
+	data-testid="coverage-strip-card"
+	data-state={loading
+		? 'loading'
+		: error
+			? 'error'
+			: visibleTimelines.length === 0
+				? 'empty'
+				: 'ready'}
+>
 	<div
 		class="relative cursor-grab border-b p-3 select-none active:cursor-grabbing"
 		draggable="true"

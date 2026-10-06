@@ -4,11 +4,13 @@ const WIDE_DAILY_RANGE =
 	'/datasets/playwright?startDate=2025-01-01&endDate=2025-03-31&groupBy=date';
 
 async function clickChartCenter(page: Page, chartId: string) {
-	const canvas = page.locator(`[data-chart-id="${chartId}"] canvas`).first();
-	await expect(canvas).toBeVisible();
-	await canvas.scrollIntoViewIfNeeded();
-	const box = await canvas.boundingBox();
-	if (!box) throw new Error(`Missing ${chartId} canvas bounds`);
+	const surface = page
+		.locator(`[data-chart-id="${chartId}"] [data-testid="chart-surface"]`)
+		.first();
+	await expect(surface).toBeVisible();
+	await surface.scrollIntoViewIfNeeded();
+	const box = await surface.boundingBox();
+	if (!box) throw new Error(`Missing ${chartId} surface bounds`);
 	await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 

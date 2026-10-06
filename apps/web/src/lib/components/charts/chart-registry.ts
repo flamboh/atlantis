@@ -11,6 +11,7 @@ import {
 	Tooltip
 } from 'chart.js';
 import { verticalCrosshairPlugin } from './crosshair-plugin';
+import { chartContractPlugin } from './chartjs-contract';
 
 let registered = false;
 
@@ -29,7 +30,8 @@ export function ensureChartRegistry(): void {
 		PointElement,
 		ScatterController,
 		Tooltip,
-		verticalCrosshairPlugin
+		verticalCrosshairPlugin,
+		chartContractPlugin
 	);
 	registered = true;
 }
