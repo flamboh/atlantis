@@ -44,7 +44,7 @@ export interface BreakdownChartConfig {
 	noSourceCopy: string;
 	fetchErrorCopy: string;
 	unexpectedErrorCopy: string;
-	canvasLabel: string;
+	chartLabel: string;
 }
 
 const ipMetricLabels: Record<IpMetricKey, string> = {
@@ -87,7 +87,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	noSourceCopy: 'Select at least one source to view IP statistics',
 	fetchErrorCopy: 'Failed to load IP statistics',
 	unexpectedErrorCopy: 'Unexpected error loading IP statistics',
-	canvasLabel: 'IP chart'
+	chartLabel: 'IP chart'
 };
 
 const PROTOCOL_CONFIG: BreakdownChartConfig = {
@@ -124,7 +124,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	noSourceCopy: 'Select at least one source to view protocol statistics',
 	fetchErrorCopy: 'Failed to load protocol statistics',
 	unexpectedErrorCopy: 'Unexpected error loading protocol statistics',
-	canvasLabel: 'Protocol chart'
+	chartLabel: 'Protocol chart'
 };
 
 export type DimensionSide = 'sa' | 'da';
@@ -186,7 +186,7 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 	noSourceCopy: 'Select at least one source to view MAAD dimensions',
 	fetchErrorCopy: 'Failed to load MAAD dimensions',
 	unexpectedErrorCopy: 'Unexpected error loading MAAD dimensions',
-	canvasLabel: 'MAAD dimensions chart'
+	chartLabel: 'MAAD dimensions chart'
 };
 
 const SPECTRUM_CONFIG: BreakdownChartConfig = {
@@ -210,7 +210,7 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	noSourceCopy: 'Select at least one source to view spectrum statistics',
 	fetchErrorCopy: 'Failed to load spectrum statistics',
 	unexpectedErrorCopy: 'Unexpected error loading spectrum statistics',
-	canvasLabel: 'Spectrum chart'
+	chartLabel: 'Spectrum chart'
 };
 
 export const BREAKDOWN_CHART_CONFIGS: Record<BreakdownChartKind, BreakdownChartConfig> = {

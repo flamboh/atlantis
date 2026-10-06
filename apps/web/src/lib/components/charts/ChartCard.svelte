@@ -16,20 +16,8 @@
 		loadingCopy,
 		noMetricsCopy,
 		emptyCopy,
-		isDraggingRange = false,
-		selectionLeft = 0,
-		selectionWidth = 0,
-		selectionTop = 0,
-		selectionHeight = 0,
-		mirroredSelectionStyle = null,
-		minDragPixels = 0,
 		controls,
-		children,
-		overlay,
-		onmousedown,
-		onmousemove,
-		onmouseup,
-		onmouseleave
+		children
 	}: {
 		title: string;
 		subtitle?: string | null;
@@ -43,20 +31,8 @@
 		loadingCopy: string;
 		noMetricsCopy: string;
 		emptyCopy: string;
-		isDraggingRange?: boolean;
-		selectionLeft?: number;
-		selectionWidth?: number;
-		selectionTop?: number;
-		selectionHeight?: number;
-		mirroredSelectionStyle?: string | null;
-		minDragPixels?: number;
 		controls?: Snippet;
 		children: Snippet;
-		overlay?: Snippet;
-		onmousedown?: (event: MouseEvent) => void;
-		onmousemove?: (event: MouseEvent) => void;
-		onmouseup?: () => void;
-		onmouseleave?: () => void;
 	} = $props();
 </script>
 
@@ -108,10 +84,6 @@
 						? 'border-border bg-background/60 relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border xl:h-[320px] xl:min-h-[240px]'
 						: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
 				role="presentation"
-				{onmousedown}
-				{onmousemove}
-				{onmouseup}
-				{onmouseleave}
 			>
 				{#if selectionUnavailableCopy}
 					<div
@@ -137,19 +109,6 @@
 				{:else}
 					<div class="relative h-full">
 						{@render children()}
-						{@render overlay?.()}
-						{#if isDraggingRange && selectionWidth >= minDragPixels}
-							<div
-								class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
-								style={`left:${selectionLeft}px; width:${selectionWidth}px; top:${selectionTop}px; height:${selectionHeight}px;`}
-							></div>
-						{/if}
-						{#if !isDraggingRange && mirroredSelectionStyle !== null}
-							<div
-								class="border-muted-foreground/70 bg-muted-foreground/20 pointer-events-none absolute border"
-								style={mirroredSelectionStyle}
-							></div>
-						{/if}
 					</div>
 				{/if}
 			</div>

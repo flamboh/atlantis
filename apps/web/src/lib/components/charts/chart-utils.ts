@@ -1,6 +1,4 @@
-import type { Chart } from 'chart.js';
 import type { GroupByOption, NetflowDataPoint } from '#lib/components/netflow/types.ts';
-import type { RangeSelectionState } from '#lib/stores/rangeSelection.svelte.ts';
 import {
 	parseLabelToPSTComponents,
 	parseLabelToDateForDrilldown,
@@ -31,212 +29,6 @@ export function findNearestValueIndex(
 		}
 	}
 	return nearestIndex;
-}
-
-export interface RangeDragState {
-	isDraggingRange: boolean;
-	dragStartX: number;
-	dragCurrentX: number;
-	selectionTop: number;
-	selectionHeight: number;
-	suppressNextClick: boolean;
-}
-
-export function createRangeDragState(): RangeDragState {
-	return {
-		isDraggingRange: false,
-		dragStartX: 0,
-		dragCurrentX: 0,
-		selectionTop: 0,
-		selectionHeight: 0,
-		suppressNextClick: false
-	};
-}
-
-export function getChartArea(chart: Chart | null) {
-	if (!chart) return null;
-	return chart.chartArea;
-}
-
-export function clampToChartX(chart: Chart | null, x: number): number {
-	const area = getChartArea(chart);
-	if (!area) return x;
-	return Math.max(area.left, Math.min(area.right, x));
-}
-
-export function indexFromPixelX(
-	chart: Chart | null,
-	pixelX: number,
-	bucketStarts?: readonly number[]
-): number | null {
-	if (!chart?.data.labels) return null;
-	const labels = chart.data.labels;
-	if (!labels || labels.length === 0) return null;
-	const value = chart.scales.x.getValueForPixel(pixelX);
-	if (typeof value !== 'number' || Number.isNaN(value)) return null;
-	if ((chart.scales.x.options as { type?: string }).type === 'linear') {
-		if (bucketStarts) return findNearestValueIndex(bucketStarts, value);
-		const points = chart.data.datasets[0]?.data ?? [];
-		let closestIndex: number | null = null;
-		let closestDistance = Infinity;
-		const seenX = new Set<number>();
-		points.forEach((point, index) => {
-			if (typeof point !== 'object' || point === null || Array.isArray(point) || !('x' in point))
-				return;
-			const x = point.x;
-			if (typeof x !== 'number' || !Number.isFinite(x)) return;
-			if (seenX.has(x)) return;
-			seenX.add(x);
-			const distance = Math.abs(x - value);
-			if (distance < closestDistance) {
-				closestDistance = distance;
-				closestIndex = index;
-			}
-		});
-		return closestIndex;
-	}
-	const rounded = Math.round(value);
-	return Math.max(0, Math.min(labels.length - 1, rounded));
-}
-
-export function getSelectionLabels(
-	chart: Chart | null,
-	startIndex: number,
-	endIndex: number
-): { startLabel: string; endLabel: string } | null {
-	if (!chart?.data.labels) return null;
-	const labels = chart.data.labels as string[];
-	if (labels.length === 0) return null;
-	const from = Math.max(0, Math.min(labels.length - 1, Math.min(startIndex, endIndex)));
-	const to = Math.max(0, Math.min(labels.length - 1, Math.max(startIndex, endIndex)));
-	const startLabel = labels[from];
-	const endLabel = labels[to];
-	if (!startLabel || !endLabel) return null;
-	return { startLabel, endLabel };
-}
-
-export function beginRangeDrag(
-	state: RangeDragState,
-	event: MouseEvent,
-	chartCanvas: HTMLCanvasElement | null,
-	chart: Chart | null,
-	onPreviewRange?: (startIndex: number, endIndex: number) => void,
-	bucketStarts?: readonly number[]
-): void {
-	if (event.button !== 0 || !chartCanvas) return;
-	const rect = chartCanvas.getBoundingClientRect();
-	const x = event.clientX - rect.left;
-	const y = event.clientY - rect.top;
-	const area = getChartArea(chart);
-	if (!area) return;
-	if (x < area.left || x > area.right || y < area.top || y > area.bottom) return;
-	state.isDraggingRange = true;
-	state.dragStartX = clampToChartX(chart, x);
-	state.dragCurrentX = state.dragStartX;
-	state.selectionTop = area.top;
-	state.selectionHeight = area.bottom - area.top;
-	const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
-	if (startIndex !== null) {
-		onPreviewRange?.(startIndex, startIndex);
-	}
-}
-
-export function updateRangeDrag(
-	state: RangeDragState,
-	event: MouseEvent,
-	chartCanvas: HTMLCanvasElement | null,
-	chart: Chart | null,
-	onPreviewRange?: (startIndex: number, endIndex: number) => void,
-	bucketStarts?: readonly number[]
-): void {
-	if (!state.isDraggingRange || !chartCanvas) return;
-	const rect = chartCanvas.getBoundingClientRect();
-	const x = event.clientX - rect.left;
-	state.dragCurrentX = clampToChartX(chart, x);
-	const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
-	const endIndex = indexFromPixelX(chart, state.dragCurrentX, bucketStarts);
-	if (startIndex !== null && endIndex !== null) {
-		onPreviewRange?.(startIndex, endIndex);
-	}
-}
-
-export function endRangeDrag(
-	state: RangeDragState,
-	chart: Chart | null,
-	onCommitRange: (startIndex: number, endIndex: number) => void,
-	bucketStarts?: readonly number[]
-): void {
-	if (!state.isDraggingRange) return;
-	const wasDrag = Math.abs(state.dragCurrentX - state.dragStartX) >= MIN_DRAG_PIXELS;
-	if (wasDrag) {
-		const startIndex = indexFromPixelX(chart, state.dragStartX, bucketStarts);
-		const endIndex = indexFromPixelX(chart, state.dragCurrentX, bucketStarts);
-		if (startIndex !== null && endIndex !== null) {
-			onCommitRange(startIndex, endIndex);
-			state.suppressNextClick = true;
-		}
-	}
-	state.isDraggingRange = false;
-}
-
-export function buildMirroredSelectionStyle(
-	chart: Chart | null,
-	mirroredRange: RangeSelectionState | null,
-	sourceChartId: string,
-	bucketStarts?: readonly number[]
-): string | null {
-	if (!mirroredRange || mirroredRange.sourceChartId === sourceChartId || !chart?.data.labels)
-		return null;
-	const labels = chart.data.labels as string[];
-	const startIndex = labels.indexOf(mirroredRange.startLabel);
-	const endIndex = labels.indexOf(mirroredRange.endLabel);
-	if (startIndex === -1 || endIndex === -1) return null;
-	const area = getChartArea(chart);
-	if (!area) return null;
-	const from = Math.min(startIndex, endIndex);
-	const to = Math.max(startIndex, endIndex);
-	const firstDataset = chart.data.datasets[0]?.data ?? [];
-	const xValues =
-		bucketStarts ??
-		firstDataset.reduce<number[]>((values, point) => {
-			if (
-				typeof point === 'object' &&
-				point !== null &&
-				!Array.isArray(point) &&
-				'x' in point &&
-				typeof point.x === 'number' &&
-				Number.isFinite(point.x) &&
-				!values.includes(point.x)
-			) {
-				values.push(point.x);
-			}
-			return values;
-		}, []);
-	const xValueAt = (index: number): number => {
-		if ((chart.scales.x.options as { type?: string }).type === 'linear') {
-			const uniqueX = xValues[index];
-			if (uniqueX !== undefined) return uniqueX;
-		}
-		const point = firstDataset[index];
-		if (
-			(chart.scales.x.options as { type?: string }).type === 'linear' &&
-			typeof point === 'object' &&
-			point !== null &&
-			!Array.isArray(point) &&
-			'x' in point
-		) {
-			const x = point.x;
-			if (typeof x === 'number' && Number.isFinite(x)) return x;
-		}
-		return index;
-	};
-	const rawLeft = chart.scales.x.getPixelForValue(xValueAt(from));
-	const rawRight = chart.scales.x.getPixelForValue(xValueAt(to));
-	const left = Math.max(area.left, Math.min(rawLeft, rawRight));
-	const right = Math.min(area.right, Math.max(rawLeft, rawRight));
-	const width = right - left;
-	if (!Number.isFinite(width) || width < MIN_DRAG_PIXELS) return null;
-	return `left:${left}px; width:${width}px; top:${area.top}px; height:${area.bottom - area.top}px;`;
 }
 
 /**
@@ -578,7 +370,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
 }
 
-/** Read coverage metadata from an untyped Chart.js point. */
+/** Read coverage metadata from an untyped point. */
 export function getChartBucketCoverage(bucket: unknown): ChartCoverage | null {
 	if (!isRecord(bucket) || !isRecord(bucket.coverage)) {
 		return null;
@@ -598,7 +390,7 @@ export function getChartBucketCoverage(bucket: unknown): ChartCoverage | null {
 	return null;
 }
 
-/** Build Chart.js points without compressing gaps into adjacent indexes. */
+/** Build temporal points without compressing gaps into adjacent indexes. */
 export function buildTemporalChartPoints<T>(
 	buckets: readonly ChartTimeBucket<T>[],
 	getValue: (data: T) => number | null
