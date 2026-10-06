@@ -1,8 +1,10 @@
 <script lang="ts">
-	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { untrack } from 'svelte';
+	import { mountChart } from '@tanstack/charts/dom';
+	import { defineChart } from '@tanstack/charts/scene';
 	import type { ChartPoint, ChartRenderContext } from '@tanstack/charts';
 	import {
-		Chart,
 		buildChartDefinition,
 		finitePoint,
 		plotTooltip,
@@ -10,6 +12,7 @@
 		type PlotPoint,
 		type PlotSeries
 	} from './chart-registry';
+	import { plotObservations, positionedScenePoints } from './chart-observations';
 	import { createChartContract } from './chart-contract';
 	import { MIN_DRAG_PIXELS, findNearestValueIndex } from './chart-utils';
 	import { crosshairStore } from '#lib/stores/crosshair.ts';
@@ -37,7 +40,6 @@
 		retainEmptySurface?: boolean;
 	} = $props();
 	const hidden = new SvelteSet<string>();
-	let size = $state({ width: 800, height: 320 });
 	let context: ChartRenderContext<PlotPoint, number, number> | null = null;
 	let contract: ReturnType<typeof createChartContract> | null = null;
 	let contractSurface: HTMLElement | SVGElement | null = null;
@@ -50,25 +52,32 @@
 	let selection: HTMLDivElement | null = null;
 	let externalCrosshair: HTMLDivElement | null = null;
 	const hasData = $derived(series.some((item) => item.data.some(finitePoint)));
-	const timeline = $derived.by(() => {
-		const unique = new SvelteMap<number, PlotPoint>();
-		for (const item of series) {
-			if (hidden.has(item.label)) continue;
-			for (const point of item.data) if (finitePoint(point)) unique.set(point.x, point);
-		}
-		return [...unique.values()].sort((left, right) => left.x - right.x);
-	});
-	const timestamps = $derived(timeline.map((point) => point.x));
-	const labeledPoints = $derived(new SvelteMap(timeline.map((point) => [point.label, point])));
-	const definition = $derived(
-		buildChartDefinition(
-			series,
-			{ ...options, compact: options.compact && size.width < 560 },
-			hidden,
+	const observationData = $derived(plotObservations(series, hidden));
+	let observations: ReturnType<typeof plotObservations> | null = null;
+	const definition = $derived.by(() => {
+		const currentSeries = series;
+		const currentOptions = options;
+		const currentHidden = new Set(hidden);
+		const formatter = formatTooltip;
+		const normal = buildChartDefinition(
+			currentSeries,
+			{ ...currentOptions, compact: false },
+			currentHidden,
 			toggle,
-			formatTooltip
-		)
-	);
+			formatter
+		);
+		return defineChart({
+			chart: ({ width }) =>
+				currentOptions.compact && width < 560
+					? buildChartDefinition(currentSeries, currentOptions, currentHidden, toggle, formatter)
+					: normal,
+			focus: normal.focus,
+			tooltip: normal.tooltip,
+			motion: false,
+			svgAnimation: false,
+			keyboard: true
+		});
+	});
 
 	function toggle(visible: readonly string[]) {
 		for (const item of series) {
@@ -77,32 +86,34 @@
 		}
 	}
 
-	function attachSize(node: HTMLDivElement) {
-		const observer = new ResizeObserver(() => {
-			const width = node.clientWidth;
-			const height = node.clientHeight;
-			if (width > 0 && height > 0 && (width !== size.width || height !== size.height))
-				size = { width, height };
+	function attachPlot(node: HTMLDivElement) {
+		const hostOptions = () => ({
+			definition,
+			ariaLabel: name,
+			onRender: publish,
+			onFocusGroupChange: focusGroup,
+			onSelect: select
 		});
-		observer.observe(node);
-		return () => {
-			observer.disconnect();
-			cleanupRender();
-			contract?.destroy();
-			contract = null;
-			context = null;
-			if (chartId && crosshairStore.sourceChartId === chartId) crosshairStore.clearHover();
-			if (chartId && rangeSelection.selection?.sourceChartId === chartId) rangeSelection.clear();
-		};
-	}
-
-	function attachLifetime() {
+		let host: ReturnType<typeof mountChart<PlotPoint, number, number>> | null = null;
+		$effect(() => {
+			const current = hostOptions();
+			const currentObservations = observationData;
+			untrack(() => {
+				observations = currentObservations;
+				if (host) host.update(current);
+				else host = mountChart(node, current);
+			});
+		});
 		return () => {
 			cleanupRender();
 			contract?.destroy();
+			host?.destroy();
 			contract = null;
 			contractSurface = null;
 			context = null;
+			observations = null;
+			if (chartId && crosshairStore.sourceChartId === chartId) crosshairStore.clearHover();
+			if (chartId && rangeSelection.selection?.sourceChartId === chartId) rangeSelection.clear();
 		};
 	}
 
@@ -117,32 +128,14 @@
 			contract = createChartContract(surface);
 			contractSurface = surface;
 		}
-		const seen = new SvelteSet<PlotPoint>();
-		const positioned = new SvelteMap<string, ChartPoint<PlotPoint, number, number>[]>();
-		for (const point of next.scene.points) {
-			if (
-				seen.has(point.datum) ||
-				!finitePoint(point.datum) ||
-				!Number.isFinite(point.x) ||
-				!Number.isFinite(point.y)
-			)
-				continue;
-			if (
-				point.x < next.scene.chart.x - 0.01 ||
-				point.x > next.scene.chart.x + next.scene.chart.width + 0.01
-			)
-				continue;
-			seen.add(point.datum);
-			const markId = point.markId.replace(/-(complete|partial|run-\d+)$/, '');
-			const points = positioned.get(markId) ?? [];
-			points.push(point);
-			positioned.set(markId, points);
-		}
+		const positioned = positionedScenePoints(next.scene);
 		contract?.render({
 			name,
 			kind: options.kind === 'coverage' ? 'line' : (options.kind ?? 'line'),
 			axes:
-				options.compact && size.width < 560 ? [] : [options.xTitle, options.yTitle].filter(Boolean),
+				options.compact && next.scene.width < 560
+					? []
+					: [options.xTitle, options.yTitle].filter(Boolean),
 			series: series.map((item, index) => {
 				const visible = !hidden.has(item.label);
 				const points = positioned.get(`series-${index}`) ?? [];
@@ -239,8 +232,11 @@
 	function atPixel(x: number): PlotPoint | null {
 		if (!context) return null;
 		const value = context.scene.scales.x.invert?.(x);
-		const index = typeof value === 'number' ? findNearestValueIndex(timestamps, value) : null;
-		return index === null ? null : timeline[index];
+		const index =
+			typeof value === 'number'
+				? findNearestValueIndex(observations?.timestamps ?? [], value)
+				: null;
+		return index === null ? null : (observations?.timeline[index] ?? null);
 	}
 
 	function pointerPosition(event: MouseEvent) {
@@ -332,8 +328,8 @@
 	function paintSelection() {
 		if (!selection || !context) return;
 		const mirrored = rangeSelection.selection;
-		const from = labeledPoints.get(mirrored?.startLabel);
-		const to = labeledPoints.get(mirrored?.endLabel);
+		const from = observations?.labeledPoints.get(mirrored?.startLabel);
+		const to = observations?.labeledPoints.get(mirrored?.endLabel);
 		const left = rangeStart ?? (from ? context.scene.scales.x.map(from.x) : null);
 		const right = rangeEnd ?? (to ? context.scene.scales.x.map(to.x) : null);
 		selection.hidden = left === null || right === null || Math.abs(right - left) < MIN_DRAG_PIXELS;
@@ -344,7 +340,7 @@
 	function paintExternalHover() {
 		if (!externalCrosshair || !context) return;
 		const label = chartId ? crosshairStore.getExternalLabel(chartId) : null;
-		const point = label ? labeledPoints.get(label) : null;
+		const point = label ? observations?.labeledPoints.get(label) : null;
 		externalCrosshair.hidden = !point;
 		if (point)
 			externalCrosshair.style.cssText = `left:${context.scene.scales.x.map(point.x)}px;top:${context.scene.chart.y}px;height:${context.scene.chart.height}px`;
@@ -388,7 +384,7 @@
 		if (!event.shiftKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
-		const points = timeline;
+		const points = observations?.timeline ?? [];
 		const index = Math.max(
 			0,
 			points.findIndex((point) => point.x === focused?.x)
@@ -412,27 +408,10 @@
 	}
 </script>
 
-<div class="relative h-full w-full min-w-0" {@attach attachSize}>
+<div class="relative h-full w-full min-w-0">
 	{#if hasData || retainEmptySurface}
-		<div class="h-full" {@attach attachLifetime}>
-			<Chart
-				{definition}
-				ariaLabel={name}
-				height={size.height}
-				onRender={publish}
-				onFocusGroupChange={focusGroup}
-				onSelect={select}
-			>
-				{#snippet tooltipBody({ points, defaultBody })}
-					{#if options.kind === 'scatter'}
-						<div role="tooltip" class="whitespace-pre-line">
-							{plotTooltip(points, formatTooltip)}
-						</div>
-					{:else}
-						{@render defaultBody()}
-					{/if}
-				{/snippet}
-			</Chart>
+		<div class="ts-chart-host h-full">
+			<div class="ts-chart-surface h-full w-full" {@attach attachPlot}></div>
 		</div>
 		{#if !hasData}<p
 				class="text-muted-foreground pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-center text-sm"

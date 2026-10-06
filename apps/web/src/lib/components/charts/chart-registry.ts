@@ -1,4 +1,4 @@
-import { defineChart } from '@tanstack/charts';
+import { defineChart } from '@tanstack/charts/scene';
 import { lineY } from '@tanstack/charts/line';
 import { areaY } from '@tanstack/charts/area';
 import { rect } from '@tanstack/charts/rect';
@@ -15,7 +15,23 @@ import type { ChartMark, ChartPoint } from '@tanstack/charts';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
 
-export { Chart } from '@tanstack/charts/svelte';
+const spectrumTooltip: typeof tooltip = {
+	...tooltip,
+	create(context) {
+		const instance = tooltip.create(context);
+		return {
+			...instance,
+			paint(input) {
+				instance.paint(input);
+				const element = context.container.querySelector<HTMLElement>('.ts-chart-tooltip');
+				if (element) {
+					element.setAttribute('role', 'tooltip');
+					element.style.whiteSpace = 'pre-line';
+				}
+			}
+		};
+	}
+};
 
 export type PlotPoint = {
 	x: number;
@@ -349,7 +365,7 @@ export function buildChartDefinition(
 				},
 		focus: options.kind === 'scatter' ? undefined : focusGroupX,
 		tooltip: {
-			use: tooltip,
+			use: options.kind === 'scatter' ? spectrumTooltip : tooltip,
 			formatGroup: (points) => plotTooltip(points, formatTooltip),
 			motion: false
 		},
