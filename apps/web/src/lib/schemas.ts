@@ -9,7 +9,7 @@ import {
 	type MaadIpVersion,
 	type MaadMeasure
 } from '#lib/types/types.ts';
-import { z } from 'zod';
+import { z } from 'zod/mini';
 
 export type DateRangeSearch = {
 	startDate: string;
@@ -37,17 +37,20 @@ export function createDateRangeSearch(
 	today = new Date().toJSON().slice(0, 10)
 ) {
 	const schema = z.object({
-		startDate: z.iso.date().catch(defaultStartDate),
-		endDate: z.iso.date().catch(today),
-		groupBy: z.enum(GROUP_BY_OPTIONS).catch('date'),
-		direction: z.enum(FLOW_DIRECTIONS).catch('all'),
-		ipVersion: z
-			.enum(IP_VERSION_PARAMS)
-			.transform((value) => Number(value) as MaadIpVersion)
-			.catch(DEFAULT_MAAD_IP_VERSION),
-		measure: z.enum(MAAD_MEASURES).catch(DEFAULT_MAAD_MEASURE)
+		startDate: z.catch(z.iso.date(), defaultStartDate),
+		endDate: z.catch(z.iso.date(), today),
+		groupBy: z.catch(z.enum(GROUP_BY_OPTIONS), 'date'),
+		direction: z.catch(z.enum(FLOW_DIRECTIONS), 'all'),
+		ipVersion: z.catch(
+			z.pipe(
+				z.enum(IP_VERSION_PARAMS),
+				z.transform((value) => Number(value) as MaadIpVersion)
+			),
+			DEFAULT_MAAD_IP_VERSION
+		),
+		measure: z.catch(z.enum(MAAD_MEASURES), DEFAULT_MAAD_MEASURE)
 	});
-	const keys = schema.keyof().options;
+	const keys = z.keyof(schema).options;
 	const defaults: DateRangeSearch = schema.parse({});
 
 	function parse(searchParams: SearchParamsReader): DateRangeSearch {
