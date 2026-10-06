@@ -1,5 +1,6 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import Logo from "../components/Logo.astro";
 
 const title = "ATLANTIS";
 const description =
@@ -15,12 +16,16 @@ const externalRel = "noopener noreferrer";
 
 const destinations = [
 	{ label: "Demo", href: links.demo, title: "UGR16 Demo deployment" },
-	{ label: "ONRG", href: links.onrg, title: "Oregon Networking Research Group" },
+	{
+		label: "ONRG",
+		href: links.onrg,
+		title: "Oregon Networking Research Group"
+	},
 	{
 		label: "GitHub",
 		href: links.github,
-		title: "Source code, documentation, and issues",
-	},
+		title: "Source code, documentation, and issues"
+	}
 ] as const;
 ---
 
@@ -29,7 +34,7 @@ const destinations = [
 		class="fade-in mx-auto flex h-dvh max-h-dvh min-h-0 max-w-lg flex-col justify-center overflow-hidden px-6 py-16 sm:px-8"
 	>
 		<h1 class="font-display text-3xl font-semibold tracking-tight text-gray-100 sm:text-4xl">
-			ATLANTIS
+			<Logo />
 		</h1>
 		<p class="mt-4 text-muted leading-relaxed">
 			Network telemetry visualization
@@ -38,24 +43,26 @@ const destinations = [
 		</p>
 		<nav class="mt-12" aria-label="External links">
 			<ul class="space-y-3 text-sm sm:text-base">
-				{destinations.map((item) => (
-					<li>
-						<a
-							href={item.href}
-							class="external-link"
-							target="_blank"
-							rel={externalRel}
-							title={item.title}
-						>
-							{item.label}
-							<span class="ml-1 inline text-cisco-blue" aria-hidden="true">↗</span>
-						</a>
-					</li>
-				))}
+				{
+					destinations.map((item) => (
+						<li>
+							<a
+								href={item.href}
+								class="external-link"
+								target="_blank"
+								rel={externalRel}
+								title={item.title}
+							>
+								{item.label}
+								<span class="ml-1 inline text-brand-blue" aria-hidden="true">
+									↗
+								</span>
+							</a>
+						</li>
+					))
+				}
 			</ul>
 		</nav>
-		<p class="mt-14 max-w-sm text-xs leading-relaxed text-gray-500">
-			Built as part of an NSF REU
-		</p>
+		<p class="mt-14 max-w-sm text-xs leading-relaxed text-gray-500">Built as part of an NSF REU</p>
 	</main>
 </BaseLayout>

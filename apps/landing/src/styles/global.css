@@ -7,7 +7,7 @@
   --font-display: "Sora", system-ui, sans-serif;
   --font-body: "IBM Plex Sans", system-ui, sans-serif;
 
-  --color-cisco-blue: #009edc;
+  --color-brand-blue: #2563eb;
   --color-dark-bg: #0a0a0a;
   --color-dark-border: #2d2d2d;
   --color-muted: #9ca3af;
@@ -37,7 +37,7 @@
   }
 
   ::selection {
-    background: color-mix(in srgb, var(--color-cisco-blue) 35%, transparent);
+    background: color-mix(in srgb, var(--color-brand-blue) 35%, transparent);
     color: #f9fafb;
   }
 }
@@ -61,7 +61,7 @@
   text-decoration: underline;
   text-decoration-color: color-mix(
     in srgb,
-    var(--color-cisco-blue) 45%,
+    var(--color-brand-blue) 45%,
     transparent
   );
   text-underline-offset: 0.2em;
@@ -72,11 +72,11 @@
 
 .external-link:hover {
   color: #f9fafb;
-  text-decoration-color: var(--color-cisco-blue);
+  text-decoration-color: var(--color-brand-blue);
 }
 
 .external-link:focus-visible {
-  outline: 2px solid var(--color-cisco-blue);
+  outline: 2px solid var(--color-brand-blue);
   outline-offset: 3px;
   border-radius: 2px;
 }

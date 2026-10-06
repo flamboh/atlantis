@@ -6,6 +6,7 @@
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
 	import { theme } from '#lib/stores/theme.svelte.ts';
+	import Logo from '#lib/components/Logo.svelte';
 
 	let { children } = $props();
 
@@ -19,10 +20,12 @@
 	<div class="font-body bg-background text-foreground flex h-dvh flex-col overflow-hidden">
 		<header class="border-border bg-card shrink-0 border-b">
 			<div class="mx-auto max-w-[95vw] px-4 sm:px-2 lg:px-4">
-				<div class="flex items-center justify-between py-4">
+				<div class="flex items-center justify-between gap-2 py-4">
 					<div>
-						<h1 class="text-foreground text-3xl font-bold hover:underline">
-							<a href={resolve('/')}>ATLANTIS</a>
+						<h1
+							class="text-foreground text-xl font-bold hover:underline min-[360px]:text-2xl sm:text-3xl"
+						>
+							<a href={resolve('/')}><Logo /></a>
 						</h1>
 					</div>
 					<div class="flex items-center gap-4">
