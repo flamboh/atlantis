@@ -32,6 +32,23 @@ describe('createDateRangeSearch', () => {
 		});
 	});
 
+	it('preserves Gregorian date validation, including leap years and four-digit years', () => {
+		for (const date of [
+			'2025-02-29',
+			'2024-02-30',
+			'2025-04-31',
+			'2025-13-01',
+			'2025-00-01',
+			'2025-01-00',
+			'2025-1-01'
+		]) {
+			expect(search.parse(new URLSearchParams({ startDate: date })).startDate).toBe('2025-01-01');
+		}
+		for (const date of ['2024-02-29', '2000-02-29', '0000-01-01', '9999-12-31']) {
+			expect(search.parse(new URLSearchParams({ startDate: date })).startDate).toBe(date);
+		}
+	});
+
 	it('accepts every dashboard grouping including 10 minutes', () => {
 		for (const groupBy of ['date', 'hour', '30min', '10min', '5min']) {
 			expect(search.parse(new URLSearchParams({ groupBy })).groupBy).toBe(groupBy);
