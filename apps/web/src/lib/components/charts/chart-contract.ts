@@ -1,6 +1,8 @@
 export type RenderedSeries = {
 	label: string;
 	visible: boolean;
+	color?: string;
+	opacity?: number;
 	count: number;
 	min: number | null;
 	max: number | null;
@@ -60,6 +62,8 @@ export function createChartContract(surface: HTMLElement | SVGElement) {
 				const entry = document.createElement('span');
 				entry.dataset.testid = 'chart-series';
 				entry.dataset.visible = String(series.visible);
+				if (series.color) entry.dataset.color = series.color;
+				if (series.opacity !== undefined) entry.dataset.opacity = String(series.opacity);
 				entry.dataset.count = String(series.count);
 				entry.dataset.min = String(series.min);
 				entry.dataset.max = String(series.max);

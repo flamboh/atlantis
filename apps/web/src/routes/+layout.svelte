@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import '../app.css';
 	import { onMount } from 'svelte';
@@ -18,19 +19,25 @@
 <!-- Single app-wide provider required by every Tooltip.Root (bits-ui) -->
 <Tooltip.Provider>
 	<div class="font-body bg-background text-foreground flex h-dvh flex-col overflow-hidden">
-		<header class="border-border bg-card shrink-0 border-b">
-			<div class="mx-auto max-w-[95vw] px-4 sm:px-2 lg:px-4">
-				<div class="flex items-center justify-between gap-2 py-4">
+		<header class="app-topbar border-border bg-card shrink-0 border-b">
+			<div class="shell-width">
+				<div class="flex items-center justify-between gap-3 py-2">
 					<div>
-						<h1
-							class="text-foreground text-xl font-bold hover:underline min-[360px]:text-2xl sm:text-3xl"
-						>
+						<h1 class="text-foreground text-base font-semibold tracking-tight">
 							<a href={resolve('/')}><Logo /></a>
 						</h1>
 					</div>
-					<div class="flex items-center gap-4">
-						<a href={resolve('/')} class="text-muted-foreground hover:text-foreground">Home</a>
-						<a href={resolve('/netflow/files')} class="text-muted-foreground hover:text-foreground"
+					<nav aria-label="Main navigation" class="flex items-center gap-3 text-sm sm:gap-6">
+						<a
+							href={resolve('/')}
+							aria-current={page.url.pathname === '/' ? 'page' : undefined}
+							class="text-muted-foreground hover:text-foreground aria-[current=page]:text-accent-foreground"
+							>Home</a
+						>
+						<a
+							href={resolve('/netflow/files')}
+							aria-current={page.url.pathname.startsWith('/netflow/files') ? 'page' : undefined}
+							class="text-muted-foreground hover:text-foreground aria-[current=page]:text-accent-foreground"
 							>Files</a
 						>
 						<Button
@@ -46,7 +53,7 @@
 								<Moon size={20} />
 							{/if}
 						</Button>
-					</div>
+					</nav>
 				</div>
 			</div>
 		</header>

@@ -16,11 +16,7 @@ export interface LineMetricConfig {
 	key: BreakdownMetricKey;
 	label: string;
 	seriesLabel: string;
-	color?: {
-		hue: number;
-		saturation: number;
-		lightness: number;
-	};
+	color?: string;
 }
 
 export interface BreakdownChartConfig {
@@ -30,10 +26,10 @@ export interface BreakdownChartConfig {
 	endpoint: string;
 	usesMaad: boolean;
 	seriesByRouter: boolean;
+	routerHueStep: number;
 	defaultGranularity: IpGranularity;
 	defaultMetrics: BreakdownMetricKey[];
 	metrics: LineMetricConfig[];
-	routerHueStep: number;
 	fillAlpha: number;
 	yAxisTitle: string;
 	formatYAxisTicks: boolean;
@@ -54,11 +50,11 @@ const ipMetricLabels: Record<IpMetricKey, string> = {
 	daIpv6Count: 'Dst IPv6'
 };
 
-const ipColors: Record<IpMetricKey, { hue: number; saturation: number; lightness: number }> = {
-	saIpv4Count: { hue: 130, saturation: 65, lightness: 58 },
-	daIpv4Count: { hue: 130, saturation: 65, lightness: 38 },
-	saIpv6Count: { hue: 25, saturation: 72, lightness: 60 },
-	daIpv6Count: { hue: 25, saturation: 72, lightness: 40 }
+const ipColors: Record<IpMetricKey, string> = {
+	saIpv4Count: 'var(--chart-series-1)',
+	daIpv4Count: 'var(--chart-series-2)',
+	saIpv6Count: 'var(--chart-series-3)',
+	daIpv6Count: 'var(--chart-series-4)'
 };
 
 const IP_CONFIG: BreakdownChartConfig = {
@@ -68,6 +64,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/ip/stats',
 	usesMaad: false,
 	seriesByRouter: false,
+	routerHueStep: 70,
 	defaultGranularity: '1d',
 	defaultMetrics: ['saIpv4Count', 'daIpv4Count'],
 	metrics: IP_METRIC_OPTIONS.map((option) => ({
@@ -76,7 +73,6 @@ const IP_CONFIG: BreakdownChartConfig = {
 		seriesLabel: ipMetricLabels[option.key],
 		color: ipColors[option.key]
 	})),
-	routerHueStep: 70,
 	fillAlpha: 0.18,
 	yAxisTitle: 'Unique IPs',
 	formatYAxisTicks: true,
@@ -97,6 +93,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/protocol/stats',
 	usesMaad: false,
 	seriesByRouter: false,
+	routerHueStep: 110,
 	defaultGranularity: '1h',
 	defaultMetrics: ['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6'],
 	metrics: [
@@ -104,16 +101,15 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 			key: 'uniqueProtocolsIpv4',
 			label: 'Unique Protocols IPv4',
 			seriesLabel: 'IPv4',
-			color: { hue: 210, saturation: 70, lightness: 50 }
+			color: 'var(--chart-series-1)'
 		},
 		{
 			key: 'uniqueProtocolsIpv6',
 			label: 'Unique Protocols IPv6',
 			seriesLabel: 'IPv6',
-			color: { hue: 35, saturation: 75, lightness: 48 }
+			color: 'var(--chart-series-2)'
 		}
 	],
-	routerHueStep: 110,
 	fillAlpha: 0.2,
 	yAxisTitle: 'Unique Protocols',
 	formatYAxisTicks: false,
@@ -163,6 +159,7 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/netflow/dimension-stats',
 	usesMaad: true,
 	seriesByRouter: true,
+	routerHueStep: 0,
 	defaultGranularity: '1h',
 	defaultMetrics: ['saD1'],
 	metrics: DIMENSION_SIDE_OPTIONS.flatMap((side) =>
@@ -175,7 +172,6 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 			};
 		})
 	),
-	routerHueStep: 0,
 	fillAlpha: 0,
 	yAxisTitle: 'Dimension',
 	formatYAxisTicks: false,
@@ -196,10 +192,10 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/netflow/spectrum-stats',
 	usesMaad: true,
 	seriesByRouter: false,
+	routerHueStep: 0,
 	defaultGranularity: '1h',
 	defaultMetrics: [],
 	metrics: [],
-	routerHueStep: 0,
 	fillAlpha: 0,
 	yAxisTitle: 'alpha',
 	formatYAxisTicks: false,

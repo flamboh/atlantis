@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import { sourceSeriesColor } from './chart-colors';
 	import ChartCard from './ChartCard.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import {
@@ -36,10 +37,10 @@
 		'5min': '5m'
 	};
 	const PORT_COLORS: Record<`${PortSide}-${PortRange}`, string> = {
-		'source-low': '#2563eb',
-		'source-high': '#0891b2',
-		'destination-low': '#d97706',
-		'destination-high': '#dc2626'
+		'source-low': 'var(--chart-series-1)',
+		'source-high': 'var(--chart-series-3)',
+		'destination-low': 'var(--chart-series-2)',
+		'destination-high': 'var(--chart-series-4)'
 	};
 	const PORT_OPTIONS: Array<{ side: PortSide; range: PortRange; label: string }> = [
 		{ side: 'source', range: 'low', label: 'Source ports 0-1023' },
@@ -62,7 +63,7 @@
 					return {
 						label: multipleSources ? `${sourceId} · ${label}` : label,
 						values: portValuesByStart(timeline, portStarts, portFamily, side, range),
-						color: PORT_COLORS[`${side}-${range}`],
+						color: sourceSeriesColor(PORT_COLORS[`${side}-${range}`], sourceIndex),
 						dash: getSourceLineDash(sourceIndex, multipleSources),
 						coverage: portStarts.map(
 							(start) =>

@@ -19,7 +19,7 @@
 	}
 </script>
 
-<div class="container mx-auto p-6">
+<div class="page-layout">
 	<div class="mx-auto max-w-2xl text-center">
 		<div class="mb-6">
 			<h1 class="text-foreground mb-2 text-4xl font-bold">{page.status}</h1>

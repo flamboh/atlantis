@@ -23,6 +23,8 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
 	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
 	import ChartCard from './ChartCard.svelte';
+	import { getSourceLineDash } from './flow-characteristics';
+	import { sourceSeriesColor, categoricalSeriesColor } from './chart-colors';
 	import ChartPlot from './ChartPlot.svelte';
 	import { plotBounds, finitePoint, type PlotSeries, type PlotOptions } from './chart-registry';
 	import { finiteSpectrumPoints, paddedSpectrumBounds } from './spectrum-points';
@@ -235,7 +237,7 @@
 			return [
 				{
 					label: 'Spectrum',
-					color: '#36A2EB',
+					color: 'var(--chart-series-1)',
 					data: buckets.flatMap((bucket) =>
 						pointsForBucket(bucket).map((point) => ({
 							x: bucket.bucketStart,
@@ -266,8 +268,15 @@
 					return {
 						label: config.seriesByRouter ? router : `${router} · ${metric.seriesLabel}`,
 						color: config.seriesByRouter
-							? `var(--chart-series-${slot > 0 && slot <= 8 ? slot : 'other'})`
-							: `hsl(${((color?.hue ?? 0) + routerIndex * config.routerHueStep) % 360}, ${color?.saturation ?? 70}%, ${color?.lightness ?? 50}%)`,
+							? categoricalSeriesColor(slot > 0 ? slot - 1 : routerIndex)
+							: sourceSeriesColor(
+									color ?? 'var(--chart-series-1)',
+									slot > 0 ? slot - 1 : routerIndex,
+									config.routerHueStep
+								),
+						dash: config.seriesByRouter
+							? undefined
+							: getSourceLineDash(routerIndex, routers.length > 1).join(' '),
 						data: bucketStarts.map((start) => {
 							const bucket = records.get(`${router}-${start}`);
 							return {

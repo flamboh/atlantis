@@ -14,6 +14,7 @@ import { scaleSequential } from 'd3-scale';
 import type { ChartMark, ChartPoint } from '@tanstack/charts';
 import { temporalTicks } from './temporal-ticks';
 import { temporalGrid } from './temporal-grid';
+import { spectrumInterpolator, type SpectrumColors } from './chart-colors';
 import { spectrumCloud } from './spectrum-cloud';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
@@ -123,6 +124,7 @@ export type PlotOptions = {
 	compact?: boolean;
 	annotations?: PlotAnnotation[];
 	colorDomain?: readonly [number, number];
+	spectrumColors?: SpectrumColors;
 };
 
 export function finitePoint(point: PlotPoint): boolean {
@@ -217,7 +219,7 @@ export function buildChartDefinition(
 						y1: (point) => (point.y ?? 0) - 0.055,
 						y2: (point) => (point.y ?? 0) + 0.055,
 						inset: 0,
-						fill: state === 'complete' ? 'rgb(16,185,129)' : 'transparent'
+						fill: state === 'complete' ? 'var(--success)' : 'transparent'
 					})
 				);
 				if (state === 'partial')
@@ -228,7 +230,7 @@ export function buildChartDefinition(
 									id: `${id}-coverage-dash-${position}`,
 									x: 'x',
 									y: 'y',
-									stroke: 'rgb(245,158,11)',
+									stroke: 'var(--warning)',
 									strokeWidth: 2,
 									strokeDasharray: '5 4'
 								})
@@ -419,9 +421,9 @@ export function buildChartDefinition(
 		},
 		color: options.colorDomain
 			? {
-					scale: scaleSequential((value: number) => `hsl(${270 - value * 210}, 70%, 50%)`).domain(
-						options.colorDomain
-					)
+					scale: scaleSequential(spectrumInterpolator(options.spectrumColors))
+						.clamp(true)
+						.domain(options.colorDomain)
 				}
 			: {
 					domain: labels,

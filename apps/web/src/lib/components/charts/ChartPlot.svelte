@@ -13,6 +13,8 @@
 		type PlotSeries
 	} from './chart-registry';
 	import { paintLegendSwatch } from './legend-swatch';
+	import { theme } from '#lib/stores/theme.svelte.ts';
+	import { readSpectrumColors } from './chart-colors';
 	import { paintSpectrumCloud } from './spectrum-cloud';
 	import { renderCoverageSvg } from './coverage-marks';
 	import { plotObservations, positionedScenePoints } from './chart-observations';
@@ -60,7 +62,16 @@
 	let observations: ReturnType<typeof plotObservations> | null = null;
 	const definition = $derived.by(() => {
 		const currentSeries = series;
-		const currentOptions = options;
+		const currentOptions =
+			options.colorDomain && typeof document !== 'undefined'
+				? {
+						...options,
+						spectrumColors: readSpectrumColors(
+							getComputedStyle(document.documentElement),
+							theme.dark
+						)
+					}
+				: options;
 		const currentHidden = new Set(hidden);
 		const formatter = formatTooltip;
 		const normal = buildChartDefinition(
@@ -101,16 +112,32 @@
 			onSelect: select
 		});
 		let host: ReturnType<typeof mountChart<PlotPoint, number, number>> | null = null;
+		let size: { width: number; height: number } | null = null;
+		let currentOptions: ReturnType<typeof hostOptions>;
+		const render = () => {
+			if (!size) return;
+			const current = { ...currentOptions, ...size };
+			if (host) host.update(current);
+			else host = mountChart(node, current);
+		};
 		$effect(() => {
 			const current = hostOptions();
 			const currentObservations = observationData;
 			untrack(() => {
 				observations = currentObservations;
-				if (host) host.update(current);
-				else host = mountChart(node, current);
+				currentOptions = current;
+				render();
 			});
 		});
+		const observer = new ResizeObserver(([entry]) => {
+			const { width, height } = entry.contentRect;
+			if (width <= 0 || height <= 0 || (size?.width === width && size.height === height)) return;
+			size = { width, height };
+			render();
+		});
+		observer.observe(node);
 		return () => {
+			observer.disconnect();
 			cleanupRender();
 			contract?.destroy();
 			host?.destroy();
@@ -175,9 +202,21 @@
 				const button = buttons.find((button) => button.dataset.chartLegendValue === item.label);
 				const box = button?.getBoundingClientRect();
 				const target = points[0];
+				const mark = next.svg.querySelector<SVGGraphicsElement>(
+					`path[data-ts-key^="series-${index}-"], circle[data-ts-key^="series-${index}-"], circle[data-ts-key^="series-${index}:"]`
+				);
+				const appearance = mark ? getComputedStyle(mark) : null;
+				const stroked = appearance?.stroke !== 'none';
+				const color = appearance ? (stroked ? appearance.stroke : appearance.fill) : target?.color;
+				const opacity = appearance
+					? Number(appearance.opacity) *
+						Number(stroked ? appearance.strokeOpacity : appearance.fillOpacity)
+					: 1;
 				return {
 					label: item.label,
 					visible,
+					color,
+					opacity: visible ? opacity : 0,
 					count: finite.length,
 					min: finite.length ? finite.reduce((min, value) => Math.min(min, value), Infinity) : null,
 					max: finite.length

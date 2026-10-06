@@ -19,28 +19,28 @@
 	}
 </script>
 
-<div class="date-range-filter flex flex-wrap items-center gap-2">
-	<div class="flex items-center gap-2">
-		<label for="startDate" class="sr-only">Start Date</label>
+<div class="date-range-filter grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2">
+	<div class="min-w-0 flex-1">
+		<label for="startDate" class="text-muted-foreground mb-1 block text-xs">Start Date</label>
 		<input
 			id="startDate"
 			type="date"
 			value={startDate}
 			onchange={handleStartDateChange}
-			class="border-input bg-background text-foreground focus-visible:ring-ring min-w-[9.5rem] rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
+			class="border-input bg-background text-foreground focus-visible:ring-ring w-full min-w-0 rounded-md border px-2 py-1.5 text-sm focus-visible:ring-2 focus-visible:outline-none"
 		/>
 	</div>
 
-	<span class="text-muted-foreground text-sm">to</span>
+	<span class="text-muted-foreground pb-1.5 text-sm">to</span>
 
-	<div class="flex items-center gap-2">
-		<label for="endDate" class="sr-only">End Date</label>
+	<div class="min-w-0 flex-1">
+		<label for="endDate" class="text-muted-foreground mb-1 block text-xs">End Date</label>
 		<input
 			id="endDate"
 			type="date"
 			value={endDate}
 			onchange={handleEndDateChange}
-			class="border-input bg-background text-foreground focus-visible:ring-ring min-w-[9.5rem] rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:outline-none"
+			class="border-input bg-background text-foreground focus-visible:ring-ring w-full min-w-0 rounded-md border px-2 py-1.5 text-sm focus-visible:ring-2 focus-visible:outline-none"
 		/>
 	</div>
 </div>

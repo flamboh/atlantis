@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ChartLoading from '#lib/components/charts/ChartLoading.svelte';
 	import DragGrip from '#lib/components/common/DragGrip.svelte';
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import type { Snippet } from 'svelte';
@@ -79,10 +80,10 @@
 
 			<div
 				class={size === 'spectrum'
-					? 'border-border bg-background/60 relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border'
+					? 'chart-frame relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border [--chart-height:400px]'
 					: size === 'split'
-						? 'border-border bg-background/60 relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border xl:h-[320px] xl:min-h-[240px]'
-						: 'border-border bg-background/60 relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
+						? 'chart-frame relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border [--chart-height:640px] xl:h-[320px] xl:min-h-[240px] xl:[--chart-height:320px]'
+						: 'chart-frame relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
 				role="presentation"
 			>
 				{#if selectionUnavailableCopy}
@@ -93,9 +94,7 @@
 						{selectionUnavailableCopy}
 					</div>
 				{:else if loading}
-					<div class="text-muted-foreground flex h-full items-center justify-center">
-						{loadingCopy}
-					</div>
+					<ChartLoading label={loadingCopy} />
 				{:else if error}
 					<div class="text-destructive flex h-full items-center justify-center">{error}</div>
 				{:else if noMetrics}

@@ -40,7 +40,7 @@ test('file lookup validates input and Enter opens populated analysis', async ({ 
 	await timestamp.press('Enter');
 	await expect(page).toHaveURL(/\/netflow\/files\/202503010200\?dataset=playwright$/);
 	await expect(
-		page.getByRole('heading', { name: 'NetFlow File: nfcapd.202503010200' })
+		page.getByRole('heading', { name: 'nfcapd.202503010200', exact: true })
 	).toBeVisible();
 	await expectRendered(page.locator('main'), 4);
 	await expect(page.getByTestId('chart-axis').filter({ hasText: 'q' }).first()).toBeAttached();

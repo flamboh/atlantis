@@ -3,6 +3,9 @@
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
 	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
+	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
 	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
 	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
 	import BreakdownChart from '#lib/components/charts/BreakdownChart.svelte';
@@ -10,6 +13,7 @@
 	import PortCardinalityChart from '#lib/components/charts/PortCardinalityChart.svelte';
 	import CoverageStrip from '#lib/components/charts/CoverageStrip.svelte';
 	import { createFlowCharacteristicsData } from '#lib/components/charts/flow-characteristics-data.svelte.ts';
+	import CardLayoutControls from '#lib/components/common/CardLayoutControls.svelte';
 	import DragGrip from '#lib/components/common/DragGrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '#lib/components/netflow/constants.ts';
 	import { createNearViewportAttachment } from '#lib/components/netflow/near-viewport.ts';
@@ -115,6 +119,7 @@
 		spectrum: false,
 		coverage: false
 	});
+	let chartHeights = $state<Partial<Record<ChartCardId, number>>>({});
 	let draggedChartId = $state<ChartCardId | null>(null);
 	let dropTargetChartId = $state<ChartCardId | null>(null);
 	let dragPreviewElement: HTMLElement | null = null;
@@ -274,6 +279,24 @@
 		nextOrder.splice(draggedIndex, 1);
 		nextOrder.splice(targetIndex, 0, draggedId);
 		chartOrder = nextOrder;
+	}
+
+	function moveCardBy(chartId: ChartCardId, offset: number) {
+		const target = chartOrder[chartOrder.indexOf(chartId) + offset];
+		if (!target) return;
+		moveChartCard(chartId, target);
+		persistChartOrder();
+	}
+
+	function resizeCard(chartId: ChartCardId, offset: number) {
+		const frame = document.querySelector<HTMLElement>(`[data-chart-id="${chartId}"] .chart-frame`);
+		if (!frame) return;
+		const minimum = Number.parseFloat(getComputedStyle(frame).minHeight) || 160;
+		chartHeights[chartId] = Math.max(
+			minimum,
+			Math.min(1200, frame.getBoundingClientRect().height + offset)
+		);
+		frame.style.removeProperty('height');
 	}
 
 	function clearDragPreview() {
@@ -436,39 +459,55 @@
 	<meta name="description" content="NetFlow analysis and visualization tool" />
 </svelte:head>
 
-<main class="mx-auto flex max-w-[95vw] flex-col gap-2 px-4 py-4 sm:px-2 lg:px-4">
-	<h1 class="text-foreground px-1 text-2xl font-semibold">
-		{props.title ?? props.dataset}
-	</h1>
-	<DatasetTabs datasetId={props.dataset} active="dashboard" />
-
-	<PrimaryFilters
-		{startDate}
-		{endDate}
-		groupBy={selectedGroupBy}
-		routers={selectedRouters}
-		{direction}
-		showDirection={hasLocality}
-		measure={maadComputed ? measure : undefined}
-		maadIpVersion={ipVersion}
-		onStartDateChange={handleStartDateChange}
-		onEndDateChange={handleEndDateChange}
-		onGroupByChange={handleGroupByChange}
-		onRoutersChange={handleRoutersChange}
-		onDirectionChange={handleDirectionChange}
-		onMeasureChange={handleMeasureChange}
-		onMaadIpVersionChange={handleIpVersionChange}
-		onResetView={handleResetView}
-	/>
-	<div role="list" aria-label="Reorderable charts" class="flex flex-col gap-2">
-		{#each chartOrder as chartId (chartId)}
+<AnalysisLayout title={props.title ?? props.dataset} eyebrow="Dataset / Network analysis">
+	{#snippet navigation()}<DatasetTabs datasetId={props.dataset} active="dashboard" />{/snippet}
+	{#snippet toolbar()}
+		<DateRangeFilter
+			{startDate}
+			{endDate}
+			onStartDateChange={(date) => handleStartDateChange({ startDate: date })}
+			onEndDateChange={(date) => handleEndDateChange({ endDate: date })}
+		/>
+		<p class="filter-summary" aria-label="Selected filters">
+			<span>{availableSpectrumRouters.length}/{routers.length} sources</span><span
+				>{direction === 'all' ? 'All directions' : direction}</span
+			><span>{selectedGroupBy === 'date' ? 'Daily' : selectedGroupBy}</span>{#if maadComputed}<span
+					>MAAD IPv{ipVersion} · {measure}</span
+				>{/if}
+		</p>
+		<Button onclick={handleResetView} size="sm" variant="outline" class="reset-view ml-auto"
+			>Reset View</Button
+		>
+		{#if startDate > endDate}<p class="text-destructive w-full text-sm" role="alert">
+				Start Date must be on or before End Date.
+			</p>{/if}
+	{/snippet}
+	{#snippet rail()}
+		<PrimaryFilters
+			{startDate}
+			{endDate}
+			groupBy={selectedGroupBy}
+			routers={selectedRouters}
+			{direction}
+			showDirection={hasLocality}
+			measure={maadComputed ? measure : undefined}
+			maadIpVersion={ipVersion}
+			onGroupByChange={handleGroupByChange}
+			onRoutersChange={handleRoutersChange}
+			onDirectionChange={handleDirectionChange}
+			onMeasureChange={handleMeasureChange}
+			onMaadIpVersionChange={handleIpVersionChange}
+		/>
+	{/snippet}
+	<div role="list" aria-label="Reorderable charts" class="chart-panels flex flex-col gap-4">
+		{#each chartOrder as chartId, index (chartId)}
 			<section
 				role="listitem"
 				data-chart-card
 				data-chart-id={chartId}
 				data-chart-activated={activatedCharts[chartId]}
-				class={`rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
-				style={`min-height:${getCardMinimumHeight(chartId)}px`}
+				class={`relative rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
+				style={`${activatedCharts[chartId] ? '' : `min-height:${getCardMinimumHeight(chartId)}px;`}${chartHeights[chartId] ? `--chart-user-height:${chartHeights[chartId]}px` : ''}`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}
@@ -483,6 +522,16 @@
 					handleChartDrop(event, chartId);
 				}}
 			>
+				<CardLayoutControls
+					title={CHART_CARD_DETAILS[chartId].title}
+					first={index === 0}
+					last={index === chartOrder.length - 1}
+					resizable={activatedCharts[chartId] && chartId !== 'coverage'}
+					onMove={(offset) => moveCardBy(chartId, offset)}
+					onResize={(offset) => {
+						resizeCard(chartId, offset);
+					}}
+				/>
 				{#if !activatedCharts[chartId]}
 					<div
 						class="border-border bg-card text-card-foreground relative flex h-full flex-col rounded-lg border shadow-sm"
@@ -634,4 +683,4 @@
 			</section>
 		{/each}
 	</div>
-</main>
+</AnalysisLayout>

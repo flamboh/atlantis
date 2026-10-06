@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
@@ -39,15 +40,26 @@
 	}
 </script>
 
-<div class="mx-auto max-w-[95vw] px-4 py-8 sm:px-2 lg:px-4">
-	<h1 class="text-foreground mb-4 text-2xl">NetFlow Files</h1>
+<AnalysisLayout title="NetFlow Files" eyebrow="Capture lookup" railLabel="Lookup guide">
+	{#snippet toolbar()}<p class="text-muted-foreground text-sm">
+			Open a five-minute capture
+		</p>{/snippet}
+	{#snippet rail()}<h2 class="rail-heading">File lookup</h2>
+		<ol class="text-muted-foreground space-y-4 text-sm leading-6">
+			<li>1. Choose a dataset.</li>
+			<li>2. Enter the timestamp from the capture filename.</li>
+			<li>3. Inspect source summaries and MAAD analysis.</li>
+		</ol>
+		<p class="text-muted-foreground mt-6 text-xs leading-5">
+			The timestamp has twelve digits, in YYYYMMDDHHmm order.
+		</p>{/snippet}
 
-	<Card class="border-primary/20 bg-primary/5 mb-6 gap-3 rounded-lg border py-4 ring-0">
+	<Card class="border-border bg-card mb-6 gap-3 rounded-none border py-4 ring-0">
 		<CardHeader class="px-4">
 			<CardTitle><h2 class="text-lg font-semibold">Navigate to File by Timestamp</h2></CardTitle>
 		</CardHeader>
 		<CardContent class="px-4">
-			<div class="grid gap-3 lg:grid-cols-[14rem_minmax(0,1fr)_auto]">
+			<div class="grid max-w-3xl gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
 				<div>
 					<label for="dataset" class="text-foreground mb-1 block text-sm font-medium">Dataset</label
 					>
@@ -87,8 +99,8 @@
 						{error || ' '}
 					</div>
 				</div>
-				<div class="flex items-start lg:pt-6">
-					<Button onclick={navigateToFile} class="w-full px-4 lg:w-auto">Go to File</Button>
+				<div class="flex items-start sm:col-span-2">
+					<Button onclick={navigateToFile} class="w-full px-4 sm:w-auto">Go to File</Button>
 				</div>
 			</div>
 			<p class="text-muted-foreground mt-2 text-sm">
@@ -97,4 +109,4 @@
 			</p>
 		</CardContent>
 	</Card>
-</div>
+</AnalysisLayout>

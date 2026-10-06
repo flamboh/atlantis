@@ -1,15 +1,5 @@
 <script lang="ts">
-	import { buildNetflowFileHref } from '#lib/utils/netflow-file-navigation.ts';
-	import { Button } from '#lib/components/ui/button/index.ts';
-	import * as Card from '#lib/components/ui/card/index.ts';
-	import type { FlowDirection, MaadIpVersion, MaadMeasure } from '#lib/types/types.ts';
-
 	let {
-		dataset,
-		nextSlug,
-		direction,
-		ipVersion,
-		measure,
 		filename,
 		year,
 		month,
@@ -18,11 +8,6 @@
 		minute,
 		processedAt
 	}: {
-		dataset: string;
-		nextSlug: string;
-		direction: FlowDirection;
-		ipVersion: MaadIpVersion;
-		measure: MaadMeasure;
 		filename: string;
 		year: string;
 		month: string;
@@ -33,24 +18,11 @@
 	} = $props();
 </script>
 
-<div class="text-foreground mb-2 flex items-center justify-between text-2xl">
-	<h1>NetFlow File: {filename}</h1>
-	<Button
-		href={buildNetflowFileHref(nextSlug, dataset, direction, ipVersion, measure)}
-		size="sm"
-		class="w-24"
-	>
-		Next File
-	</Button>
+<div class="file-context">
+	<h2 class="rail-heading">File Information</h2>
+	<p class="text-muted-foreground text-xs">Filename</p>
+	<p class="font-mono text-xs break-all">{filename}</p>
+	<p>Date: {year}-{month}-{day}</p>
+	<p>Time: {hour}:{minute}</p>
+	<p class="text-xs">Processed in DB: {processedAt}</p>
 </div>
-
-<Card.Root size="sm" class="mb-2">
-	<Card.Header>
-		<Card.Title class="text-lg font-semibold"><h2>File Information</h2></Card.Title>
-	</Card.Header>
-	<Card.Content class="grid grid-cols-3 gap-2">
-		<div>Date: {year}-{month}-{day}</div>
-		<div>Time: {hour}:{minute}</div>
-		<div>Processed in DB: {processedAt}</div>
-	</Card.Content>
-</Card.Root>

@@ -16,9 +16,9 @@
 	const series = $derived([
 		{
 			label: 'f(alpha)',
-			color: 'rgb(147, 51, 234)',
+			color: 'var(--chart-series-7)',
 			strokeWidth: 2,
-			pointFill: 'rgb(147, 51, 234)',
+			pointFill: 'var(--chart-series-7)',
 			pointStroke: 'var(--card)',
 			pointStrokeWidth: 1,
 			radius: 3,
@@ -50,7 +50,7 @@
 				zero: false,
 				annotations: [
 					{
-						color: 'rgb(128,128,128)',
+						color: 'var(--chart-text-color)',
 						opacity: 0.5,
 						strokeWidth: 1,
 						dash: '5 5',

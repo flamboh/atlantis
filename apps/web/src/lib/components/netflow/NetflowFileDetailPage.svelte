@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { afterNavigate, goto } from '$app/navigation';
 	import { getNetflowFileDetailLoader } from '#lib/components/netflow/file-detail-loader.svelte.ts';
+	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import { buildNetflowFileHref } from '#lib/utils/netflow-file-navigation.ts';
 	import NetflowFileHeader from '#lib/components/netflow/NetflowFileHeader.svelte';
 	import NetflowFileLoadingSkeleton from '#lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '#lib/components/netflow/NetflowFileMessageCard.svelte';
@@ -127,39 +130,55 @@
 	});
 </script>
 
-<div class="mx-auto max-w-[95vw] px-2 py-2 sm:px-2 lg:px-4">
-	<NetflowFileHeader
-		dataset={data.dataset}
-		{nextSlug}
-		direction={data.direction}
-		ipVersion={data.ipVersion}
-		measure={data.measure}
-		filename={data.fileInfo.filename}
-		year={data.fileInfo.year}
-		month={data.fileInfo.month}
-		day={data.fileInfo.day}
-		hour={data.fileInfo.hour}
-		minute={data.fileInfo.minute}
-		processedAt={loader?.processedAt
-			? formatTimestampAsPST(Date.parse(loader.processedAt))
-			: loader?.loading
-				? 'Loading...'
-				: 'N/A'}
-	/>
+<svelte:head><title>{data.fileInfo.filename} · ATLANTIS</title></svelte:head>
 
-	<div class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-		<div class="flex items-center gap-2">
-			<span class="text-foreground text-sm font-medium">MAAD address family:</span>
-			<MaadIpVersionFilter
-				ipVersion={data.ipVersion}
-				onIpVersionChange={handleMaadIpVersionChange}
-			/>
+<AnalysisLayout title={data.fileInfo.filename} eyebrow="NetFlow File:" railLabel="File options">
+	{#snippet toolbar()}<p class="text-muted-foreground text-xs">
+			{data.dataset} · {data.fileInfo.year}-{data.fileInfo.month}-{data.fileInfo.day} · {data
+				.fileInfo.hour}:{data.fileInfo.minute}
+		</p>
+		<p class="filter-summary"><span>MAAD IPv{data.ipVersion} · {maadMeasure}</span></p>
+		<Button
+			href={buildNetflowFileHref(
+				nextSlug,
+				data.dataset,
+				data.direction,
+				data.ipVersion,
+				data.measure
+			)}
+			size="sm"
+			variant="outline"
+			class="ml-auto">Next File</Button
+		>{/snippet}
+	{#snippet rail()}
+		<NetflowFileHeader
+			filename={data.fileInfo.filename}
+			year={data.fileInfo.year}
+			month={data.fileInfo.month}
+			day={data.fileInfo.day}
+			hour={data.fileInfo.hour}
+			minute={data.fileInfo.minute}
+			processedAt={loader?.processedAt
+				? formatTimestampAsPST(Date.parse(loader.processedAt))
+				: loader?.loading
+					? 'Loading...'
+					: 'N/A'}
+		/>
+
+		<div class="file-filters mt-5 space-y-4 border-t pt-4">
+			<div class="flex flex-col items-stretch gap-2">
+				<span class="text-foreground text-sm font-medium">MAAD address family:</span>
+				<MaadIpVersionFilter
+					ipVersion={data.ipVersion}
+					onIpVersionChange={handleMaadIpVersionChange}
+				/>
+			</div>
+			<div class="flex flex-col items-stretch gap-2">
+				<span class="text-foreground text-sm font-medium">MAAD measure:</span>
+				<MaadMeasureFilter measure={maadMeasure} onMeasureChange={handleMaadMeasureChange} />
+			</div>
 		</div>
-		<div class="flex items-center gap-2">
-			<span class="text-foreground text-sm font-medium">MAAD measure:</span>
-			<MaadMeasureFilter measure={maadMeasure} onMeasureChange={handleMaadMeasureChange} />
-		</div>
-	</div>
+	{/snippet}
 
 	{#if loader?.error && !loader.hasRows}
 		<NetflowFileMessageCard
@@ -195,4 +214,4 @@
 			{/each}
 		</div>
 	{/if}
-</div>
+</AnalysisLayout>

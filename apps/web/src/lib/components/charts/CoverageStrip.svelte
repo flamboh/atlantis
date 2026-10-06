@@ -89,7 +89,7 @@
 	const series = $derived<PlotSeries[]>(
 		visibleTimelines.map((timeline, index) => ({
 			label: timeline.sourceId,
-			color: 'rgb(16,185,129)',
+			color: 'var(--success)',
 			data: timeline.buckets.map((bucket) => ({
 				x: bucket.bucketStart,
 				x2: bucket.bucketEnd,
