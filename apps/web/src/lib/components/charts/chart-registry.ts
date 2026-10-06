@@ -12,6 +12,8 @@ import { controlledSignal } from '@tanstack/charts/interaction/signal';
 import { scaleLinear } from '@tanstack/charts/scales/linear';
 import { scaleSequential } from 'd3-scale';
 import type { ChartMark, ChartPoint } from '@tanstack/charts';
+import { temporalTicks } from './temporal-ticks';
+import { temporalGrid } from './temporal-grid';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
 
@@ -273,10 +275,19 @@ export function buildChartDefinition(
 			? scaleLinear
 			: scaleLinear().domain([minY, maxY === minY ? maxY + 1 : maxY]);
 	const labels = series.map((item) => item.label);
-	const labeledTicks = options.xTicks?.filter(
-		(value) => !options.xFormat || options.xFormat(value)
-	);
-	const xTicks = labeledTicks?.length ? labeledTicks : options.xTicks;
+	const formatX = options.xFormat;
+	const timeAxis = Boolean(options.xTicks && formatX);
+	const xTicks =
+		options.xTicks && formatX
+			? temporalTicks(options.xTicks, formatX, options.compact)
+			: options.xTicks;
+	if (timeAxis && options.kind !== 'coverage')
+		marks.unshift(
+			temporalGrid(
+				options.xTicks ?? [],
+				new Set(temporalTicks(options.xTicks ?? [], formatX ?? String))
+			)
+		);
 	const legend = interactiveColorLegend({
 		placement: 'top',
 		itemWidth: 130,
@@ -304,7 +315,7 @@ export function buildChartDefinition(
 		scales: {
 			x: {
 				scale: scaleLinear().domain(xDomain),
-				grid: options.kind === 'coverage' ? false : { strokeOpacity: 0.2 },
+				grid: options.kind === 'coverage' || timeAxis ? false : { strokeOpacity: 1 },
 				axis:
 					options.kind === 'coverage'
 						? false
@@ -312,9 +323,12 @@ export function buildChartDefinition(
 								label: options.compact ? undefined : options.xTitle,
 								ticks: {
 									...(xTicks ? { values: xTicks } : { count: options.compact ? 4 : 8 }),
-									format: options.xFormat
+									format: formatX
 								},
-								tickLabels: { rotate: options.compact ? 0 : -30, thin: { minGap: 8 } }
+								tickLabels: {
+									rotate: timeAxis && !options.compact ? -45 : 0,
+									thin: timeAxis ? false : { minGap: 8 }
+								}
 							}
 			},
 			y: {
