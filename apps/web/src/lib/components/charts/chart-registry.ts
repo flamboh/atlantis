@@ -12,6 +12,7 @@ import { controlledSignal } from '@tanstack/charts/interaction/signal';
 import { scaleLinear } from '@tanstack/charts/scales/linear';
 import { scaleSequential } from 'd3-scale';
 import type { ChartMark, ChartPoint } from '@tanstack/charts';
+import { spectrumCloud } from './spectrum-cloud';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
 
@@ -171,11 +172,13 @@ export function buildChartDefinition(
 		let displayedData = item.data;
 		if (options.kind === 'scatter') {
 			marks.push(
-				dot(item.data, {
-					...channels,
-					color: options.colorDomain ? (point) => point.f ?? 0 : channels.color,
-					r: item.radius ?? 1
-				})
+				options.colorDomain && item.data.length > 2048
+					? spectrumCloud(item.data, id, item.label)
+					: dot(item.data, {
+							...channels,
+							color: options.colorDomain ? (point) => point.f ?? 0 : channels.color,
+							r: item.radius ?? 1
+						})
 			);
 		} else if (options.kind === 'coverage') {
 			const track = options.xDomain ?? plotBounds(series);
