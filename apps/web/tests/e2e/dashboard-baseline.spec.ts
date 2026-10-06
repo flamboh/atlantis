@@ -67,8 +67,8 @@ test('traffic metrics and family controls change the rendered values and series'
 	}
 	await card.getByRole('button', { name: 'Select All', exact: true }).click();
 	await expect(state).toHaveAttribute('data-series-count', '12');
-	await card.getByRole('button', { name: 'NetFlow metric series', exact: true }).click();
-	const seriesControls = page.getByRole('dialog', { name: 'NetFlow metric series', exact: true });
+	await card.getByRole('button', { name: 'NetFlow metrics', exact: true }).click();
+	const seriesControls = page.getByRole('dialog', { name: 'NetFlow metrics', exact: true });
 	await expect(seriesControls.getByRole('checkbox')).toHaveCount(12);
 	for (const checkbox of await seriesControls.getByRole('checkbox').all()) {
 		await checkbox.uncheck();

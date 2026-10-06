@@ -130,13 +130,13 @@
 			/>
 		</div>
 		<ControlPopover
-			label="NetFlow metric series"
-			summary={`Series · ${dataOptions.filter((option) => option.checked).length}/12`}
+			label="NetFlow metrics"
+			summary={`Metrics · ${dataOptions.filter((option) => option.checked).length}/12`}
 		>
 			<div
 				class="metric-matrix border-border bg-muted/20 max-w-xl rounded-md border"
 				role="group"
-				aria-label="NetFlow metric series"
+				aria-label="NetFlow metrics"
 			>
 				<div class="grid grid-cols-[minmax(4rem,0.95fr)_repeat(4,minmax(0,1fr))]">
 					<div class="text-muted-foreground px-2 py-2 text-xs font-medium">Metric</div>

@@ -185,10 +185,10 @@ for (const width of [390, 1280]) {
 		await page.goto(FIXTURE_DASHBOARD);
 		const card = page.locator('[data-chart-id="dashboard"]');
 		const state = (await expectRendered(card)).first();
-		const trigger = card.getByRole('button', { name: 'NetFlow metric series', exact: true });
+		const trigger = card.getByRole('button', { name: 'NetFlow metrics', exact: true });
 		await trigger.focus();
 		await page.keyboard.press('Enter');
-		const dialog = page.getByRole('dialog', { name: 'NetFlow metric series', exact: true });
+		const dialog = page.getByRole('dialog', { name: 'NetFlow metrics', exact: true });
 		await expect(dialog.getByRole('checkbox')).toHaveCount(12);
 		await dialog.getByRole('checkbox', { name: 'Flows TCP', exact: true }).uncheck();
 		await dialog.getByRole('checkbox', { name: 'Bytes UDP', exact: true }).check();
@@ -204,7 +204,7 @@ for (const width of [390, 1280]) {
 			dialog.getByRole('checkbox', { name: 'Flows TCP', exact: true })
 		).not.toBeChecked();
 		await expect(dialog.getByRole('checkbox', { name: 'Bytes UDP', exact: true })).toBeChecked();
-		await dialog.getByRole('button', { name: 'Close netflow metric series', exact: true }).click();
+		await dialog.getByRole('button', { name: 'Close netflow metrics', exact: true }).click();
 		await expect(trigger).toBeFocused();
 	});
 }
