@@ -23,7 +23,7 @@ Keep `data-chart-id`, `data-chart-activated`, `data-chart-sentinel`, deferred-ca
 | `data-testid="chart-card-state"`       | Card lifecycle: `loading`, `error`, `no-metrics`, `empty`, `unavailable`, or `ready`. Card `ready` means its content branch is active; the renderer summary proves finite data actually rendered.                                                                                                          |
 | `data-testid="coverage-strip-card"`    | Coverage card retains its test ID and publishes `loading`, `error`, `empty`, or `ready`.                                                                                                                                                                                                                   |
 
-`chart-contract.ts` publishes a renderer-independent DOM summary with memory proportional to series and axes. `chartjs-contract.ts` is the temporary Chart.js adapter. Replace that adapter in the migration and call the publisher from the new renderer after marks have been drawn. Do not synthesize readiness solely from an API response or from a mounted graphics element. The existing spectrum tooltip and loading/empty/unavailable copy remain user-facing contracts.
+`chart-contract.ts` publishes a renderer-independent DOM summary with memory proportional to series and axes. `ChartPlot.svelte` publishes from the official TanStack Svelte adapter after layout and rendering. All charts use SVG after comparing SVG and canvas costs on real v5 points. Do not synthesize readiness solely from an API response or from a mounted graphics element. The existing spectrum tooltip and loading/empty/unavailable copy remain user-facing contracts.
 
 ## Numerical and interaction assertions
 
@@ -31,7 +31,7 @@ The tests verify TCP flows of 100 across both families, 80 for IPv4, 20 for IPv6
 
 Preserve date/grouping/direction/MAAD URL state, history navigation, file context on drilldown and next-file links, brush drilldown, legend visibility, chart order persistence, deferred activation, cached-state recovery, and cancellation of obsolete requests. Missing and unknown coverage must retain the data contract; do not replace null observations with zero in the chart adapter.
 
-Some baseline behavior needs later product work: sources and local metric selections reset on reload, some unknown windows produce blank plot areas, and charts currently lack keyboard equivalents for pointer drilldown and legends. The suite verifies useful behavior without requiring those rough edges to remain. Improve them with new assertions when their fixes land.
+The migration regressions cover hovered-bucket totals, singleton positioning, keyboard legend toggles and drilldown, keyboard range selection with cancellation, and a dense spectrum with one accessible interaction target. Empty selections explain why no data is shown. Sources and local metric selections still reset on reload; those choices remain for the redesign.
 
 ## Coverage limits
 
