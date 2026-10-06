@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { activateChart, expectRendered } from './chart-helpers';
 
 test('time axes keep midnight and noon labels with bounded grid geometry', async ({ page }) => {
@@ -74,3 +74,54 @@ for (const mode of ['light', 'dark']) {
 		await expect(structure.locator('text').filter({ hasText: /^4\.1$/ })).toBeAttached();
 	});
 }
+
+async function expectLocalClipPaths(page: Page) {
+	const clips = await page.getByTestId('chart-surface').evaluateAll((surfaces) =>
+		surfaces.flatMap((surface) =>
+			Array.from(surface.querySelectorAll('g[clip-path]')).map((group) => {
+				const id = group.getAttribute('clip-path')?.match(/^url\(#(.+)\)$/)?.[1];
+				const local = Array.from(surface.querySelectorAll('clipPath')).find(
+					(clip) => clip.id === id
+				);
+				return {
+					id,
+					local: Boolean(local),
+					resolvedLocally: Boolean(local && document.getElementById(id ?? '')?.isSameNode(local))
+				};
+			})
+		)
+	);
+	expect(clips.length).toBeGreaterThan(1);
+	expect(new Set(clips.map((clip) => clip.id)).size).toBe(clips.length);
+	for (const clip of clips) {
+		expect(clip.local).toBe(true);
+		expect(clip.resolvedLocally).toBe(true);
+	}
+}
+
+test('each dashboard and file chart resolves its own clipping rectangle', async ({ page }) => {
+	await page.goto('/datasets/playwright?startDate=2025-03-01&endDate=2025-03-02&groupBy=10min');
+	for (const id of [
+		'dashboard',
+		'characteristics',
+		'ports',
+		'ip',
+		'protocol',
+		'dimensions',
+		'spectrum',
+		'coverage'
+	]) {
+		const card = await activateChart(page, id);
+		await expectRendered(card, id === 'characteristics' ? 2 : 1);
+	}
+	await expectLocalClipPaths(page);
+	await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+	await expect(page.locator('html')).toHaveClass(/dark/);
+	await expectLocalClipPaths(page);
+	await page.goto('/netflow/files/202503010200?dataset=playwright');
+	await expect(page.getByTestId('chart-surface').first()).toHaveAttribute(
+		'data-chart-rendered',
+		'true'
+	);
+	await expectLocalClipPaths(page);
+});

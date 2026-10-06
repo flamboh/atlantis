@@ -42,6 +42,7 @@
 		emptyCopy?: string;
 		retainEmptySurface?: boolean;
 	} = $props();
+	const generatedId = $props.id();
 	const hidden = new SvelteSet<string>();
 	let context: ChartRenderContext<PlotPoint, number, number> | null = null;
 	let contract: ReturnType<typeof createChartContract> | null = null;
@@ -92,6 +93,7 @@
 	function attachPlot(node: HTMLDivElement) {
 		const hostOptions = () => ({
 			definition,
+			idPrefix: `atlantis-chart-${generatedId.replaceAll(/[^a-zA-Z0-9_-]/g, '')}`,
 			ariaLabel: name,
 			renderSvg: options.kind === 'coverage' ? renderCoverageSvg : undefined,
 			onRender: publish,
