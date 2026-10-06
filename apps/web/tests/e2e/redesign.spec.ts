@@ -144,6 +144,39 @@ test('collapsed desktop rail preserves sources and URL controls', async ({ page 
 	await expectRendered(page.locator('[data-chart-id="dashboard"]'));
 });
 
+test('Escape cancels the first filter sheet open while its module is loading', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 900 });
+	await page.goto(FIXTURE_DASHBOARD);
+	await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+	let release!: () => void;
+	let requested!: () => void;
+	const pending = new Promise<void>((resolve) => (release = resolve));
+	const started = new Promise<void>((resolve) => (requested = resolve));
+	await page.route('**/_app/immutable/**/*.js', async (route) => {
+		requested();
+		await pending;
+		await route.continue();
+	});
+	const trigger = page.getByRole('button', { name: 'Open filters', exact: true });
+	try {
+		await trigger.focus();
+		await trigger.press('Enter');
+		await started;
+		await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+		await page.keyboard.press('Escape');
+		await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+	} finally {
+		release();
+	}
+	await page.waitForLoadState('networkidle');
+	await expect(page.getByRole('dialog', { name: 'Filters', exact: true })).not.toBeAttached();
+	await expect(trigger).toBeFocused();
+	await trigger.click();
+	await expect(page.getByRole('dialog', { name: 'Filters', exact: true })).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(trigger).toBeFocused();
+});
+
 for (const width of [390, 1280]) {
 	test(`metric disclosure supports independent selections and focus return at ${width}px`, async ({
 		page

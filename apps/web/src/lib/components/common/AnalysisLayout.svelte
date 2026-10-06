@@ -34,6 +34,9 @@
 </script>
 
 <svelte:window
+	onkeydown={(event) => {
+		if (sheetOpen && event.key === 'Escape' && !event.defaultPrevented) sheetOpen = false;
+	}}
 	onresize={() => {
 		if (desktop.current) sheetOpen = false;
 	}}
