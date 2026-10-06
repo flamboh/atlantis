@@ -2,41 +2,68 @@ import { expect, test } from '@playwright/test';
 import type { NetflowFileDetailsResponse } from '../../src/lib/types/types';
 import { expectRendered, FIXTURE_DASHBOARD } from './chart-helpers';
 
-test('keyboard layout controls reorder persistently and resize the rendered plot', async ({
-	page
-}) => {
-	await page.goto(FIXTURE_DASHBOARD);
-	const card = page.locator('[data-chart-id="dashboard"]');
-	await expectRendered(card);
-	const frame = card.locator('.chart-frame');
-	const initial = await frame.evaluate((node) => node.getBoundingClientRect().height);
-	await page.getByRole('button', { name: 'Make Traffic Overview taller' }).focus();
-	await page.keyboard.press('Enter');
-	await expect
-		.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
-		.toBe(initial + 80);
-	await expectRendered(card);
-	await page.getByRole('button', { name: 'Make Traffic Overview shorter' }).focus();
-	await page.keyboard.press('Enter');
-	await expect
-		.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
-		.toBe(initial);
-	await page.getByRole('button', { name: 'Move Traffic Overview down' }).focus();
-	await page.keyboard.press('Enter');
-	await expect(page.locator('[data-chart-id]').first()).toHaveAttribute(
-		'data-chart-id',
-		'characteristics'
-	);
-	await page.reload();
-	await expect(page.locator('[data-chart-id]').first()).toHaveAttribute(
-		'data-chart-id',
-		'characteristics'
-	);
-	await expect(page.locator('[data-chart-id="characteristics"]')).toHaveAttribute(
-		'data-chart-activated',
-		'true'
-	);
-});
+for (const width of [390, 1280]) {
+	test(`keyboard layout controls preserve focus, order and plot size at ${width}px`, async ({
+		page
+	}) => {
+		await page.setViewportSize({ width, height: 900 });
+		await page.goto(FIXTURE_DASHBOARD);
+		const card = page.locator('[data-chart-id="dashboard"]');
+		await expectRendered(card);
+		const frame = card.locator('.chart-frame');
+		const initial = await frame.evaluate((node) => node.getBoundingClientRect().height);
+		await page.getByRole('button', { name: 'Make Traffic Overview taller' }).focus();
+		await page.keyboard.press('Enter');
+		await expect
+			.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
+			.toBe(initial + 80);
+		await expectRendered(card);
+		await page.getByRole('button', { name: 'Make Traffic Overview shorter' }).focus();
+		await page.keyboard.press('Enter');
+		await expect
+			.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
+			.toBe(initial);
+		await page.getByRole('button', { name: 'Move Traffic Overview down' }).focus();
+		await page.keyboard.press('Enter');
+		await expect(page.locator('[data-chart-id]').first()).toHaveAttribute(
+			'data-chart-id',
+			'characteristics'
+		);
+		await expect(
+			page.getByRole('button', { name: 'Move Traffic Overview down', exact: true })
+		).toBeFocused();
+		await page.reload();
+		await expect(page.locator('[data-chart-id]').first()).toHaveAttribute(
+			'data-chart-id',
+			'characteristics'
+		);
+		await expect(page.locator('[data-chart-id="characteristics"]')).toHaveAttribute(
+			'data-chart-activated',
+			'true'
+		);
+		const down = card.getByRole('button', { name: 'Move Traffic Overview down', exact: true });
+		const up = card.getByRole('button', { name: 'Move Traffic Overview up', exact: true });
+		await down.focus();
+		for (let position = 2; position < 8; position++) {
+			await page.keyboard.press('Enter');
+			await expect(page.locator('[data-chart-card]').nth(position)).toHaveAttribute(
+				'data-chart-id',
+				'dashboard'
+			);
+			await expect(position === 7 ? up : down).toBeFocused();
+		}
+		await expect(down).toBeDisabled();
+		for (let position = 6; position >= 0; position--) {
+			await page.keyboard.press('Enter');
+			await expect(page.locator('[data-chart-card]').nth(position)).toHaveAttribute(
+				'data-chart-id',
+				'dashboard'
+			);
+			await expect(position === 0 ? down : up).toBeFocused();
+		}
+		await expect(up).toBeDisabled();
+	});
+}
 
 for (const width of [390, 768, 1280, 1920]) {
 	test(`file summary and analysis labels fit at ${width}px`, async ({ page }) => {
