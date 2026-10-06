@@ -5,11 +5,13 @@
 		first,
 		last,
 		onMove,
-		onResize
+		onResize,
+		resizable = true
 	}: {
 		title: string;
 		first: boolean;
 		last: boolean;
+		resizable?: boolean;
 		onMove: (offset: number) => void;
 		onResize: (offset: number) => void;
 	} = $props();
@@ -39,20 +41,21 @@
 			onclick={() => onMove(1)}
 			aria-label={`Move ${title} down`}>Move down</Button
 		>
-		<div class="border-border my-1 border-t"></div>
-		<Button
-			variant="ghost"
-			size="sm"
-			class="justify-start"
-			onclick={() => onResize(-80)}
-			aria-label={`Make ${title} shorter`}>Shorter plot</Button
-		>
-		<Button
-			variant="ghost"
-			size="sm"
-			class="justify-start"
-			onclick={() => onResize(80)}
-			aria-label={`Make ${title} taller`}>Taller plot</Button
-		>
+		{#if resizable}<div class="border-border my-1 border-t"></div>
+			<Button
+				variant="ghost"
+				size="sm"
+				class="justify-start"
+				onclick={() => onResize(-80)}
+				aria-label={`Make ${title} shorter`}>Shorter plot</Button
+			>
+			<Button
+				variant="ghost"
+				size="sm"
+				class="justify-start"
+				onclick={() => onResize(80)}
+				aria-label={`Make ${title} taller`}>Taller plot</Button
+			>
+		{/if}
 	</div>
 </details>

@@ -9,7 +9,7 @@
 	const series = $derived([
 		{
 			label: 'tau(q)',
-			color: 'rgb(59,130,246)',
+			color: 'var(--chart-series-1)',
 			data: points.map((point) => ({ x: point.q, y: point.tau, sd: point.sd }))
 		}
 	]);
@@ -18,21 +18,21 @@
 			.filter((point) => Number.isFinite(point.sd))
 			.flatMap((point) => [
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'var(--chart-text-color)',
 					data: [
 						{ x: point.q, y: point.tau - point.sd },
 						{ x: point.q, y: point.tau + point.sd }
 					]
 				},
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'var(--chart-text-color)',
 					data: [
 						{ x: point.q - 0.02, y: point.tau - point.sd },
 						{ x: point.q + 0.02, y: point.tau - point.sd }
 					]
 				},
 				{
-					color: 'rgba(128,128,128,0.7)',
+					color: 'var(--chart-text-color)',
 					data: [
 						{ x: point.q - 0.02, y: point.tau + point.sd },
 						{ x: point.q + 0.02, y: point.tau + point.sd }

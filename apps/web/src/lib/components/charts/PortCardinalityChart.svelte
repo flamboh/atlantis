@@ -36,10 +36,10 @@
 		'5min': '5m'
 	};
 	const PORT_COLORS: Record<`${PortSide}-${PortRange}`, string> = {
-		'source-low': '#2563eb',
-		'source-high': '#0891b2',
-		'destination-low': '#d97706',
-		'destination-high': '#dc2626'
+		'source-low': 'var(--chart-series-1)',
+		'source-high': 'var(--chart-series-3)',
+		'destination-low': 'var(--chart-series-2)',
+		'destination-high': 'var(--chart-series-4)'
 	};
 	const PORT_OPTIONS: Array<{ side: PortSide; range: PortRange; label: string }> = [
 		{ side: 'source', range: 'low', label: 'Source ports 0-1023' },

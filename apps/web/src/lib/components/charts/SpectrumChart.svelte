@@ -16,7 +16,7 @@
 	const series = $derived([
 		{
 			label: 'f(alpha)',
-			color: 'rgb(147, 51, 234)',
+			color: 'var(--chart-series-1)',
 			radius: 3,
 			data: points.map((point) => ({ x: point.alpha, y: point.f }))
 		}
@@ -46,7 +46,7 @@
 				zero: false,
 				annotations: [
 					{
-						color: 'rgba(128,128,128,0.5)',
+						color: 'var(--chart-text-color)',
 						dash: '5 5',
 						data: [
 							{ x: bounds.min, y: bounds.min },

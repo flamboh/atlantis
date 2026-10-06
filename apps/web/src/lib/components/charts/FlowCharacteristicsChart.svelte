@@ -57,7 +57,7 @@
 				observationFamily,
 				'averageDurationMs'
 			),
-			color: '#2563eb',
+			color: 'var(--chart-series-1)',
 			coverage: observationCoverage
 		}
 	]);
@@ -70,7 +70,7 @@
 				observationFamily,
 				'averageMinTtl'
 			),
-			color: '#7c3aed',
+			color: 'var(--chart-series-7)',
 			coverage: observationCoverage
 		},
 		{
@@ -81,7 +81,7 @@
 				observationFamily,
 				'averageMaxTtl'
 			),
-			color: '#db2777',
+			color: 'var(--chart-series-4)',
 			coverage: observationCoverage
 		}
 	]);

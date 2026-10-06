@@ -506,9 +506,9 @@
 					title={CHART_CARD_DETAILS[chartId].title}
 					first={index === 0}
 					last={index === chartOrder.length - 1}
+					resizable={activatedCharts[chartId] && chartId !== 'coverage'}
 					onMove={(offset) => moveCardBy(chartId, offset)}
 					onResize={(offset) => {
-						activateChart(chartId);
 						resizeCard(chartId, offset);
 					}}
 				/>
