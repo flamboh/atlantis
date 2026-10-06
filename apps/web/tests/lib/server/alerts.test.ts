@@ -311,9 +311,11 @@ describe('alerts server helper', () => {
 				window_start, address, alpha, tail, rank, r2, prefix_levels
 			) VALUES (?, ?, 3.6, 'high', 1, 0.8, 24)
 		`);
-		for (let index = 2; index < 600; index += 1) {
-			insertAlert.run(1_700_000_000 + index * 300, `address-${index}`);
-		}
+		db.transaction(() => {
+			for (let index = 2; index < 600; index += 1) {
+				insertAlert.run(1_700_000_000 + index * 300, `address-${index}`);
+			}
+		})();
 		db.close();
 		vi.stubEnv('LOCAL_SQLITE_PATH', fixture.netflowPath);
 		const alerts = await loadAlertsModule();

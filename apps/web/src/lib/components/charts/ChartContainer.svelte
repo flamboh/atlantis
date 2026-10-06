@@ -767,7 +767,8 @@
 	onmouseup={finishRangeSelection}
 	onmouseleave={finishRangeSelection}
 >
-	<canvas bind:this={chartCanvas} class="h-full w-full"></canvas>
+	<canvas bind:this={chartCanvas} class="h-full w-full" aria-label="Traffic overview chart"
+	></canvas>
 	{#if rangeDrag.isDraggingRange && selectionWidth >= MIN_DRAG_PIXELS}
 		<div
 			class="border-muted-foreground/70 bg-muted/20 pointer-events-none absolute border"

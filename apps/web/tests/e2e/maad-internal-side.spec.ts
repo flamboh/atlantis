@@ -89,5 +89,5 @@ test('explains the file view side the product did not compute', async ({ page })
 		'MAAD is not computed for internal addresses. The source addresses are internal for egress traffic.'
 	);
 	await expect(unavailable).toHaveCount(2);
-	await expect(page.locator('canvas').first()).toBeVisible();
+	await expect(page.getByTestId('chart-surface').first()).toBeVisible();
 });

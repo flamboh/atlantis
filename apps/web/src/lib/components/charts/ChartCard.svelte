@@ -60,7 +60,22 @@
 	} = $props();
 </script>
 
-<Card.Root size="sm" class="gap-0 py-0">
+<Card.Root
+	size="sm"
+	class="gap-0 py-0"
+	data-testid="chart-card-state"
+	data-state={unavailableCopy || selectionUnavailableCopy
+		? 'unavailable'
+		: loading
+			? 'loading'
+			: error
+				? 'error'
+				: noMetrics
+					? 'no-metrics'
+					: empty
+						? 'empty'
+						: 'ready'}
+>
 	<Card.Header
 		class="border-border relative cursor-grab border-b py-4 select-none active:cursor-grabbing"
 		draggable="true"

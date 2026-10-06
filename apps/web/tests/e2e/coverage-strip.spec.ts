@@ -11,12 +11,12 @@ test('coverage hover does not resize the chart card', async ({ page }) => {
 	const strip = page.getByTestId('coverage-strip');
 	await expect(card).toBeVisible();
 	await expect(strip).toBeVisible();
-	await expect(strip.locator('canvas')).toBeVisible();
+	await expect(strip.getByTestId('chart-surface')).toBeVisible();
 
 	const heightBeforeHover = await card.evaluate(
 		(element) => element.getBoundingClientRect().height
 	);
-	await strip.locator('canvas').hover({ position: { x: 150, y: 10 } });
+	await strip.getByTestId('chart-surface').hover({ position: { x: 150, y: 10 } });
 	const heightAfterHover = await card.evaluate((element) => element.getBoundingClientRect().height);
 
 	expect(heightAfterHover).toBe(heightBeforeHover);

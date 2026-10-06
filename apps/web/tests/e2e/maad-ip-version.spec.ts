@@ -28,7 +28,7 @@ test('keeps the IPv6 MAAD selection across drilldown, reload, and next file', as
 
 	const dashboard = page.locator('[data-chart-id="dashboard"]');
 	await dashboard.scrollIntoViewIfNeeded();
-	await dashboard.locator('canvas').first().click();
+	await dashboard.getByTestId('chart-surface').first().click();
 	await expect(page).toHaveURL(/\/netflow\/files\/\d{12}\?/);
 	const fileUrl = new URL(page.url());
 	expect(fileUrl.searchParams.get('dataset')).toBe('playwright');
