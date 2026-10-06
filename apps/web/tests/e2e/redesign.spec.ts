@@ -8,9 +8,6 @@ test('keyboard layout controls reorder persistently and resize the rendered plot
 	await page.goto(FIXTURE_DASHBOARD);
 	const card = page.locator('[data-chart-id="dashboard"]');
 	await expectRendered(card);
-	const layout = card.locator('summary');
-	await layout.focus();
-	await page.keyboard.press('Enter');
 	const frame = card.locator('.chart-frame');
 	const initial = await frame.evaluate((node) => node.getBoundingClientRect().height);
 	await page.getByRole('button', { name: 'Make Traffic Overview taller' }).focus();

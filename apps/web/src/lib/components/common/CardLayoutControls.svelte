@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { ArrowUp, ArrowDown, Minus, Plus } from '@lucide/svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	let {
 		title,
@@ -17,45 +18,37 @@
 	} = $props();
 </script>
 
-<details class="card-layout absolute top-2 right-3 z-10">
-	<summary
-		class="text-muted-foreground hover:text-foreground cursor-pointer rounded px-2 py-1 text-xs"
-		aria-label={`Layout for ${title}`}>Layout</summary
+<div class="card-actions" role="group" aria-label={`Arrange ${title}`}>
+	<Button
+		variant="ghost"
+		size="icon-sm"
+		disabled={first}
+		onclick={() => onMove(-1)}
+		aria-label={`Move ${title} up`}
+		title="Move up"><ArrowUp size={15} /></Button
 	>
-	<div
-		class="border-border bg-popover absolute right-0 mt-1 flex w-44 flex-col gap-1 rounded-md border p-1 shadow-(--elevation-popover)"
+	<Button
+		variant="ghost"
+		size="icon-sm"
+		disabled={last}
+		onclick={() => onMove(1)}
+		aria-label={`Move ${title} down`}
+		title="Move down"><ArrowDown size={15} /></Button
 	>
+	{#if resizable}
 		<Button
 			variant="ghost"
-			size="sm"
-			class="justify-start"
-			disabled={first}
-			onclick={() => onMove(-1)}
-			aria-label={`Move ${title} up`}>Move up</Button
+			size="icon-sm"
+			onclick={() => onResize(-80)}
+			aria-label={`Make ${title} shorter`}
+			title="Shorter plot"><Minus size={15} /></Button
 		>
 		<Button
 			variant="ghost"
-			size="sm"
-			class="justify-start"
-			disabled={last}
-			onclick={() => onMove(1)}
-			aria-label={`Move ${title} down`}>Move down</Button
+			size="icon-sm"
+			onclick={() => onResize(80)}
+			aria-label={`Make ${title} taller`}
+			title="Taller plot"><Plus size={15} /></Button
 		>
-		{#if resizable}<div class="border-border my-1 border-t"></div>
-			<Button
-				variant="ghost"
-				size="sm"
-				class="justify-start"
-				onclick={() => onResize(-80)}
-				aria-label={`Make ${title} shorter`}>Shorter plot</Button
-			>
-			<Button
-				variant="ghost"
-				size="sm"
-				class="justify-start"
-				onclick={() => onResize(80)}
-				aria-label={`Make ${title} taller`}>Taller plot</Button
-			>
-		{/if}
-	</div>
-</details>
+	{/if}
+</div>

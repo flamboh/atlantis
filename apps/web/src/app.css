@@ -443,6 +443,26 @@ th {
 	align-items: center;
 }
 
+.card-actions {
+	position: absolute;
+	top: 0.25rem;
+	right: 0.5rem;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	gap: 0.125rem;
+}
+.card-actions button {
+	height: 2.25rem;
+	width: 2.25rem;
+}
+.chart-panels [data-drag-handle] {
+	min-height: 2.75rem;
+	padding-right: 10.5rem;
+}
+.chart-panels [data-drag-handle] h2 {
+	padding-right: 0;
+}
 .chart-panels > section > [data-slot='card'] {
 	border-radius: 0;
 }
