@@ -16,12 +16,16 @@ const externalRel = "noopener noreferrer";
 
 const destinations = [
 	{ label: "Demo", href: links.demo, title: "UGR16 Demo deployment" },
-	{ label: "ONRG", href: links.onrg, title: "Oregon Networking Research Group" },
+	{
+		label: "ONRG",
+		href: links.onrg,
+		title: "Oregon Networking Research Group"
+	},
 	{
 		label: "GitHub",
 		href: links.github,
-		title: "Source code, documentation, and issues",
-	},
+		title: "Source code, documentation, and issues"
+	}
 ] as const;
 ---
 
@@ -39,24 +43,26 @@ const destinations = [
 		</p>
 		<nav class="mt-12" aria-label="External links">
 			<ul class="space-y-3 text-sm sm:text-base">
-				{destinations.map((item) => (
-					<li>
-						<a
-							href={item.href}
-							class="external-link"
-							target="_blank"
-							rel={externalRel}
-							title={item.title}
-						>
-							{item.label}
-							<span class="ml-1 inline text-brand-blue" aria-hidden="true">↗</span>
-						</a>
-					</li>
-				))}
+				{
+					destinations.map((item) => (
+						<li>
+							<a
+								href={item.href}
+								class="external-link"
+								target="_blank"
+								rel={externalRel}
+								title={item.title}
+							>
+								{item.label}
+								<span class="ml-1 inline text-brand-blue" aria-hidden="true">
+									↗
+								</span>
+							</a>
+						</li>
+					))
+				}
 			</ul>
 		</nav>
-		<p class="mt-14 max-w-sm text-xs leading-relaxed text-gray-500">
-			Built as part of an NSF REU
-		</p>
+		<p class="mt-14 max-w-sm text-xs leading-relaxed text-gray-500">Built as part of an NSF REU</p>
 	</main>
 </BaseLayout>
