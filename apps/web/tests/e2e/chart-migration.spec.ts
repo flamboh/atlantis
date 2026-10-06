@@ -239,3 +239,38 @@ test('traffic aborts an obsolete request and retains the latest rendered groupin
 	await expect(card.getByTestId('chart-axis').filter({ hasText: '10 Minutes' })).toBeAttached();
 	await expect(tcp).toHaveAttribute('data-total', '100');
 });
+
+test('filter transitions release detached chart DOM and listeners', async ({ page }) => {
+	await page.goto(FIXTURE_DASHBOARD);
+	for (const id of [
+		'dashboard',
+		'characteristics',
+		'ports',
+		'ip',
+		'protocol',
+		'dimensions',
+		'spectrum',
+		'coverage'
+	]) {
+		await activateChart(page, id);
+	}
+	const direction = page.getByRole('group', { name: 'Traffic direction' });
+	async function change(name: 'Ingress' | 'All') {
+		await direction.getByRole('button', { name, exact: true }).click();
+		await page.waitForLoadState('networkidle');
+	}
+	await change('Ingress');
+	await change('All');
+	const cdp = await page.context().newCDPSession(page);
+	async function retainedDOM() {
+		await cdp.send('HeapProfiler.collectGarbage');
+		return cdp.send('Memory.getDOMCounters');
+	}
+	const before = await retainedDOM();
+	for (let cycle = 0; cycle < 6; cycle++) {
+		await change(cycle % 2 ? 'All' : 'Ingress');
+	}
+	const after = await retainedDOM();
+	expect(after.nodes).toBeLessThanOrEqual(before.nodes + 100);
+	expect(after.jsEventListeners).toBeLessThanOrEqual(before.jsEventListeners + 3);
+});
