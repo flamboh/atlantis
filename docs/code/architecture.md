@@ -67,7 +67,7 @@ Both implementations must keep compatible table and column contracts. No automat
 - Astro 6
 - TypeScript
 - Tailwind CSS 4
-- Chart.js
+- TanStack Charts 1.0.0 through its official Svelte adapter, using SVG renderers
 - Rust 1.97.1
 - SQLite and Cloudflare D1
 - Bun 1.3.11
