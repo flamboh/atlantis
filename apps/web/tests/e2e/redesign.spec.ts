@@ -344,8 +344,10 @@ for (const width of [390, 768, 1280, 1920]) {
 }
 
 for (const width of [1280, 1920]) {
-	test(`compact filter rail reserves plot width at ${width}px`, async ({ page }) => {
-		await page.setViewportSize({ width, height: 900 });
+	test(`compact filter rail reserves plot width and room for three sources at ${width}px`, async ({
+		page
+	}) => {
+		await page.setViewportSize({ width, height: 800 });
 		await page.goto(FIXTURE_DASHBOARD);
 		await expectRendered(page.locator('[data-chart-id="dashboard"]'));
 		const rail = page.getByRole('complementary', { name: 'Filters', exact: true });
@@ -361,11 +363,16 @@ for (const width of [1280, 1920]) {
 			);
 			expect(new Set(geometry.map((button) => button.top)).size).toBeGreaterThan(1);
 			for (const button of geometry) {
-				expect(button.height).toBeGreaterThanOrEqual(44);
+				expect(button.height).toBe(32);
 				expect(button.left).toBeGreaterThanOrEqual(box!.x);
 				expect(button.right).toBeLessThanOrEqual(box!.x + box!.width);
 			}
 		}
+		const maad = await rail.getByRole('group', { name: 'MAAD options', exact: true }).boundingBox();
+		const sources = await rail.locator('.router-filter label').all();
+		for (const source of sources) expect((await source.boundingBox())!.height).toBe(32);
+		const extraSourceRows = 3 - sources.length;
+		expect(maad!.y + maad!.height + extraSourceRows * (32 + 4)).toBeLessThanOrEqual(800);
 		const plot = await page.locator('[data-chart-id="dashboard"]').boundingBox();
 		expect(plot!.width).toBeGreaterThan(width - 280);
 	});
@@ -461,4 +468,27 @@ test('native and keyboard resizing share the packed panel height', async ({ page
 		);
 	expect(gap).toBe(16);
 	await expectRendered(card);
+});
+
+test.describe('coarse pointer filter geometry', () => {
+	test.use({ hasTouch: true });
+	for (const width of [390, 1280]) {
+		test(`keeps 44px filter targets at ${width}px`, async ({ page }) => {
+			await page.setViewportSize({ width, height: 800 });
+			await page.goto(FIXTURE_DASHBOARD);
+			await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+			expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+			if (width < 1024)
+				await page.getByRole('button', { name: 'Open filters', exact: true }).click();
+			const filters =
+				width < 1024
+					? page.getByRole('dialog', { name: 'Filters', exact: true })
+					: page.getByRole('complementary', { name: 'Filters', exact: true });
+			const heights = await filters
+				.locator(".primary-filters [role='group'] button, .primary-filters .router-filter label")
+				.evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height));
+			expect(heights.length).toBeGreaterThan(10);
+			for (const height of heights) expect(height).toBeGreaterThanOrEqual(44);
+		});
+	}
 });

@@ -443,6 +443,31 @@ th {
 	align-items: center;
 }
 
+@media (pointer: fine) {
+	.console-rail .primary-filters [role='group'] button {
+		height: 2rem;
+		min-height: 2rem;
+	}
+	.console-rail .primary-filters .router-filter label {
+		min-height: 2rem;
+	}
+	.console-rail .rail-section {
+		padding-block: 0.25rem;
+	}
+	.console-rail .rail-heading {
+		margin-bottom: 0.5rem;
+	}
+	.console-rail .rail-section:first-child > div {
+		margin-bottom: 0.25rem;
+	}
+	.console-rail .rail-section:first-child .rail-heading {
+		margin-bottom: 0;
+	}
+	.console-rail .rail-section:first-child {
+		padding-top: 0;
+	}
+}
+
 .card-actions {
 	position: absolute;
 	top: 0.25rem;
