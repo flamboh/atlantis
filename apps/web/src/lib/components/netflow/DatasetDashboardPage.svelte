@@ -296,6 +296,7 @@
 			minimum,
 			Math.min(1200, frame.getBoundingClientRect().height + offset)
 		);
+		frame.style.removeProperty('height');
 	}
 
 	function clearDragPreview() {
@@ -506,7 +507,7 @@
 				data-chart-id={chartId}
 				data-chart-activated={activatedCharts[chartId]}
 				class={`relative rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
-				style={`min-height:${getCardMinimumHeight(chartId)}px;${chartHeights[chartId] ? `--chart-user-height:${chartHeights[chartId]}px` : ''}`}
+				style={`${activatedCharts[chartId] ? '' : `min-height:${getCardMinimumHeight(chartId)}px;`}${chartHeights[chartId] ? `--chart-user-height:${chartHeights[chartId]}px` : ''}`}
 				ondragstart={(event) => {
 					handleChartDragStart(event, chartId);
 				}}

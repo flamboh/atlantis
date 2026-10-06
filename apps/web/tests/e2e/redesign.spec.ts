@@ -370,3 +370,95 @@ for (const width of [1280, 1920]) {
 		expect(plot!.width).toBeGreaterThan(width - 280);
 	});
 }
+
+for (const width of [390, 768, 1280, 1920]) {
+	for (const theme of ['light', 'dark'] as const) {
+		test(`resized panels stay packed at ${width}px in ${theme}`, async ({ page }) => {
+			await page.setViewportSize({ width, height: 900 });
+			await page.emulateMedia({ colorScheme: theme });
+			await page.addInitScript(
+				(dark) => localStorage.setItem('dark-mode', String(dark)),
+				theme === 'dark'
+			);
+			await page.goto(FIXTURE_DASHBOARD);
+			const cards = page.locator('[data-chart-card]');
+			for (const card of await cards.all()) {
+				await card.scrollIntoViewIfNeeded();
+				await expect(card).toHaveAttribute('data-chart-activated', 'true');
+				const id = await card.getAttribute('data-chart-id');
+				await expectRendered(card, id === 'characteristics' ? 2 : 1);
+			}
+			const expectPacked = async () => {
+				const geometry = await cards.evaluateAll((nodes) =>
+					nodes.map((node) => {
+						const card = node.getBoundingClientRect();
+						const content = node.lastElementChild!.getBoundingClientRect();
+						return {
+							top: card.top,
+							bottom: card.bottom,
+							left: card.left,
+							right: card.right,
+							contentBottom: content.bottom
+						};
+					})
+				);
+				for (let index = 0; index < geometry.length; index++) {
+					const card = geometry[index];
+					expect(Math.abs(card.bottom - card.contentBottom)).toBeLessThanOrEqual(1);
+					if (index > 0) {
+						expect(card.top - geometry[index - 1].bottom).toBeCloseTo(16, 0);
+						expect(card.left).toBe(geometry[0].left);
+						expect(card.right).toBe(geometry[0].right);
+					}
+				}
+			};
+			for (const card of (await cards.all()).slice(0, -1)) {
+				const shorter = card.getByRole('button', { name: /^Make .* shorter$/ });
+				await shorter.click();
+				await shorter.click();
+				await expectPacked();
+			}
+			for (const card of (await cards.all()).slice(0, -1).reverse()) {
+				await card.getByRole('button', { name: /^Make .* taller$/ }).click();
+				await expectPacked();
+			}
+			await page.getByRole('button', { name: 'Move Traffic Overview down', exact: true }).click();
+			await expectPacked();
+		});
+	}
+}
+
+test('native and keyboard resizing share the packed panel height', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 1000 });
+	await page.goto(FIXTURE_DASHBOARD);
+	const card = page.locator('[data-chart-id="dashboard"]');
+	await expectRendered(card);
+	const frame = card.locator('.chart-frame');
+	const initial = (await frame.boundingBox())!;
+	await page.mouse.move(initial.x + initial.width - 3, initial.y + initial.height - 3);
+	await page.mouse.down();
+	await page.mouse.move(initial.x + initial.width - 3, initial.y + initial.height - 103, {
+		steps: 5
+	});
+	await page.mouse.up();
+	await expect
+		.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
+		.toBe(initial.height - 100);
+	await card.getByRole('button', { name: 'Make Traffic Overview shorter', exact: true }).focus();
+	await page.keyboard.press('Enter');
+	await expect
+		.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
+		.toBe(initial.height - 180);
+	await card.getByRole('button', { name: 'Make Traffic Overview taller', exact: true }).focus();
+	await page.keyboard.press('Enter');
+	await expect
+		.poll(() => frame.evaluate((node) => node.getBoundingClientRect().height))
+		.toBe(initial.height - 100);
+	const gap = await page
+		.locator('[data-chart-card]')
+		.evaluateAll(
+			(nodes) => nodes[1].getBoundingClientRect().top - nodes[0].getBoundingClientRect().bottom
+		);
+	expect(gap).toBe(16);
+	await expectRendered(card);
+});

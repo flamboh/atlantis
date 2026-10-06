@@ -494,7 +494,7 @@ th {
 .chart-panels .traffic-frame {
 	--chart-height: 520px;
 }
-.chart-panels > [data-chart-id='dashboard'] {
+.chart-panels > [data-chart-id='dashboard'][data-chart-activated='false'] {
 	min-height: 740px !important;
 }
 .chart-panels [data-slot='card-content'] > [role='group'],
@@ -622,7 +622,7 @@ th {
 	.chart-panels .traffic-frame {
 		--chart-height: 400px;
 	}
-	.chart-panels > [data-chart-id='dashboard'] {
+	.chart-panels > [data-chart-id='dashboard'][data-chart-activated='false'] {
 		min-height: 560px !important;
 	}
 	.catalog-row {

@@ -40,3 +40,5 @@ The fixture suite covers the dataset index, dashboard, alerts, file lookup, file
 The Traffic Overview **Metrics** popover, named "NetFlow metrics", keeps all twelve independent metric/protocol checkboxes and the existing quick selections.
 
 Chart headers retain drag handles. The visible "Arrange <chart title>" button group replaces the per-card Layout dropdown with named move-up, move-down, shorter and taller actions. All actions support Tab and Enter; move actions persist the same chart order. Resize actions appear after activation and are omitted for Coverage.
+
+Loaded charts fit their contents in the full-width panel stack, so shrinking a plot reflows every following card with the same 16px gap. Deferred cards alone reserve their existing minimum heights. This keeps reading/reorder order and the initial deferred-activation budget.
