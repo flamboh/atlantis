@@ -109,3 +109,68 @@ test('dense spectra retain one accessible interaction surface and positioned sum
 	await surface.press('Enter');
 	await expect(page).toHaveURL(/\/netflow\/files\/202503010200/);
 });
+
+for (const width of [390, 768, 1280, 1920]) {
+	test(`dense legends preserve positioned marks and axis labels at ${width}px`, async ({
+		page
+	}) => {
+		await page.setViewportSize({ width, height: 900 });
+		await page.route('**/api/ip/stats?*', async (route) => {
+			const response = await route.fetch();
+			const payload = await response.json();
+			payload.timelines = [0, 1, 2].flatMap((index) =>
+				payload.timelines.map((timeline: { router: string }) => ({
+					...timeline,
+					router: `${timeline.router}-${index}`
+				}))
+			);
+			await route.fulfill({ response, json: payload });
+		});
+		await page.goto(FIXTURE_DASHBOARD);
+		for (const id of ['ports', 'ip']) {
+			const card = await activateChart(page, id);
+			const surface = card.getByTestId('chart-surface');
+			await rendered(surface);
+			for (const series of await card.locator('[data-testid="chart-series"][data-point-y]').all()) {
+				const y = Number(await series.getAttribute('data-point-y'));
+				expect(y).toBeGreaterThan(0);
+				expect(y).toBeLessThan(1);
+			}
+			const axis = surface.getByText('Time (5m)', { exact: true });
+			await expect(axis).toBeVisible();
+			await expect
+				.poll(async () => {
+					const graphic = await surface.boundingBox();
+					const label = await axis.boundingBox();
+					return Boolean(graphic && label && label.y + label.height <= graphic.y + graphic.height);
+				})
+				.toBe(true);
+			const lastLegend = card.locator('[data-chart-legend-value]').last();
+			await lastLegend.scrollIntoViewIfNeeded();
+			const label = await lastLegend.getAttribute('data-chart-legend-value');
+			const entry = card
+				.getByTestId('chart-series')
+				.filter({ hasText: label ?? '' })
+				.last();
+			await expect
+				.poll(async () => {
+					const graphic = await surface.boundingBox();
+					const button = await lastLegend.boundingBox();
+					if (!graphic || !button) return Infinity;
+					return Math.abs(
+						graphic.y +
+							graphic.height * Number(await entry.getAttribute('data-legend-y')) -
+							button.y -
+							button.height / 2
+					);
+				})
+				.toBeLessThan(1);
+			await lastLegend.click();
+			await expect(lastLegend).toHaveAttribute('aria-pressed', 'false');
+			await lastLegend.press('Space');
+			await expect(lastLegend).toHaveAttribute('aria-pressed', 'true');
+			await hoverChart(page, surface);
+			await expect(card.getByTestId('chart-tooltip')).toContainText('2025-03-01 02:00');
+		}
+	});
+}

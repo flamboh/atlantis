@@ -277,12 +277,24 @@ export function buildChartDefinition(
 		(value) => !options.xFormat || options.xFormat(value)
 	);
 	const xTicks = labeledTicks?.length ? labeledTicks : options.xTicks;
+	const legend = interactiveColorLegend({
+		placement: 'top',
+		itemWidth: 130,
+		visible: controlledSignal<readonly string[]>(
+			labels.filter((label) => !hidden.has(label)),
+			onToggle
+		)
+	});
 	return defineChart({
 		marks,
 		margin:
 			options.kind === 'coverage'
 				? { left: 120, right: 8, top: 4, bottom: 4 }
-				: { left: options.compact ? 56 : 80, right: 18, bottom: options.compact ? 35 : 62 },
+				: {
+						left: options.compact ? 56 : 80,
+						right: 18,
+						bottom: options.compact ? 35 : options.xTicks ? 80 : 62
+					},
 		clip: true,
 		theme: {
 			foreground: 'var(--chart-text-color)',
@@ -330,14 +342,10 @@ export function buildChartDefinition(
 					legend:
 						options.legend === false || options.compact
 							? undefined
-							: interactiveColorLegend({
-									placement: 'top',
-									itemWidth: 130,
-									visible: controlledSignal<readonly string[]>(
-										labels.filter((label) => !hidden.has(label)),
-										onToggle
-									)
-								})
+							: {
+									...legend,
+									height: (count, context) => Math.min(108, legend.height(count, context))
+								}
 				},
 		focus: options.kind === 'scatter' ? undefined : focusGroupX,
 		tooltip: {

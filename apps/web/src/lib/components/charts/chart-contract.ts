@@ -26,6 +26,7 @@ export function createChartContract(surface: HTMLElement | SVGElement) {
 	tooltip.hidden = true;
 	let rendered = false;
 	let description = '';
+	const seriesEntries = new Map<string, HTMLElement>();
 	function syncAttributes() {
 		if (surface.dataset.testid !== 'chart-surface') surface.dataset.testid = 'chart-surface';
 		if (surface.getAttribute('role') !== 'img') surface.setAttribute('role', 'img');
@@ -54,6 +55,7 @@ export function createChartContract(surface: HTMLElement | SVGElement) {
 			rendered = true;
 			syncAttributes();
 			summary.setAttribute('aria-label', 'Rendered chart summary');
+			seriesEntries.clear();
 			const entries = snapshot.series.map((series) => {
 				const entry = document.createElement('span');
 				entry.dataset.testid = 'chart-series';
@@ -71,6 +73,7 @@ export function createChartContract(surface: HTMLElement | SVGElement) {
 					entry.dataset.legendY = String(series.legend.y);
 				}
 				entry.textContent = series.label;
+				seriesEntries.set(series.label, entry);
 				return entry;
 			});
 			const axes = snapshot.axes.map((label) => {
@@ -81,12 +84,20 @@ export function createChartContract(surface: HTMLElement | SVGElement) {
 			});
 			summary.replaceChildren(...axes, ...entries, tooltip);
 		},
+		legend(label: string, position: { x: number; y: number }) {
+			const entry = seriesEntries.get(label);
+			if (entry) {
+				entry.dataset.legendX = String(position.x);
+				entry.dataset.legendY = String(position.y);
+			}
+		},
 		tooltip(text: string) {
 			if (tooltip.textContent !== text) tooltip.textContent = text;
 			tooltip.hidden = text.length === 0;
 		},
 		destroy() {
 			observer.disconnect();
+			seriesEntries.clear();
 			summary.remove();
 			delete surface.dataset.chartRendered;
 			surface.removeAttribute('aria-description');

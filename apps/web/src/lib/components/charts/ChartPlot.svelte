@@ -193,6 +193,21 @@
 				};
 			})
 		});
+		const legend = next.container.querySelector('.ts-chart__interactive-legend');
+		const syncLegendTargets = () => {
+			const bounds = surface.getBoundingClientRect();
+			for (const button of next.container.querySelectorAll<HTMLButtonElement>(
+				'[data-chart-legend-value]'
+			)) {
+				const box = button.getBoundingClientRect();
+				if (bounds.width && bounds.height)
+					contract?.legend(button.dataset.chartLegendValue ?? '', {
+						x: (box.x + box.width / 2 - bounds.x) / bounds.width,
+						y: (box.y + box.height / 2 - bounds.y) / bounds.height
+					});
+			}
+		};
+		legend?.addEventListener('scroll', syncLegendTargets);
 		selection = document.createElement('div');
 		selection.className =
 			'pointer-events-none absolute border border-muted-foreground/70 bg-muted-foreground/20';
@@ -208,6 +223,7 @@
 		next.container.addEventListener('keydown', handleKey, true);
 		next.container.addEventListener('click', selectAtPointer, true);
 		cleanupRender = () => {
+			legend?.removeEventListener('scroll', syncLegendTargets);
 			unsubscribeHover();
 			unsubscribeRange();
 			next.container.removeEventListener('mousedown', beginDrag, true);
@@ -438,6 +454,12 @@
 </div>
 
 <style>
+	:global(.ts-chart__interactive-legend) {
+		overflow: auto;
+		align-content: start;
+		grid-auto-rows: 44px;
+	}
+
 	:global(.ts-chart-host) {
 		--ts-chart-foreground: var(--chart-text-color);
 		--ts-chart-grid: var(--chart-grid-color);
