@@ -2,7 +2,6 @@
 	import { MediaQuery } from 'svelte/reactivity';
 	import { PanelLeftClose, PanelLeftOpen, SlidersHorizontal } from '@lucide/svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import FilterSheet from './FilterSheet.svelte';
 	import type { Snippet } from 'svelte';
 
 	let {
@@ -26,6 +25,12 @@
 	const desktop = new MediaQuery('(min-width: 1024px)', true);
 	let collapsed = $state(false);
 	let sheetOpen = $state(false);
+	let sheetModule = $state<Promise<typeof import('./FilterSheet.svelte')> | null>(null);
+
+	function openSheet() {
+		sheetModule ??= import('./FilterSheet.svelte');
+		sheetOpen = true;
+	}
 </script>
 
 <svelte:window
@@ -70,7 +75,7 @@
 						aria-haspopup="dialog"
 						data-filter-trigger={id}
 						aria-expanded={sheetOpen}
-						onclick={() => (sheetOpen = true)}><SlidersHorizontal size={15} />{railLabel}</Button
+						onclick={openSheet}><SlidersHorizontal size={15} />{railLabel}</Button
 					>
 				{/if}
 				{@render toolbar?.()}
@@ -80,11 +85,13 @@
 	</div>
 </div>
 
-{#if !desktop.current}
-	<FilterSheet
-		bind:open={sheetOpen}
-		title={railLabel}
-		onClose={() => document.querySelector<HTMLElement>(`[data-filter-trigger="${id}"]`)?.focus()}
-		>{@render rail()}</FilterSheet
-	>
+{#if !desktop.current && sheetModule}
+	{#await sheetModule then { default: FilterSheet }}
+		<FilterSheet
+			bind:open={sheetOpen}
+			title={railLabel}
+			onClose={() => document.querySelector<HTMLElement>(`[data-filter-trigger="${id}"]`)?.focus()}
+			>{@render rail()}</FilterSheet
+		>
+	{/await}
 {/if}

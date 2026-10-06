@@ -196,6 +196,54 @@ test('large byte totals remain on one line in the 1280px file sidebar', async ({
 	).toBe(1);
 });
 
+test('fractional file plots render once and follow rail and viewport resizing', async ({
+	page
+}) => {
+	await page.addInitScript(() => {
+		new MutationObserver((records) => {
+			for (const record of records) {
+				const node = record.target;
+				if (node instanceof HTMLElement && node.dataset.testid === 'chart-render-state') {
+					node.dataset.testRenderCount = String(Number(node.dataset.testRenderCount ?? 0) + 1);
+				}
+			}
+		}).observe(document, {
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['data-series-count']
+		});
+	});
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await page.goto('/netflow/files/202503010200?dataset=playwright');
+	await expectRendered(page.locator('main'), 4);
+	await page.evaluate(
+		() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+	);
+	const summaries = page.getByTestId('chart-render-state');
+	for (const summary of await summaries.all()) {
+		await expect(summary).toHaveAttribute('data-test-render-count', '1');
+	}
+	for (const name of ['Hide file options', 'Show file options']) {
+		const before = await page.getByTestId('chart-surface').first().boundingBox();
+		await page.getByRole('button', { name, exact: true }).click();
+		await expect
+			.poll(async () => (await page.getByTestId('chart-surface').first().boundingBox())?.width)
+			.not.toBe(before?.width);
+	}
+	await page.setViewportSize({ width: 768, height: 900 });
+	await expect(page.getByRole('button', { name: 'Open file options', exact: true })).toBeVisible();
+	for (const surface of await page.getByTestId('chart-surface').all()) {
+		await expect
+			.poll(() =>
+				surface.evaluate((node) => {
+					if (!(node instanceof SVGSVGElement)) return Infinity;
+					return Math.abs(node.viewBox.baseVal.width - node.parentElement!.clientWidth);
+				})
+			)
+			.toBeLessThanOrEqual(1);
+	}
+});
+
 test('phone quick-selection labels fit inside their separate buttons', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 900 });
 	await page.goto(FIXTURE_DASHBOARD);

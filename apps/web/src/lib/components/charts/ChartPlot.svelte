@@ -101,16 +101,32 @@
 			onSelect: select
 		});
 		let host: ReturnType<typeof mountChart<PlotPoint, number, number>> | null = null;
+		let size: { width: number; height: number } | null = null;
+		let currentOptions: ReturnType<typeof hostOptions>;
+		const render = () => {
+			if (!size) return;
+			const current = { ...currentOptions, ...size };
+			if (host) host.update(current);
+			else host = mountChart(node, current);
+		};
 		$effect(() => {
 			const current = hostOptions();
 			const currentObservations = observationData;
 			untrack(() => {
 				observations = currentObservations;
-				if (host) host.update(current);
-				else host = mountChart(node, current);
+				currentOptions = current;
+				render();
 			});
 		});
+		const observer = new ResizeObserver(([entry]) => {
+			const { width, height } = entry.contentRect;
+			if (width <= 0 || height <= 0 || (size?.width === width && size.height === height)) return;
+			size = { width, height };
+			render();
+		});
+		observer.observe(node);
 		return () => {
+			observer.disconnect();
 			cleanupRender();
 			contract?.destroy();
 			host?.destroy();
