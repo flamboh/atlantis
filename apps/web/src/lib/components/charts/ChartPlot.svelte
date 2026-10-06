@@ -13,6 +13,7 @@
 		type PlotSeries
 	} from './chart-registry';
 	import { paintLegendSwatch } from './legend-swatch';
+	import { paintSpectrumCloud } from './spectrum-cloud';
 	import { plotObservations, positionedScenePoints } from './chart-observations';
 	import { createChartContract } from './chart-contract';
 	import { MIN_DRAG_PIXELS, findNearestValueIndex } from './chart-utils';
@@ -120,6 +121,7 @@
 
 	function publish(next: ChartRenderContext<PlotPoint, number, number>) {
 		cleanupRender();
+		paintSpectrumCloud(next, series);
 		context = next;
 		const surface = next.surface.element;
 		if (!(surface instanceof HTMLElement || surface instanceof SVGElement))
