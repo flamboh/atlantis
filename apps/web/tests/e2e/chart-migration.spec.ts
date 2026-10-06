@@ -309,3 +309,59 @@ test('filter transitions release detached chart DOM and listeners', async ({ pag
 	expect(after.nodes).toBeLessThanOrEqual(before.nodes + 100);
 	expect(after.jsEventListeners).toBeLessThanOrEqual(before.jsEventListeners + 3);
 });
+
+for (const mode of ['light', 'dark']) {
+	test(`router series retain distinct visible colors in ${mode} mode`, async ({ page }) => {
+		await page.route(
+			/\/api\/(ip\/stats|protocol\/stats|netflow\/dimension-stats|netflow\/characteristics)\?/,
+			async (route) => {
+				const response = await route.fetch();
+				const payload = await response.json();
+				if (payload.timelines)
+					payload.timelines = [0, 1, 2].flatMap((index) =>
+						payload.timelines.map((timeline: { router: string }) => ({
+							...timeline,
+							router: `${timeline.router}-${index}`
+						}))
+					);
+				if (payload.portTimelines) {
+					payload.portTimelines = [0, 1, 2].flatMap((index) =>
+						payload.portTimelines.map((timeline: { sourceId: string }) => ({
+							...timeline,
+							sourceId: `${timeline.sourceId}-${index}`
+						}))
+					);
+					payload.resolvedSources = payload.portTimelines.map(
+						(timeline: { sourceId: string }) => timeline.sourceId
+					);
+				}
+				await route.fulfill({ response, json: payload });
+			}
+		);
+
+		await page.addInitScript(
+			(dark) => localStorage.setItem('dark-mode', String(dark)),
+			mode === 'dark'
+		);
+		await page.goto(FIXTURE_DASHBOARD);
+		for (const id of ['dashboard', 'ports', 'ip', 'protocol', 'dimensions']) {
+			const card = await activateChart(page, id);
+			await expectRendered(card);
+			const series = card.locator('[data-testid="chart-series"][data-visible="true"]');
+			const appearance = await series.evaluateAll((entries) =>
+				entries.map((entry) => ({
+					color: entry.getAttribute('data-color'),
+					opacity: Number(entry.getAttribute('data-opacity'))
+				}))
+			);
+			expect(appearance.length).toBeGreaterThan(1);
+			expect(new Set(appearance.map(({ color }) => color)).size).toBe(appearance.length);
+			for (const { color, opacity } of appearance) {
+				expect(color).toBeTruthy();
+				expect(color).not.toBe('none');
+				expect(color).not.toContain('var(');
+				expect(opacity).toBeGreaterThan(0);
+			}
+		}
+	});
+}

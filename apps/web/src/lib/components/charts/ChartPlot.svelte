@@ -202,9 +202,21 @@
 				const button = buttons.find((button) => button.dataset.chartLegendValue === item.label);
 				const box = button?.getBoundingClientRect();
 				const target = points[0];
+				const mark = next.svg.querySelector<SVGGraphicsElement>(
+					`path[data-ts-key^="series-${index}-"], circle[data-ts-key^="series-${index}-"], circle[data-ts-key^="series-${index}:"]`
+				);
+				const appearance = mark ? getComputedStyle(mark) : null;
+				const stroked = appearance?.stroke !== 'none';
+				const color = appearance ? (stroked ? appearance.stroke : appearance.fill) : target?.color;
+				const opacity = appearance
+					? Number(appearance.opacity) *
+						Number(stroked ? appearance.strokeOpacity : appearance.fillOpacity)
+					: 1;
 				return {
 					label: item.label,
 					visible,
+					color,
+					opacity: visible ? opacity : 0,
 					count: finite.length,
 					min: finite.length ? finite.reduce((min, value) => Math.min(min, value), Infinity) : null,
 					max: finite.length

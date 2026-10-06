@@ -26,6 +26,7 @@ export interface BreakdownChartConfig {
 	endpoint: string;
 	usesMaad: boolean;
 	seriesByRouter: boolean;
+	routerHueStep: number;
 	defaultGranularity: IpGranularity;
 	defaultMetrics: BreakdownMetricKey[];
 	metrics: LineMetricConfig[];
@@ -63,6 +64,7 @@ const IP_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/ip/stats',
 	usesMaad: false,
 	seriesByRouter: false,
+	routerHueStep: 70,
 	defaultGranularity: '1d',
 	defaultMetrics: ['saIpv4Count', 'daIpv4Count'],
 	metrics: IP_METRIC_OPTIONS.map((option) => ({
@@ -91,6 +93,7 @@ const PROTOCOL_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/protocol/stats',
 	usesMaad: false,
 	seriesByRouter: false,
+	routerHueStep: 110,
 	defaultGranularity: '1h',
 	defaultMetrics: ['uniqueProtocolsIpv4', 'uniqueProtocolsIpv6'],
 	metrics: [
@@ -156,6 +159,7 @@ const DIMENSIONS_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/netflow/dimension-stats',
 	usesMaad: true,
 	seriesByRouter: true,
+	routerHueStep: 0,
 	defaultGranularity: '1h',
 	defaultMetrics: ['saD1'],
 	metrics: DIMENSION_SIDE_OPTIONS.flatMap((side) =>
@@ -188,6 +192,7 @@ const SPECTRUM_CONFIG: BreakdownChartConfig = {
 	endpoint: '/api/netflow/spectrum-stats',
 	usesMaad: true,
 	seriesByRouter: false,
+	routerHueStep: 0,
 	defaultGranularity: '1h',
 	defaultMetrics: [],
 	metrics: [],

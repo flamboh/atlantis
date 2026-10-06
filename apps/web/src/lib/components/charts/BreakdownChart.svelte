@@ -24,6 +24,7 @@
 	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
 	import ChartCard from './ChartCard.svelte';
 	import { getSourceLineDash } from './flow-characteristics';
+	import { sourceSeriesColor, categoricalSeriesColor } from './chart-colors';
 	import ChartPlot from './ChartPlot.svelte';
 	import { plotBounds, finitePoint, type PlotSeries, type PlotOptions } from './chart-registry';
 	import { finiteSpectrumPoints, paddedSpectrumBounds } from './spectrum-points';
@@ -267,8 +268,12 @@
 					return {
 						label: config.seriesByRouter ? router : `${router} · ${metric.seriesLabel}`,
 						color: config.seriesByRouter
-							? `var(--chart-series-${slot > 0 && slot <= 8 ? slot : 'other'})`
-							: (color ?? 'var(--chart-series-1)'),
+							? categoricalSeriesColor(slot > 0 ? slot - 1 : routerIndex)
+							: sourceSeriesColor(
+									color ?? 'var(--chart-series-1)',
+									slot > 0 ? slot - 1 : routerIndex,
+									config.routerHueStep
+								),
 						dash: config.seriesByRouter
 							? undefined
 							: getSourceLineDash(routerIndex, routers.length > 1).join(' '),

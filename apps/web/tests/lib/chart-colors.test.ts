@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { spectrumInterpolator } from '../../src/lib/components/charts/chart-colors';
+import {
+	spectrumInterpolator,
+	sourceSeriesColor
+} from '../../src/lib/components/charts/chart-colors';
 
 describe('spectrum colors', () => {
 	it('preserves the purple, blue, cyan, green, yellow order and clamps outliers', () => {
@@ -18,5 +21,14 @@ describe('spectrum colors', () => {
 		expect(
 			spectrumInterpolator({ lowHue: 270, highHue: 60, saturation: 70, lightness: 60 })(0.5)
 		).toBe('hsl(165, 70%, 60%)');
+	});
+});
+
+describe('source series colors', () => {
+	it('preserves the base metric token and separates router hues', () => {
+		const color = 'var(--chart-series-1)';
+		expect(sourceSeriesColor(color, 0)).toBe(color);
+		expect(sourceSeriesColor(color, 1)).toBe('hsl(from var(--chart-series-1) calc(h + 80) s l)');
+		expect(sourceSeriesColor(color, 2)).toBe('hsl(from var(--chart-series-1) calc(h + 160) s l)');
 	});
 });
