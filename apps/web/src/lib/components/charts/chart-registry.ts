@@ -1,4 +1,4 @@
-import { defineChart } from '@tanstack/charts';
+import { defineChart } from '@tanstack/charts/scene';
 import { lineY } from '@tanstack/charts/line';
 import { areaY } from '@tanstack/charts/area';
 import { rect } from '@tanstack/charts/rect';
@@ -14,10 +14,66 @@ import { scaleSequential } from 'd3-scale';
 import type { ChartMark, ChartPoint } from '@tanstack/charts';
 import { temporalTicks } from './temporal-ticks';
 import { temporalGrid } from './temporal-grid';
+import { spectrumCloud } from './spectrum-cloud';
 import { coverageLineRuns } from './coverage-line-style';
 import type { ChartCoverage } from './chart-utils';
 
-export { Chart } from '@tanstack/charts/svelte';
+const spectrumTooltip: typeof tooltip = {
+	...tooltip,
+	create(context) {
+		const instance = tooltip.create(context);
+		return {
+			...instance,
+			paint(input) {
+				instance.paint(input);
+				const element = context.container.querySelector<HTMLElement>('.ts-chart-tooltip');
+				if (element) {
+					element.setAttribute('role', 'tooltip');
+					element.style.whiteSpace = 'pre-line';
+				}
+			}
+		};
+	}
+};
+
+const focusRings: ChartMark<never, never, never> = {
+	initialize: () => ({
+		id: 'focus-rings',
+		focusGuideOnly: true,
+		channels: {},
+		render: ({ chart, surface }) => ({
+			nodes: [],
+			focusGuides: [
+				{
+					key: 'focus-rings',
+					markId: 'focus-rings',
+					chart,
+					surface,
+					resolve: ({ focus }) =>
+						focus
+							? {
+									kind: 'group',
+									key: 'focus-rings',
+									ariaHidden: true,
+									children: [focus.primary].map((point) => ({
+										kind: 'dot',
+										key: point.key,
+										x: point.x,
+										y: point.y,
+										radius: 5,
+										style: {
+											fill: 'var(--ts-chart-focus-fill, Canvas)',
+											stroke: point.color,
+											strokeWidth: 2.5
+										}
+									}))
+								}
+							: undefined
+				}
+			]
+		})
+	})
+};
 
 export type PlotPoint = {
 	x: number;
@@ -124,11 +180,13 @@ export function buildChartDefinition(
 		let displayedData = item.data;
 		if (options.kind === 'scatter') {
 			marks.push(
-				dot(item.data, {
-					...channels,
-					color: options.colorDomain ? (point) => point.f ?? 0 : channels.color,
-					r: item.radius ?? 1
-				})
+				options.colorDomain && item.data.length > 2048
+					? spectrumCloud(item.data, id, item.label)
+					: dot(item.data, {
+							...channels,
+							color: options.colorDomain ? (point) => point.f ?? 0 : channels.color,
+							r: item.radius ?? 1
+						})
 			);
 		} else if (options.kind === 'coverage') {
 			const track = options.xDomain ?? plotBounds(series);
@@ -260,6 +318,7 @@ export function buildChartDefinition(
 		);
 	}
 	marks.push(
+		focusRings,
 		crosshair({ y: false, stroke: 'currentColor', strokeOpacity: 0.65, strokeDasharray: '3 3' })
 	);
 	const xDomain = options.xDomain ?? plotBounds(series);
@@ -282,7 +341,14 @@ export function buildChartDefinition(
 			? scaleLinear
 			: scaleLinear().domain([minY, maxY === minY ? maxY + 1 : maxY]);
 	const labels = series.map((item) => item.label);
-	const formatX = options.xFormat;
+	const formattedTicks = new Map<number, string>();
+	const formatter = options.xFormat;
+	const formatX = formatter
+		? (value: number) => {
+				if (!formattedTicks.has(value)) formattedTicks.set(value, formatter(value));
+				return formattedTicks.get(value) ?? '';
+			}
+		: undefined;
 	const timeAxis = Boolean(options.xTicks && formatX);
 	const xTicks =
 		options.xTicks && formatX
@@ -368,9 +434,10 @@ export function buildChartDefinition(
 									height: (count, context) => Math.min(108, legend.height(count, context))
 								}
 				},
+		focusRing: false,
 		focus: options.kind === 'scatter' ? undefined : focusGroupX,
 		tooltip: {
-			use: tooltip,
+			use: options.kind === 'scatter' ? spectrumTooltip : tooltip,
 			formatGroup: (points) => plotTooltip(points, formatTooltip),
 			motion: false
 		},

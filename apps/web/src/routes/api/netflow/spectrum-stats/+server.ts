@@ -28,6 +28,10 @@ export const GET: RequestHandler = async ({ url }) => {
 	if ('error' in params) {
 		return Response.json({ error: params.error }, { status: params.status });
 	}
+	const addressSide = url.searchParams.get('addressSide');
+	if (addressSide !== null && addressSide !== 'source' && addressSide !== 'destination') {
+		return Response.json({ error: 'Invalid addressSide' }, { status: 400 });
+	}
 	const measureError = spectrumMeasureError(params.measure);
 	if (measureError) {
 		return Response.json({ error: measureError.error }, { status: measureError.status });
@@ -55,8 +59,8 @@ export const GET: RequestHandler = async ({ url }) => {
 					${sourceColumn} AS router,
 					bucket_start AS bucketStart,
 					MAX(bucket_end) AS bucketEnd,
-					MAX(CASE WHEN address_side = 'source' THEN spectrum END) AS saSpectrum,
-					MAX(CASE WHEN address_side = 'destination' THEN spectrum END) AS daSpectrum
+					${addressSide === 'destination' ? 'NULL' : "MAX(CASE WHEN address_side = 'source' THEN spectrum END)"} AS saSpectrum,
+					${addressSide === 'source' ? 'NULL' : "MAX(CASE WHEN address_side = 'destination' THEN spectrum END)"} AS daSpectrum
 				FROM ${tableName}
 				WHERE granularity = ?
 					AND ${sourceColumn} IN (${placeholders(routers)})

@@ -1,20 +1,20 @@
-import { z } from 'zod';
+import { z } from 'zod/mini';
 import type { DatasetSummariesResponse, DatasetSummary } from '#lib/types/types.ts';
 
 export type { DatasetSummariesResponse, DatasetSummary } from '#lib/types/types.ts';
 
 const datasetSummarySchema = z.object({
-	datasetId: z.string().min(1),
-	label: z.string().min(1),
+	datasetId: z.string().check(z.minLength(1)),
+	label: z.string().check(z.minLength(1)),
 	defaultStartDate: z.iso.date(),
-	discoveryMode: z.string().min(1),
+	discoveryMode: z.string().check(z.minLength(1)),
 	hasLocality: z.boolean(),
 	isDefault: z.boolean()
 });
 
 const datasetSummariesResponseSchema = z.object({
-	data: z.array(datasetSummarySchema).nullable(),
-	error: z.string().nullable()
+	data: z.nullable(z.array(datasetSummarySchema)),
+	error: z.nullable(z.string())
 });
 
 let cachedDatasetSummaries: DatasetSummary[] | null = null;

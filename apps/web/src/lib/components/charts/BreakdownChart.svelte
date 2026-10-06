@@ -104,6 +104,7 @@
 		props.granularity ?? config.defaultGranularity
 	);
 
+	let addressType = $derived(props.addressType ?? 'sa');
 	const ipVersion = $derived<MaadIpVersion>(props.ipVersion ?? DEFAULT_MAAD_IP_VERSION);
 	type FilterInputs = {
 		startDate: string;
@@ -113,6 +114,7 @@
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
+		addressSide?: 'source' | 'destination';
 	};
 
 	const filters = $derived<FilterInputs>({
@@ -126,7 +128,10 @@
 					: []
 				: deriveSelectedRouters(props.routers),
 		direction: props.direction ?? 'all',
-		...(config.usesMaad ? { ipVersion, measure: props.measure } : {})
+		...(config.usesMaad ? { ipVersion, measure: props.measure } : {}),
+		...(props.kind === 'spectrum'
+			? { addressSide: addressType === 'sa' ? ('source' as const) : ('destination' as const) }
+			: {})
 	});
 	const requestKey = $derived(
 		JSON.stringify({
@@ -159,7 +164,6 @@
 				? settled.error
 				: null
 	);
-	let addressType = $derived(props.addressType ?? 'sa');
 	const selectedSide = $derived<DimensionSide | null>(
 		props.kind === 'spectrum'
 			? addressType
@@ -221,6 +225,11 @@
 	const bucketStarts = $derived(
 		[...new Set(buckets.map((bucket) => bucket.bucketStart))].sort((a, b) => a - b)
 	);
+	const bucketLabels = $derived(
+		new Map(
+			bucketStarts.map((start) => [start, formatTemporalBucketLabel(start, currentGranularity)])
+		)
+	);
 	const series = $derived.by((): PlotSeries[] => {
 		if (props.kind === 'spectrum')
 			return [
@@ -232,7 +241,7 @@
 							x: bucket.bucketStart,
 							y: point.alpha,
 							f: point.f,
-							label: formatTemporalBucketLabel(bucket.bucketStart, currentGranularity),
+							label: bucketLabels.get(bucket.bucketStart),
 							coverage: bucket.coverage
 						}))
 					)
@@ -264,7 +273,7 @@
 							return {
 								x: start,
 								y: readLineMetric((bucket?.data as LineBucketData | null) ?? null, metric.key),
-								label: formatTemporalBucketLabel(start, currentGranularity),
+								label: bucketLabels.get(start),
 								coverage: getChartBucketCoverage(bucket) ?? {
 									state: 'unknown',
 									observedUnits: 0,
@@ -281,7 +290,8 @@
 		plotBounds(series, groupByBucketDurationMs(IP_TO_GROUP_BY[currentGranularity]) / 1000)
 	);
 	const chartOptions = $derived.by((): PlotOptions => {
-		const points = series.flatMap((item) => item.data).filter(finitePoint);
+		const points =
+			props.kind === 'spectrum' ? series.flatMap((item) => item.data).filter(finitePoint) : [];
 		let minAlpha = Infinity;
 		let maxAlpha = -Infinity;
 		let minF = Infinity;
@@ -342,7 +352,8 @@
 			routers: filters.routers.join(','),
 			direction: filters.direction,
 			...(filters.ipVersion !== undefined ? { ipVersion: String(filters.ipVersion) } : {}),
-			...(filters.measure !== undefined ? { measure: filters.measure } : {})
+			...(filters.measure !== undefined ? { measure: filters.measure } : {}),
+			...(filters.addressSide ? { addressSide: filters.addressSide } : {})
 		});
 		const cacheKey = `${config.endpoint}?${params}`;
 		await ensureCachedWindow<CachedBreakdownBucket>({

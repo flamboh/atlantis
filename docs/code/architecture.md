@@ -67,7 +67,13 @@ Both implementations must keep compatible table and column contracts. No automat
 - Astro 6
 - TypeScript
 - Tailwind CSS 4
-- TanStack Charts 1.0.0 through its official Svelte adapter, using SVG renderers
+- TanStack Charts 1.0.0 through its DOM API and Svelte attachments, using SVG with a canvas layer for dense time spectra
 - Rust 1.97.1
 - SQLite and Cloudflare D1
 - Bun 1.3.11
+
+## Chart rendering and spectrum requests
+
+ChartPlot mounts each chart once and updates its DOM host when data or options change. It publishes accessibility summaries after painting, using positioned scene observations. The attachment effect owns an interaction-observation snapshot before passing it to DOM callbacks, so derived dependencies detach with the chart. Dense time spectra retain every point, color and bucket identity in the scene while painting the marks into a canvas at the device pixel ratio. Axes and focus rings remain SVG. Focus rings are generated only for the active observation. Coverage SVG output uses one disconnected path per state and lane. The scene retains its native rectangles for interval hit testing, each bucket's ratio and hover identity.
+
+The spectrum-stats endpoint accepts optional `addressSide=source` or `addressSide=destination`. Omitting it returns both spectra as before. A projection returns the requested spectrum unchanged and the other side as an empty array. It retains the full query's row membership, bucket ends, coverage and empty or null buckets. The dashboard scopes its requests and window-cache keys to the selected side. This changes response shaping only; stored data, aggregation and half-open windows are unchanged.

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import type { SpectrumStatsResponse } from '#lib/types/spectrum-stats.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	cleanupPlaywrightDatabase,
@@ -132,6 +133,76 @@ describe('database drivers', () => {
 			cleanupPlaywrightDatabase(fixture);
 		}
 	});
+
+	it.each(['sqlite', 'd1'] as const)(
+		'preserves selected-side spectra, half-open buckets and coverage in %s projections',
+		async (driver) => {
+			const databasePath = seedDatabase();
+			const fixture = new Database(databasePath);
+			try {
+				fixture
+					.prepare(
+						"UPDATE address_maad_stats SET spectrum = ? WHERE address_side = 'destination' AND measure = 'addresses'"
+					)
+					.run(Buffer.from(Float32Array.from([3, 4]).buffer));
+				const row = fixture
+					.prepare(
+						"SELECT * FROM address_maad_stats WHERE address_side = 'destination' AND ip_version = 4 AND measure = 'addresses' AND granularity = '5m' AND src_locality = 'all' AND dst_locality = 'all' LIMIT 1"
+					)
+					.get() as Record<string, unknown>;
+				row.bucket_start = 1740823500;
+				row.bucket_end = 1740823800;
+				const columns = Object.keys(row);
+				fixture
+					.prepare(
+						`INSERT OR REPLACE INTO address_maad_stats (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`
+					)
+					.run(...Object.values(row));
+			} finally {
+				fixture.close();
+			}
+			const route = () => import('../../../../src/routes/api/netflow/spectrum-stats/+server.ts');
+			const url =
+				'http://localhost/api/netflow/spectrum-stats?dataset=playwright&routers=fixture-router&granularity=5m&startDate=1740822900&endDate=1740823800';
+			const full = await callRoute(driver, databasePath, route, url);
+			expect(full.status).toBe(200);
+			const body = full.body as SpectrumStatsResponse;
+			const buckets = body.timelines[0].buckets;
+			expect(buckets.map((bucket) => bucket.bucketStart)).toEqual([
+				1740822900, 1740823200, 1740823500
+			]);
+			expect(buckets[1].data?.spectrumSa).not.toEqual(buckets[1].data?.spectrumDa);
+			expect(buckets[2].data?.spectrumSa).toEqual([]);
+			expect(buckets[2].data?.spectrumDa).toEqual([{ alpha: 3, f: 4 }]);
+			for (const addressSide of ['source', 'destination']) {
+				const projected = await callRoute(
+					driver,
+					databasePath,
+					route,
+					`${url}&addressSide=${addressSide}`
+				);
+				expect(projected.status).toBe(200);
+				expect(projected.body).toEqual({
+					...body,
+					timelines: body.timelines.map((timeline) => ({
+						...timeline,
+						buckets: timeline.buckets.map((bucket) => ({
+							...bucket,
+							data:
+								bucket.data === null
+									? null
+									: {
+											spectrumSa: addressSide === 'source' ? bucket.data.spectrumSa : [],
+											spectrumDa: addressSide === 'destination' ? bucket.data.spectrumDa : []
+										}
+						}))
+					}))
+				});
+			}
+			const invalid = await callRoute(driver, databasePath, route, `${url}&addressSide=invalid`);
+			expect(invalid.status).toBe(400);
+		}
+	);
 
 	it('export the same driver interface', async () => {
 		vi.resetModules();

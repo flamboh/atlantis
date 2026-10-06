@@ -57,12 +57,17 @@ test('file lookup validates input and Enter opens populated analysis', async ({ 
 });
 
 test('file next navigation keeps filters and explains absent MAAD analyses', async ({ page }) => {
+	const requests: string[] = [];
+	page.on('request', (request) => {
+		if (/\/api\/netflow\/files\/.*\/details\?/.test(request.url())) requests.push(request.url());
+	});
 	await page.goto('/netflow/files/202503010200?dataset=playwright&measure=bytes');
 	await expect(page.getByRole('button', { name: 'Bytes', exact: true })).toHaveAttribute(
 		'aria-pressed',
 		'true'
 	);
 	await expectRendered(page.locator('main'), 2);
+	await expect.poll(() => requests.length).toBe(1);
 	await expect(
 		page.getByText('The spectrum is only computed for the addresses measure.')
 	).toBeVisible();
@@ -71,8 +76,13 @@ test('file next navigation keeps filters and explains absent MAAD analyses', asy
 	await expect(page.getByText('No source structure data.', { exact: true })).toBeVisible();
 	await expect(page.getByText('No destination structure data.', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Reload', exact: true })).toHaveCount(2);
+	await expect.poll(() => requests.length).toBe(2);
 	await page.goBack();
 	await expectRendered(page.locator('main'), 2);
+	await expect.poll(() => requests.length).toBe(3);
+	await page.reload();
+	await expectRendered(page.locator('main'), 2);
+	await expect.poll(() => requests.length).toBe(4);
 });
 
 test('file summary request errors recover through Retry Summary', async ({ page }) => {
