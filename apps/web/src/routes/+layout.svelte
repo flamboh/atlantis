@@ -22,7 +22,7 @@
 			<div class="mx-auto max-w-[95vw] px-4 sm:px-2 lg:px-4">
 				<div class="flex items-center justify-between py-4">
 					<div>
-						<h1 class="text-foreground text-3xl font-bold hover:underline">
+						<h1 class="text-foreground text-2xl font-bold hover:underline sm:text-3xl">
 							<a href={resolve('/')}><Logo /></a>
 						</h1>
 					</div>
