@@ -14,6 +14,7 @@
 	} from './chart-registry';
 	import { paintLegendSwatch } from './legend-swatch';
 	import { paintSpectrumCloud } from './spectrum-cloud';
+	import { renderCoverageSvg } from './coverage-marks';
 	import { plotObservations, positionedScenePoints } from './chart-observations';
 	import { createChartContract } from './chart-contract';
 	import { MIN_DRAG_PIXELS, findNearestValueIndex } from './chart-utils';
@@ -92,6 +93,7 @@
 		const hostOptions = () => ({
 			definition,
 			ariaLabel: name,
+			renderSvg: options.kind === 'coverage' ? renderCoverageSvg : undefined,
 			onRender: publish,
 			onFocusGroupChange: focusGroup,
 			onSelect: select
