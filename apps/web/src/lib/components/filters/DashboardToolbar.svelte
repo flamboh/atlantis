@@ -100,7 +100,7 @@
 	<Button
 		variant="ghost"
 		size="sm"
-		class="text-muted-foreground ml-auto"
+		class="toolbar-trigger text-muted-foreground ml-auto"
 		aria-label="Reset filters"
 		onclick={onReset}><RotateCcw class="size-3.5" />Reset</Button
 	>

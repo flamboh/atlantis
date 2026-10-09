@@ -97,13 +97,13 @@
 		'coverage'
 	];
 	const CHART_CARD_DETAILS: Record<ChartCardId, { title: string; minimumHeight: number }> = {
-		dashboard: { title: 'Traffic Overview', minimumHeight: 640 },
-		characteristics: { title: 'Flow Characteristics', minimumHeight: 440 },
-		ports: { title: 'Unique Ports', minimumHeight: 440 },
-		ip: { title: 'IP Address Breakdown', minimumHeight: 440 },
-		protocol: { title: 'Protocol Breakdown', minimumHeight: 440 },
-		dimensions: { title: 'MAAD Dimensions', minimumHeight: 440 },
-		spectrum: { title: 'IP Address Spectrum', minimumHeight: 560 },
+		dashboard: { title: 'Traffic Overview', minimumHeight: 571 },
+		characteristics: { title: 'Flow Characteristics', minimumHeight: 691 },
+		ports: { title: 'Unique Ports', minimumHeight: 371 },
+		ip: { title: 'Unique IP Counts', minimumHeight: 371 },
+		protocol: { title: 'Unique Protocol Counts', minimumHeight: 371 },
+		dimensions: { title: 'MAAD Dimensions', minimumHeight: 371 },
+		spectrum: { title: 'Spectrum', minimumHeight: 451 },
 		coverage: { title: 'Coverage', minimumHeight: 113 }
 	};
 	const UNAVAILABLE_CARD_MINIMUM_HEIGHT = 214;

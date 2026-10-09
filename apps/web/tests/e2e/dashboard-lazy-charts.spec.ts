@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { setDateRange } from './toolbar-helpers';
 
 test('mounts chart cards near the viewport and keeps them mounted', async ({ page }) => {
 	await page.goto('/datasets/playwright?startDate=2025-03-01&endDate=2025-03-01&groupBy=5min');
@@ -38,7 +39,23 @@ test('mounts only the persisted first card on initial load', async ({ page }) =>
 		'false'
 	);
 	await expect.poll(() => requestedPaths.includes('/api/protocol/stats')).toBe(true);
-	expect(requestedPaths).not.toContain('/api/netflow/stats');
+	// The KPI row reads the traffic window up front; the deferred traffic card reuses it.
+	await expect
+		.poll(() => requestedPaths.filter((path) => path === '/api/netflow/stats').length)
+		.toBe(1);
+	for (const path of [
+		'/api/ip/stats',
+		'/api/netflow/characteristics',
+		'/api/netflow/spectrum-stats'
+	])
+		expect(requestedPaths).not.toContain(path);
+	await page.getByRole('button', { name: 'Load Traffic Overview chart' }).click();
+	await expect(page.locator('[data-chart-id="dashboard"]')).toHaveAttribute(
+		'data-chart-activated',
+		'true'
+	);
+	await expect(page.getByTestId('chart-card-state').first()).toBeAttached();
+	expect(requestedPaths.filter((path) => path === '/api/netflow/stats')).toHaveLength(1);
 });
 
 test('uses the latest filters when a deferred card mounts', async ({ page }) => {
@@ -50,14 +67,13 @@ test('uses the latest filters when a deferred card mounts', async ({ page }) => 
 	const ip = page.locator('[data-chart-id="ip"]');
 	await expect(ip).toHaveAttribute('data-chart-activated', 'false');
 
-	await page.locator('#endDate').fill('2025-03-02');
-	await page.locator('#endDate').press('Tab');
+	await setDateRange(page, { endDate: '2025-03-02' });
 	await expect.poll(() => new URL(page.url()).searchParams.get('endDate')).toBe('2025-03-02');
 
 	const requestPromise = page.waitForRequest(
 		(request) => new URL(request.url()).pathname === '/api/ip/stats'
 	);
-	await page.getByRole('button', { name: 'Load IP Address Breakdown chart' }).click();
+	await page.getByRole('button', { name: 'Load Unique IP Counts chart' }).click();
 	const request = await requestPromise;
 
 	expect(new URL(request.url()).searchParams.get('endDate')).toBe('1740988800');

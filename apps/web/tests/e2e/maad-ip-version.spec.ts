@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { setMaadFamily } from './toolbar-helpers';
 
 const IPV6_LABEL = 'IPv6 (/23–/64)';
 
@@ -15,16 +16,15 @@ test('keeps the IPv6 MAAD selection across drilldown, reload, and next file', as
 			new URL(request.url()).pathname === '/api/netflow/spectrum-stats' &&
 			new URL(request.url()).searchParams.get('ipVersion') === '6'
 	);
-	await familyControl.getByRole('button', { name: IPV6_LABEL }).click();
+	await setMaadFamily(page, IPV6_LABEL);
 	await expect.poll(() => new URL(page.url()).searchParams.get('ipVersion')).toBe('6');
 	await spectrumRequest;
 
 	await page.reload();
 	await page.locator('[data-chart-sentinel="spectrum"]').scrollIntoViewIfNeeded();
-	await expect(familyControl.getByRole('button', { name: IPV6_LABEL })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
+	await expect(
+		page.getByRole('button', { name: 'MAAD: IPv6, Addresses', exact: true })
+	).toBeVisible();
 
 	const dashboard = page.locator('[data-chart-id="dashboard"]');
 	await dashboard.scrollIntoViewIfNeeded();
@@ -34,15 +34,15 @@ test('keeps the IPv6 MAAD selection across drilldown, reload, and next file', as
 	expect(fileUrl.searchParams.get('dataset')).toBe('playwright');
 	expect(fileUrl.searchParams.get('ipVersion')).toBe('6');
 
-	const fileIpv6 = familyControl.getByRole('button', { name: IPV6_LABEL });
-	await expect(fileIpv6).toHaveAttribute('aria-pressed', 'true');
+	const fileIpv6 = familyControl.getByRole('radio', { name: IPV6_LABEL });
+	await expect(fileIpv6).toHaveAttribute('aria-checked', 'true');
 
 	await page.reload();
-	await expect(fileIpv6).toHaveAttribute('aria-pressed', 'true');
+	await expect(fileIpv6).toHaveAttribute('aria-checked', 'true');
 
 	await page
 		.getByRole('group', { name: 'MAAD measure' })
-		.getByRole('button', { name: 'Bytes' })
+		.getByRole('radio', { name: 'Bytes' })
 		.click();
 	await expect.poll(() => new URL(page.url()).searchParams.get('measure')).toBe('bytes');
 	expect(new URL(page.url()).searchParams.get('ipVersion')).toBe('6');
@@ -53,9 +53,9 @@ test('keeps the IPv6 MAAD selection across drilldown, reload, and next file', as
 	await expect.poll(() => new URL(page.url()).searchParams.get('ipVersion')).toBe('6');
 	expect(new URL(page.url()).searchParams.get('dataset')).toBe('playwright');
 	expect(new URL(page.url()).searchParams.get('measure')).toBe('bytes');
-	await expect(fileIpv6).toHaveAttribute('aria-pressed', 'true');
+	await expect(fileIpv6).toHaveAttribute('aria-checked', 'true');
 
-	await page.getByRole('button', { name: 'IPv4 (/8–/24)' }).click();
+	await familyControl.getByRole('radio', { name: 'IPv4 (/8–/24)' }).click();
 	await expect.poll(() => new URL(page.url()).searchParams.get('ipVersion')).toBeNull();
 	expect(new URL(page.url()).searchParams.get('measure')).toBe('bytes');
 });
@@ -66,8 +66,6 @@ test('falls back to IPv4 MAAD for an unknown ipVersion on the dashboard', async 
 	);
 
 	await expect(
-		page
-			.getByRole('group', { name: 'MAAD address family' })
-			.getByRole('button', { name: 'IPv4 (/8–/24)' })
-	).toHaveAttribute('aria-pressed', 'true');
+		page.getByRole('button', { name: 'MAAD: IPv4, Addresses', exact: true })
+	).toBeVisible();
 });

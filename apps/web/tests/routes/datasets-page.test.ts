@@ -45,6 +45,16 @@ describe('/datasets/[dataset] load', () => {
 		expect(fetch).toHaveBeenCalledWith('/api/routers?dataset=uoregon');
 		expect(fetch).toHaveBeenCalledWith('/api/netflow/maad-status?dataset=uoregon');
 		expect(result).toEqual({
+			datasets: [
+				{
+					datasetId: 'uoregon',
+					label: 'UONet-in',
+					defaultStartDate: '2025-02-11',
+					discoveryMode: 'live',
+					hasLocality: false,
+					isDefault: true
+				}
+			],
 			datasetId: 'uoregon',
 			title: 'UONet-in',
 			defaultStartDate: '2025-02-11',

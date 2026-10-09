@@ -32,17 +32,6 @@ export type NetflowStatsData = {
 	readonly error: string | null;
 };
 
-export type NetflowWindowTotals = {
-	flows: number;
-	flowsTcp: number;
-	packets: number;
-	bytes: number;
-	buckets: number;
-	completeBuckets: number;
-	partialBuckets: number;
-	unknownBuckets: number;
-};
-
 type StatsRequest =
 	| { kind: 'waiting' }
 	| { kind: 'invalid'; error: string }
@@ -195,29 +184,4 @@ export function createNetflowStatsData(getFilters: () => NetflowStatsFilters): N
 			return request.kind === 'fetch' && settled?.id === request.id ? settled.error : null;
 		}
 	};
-}
-
-/** Sum the additive totals of every observed bucket; buckets without data contribute nothing. */
-export function sumNetflowWindow(results: readonly TimeBucket<NetflowStatsResult>[]) {
-	const totals: NetflowWindowTotals = {
-		flows: 0,
-		flowsTcp: 0,
-		packets: 0,
-		bytes: 0,
-		buckets: results.length,
-		completeBuckets: 0,
-		partialBuckets: 0,
-		unknownBuckets: 0
-	};
-	for (const bucket of results) {
-		if (bucket.coverage.state === 'complete') totals.completeBuckets += 1;
-		else if (bucket.coverage.state === 'partial') totals.partialBuckets += 1;
-		else totals.unknownBuckets += 1;
-		if (!bucket.data) continue;
-		totals.flows += bucket.data.flows;
-		totals.flowsTcp += bucket.data.flowsTcp;
-		totals.packets += bucket.data.packets;
-		totals.bytes += bucket.data.bytes;
-	}
-	return totals;
 }

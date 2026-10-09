@@ -7,6 +7,7 @@ import {
 	hoverChart,
 	rendered
 } from './chart-helpers';
+import { intervalSelect, setDirection, setInterval } from './toolbar-helpers';
 
 test('traffic tooltip totals describe the hovered bucket after trimming unknown bounds', async ({
 	page
@@ -74,10 +75,7 @@ test('keyboard range selection changes the time window and Escape cancels it', a
 	await expect(page).toHaveURL(/endDate=2025-03-03/);
 	await surface.press('Shift+ArrowRight');
 	await surface.press('Enter');
-	await expect(page.getByRole('button', { name: '5 min', exact: true })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
+	await expect(intervalSelect(page)).toHaveAccessibleName('Interval: 5 min');
 });
 
 test('dense spectra retain one accessible interaction surface and positioned summaries', async ({
@@ -258,12 +256,12 @@ test('traffic aborts an obsolete request and retains the latest rendered groupin
 			request.url().includes('/api/netflow/stats?') &&
 			new URL(request.url()).searchParams.get('groupBy') === 'hour'
 	);
-	await page.getByRole('button', { name: 'Hour', exact: true }).click();
+	await setInterval(page, 'Hour');
 	const pending = await requested;
 	const aborted = page.waitForEvent('requestfailed', {
 		predicate: (request) => request === pending
 	});
-	await page.getByRole('button', { name: '10 min', exact: true }).click();
+	await setInterval(page, '10 min');
 	await expect(card.getByTestId('chart-axis').filter({ hasText: '10 Minutes' })).toBeAttached();
 	const tcp = card.getByTestId('chart-series').filter({ hasText: /^Flows TCP$/ });
 	await expect(tcp).toHaveAttribute('data-total', '100');
@@ -289,9 +287,8 @@ test('filter transitions release detached chart DOM and listeners', async ({ pag
 	]) {
 		await activateChart(page, id);
 	}
-	const direction = page.getByRole('group', { name: 'Traffic direction' });
 	async function change(name: 'Ingress' | 'All') {
-		await direction.getByRole('button', { name, exact: true }).click();
+		await setDirection(page, name);
 		await page.waitForLoadState('networkidle');
 	}
 	await change('Ingress');

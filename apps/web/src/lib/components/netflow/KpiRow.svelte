@@ -1,7 +1,8 @@
 <script lang="ts">
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
-	import { sumNetflowWindow, type NetflowStatsData } from './netflow-stats-data.svelte.ts';
+	import type { NetflowStatsData } from './netflow-stats-data.svelte.ts';
+	import { sumNetflowWindow } from './netflow-window-totals.ts';
 
 	let { stats }: { stats: NetflowStatsData } = $props();
 

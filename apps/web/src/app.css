@@ -249,3 +249,12 @@ table {
 		transition-duration: 0.01ms !important;
 	}
 }
+@media (pointer: coarse) {
+	.toolbar-trigger,
+	[data-card-menu-trigger] {
+		min-height: 2.75rem;
+	}
+	[data-card-menu-trigger] {
+		min-width: 2.75rem;
+	}
+}
