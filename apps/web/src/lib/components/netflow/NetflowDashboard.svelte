@@ -1,63 +1,53 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import ChartLoading from '#lib/components/charts/ChartLoading.svelte';
-	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import ChartCardHeader from '#lib/components/charts/ChartCardHeader.svelte';
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import { goto } from '$app/navigation';
 	import ChartContainer from '#lib/components/charts/ChartContainer.svelte';
-	import MetricSelector from '#lib/components/filters/MetricSelector.svelte';
-	import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
+	import TrafficMetricControls from '#lib/components/filters/TrafficMetricControls.svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
-	import {
-		ensureCachedWindow,
-		getMissingWindowRanges,
-		readCachedWindow,
-		type TimeRange
-	} from '#lib/utils/window-cache.ts';
-	import type {
-		DataOption,
-		GroupByOption,
-		NetflowDataPoint,
-		ChartTypeOption,
-		RouterConfig
-	} from './types.ts';
+	import type { NetflowStatsData } from './netflow-stats-data.svelte.ts';
+	import type { DataOption, GroupByOption, NetflowDataPoint, ChartTypeOption } from './types.ts';
 	import type {
 		FlowDirection,
 		MaadIpVersion,
 		MaadMeasure,
 		NetflowIpFamily,
 		NetflowMetricTotals,
-		NetflowStatsResponse,
-		NetflowStatsResult,
-		TimeBucket
+		NetflowStatsResult
 	} from '#lib/types/types.ts';
 
-	const props = $props<{
+	type Props = {
 		dataset: string;
-		startDate: string;
-		endDate: string;
+		stats: NetflowStatsData;
 		groupBy: GroupByOption;
-		routers: RouterConfig;
-		routersLoaded: boolean;
 		dataOptions: DataOption[];
 		direction: FlowDirection;
 		ipVersion?: MaadIpVersion;
 		measure?: MaadMeasure;
 		onDrillDown?: (payload: { groupBy: GroupByOption; startDate: string; endDate: string }) => void;
 		onDataOptionsChange?: (payload: { options: DataOption[] }) => void;
-	}>();
+	};
+	const props: Props = $props();
 	const IP_FAMILY_LABELS: Record<NetflowIpFamily, string> = {
 		all: 'All',
 		ipv4: 'IPv4',
 		ipv6: 'IPv6'
 	};
+	const CHART_TYPE_OPTIONS = [
+		{ value: 'stacked', label: 'Stacked' },
+		{ value: 'line', label: 'Line' }
+	] as const;
 
 	let chartType = $state<ChartTypeOption>('stacked');
-	let selectedIpFamily = $state<NetflowIpFamily>('all');
-	let availableIpFamilies = $state<NetflowIpFamily[]>(['all']);
-	let rawResults = $state.raw<TimeBucket<NetflowStatsResult>[]>([]);
-	let loading = $state(false);
-	let error = $state<string | null>(null);
+	let requestedIpFamily = $state<NetflowIpFamily>('all');
+	const availableIpFamilies = $derived(props.stats.availableIpFamilies);
+	const selectedIpFamily = $derived(
+		availableIpFamilies.includes(requestedIpFamily) ? requestedIpFamily : 'all'
+	);
+	const loading = $derived(props.stats.loading);
+	const error = $derived(props.stats.error);
 
 	function getMetricsForFamily(
 		row: NetflowStatsResult,
@@ -82,158 +72,20 @@
 		};
 	}
 
-	let results = $derived.by<NetflowDataPoint[]>(() => {
+	const results = $derived.by<NetflowDataPoint[]>(() => {
 		const suffix =
 			selectedIpFamily === 'all' ? null : selectedIpFamily === 'ipv4' ? 'Ipv4' : 'Ipv6';
-		return rawResults.map((bucket) => ({
+		return props.stats.results.map((bucket) => ({
 			...bucket,
 			data: bucket.data === null ? null : getMetricsForFamily(bucket.data, suffix)
 		}));
 	});
 
-	let ipFamilyOptions = $derived.by(() =>
+	const ipFamilyOptions = $derived(
 		availableIpFamilies.length > 1
-			? availableIpFamilies.map((family) => ({
-					value: family,
-					label: IP_FAMILY_LABELS[family]
-				}))
+			? availableIpFamilies.map((family) => ({ value: family, label: IP_FAMILY_LABELS[family] }))
 			: []
 	);
-
-	type FilterInputs = {
-		startDate: string;
-		endDate: string;
-		groupBy: GroupByOption;
-		routers: RouterConfig;
-		direction: FlowDirection;
-	};
-
-	let lastFiltersKey = '';
-	let requestToken = 0;
-	let requestController: AbortController | null = null;
-	const ipFamilyCache: Record<string, NetflowIpFamily[] | undefined> = {};
-
-	function setAvailableIpFamilies(ipFamilies: NetflowIpFamily[]) {
-		availableIpFamilies = ipFamilies;
-		if (!ipFamilies.includes(selectedIpFamily)) {
-			selectedIpFamily = 'all';
-		}
-	}
-
-	function deriveSelectedRouters(routers: RouterConfig): string[] {
-		return Object.entries(routers)
-			.filter(([, enabled]) => enabled)
-			.map(([router]) => router.trim())
-			.filter((router) => router.length > 0)
-			.sort();
-	}
-
-	function getCacheKey(filters: FilterInputs, selectedRouters: string[]): string {
-		return JSON.stringify({
-			chart: 'netflow',
-			dataset: props.dataset,
-			groupBy: filters.groupBy,
-			routers: selectedRouters,
-			direction: filters.direction
-		});
-	}
-
-	function getRequestedRange(filters: FilterInputs): TimeRange {
-		return {
-			start: dateStringToEpochPST(filters.startDate),
-			end: dateStringToEpochPST(filters.endDate, true)
-		};
-	}
-
-	function readCachedResults(
-		cacheKey: string,
-		requestedRange: TimeRange
-	): TimeBucket<NetflowStatsResult>[] {
-		return readCachedWindow<TimeBucket<NetflowStatsResult>>(
-			cacheKey,
-			requestedRange,
-			(record, range) => record.bucketStart >= range.start && record.bucketStart < range.end
-		);
-	}
-
-	function handleIpFamilyChange(ipFamily: NetflowIpFamily) {
-		selectedIpFamily = ipFamily;
-	}
-
-	async function loadData(
-		filters: FilterInputs,
-		token: number,
-		selectedRouters: string[],
-		requestedRange: TimeRange
-	) {
-		requestController?.abort();
-		const controller = new AbortController();
-		requestController = controller;
-		const cacheKey = getCacheKey(filters, selectedRouters);
-		const needsFetch = getMissingWindowRanges(cacheKey, requestedRange).length > 0;
-		loading = needsFetch;
-		error = null;
-
-		const params = new URLSearchParams({
-			dataset: props.dataset,
-			routers: selectedRouters.join(','),
-			groupBy: filters.groupBy,
-			direction: filters.direction
-		});
-
-		try {
-			await ensureCachedWindow<TimeBucket<NetflowStatsResult>>({
-				key: cacheKey,
-				requestedRange,
-				signal: controller.signal,
-				fetchRange: async (range, signal) => {
-					const response = await fetch(
-						`/api/netflow/stats?${new URLSearchParams({
-							...Object.fromEntries(params.entries()),
-							startDate: range.start.toString(),
-							endDate: range.end.toString()
-						}).toString()}`,
-						{
-							signal,
-							method: 'GET',
-							headers: {
-								'Content-Type': 'application/json'
-							}
-						}
-					);
-
-					if (!response.ok) {
-						const message = await response.text();
-						throw new Error(message || `Failed to load data: ${response.statusText}`);
-					}
-
-					const json = (await response.json()) as NetflowStatsResponse;
-					ipFamilyCache[cacheKey] = json.availableIpFamilies;
-					return json.result;
-				},
-				getRecordKey: (record) => `${record.bucketStart}`,
-				compareRecords: (left, right) => left.bucketStart - right.bucketStart
-			});
-
-			if (token !== requestToken) {
-				return;
-			}
-			setAvailableIpFamilies(ipFamilyCache[cacheKey] ?? ['all']);
-			rawResults = readCachedResults(cacheKey, requestedRange);
-		} catch (err) {
-			if (token !== requestToken) {
-				return;
-			}
-			if (err instanceof DOMException && err.name === 'AbortError') return;
-			error = `Failed to load data: ${err instanceof Error ? err.message : 'Unknown error'}`;
-			rawResults = [];
-		} finally {
-			if (token === requestToken) {
-				loading = false;
-				if (requestController === controller) requestController = null;
-			}
-		}
-	}
 
 	function handleDrillDown(newGroupBy: GroupByOption, newStartDate: string, newEndDate: string) {
 		props.onDrillDown?.({ groupBy: newGroupBy, startDate: newStartDate, endDate: newEndDate });
@@ -249,112 +101,52 @@
 			props.measure
 		);
 	}
-
-	function handleChartTypeChange(newChartType: ChartTypeOption) {
-		chartType = newChartType;
-	}
-
-	function handleDataOptionsChange(nextOptions: DataOption[]) {
-		props.onDataOptionsChange?.({ options: nextOptions });
-	}
-
-	$effect(() => {
-		const filters: FilterInputs = {
-			startDate: props.startDate,
-			endDate: props.endDate,
-			groupBy: props.groupBy,
-			routers: props.routers,
-			direction: props.direction
-		};
-
-		const selectedRouters = deriveSelectedRouters(filters.routers);
-
-		if (!props.routersLoaded) {
-			requestToken += 1;
-			requestController?.abort();
-			requestController = null;
-			error = null;
-			rawResults = [];
-			loading = true;
-			return;
-		}
-
-		if (selectedRouters.length === 0) {
-			lastFiltersKey = '';
-			requestToken += 1;
-			requestController?.abort();
-			requestController = null;
-			error = 'Select at least one source to view NetFlow statistics';
-			rawResults = [];
-			loading = false;
-			return;
-		}
-
-		const nextKey = JSON.stringify({
-			dataset: props.dataset,
-			startDate: filters.startDate,
-			endDate: filters.endDate,
-			groupBy: filters.groupBy,
-			routers: selectedRouters,
-			direction: filters.direction
-		});
-
-		if (nextKey === lastFiltersKey) {
-			return;
-		}
-
-		lastFiltersKey = nextKey;
-		const requestedRange = getRequestedRange(filters);
-		const token = ++requestToken;
-		loadData(filters, token, selectedRouters, requestedRange);
-	});
-
-	onDestroy(() => {
-		requestToken += 1;
-		requestController?.abort();
-	});
 </script>
 
 <Card.Root
 	size="sm"
-	class="gap-0 overflow-visible py-0"
+	class="gap-0 py-0"
 	data-testid="chart-card-state"
 	data-state={loading ? 'loading' : error ? 'error' : results.length === 0 ? 'empty' : 'ready'}
 >
-	<Card.Header
-		class="border-border relative cursor-grab border-b py-4 select-none active:cursor-grabbing"
-		draggable="true"
-		data-drag-handle
-	>
-		<Card.Title class="text-lg font-semibold">
-			<h2>Traffic Overview</h2>
-		</Card.Title>
-		<DragGrip />
-	</Card.Header>
+	<ChartCardHeader title="Traffic Overview">
+		{#snippet controls()}
+			<TrafficMetricControls
+				dataOptions={props.dataOptions}
+				onDataOptionsChange={(options) => props.onDataOptionsChange?.({ options })}
+			/>
+			{#if ipFamilyOptions.length > 0}
+				<SegmentedToggle
+					options={ipFamilyOptions}
+					value={selectedIpFamily}
+					onValueChange={(family) => (requestedIpFamily = family)}
+					ariaLabel="Traffic IP family"
+				/>
+			{/if}
+			<SegmentedToggle
+				options={CHART_TYPE_OPTIONS}
+				value={chartType}
+				onValueChange={(next) => (chartType = next)}
+				ariaLabel="Traffic chart type"
+			/>
+		{/snippet}
+	</ChartCardHeader>
 
-	<Card.Content class="space-y-4 py-4">
-		<MetricSelector
-			dataOptions={props.dataOptions}
-			onDataOptionsChange={handleDataOptionsChange}
-			{chartType}
-			onChartTypeChange={handleChartTypeChange}
-			{ipFamilyOptions}
-			{selectedIpFamily}
-			onIpFamilyChange={handleIpFamilyChange}
-		/>
-
+	<Card.Content class="p-0">
 		<div
-			class="chart-frame traffic-frame h-[380px] min-h-[280px] resize-none overflow-hidden rounded-md border md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
+			class="chart-frame traffic-frame h-[380px] min-h-[280px] resize-none overflow-hidden p-3 [--chart-height:400px] sm:[--chart-height:520px] md:h-[320px] md:min-h-[240px] md:resize-y md:overflow-auto"
 		>
 			{#if loading}
 				<ChartLoading label="Loading data..." />
 			{:else if error}
 				<div class="flex h-full items-center justify-center">
-					<div class="text-destructive">{error}</div>
+					<div class="text-destructive text-sm">{error}</div>
 				</div>
 			{:else if results.length === 0}
 				<div class="flex h-full items-center justify-center">
-					<div class="text-muted-foreground">No data available for the selected filters</div>
+					<div class="text-muted-foreground text-sm">
+						No data available for the selected filters
+					</div>
 				</div>
 			{:else}
 				<ChartContainer

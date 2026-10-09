@@ -1,18 +1,19 @@
 <script lang="ts">
 	import { afterNavigate, goto } from '$app/navigation';
 	import { getNetflowFileDetailLoader } from '#lib/components/netflow/file-detail-loader.svelte.ts';
-	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
+	import { ArrowRight } from '@lucide/svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
+	import PageHeader from '#lib/components/shell/PageHeader.svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import { buildNetflowFileHref } from '#lib/utils/netflow-file-navigation.ts';
-	import NetflowFileHeader from '#lib/components/netflow/NetflowFileHeader.svelte';
 	import NetflowFileLoadingSkeleton from '#lib/components/netflow/NetflowFileLoadingSkeleton.svelte';
 	import NetflowFileMessageCard from '#lib/components/netflow/NetflowFileMessageCard.svelte';
 	import NetflowFileRouterCard from '#lib/components/netflow/NetflowFileRouterCard.svelte';
-	import MaadIpVersionFilter from '#lib/components/filters/MaadIpVersionFilter.svelte';
-	import MaadMeasureFilter from '#lib/components/filters/MaadMeasureFilter.svelte';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import {
 		MAAD_ADDRESS_SIDES,
+		MAAD_IP_VERSION_OPTIONS,
+		MAAD_MEASURE_OPTIONS,
 		maadInternalSideCopy,
 		maadMeasureHasSpectrum,
 		maadSideComputed,
@@ -57,6 +58,18 @@
 					: maadInternalSideCopy(data.direction, [side])
 			])
 		) as Record<MaadAddressSide, string | null>
+	);
+
+	const familyOptions = MAAD_IP_VERSION_OPTIONS.map((option) => ({
+		value: String(option.value),
+		label: option.label
+	}));
+	const processedAt = $derived(
+		loader?.processedAt
+			? formatTimestampAsPST(Date.parse(loader.processedAt))
+			: loader?.loading
+				? 'Loading...'
+				: 'N/A'
 	);
 
 	const formatCount = (value: number | null | undefined) =>
@@ -132,53 +145,49 @@
 
 <svelte:head><title>{data.fileInfo.filename} · ATLANTIS</title></svelte:head>
 
-<AnalysisLayout title={data.fileInfo.filename} eyebrow="NetFlow File:" railLabel="File options">
-	{#snippet toolbar()}<p class="text-muted-foreground text-xs">
-			{data.dataset} · {data.fileInfo.year}-{data.fileInfo.month}-{data.fileInfo.day} · {data
-				.fileInfo.hour}:{data.fileInfo.minute}
-		</p>
-		<p class="filter-summary"><span>MAAD IPv{data.ipVersion} · {maadMeasure}</span></p>
-		<Button
-			href={buildNetflowFileHref(
-				nextSlug,
-				data.dataset,
-				data.direction,
-				data.ipVersion,
-				data.measure
-			)}
-			size="sm"
-			variant="outline"
-			class="ml-auto">Next File</Button
-		>{/snippet}
-	{#snippet rail()}
-		<NetflowFileHeader
-			filename={data.fileInfo.filename}
-			year={data.fileInfo.year}
-			month={data.fileInfo.month}
-			day={data.fileInfo.day}
-			hour={data.fileInfo.hour}
-			minute={data.fileInfo.minute}
-			processedAt={loader?.processedAt
-				? formatTimestampAsPST(Date.parse(loader.processedAt))
-				: loader?.loading
-					? 'Loading...'
-					: 'N/A'}
-		/>
-
-		<div class="file-filters mt-5 space-y-4 border-t pt-4">
-			<div class="flex flex-col items-stretch gap-2">
-				<span class="text-foreground text-sm font-medium">MAAD address family:</span>
-				<MaadIpVersionFilter
-					ipVersion={data.ipVersion}
-					onIpVersionChange={handleMaadIpVersionChange}
-				/>
-			</div>
-			<div class="flex flex-col items-stretch gap-2">
-				<span class="text-foreground text-sm font-medium">MAAD measure:</span>
-				<MaadMeasureFilter measure={maadMeasure} onMeasureChange={handleMaadMeasureChange} />
-			</div>
+<div class="shell page flex flex-col gap-4">
+	<PageHeader title={data.fileInfo.filename}>
+		{#snippet description()}
+			<span class="tabular-nums">
+				{data.dataset} · {data.fileInfo.year}-{data.fileInfo.month}-{data.fileInfo.day}
+				{data.fileInfo.hour}:{data.fileInfo.minute} PST · Processed {processedAt}
+			</span>
+		{/snippet}
+		{#snippet actions()}
+			<Button
+				href={buildNetflowFileHref(
+					nextSlug,
+					data.dataset,
+					data.direction,
+					data.ipVersion,
+					data.measure
+				)}
+				size="sm"
+				variant="outline">Next File<ArrowRight /></Button
+			>
+		{/snippet}
+	</PageHeader>
+	<div class="flex flex-wrap items-center gap-x-4 gap-y-2" role="group" aria-label="MAAD options">
+		<div class="flex items-center gap-2">
+			<span class="text-muted-foreground text-xs">MAAD measure</span>
+			<SegmentedToggle
+				options={MAAD_MEASURE_OPTIONS}
+				value={maadMeasure}
+				onValueChange={(measure) => handleMaadMeasureChange({ measure })}
+				ariaLabel="MAAD measure"
+			/>
 		</div>
-	{/snippet}
+		<div class="flex items-center gap-2">
+			<span class="text-muted-foreground text-xs">Address family</span>
+			<SegmentedToggle
+				options={familyOptions}
+				value={String(data.ipVersion)}
+				onValueChange={(value) =>
+					handleMaadIpVersionChange({ ipVersion: Number(value) as MaadIpVersion })}
+				ariaLabel="MAAD address family"
+			/>
+		</div>
+	</div>
 
 	{#if loader?.error && !loader.hasRows}
 		<NetflowFileMessageCard
@@ -214,4 +223,4 @@
 			{/each}
 		</div>
 	{/if}
-</AnalysisLayout>
+</div>

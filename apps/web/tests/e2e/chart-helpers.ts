@@ -35,12 +35,15 @@ export async function hoverPlot(surface: Locator) {
 }
 
 export async function setDates(page: Page, start: string, end: string) {
+	const dialog = page.getByRole('dialog', { name: 'Date range', exact: true });
+	if (!(await dialog.isVisible())) await page.getByRole('button', { name: /^Date range:/ }).click();
+	await expect(dialog).toBeVisible();
 	for (const [label, date] of [
 		['End Date', end],
 		['Start Date', start]
 	]) {
-		await page.getByLabel(label, { exact: true }).fill(date);
-		await page.getByLabel(label, { exact: true }).press('Tab');
+		await dialog.getByLabel(label, { exact: true }).fill(date);
+		await dialog.getByLabel(label, { exact: true }).press('Tab');
 		const key = label === 'End Date' ? 'endDate' : 'startDate';
 		await expect
 			.poll(
@@ -50,8 +53,10 @@ export async function setDates(page: Page, start: string, end: string) {
 			)
 			.toBe(date);
 	}
-	await expect(page.getByLabel('Start Date', { exact: true })).toHaveValue(start);
-	await expect(page.getByLabel('End Date', { exact: true })).toHaveValue(end);
+	await expect(dialog.getByLabel('Start Date', { exact: true })).toHaveValue(start);
+	await expect(dialog.getByLabel('End Date', { exact: true })).toHaveValue(end);
+	await page.keyboard.press('Escape');
+	await expect(dialog).not.toBeAttached();
 }
 
 export async function rendered(surface: Locator) {

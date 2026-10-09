@@ -31,7 +31,7 @@
       "name": "@atlantis/web",
       "version": "0.0.1",
       "dependencies": {
-        "@lucide/svelte": "^1.33.0",
+        "@lucide/svelte": "^1.54.0",
         "@tanstack/charts": "1.0.0",
         "better-sqlite3": "^12.6.2",
         "d3-scale": "4.0.2",
@@ -52,7 +52,7 @@
         "@types/better-sqlite3": "^7.6.13",
         "@types/d3-scale": "4.0.9",
         "@types/node": "^22.15.17",
-        "bits-ui": "^2.16.3",
+        "bits-ui": "^2.18.0",
         "clsx": "^2.1.1",
         "eslint": "^9.18.0",
         "eslint-config-prettier": "^10.0.1",
@@ -424,7 +424,7 @@
 
     "@libsql/win32-x64-msvc": ["@libsql/win32-x64-msvc@0.5.29", "", { "os": "win32", "cpu": "x64" }, "sha512-4/0CvEdhi6+KjMxMaVbFM2n2Z44escBRoEYpR+gZg64DdetzGnYm8mcNLcoySaDJZNaBd6wz5DNdgRmcI4hXcg=="],
 
-    "@lucide/svelte": ["@lucide/svelte@1.33.0", "", { "peerDependencies": { "svelte": "^5" } }, "sha512-b+osTYG2V4dge5Lr7tnaTaahhy/4vH7Xb8zcqVjmctjwgkpXS0NNOJPkGzHHZoxtw/OO+2YAU28omeMfYCaawg=="],
+    "@lucide/svelte": ["@lucide/svelte@1.54.0", "", { "peerDependencies": { "svelte": "^5" } }, "sha512-PbUrcmVPU71zmcs1Kc5RlgF83SsBsSNC+MeuttAHMmvPMuoIJfyDPjit5kpAJxJwsmN2Pk1Bx75AwZxP8vkDvw=="],
 
     "@mrleebo/prisma-ast": ["@mrleebo/prisma-ast@0.13.1", "", { "dependencies": { "chevrotain": "^10.5.0", "lilconfig": "^2.1.0" } }, "sha512-XyroGQXcHrZdvmrGJvsA9KNeOOgGMg1Vg9OlheUsBOSKznLMDl+YChxbkboRHvtFYJEMRYmlV3uoo/njCw05iw=="],
 

@@ -20,11 +20,13 @@
 	} = $props();
 </script>
 
-<Card.Root size="sm" class="file-router-card gap-0 py-0">
-	<NetflowFileRouterSummary {row} {formatCount} {formatTimestampAsPST} />
+<Card.Root size="sm" class="grid gap-0 py-0 2xl:grid-cols-[minmax(28rem,0.8fr)_minmax(0,2fr)]">
+	<div class="min-w-0 border-b 2xl:border-r 2xl:border-b-0">
+		<NetflowFileRouterSummary {row} {formatCount} {formatTimestampAsPST} />
+	</div>
 
-	<Card.Content class="py-4">
-		<h4 class="text-md text-foreground mb-4 font-semibold">MAAD Analysis</h4>
+	<Card.Content class="min-w-0 p-4">
+		<h4 class="text-foreground mb-3 text-sm font-semibold">MAAD analysis</h4>
 		<div class="space-y-6">
 			<NetflowFileRouterAnalysisSection
 				title="Structure"

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
-	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
+	import ChecklistPopover from '#lib/components/common/ChecklistPopover.svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
 	import { sourceSeriesColor } from './chart-colors';
 	import ChartCard from './ChartCard.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
@@ -49,6 +50,10 @@
 		{ side: 'destination', range: 'high', label: 'Destination ports >1023' }
 	];
 
+	const PORT_FAMILY_OPTIONS = [
+		{ value: 'ipv4', label: 'IPv4' },
+		{ value: 'ipv6', label: 'IPv6' }
+	] as const;
 	let portFamily = $state<Exclude<NetflowIpFamily, 'all'>>('ipv4');
 	const activePortSeries = new SvelteSet(PORT_OPTIONS.map(({ side, range }) => `${side}-${range}`));
 	const granularity = $derived(GROUP_BY_TO_GRANULARITY[props.groupBy]);
@@ -114,37 +119,30 @@
 	emptyCopy="No port data for the selected filters"
 >
 	{#snippet controls()}
-		<div class="flex flex-wrap items-center gap-x-6 gap-y-3">
-			<div class="flex flex-wrap items-center gap-4" role="group" aria-label="Port IP family">
-				{#each ['ipv4', 'ipv6'] as const as family (family)}
-					<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-						<input
-							type="radio"
-							name="port-cardinality-ip-family"
-							checked={portFamily === family}
-							onchange={() => (portFamily = family)}
-							class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-						/>
-						<span>{family.toUpperCase()}</span>
-					</label>
-				{/each}
-			</div>
-			<div
-				class="flex flex-wrap items-center gap-x-4 gap-y-2"
-				role="group"
-				aria-label="Port ranges"
-			>
-				{#each PORT_OPTIONS as option (`${option.side}-${option.range}`)}
-					<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-						<Checkbox
-							checked={activePortSeries.has(`${option.side}-${option.range}`)}
-							onCheckedChange={() => togglePortSeries(option.side, option.range)}
-						/>
-						<span>{option.label}</span>
-					</label>
-				{/each}
-			</div>
-		</div>
+		<SegmentedToggle
+			options={PORT_FAMILY_OPTIONS}
+			value={portFamily}
+			onValueChange={(family) => (portFamily = family)}
+			ariaLabel="Port IP family"
+		/>
+		<ChecklistPopover
+			label="Ranges"
+			dialogLabel="Port ranges"
+			items={PORT_OPTIONS.map((option) => ({
+				key: `${option.side}-${option.range}` as const,
+				label: option.label,
+				checked: activePortSeries.has(`${option.side}-${option.range}`)
+			}))}
+			onToggle={(key) => {
+				const option = PORT_OPTIONS.find(({ side, range }) => `${side}-${range}` === key);
+				if (option) togglePortSeries(option.side, option.range);
+			}}
+			onSetAll={(checked) => {
+				activePortSeries.clear();
+				if (checked)
+					for (const { side, range } of PORT_OPTIONS) activePortSeries.add(`${side}-${range}`);
+			}}
+		/>
 	{/snippet}
 
 	<MetricLinePanel

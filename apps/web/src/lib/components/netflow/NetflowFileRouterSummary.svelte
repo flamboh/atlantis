@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { FileDetailResourceView, NetflowFileRouterRow } from './file-detail-loader.svelte';
 	import type { FileIpCounts } from '#lib/types/types.ts';
-	import * as Card from '#lib/components/ui/card/index.ts';
+	import { Badge } from '#lib/components/ui/badge/index.ts';
+	import * as Table from '#lib/components/ui/table/index.ts';
 
 	let {
 		row,
@@ -29,88 +30,130 @@
 
 		return formatTimestampAsPST(timestamp * 1000);
 	}
+
+	const summary = $derived(row.summary);
+	const metricRows = $derived([
+		{
+			label: 'Flows',
+			values: [
+				summary.flows,
+				summary.flows_tcp,
+				summary.flows_udp,
+				summary.flows_icmp,
+				summary.flows_other
+			]
+		},
+		{
+			label: 'Packets',
+			values: [
+				summary.packets,
+				summary.packets_tcp,
+				summary.packets_udp,
+				summary.packets_icmp,
+				summary.packets_other
+			]
+		},
+		{
+			label: 'Bytes',
+			values: [
+				summary.bytes,
+				summary.bytes_tcp,
+				summary.bytes_udp,
+				summary.bytes_icmp,
+				summary.bytes_other
+			]
+		}
+	]);
+	const details = $derived([
+		['Bucket', formatOptionalTimestamp(summary.bucket_start)],
+		['First', formatOptionalTimestamp(summary.first_timestamp)],
+		['Last', formatOptionalTimestamp(summary.last_timestamp)],
+		['First ms', formatCount(summary.msec_first)],
+		['Last ms', formatCount(summary.msec_last)],
+		['Seq failures', formatCount(summary.sequence_failures)]
+	]);
 </script>
 
-<Card.Header class="file-summary border-border bg-muted/30 border-b py-4 break-words">
-	<div class="mb-4 grid gap-3">
-		<div class="min-w-0">
-			<Card.Title class="text-lg font-semibold">
-				<h3>Source: {row.router}</h3>
-			</Card.Title>
-			<p class="text-muted-foreground mt-1 text-sm break-all">
-				{row.summary.file_path ?? 'No input locator recorded'}
-			</p>
+<div class="flex min-w-0 flex-col gap-4 p-4">
+	<div class="min-w-0">
+		<div class="flex flex-wrap items-center gap-2">
+			<h3 class="text-base font-semibold tracking-tight">Source: {row.router}</h3>
+			<Badge variant="outline" class="text-muted-foreground font-normal"
+				>Kind {summary.input_kind ?? 'unknown'}</Badge
+			>
+			<Badge
+				variant={summary.input_status === 'failed' ? 'destructive' : 'outline'}
+				class="font-normal">Status {summary.input_status ?? 'unknown'}</Badge
+			>
+			<Badge variant="outline" class="text-muted-foreground font-normal"
+				>{summary.file_exists_on_disk ? 'on disk' : 'not on disk'}</Badge
+			>
 		</div>
-		<div class="grid grid-cols-2 gap-2 text-xs">
-			<div>
-				<p class="text-muted-foreground font-semibold uppercase">Kind</p>
-				<p>{row.summary.input_kind ?? 'unknown'}</p>
-			</div>
-			<div>
-				<p class="text-muted-foreground font-semibold uppercase">Status</p>
-				<p>{row.summary.input_status ?? 'unknown'}</p>
-			</div>
-			<div>
-				<p class="text-muted-foreground font-semibold uppercase">Bucket</p>
-				<p>{formatOptionalTimestamp(row.summary.bucket_start)}</p>
-			</div>
-			<div>
-				<p class="text-muted-foreground font-semibold uppercase">On Disk</p>
-				<p>{row.summary.file_exists_on_disk ? 'yes' : 'no'}</p>
-			</div>
-		</div>
+		<p class="text-muted-foreground mt-1 font-mono text-xs break-all">
+			{summary.file_path ?? 'No input locator recorded'}
+		</p>
 	</div>
-	{#if row.summary.input_error_message}
+	{#if summary.input_error_message}
 		<p
-			class="border-destructive/20 bg-background text-destructive mb-4 rounded border px-3 py-2 text-sm"
+			class="border-destructive/30 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm"
 		>
-			{row.summary.input_error_message}
+			{summary.input_error_message}
 		</p>
 	{/if}
-	<div class="grid grid-cols-1 gap-2 text-sm md:grid-cols-2">
-		<div>
-			<h3 class="text-md font-semibold">Unique IP Count (Source)</h3>
-			<div>IPv4: {formatIpCount(row.source.ipCounts, 'ipv4')}</div>
-			<div>IPv6: {formatIpCount(row.source.ipCounts, 'ipv6')}</div>
-		</div>
-		<div>
-			<h3 class="text-md font-semibold">Unique IP Count (Destination)</h3>
-			<div>IPv4: {formatIpCount(row.destination.ipCounts, 'ipv4')}</div>
-			<div>IPv6: {formatIpCount(row.destination.ipCounts, 'ipv6')}</div>
-		</div>
+
+	<div class="overflow-x-auto rounded-md border">
+		<Table.Root class="text-xs">
+			<Table.Header class="bg-muted/50">
+				<Table.Row class="hover:bg-transparent">
+					<Table.Head class="h-8 px-2.5"><span class="sr-only">Metric</span></Table.Head>
+					{#each ['Total', 'TCP', 'UDP', 'ICMP', 'Other'] as column (column)}
+						<Table.Head class="text-muted-foreground h-8 px-2.5 text-right text-xs"
+							>{column}</Table.Head
+						>
+					{/each}
+				</Table.Row>
+			</Table.Header>
+			<Table.Body>
+				{#each metricRows as metric (metric.label)}
+					<Table.Row class="hover:bg-transparent">
+						<Table.Head scope="row" class="text-foreground h-8 px-2.5 font-medium"
+							>{metric.label}</Table.Head
+						>
+						{#each metric.values as value, index (index)}
+							<Table.Cell class="px-2.5 py-1.5 text-right tabular-nums"
+								>{value.toLocaleString()}</Table.Cell
+							>
+						{/each}
+					</Table.Row>
+				{/each}
+			</Table.Body>
+		</Table.Root>
 	</div>
-	<div class="file-metrics grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+
+	<dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4 2xl:grid-cols-2">
 		<div>
-			<h4 class="font-medium">Flows</h4>
-			<p>Total: {row.summary.flows.toLocaleString()}</p>
-			<p>TCP: {row.summary.flows_tcp.toLocaleString()}</p>
-			<p>UDP: {row.summary.flows_udp.toLocaleString()}</p>
-			<p>ICMP: {row.summary.flows_icmp.toLocaleString()}</p>
-			<p>Other: {row.summary.flows_other.toLocaleString()}</p>
+			<dt class="text-muted-foreground">Unique source IPs</dt>
+			<dd class="tabular-nums">
+				IPv4 {formatIpCount(row.source.ipCounts, 'ipv4')} · IPv6 {formatIpCount(
+					row.source.ipCounts,
+					'ipv6'
+				)}
+			</dd>
 		</div>
 		<div>
-			<h4 class="font-medium">Packets</h4>
-			<p>Total: {row.summary.packets.toLocaleString()}</p>
-			<p>TCP: {row.summary.packets_tcp.toLocaleString()}</p>
-			<p>UDP: {row.summary.packets_udp.toLocaleString()}</p>
-			<p>ICMP: {row.summary.packets_icmp.toLocaleString()}</p>
-			<p>Other: {row.summary.packets_other.toLocaleString()}</p>
+			<dt class="text-muted-foreground">Unique destination IPs</dt>
+			<dd class="tabular-nums">
+				IPv4 {formatIpCount(row.destination.ipCounts, 'ipv4')} · IPv6 {formatIpCount(
+					row.destination.ipCounts,
+					'ipv6'
+				)}
+			</dd>
 		</div>
-		<div>
-			<h4 class="font-medium">Bytes</h4>
-			<p>Total: {row.summary.bytes.toLocaleString()}</p>
-			<p>TCP: {row.summary.bytes_tcp.toLocaleString()}</p>
-			<p>UDP: {row.summary.bytes_udp.toLocaleString()}</p>
-			<p>ICMP: {row.summary.bytes_icmp.toLocaleString()}</p>
-			<p>Other: {row.summary.bytes_other.toLocaleString()}</p>
-		</div>
-		<div>
-			<h4 class="font-medium">Timestamps & Metrics</h4>
-			<p>First: {formatOptionalTimestamp(row.summary.first_timestamp)}</p>
-			<p>Last: {formatOptionalTimestamp(row.summary.last_timestamp)}</p>
-			<p>First ms: {formatCount(row.summary.msec_first)}</p>
-			<p>Last ms: {formatCount(row.summary.msec_last)}</p>
-			<p>Seq failures: {formatCount(row.summary.sequence_failures)}</p>
-		</div>
-	</div>
-</Card.Header>
+		{#each details as [label, value] (label)}
+			<div>
+				<dt class="text-muted-foreground">{label}</dt>
+				<dd class="tabular-nums">{value}</dd>
+			</div>
+		{/each}
+	</dl>
+</div>

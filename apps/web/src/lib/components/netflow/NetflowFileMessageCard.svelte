@@ -16,7 +16,7 @@
 
 	const classes = $derived(
 		tone === 'danger'
-			? 'bg-destructive/5 text-destructive ring-destructive/20'
+			? 'border-destructive/30 bg-destructive/5 text-destructive'
 			: 'text-muted-foreground'
 	);
 </script>
@@ -25,7 +25,7 @@
 	<Card.Content>
 		<p>{message}</p>
 		{#if action && actionLabel}
-			<Button type="button" variant="destructive" size="sm" class="mt-2" onclick={action}>
+			<Button type="button" variant="outline" size="sm" class="mt-3" onclick={action}>
 				{actionLabel}
 			</Button>
 		{/if}

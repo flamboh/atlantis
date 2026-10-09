@@ -3,8 +3,8 @@ import { expectRendered, FIXTURE_DASHBOARD, hoverChart } from './chart-helpers';
 
 test('dataset picker and navigation open the selected dataset and alerts', async ({ page }) => {
 	await page.goto('/');
-	const fixture = page.getByRole('button', { name: /Playwright Fixture/ });
-	const external = page.getByRole('button', { name: /Playwright External MAAD/ });
+	const fixture = page.getByRole('link', { name: 'Playwright Fixture', exact: true });
+	const external = page.getByRole('link', { name: 'Playwright External MAAD', exact: true });
 	await expect(fixture).toBeVisible();
 	await expect(external).toBeVisible();
 	await external.focus();
@@ -22,7 +22,7 @@ test('dataset picker and navigation open the selected dataset and alerts', async
 	).toBeVisible();
 	await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
 	await expect(page).toHaveURL(/\/datasets\/playwright-external-maad$/);
-	await page.getByRole('link', { name: 'Home', exact: true }).click();
+	await page.getByRole('link', { name: 'ATLANTIS', exact: true }).click();
 	await fixture.click();
 	await expect(page).toHaveURL(/\/datasets\/playwright$/);
 });
@@ -62,10 +62,9 @@ test('file next navigation keeps filters and explains absent MAAD analyses', asy
 		if (/\/api\/netflow\/files\/.*\/details\?/.test(request.url())) requests.push(request.url());
 	});
 	await page.goto('/netflow/files/202503010200?dataset=playwright&measure=bytes');
-	await expect(page.getByRole('button', { name: 'Bytes', exact: true })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
+	await expect(
+		page.getByRole('group', { name: 'MAAD measure' }).getByRole('radio', { name: 'Bytes' })
+	).toHaveAttribute('aria-checked', 'true');
 	await expectRendered(page.locator('main'), 2);
 	await expect.poll(() => requests.length).toBe(1);
 	await expect(
@@ -109,7 +108,7 @@ for (const [path, status, title] of [
 		await expect(page.getByRole('heading', { name: status, exact: true })).toBeVisible();
 		await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
 		await page.getByRole('link', { name: 'Home', exact: true }).last().click();
-		await expect(page.getByRole('button', { name: /Playwright Fixture/ })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Playwright Fixture', exact: true })).toBeVisible();
 	});
 }
 

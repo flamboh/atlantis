@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { chooseSegment, setDirection } from './toolbar-helpers';
 
 const DASHBOARD =
 	'/datasets/playwright-external-maad?startDate=2025-03-01&endDate=2025-03-01&groupBy=5min';
@@ -23,32 +24,20 @@ test('explains MAAD cards for internal address sides the product did not compute
 	await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 	await expect(spectrum.getByLabel('Spectrum chart')).toBeVisible();
 
-	await dimensions
-		.getByRole('group', { name: 'MAAD address side' })
-		.getByRole('button', { name: 'Destination' })
-		.click();
+	await chooseSegment(dimensions, 'MAAD address side', 'Destination');
 	await expect(dimensions.getByTestId('chart-selection-unavailable')).toHaveText(
 		'MAAD is not computed for internal addresses. The destination addresses are internal for ingress traffic.'
 	);
 
-	await spectrum
-		.getByRole('group', { name: 'Spectrum address side' })
-		.getByRole('button', { name: 'Destination' })
-		.click();
+	await chooseSegment(spectrum, 'Spectrum address side', 'Destination');
 	await expect(spectrum.getByTestId('chart-selection-unavailable')).toContainText(
 		'not computed for internal addresses'
 	);
 
-	await spectrum
-		.getByRole('group', { name: 'Spectrum address side' })
-		.getByRole('button', { name: 'Source' })
-		.click();
+	await chooseSegment(spectrum, 'Spectrum address side', 'Source');
 	await expect(spectrum.getByLabel('Spectrum chart')).toBeVisible();
 
-	await page
-		.getByRole('group', { name: 'Traffic direction' })
-		.getByRole('button', { name: 'Lateral', exact: true })
-		.click();
+	await setDirection(page, 'Lateral');
 	await expect(dimensions.getByTestId('chart-unavailable')).toHaveText(
 		'MAAD is not computed for internal addresses. The source and destination addresses are both internal for lateral traffic.'
 	);
@@ -56,10 +45,7 @@ test('explains MAAD cards for internal address sides the product did not compute
 		'not computed for internal addresses'
 	);
 
-	await page
-		.getByRole('group', { name: 'Traffic direction' })
-		.getByRole('button', { name: 'Transit', exact: true })
-		.click();
+	await setDirection(page, 'Transit');
 	await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 	await expect(dimensions.getByTestId('chart-selection-unavailable')).not.toBeAttached();
 });

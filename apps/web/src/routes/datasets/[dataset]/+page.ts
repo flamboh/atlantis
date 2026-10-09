@@ -56,6 +56,7 @@ export const load: PageLoad = async ({ params, fetch }) => {
 	}
 
 	return {
+		datasets,
 		datasetId: selectedDataset.datasetId,
 		title: selectedDataset.label,
 		defaultStartDate: selectedDataset.defaultStartDate,

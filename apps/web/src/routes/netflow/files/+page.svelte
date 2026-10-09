@@ -1,16 +1,25 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
+	import { resolve } from '$app/paths';
+	import PageHeader from '#lib/components/shell/PageHeader.svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import { Input } from '#lib/components/ui/input/index.ts';
+	import { Label } from '#lib/components/ui/label/index.ts';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.ts';
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let timestamp = $state('');
-	let selectedDatasetOverride = $state<string | null>(null);
-	const selectedDataset = $derived(selectedDatasetOverride ?? data.selectedDataset);
 	let error = $state('');
+
+	function selectDataset(datasetId: string) {
+		void goto(`${resolve('/netflow/files')}?dataset=${encodeURIComponent(datasetId)}`, {
+			replaceState: true,
+			reset: false
+		});
+	}
 
 	function navigateToFile() {
 		error = '';
@@ -25,88 +34,76 @@
 			return;
 		}
 
-		if (!selectedDataset) {
+		if (!data.selectedDataset) {
 			error = 'Please choose a dataset';
 			return;
 		}
 
-		void navigateToNetflowFile(goto, timestamp, selectedDataset);
-	}
-
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			navigateToFile();
-		}
+		void navigateToNetflowFile(goto, timestamp, data.selectedDataset);
 	}
 </script>
 
-<AnalysisLayout title="NetFlow Files" eyebrow="Capture lookup" railLabel="Lookup guide">
-	{#snippet toolbar()}<p class="text-muted-foreground text-sm">
-			Open a five-minute capture
-		</p>{/snippet}
-	{#snippet rail()}<h2 class="rail-heading">File lookup</h2>
-		<ol class="text-muted-foreground space-y-4 text-sm leading-6">
-			<li>1. Choose a dataset.</li>
-			<li>2. Enter the timestamp from the capture filename.</li>
-			<li>3. Inspect source summaries and MAAD analysis.</li>
-		</ol>
-		<p class="text-muted-foreground mt-6 text-xs leading-5">
-			The timestamp has twelve digits, in YYYYMMDDHHmm order.
-		</p>{/snippet}
+<svelte:head><title>NetFlow Files · ATLANTIS</title></svelte:head>
 
-	<Card class="border-border bg-card mb-6 gap-3 rounded-none border py-4 ring-0">
-		<CardHeader class="px-4">
-			<CardTitle><h2 class="text-lg font-semibold">Navigate to File by Timestamp</h2></CardTitle>
-		</CardHeader>
-		<CardContent class="px-4">
-			<div class="grid max-w-3xl gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-				<div>
-					<label for="dataset" class="text-foreground mb-1 block text-sm font-medium">Dataset</label
-					>
-					<select
+<div class="shell page flex flex-col gap-4">
+	<PageHeader title="NetFlow Files">
+		{#snippet description()}
+			Open a five-minute capture to inspect its source summaries and MAAD analysis.
+		{/snippet}
+	</PageHeader>
+
+	<Card.Root class="max-w-3xl gap-4">
+		<Card.Header>
+			<Card.Title><h2>Open a capture by timestamp</h2></Card.Title>
+			<Card.Description>
+				Use the 12-digit timestamp from the capture filename, e.g.
+				<code class="font-mono">nfcapd.202601011200</code>.
+			</Card.Description>
+		</Card.Header>
+		<Card.Content>
+			<form
+				class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-start"
+				onsubmit={(event) => {
+					event.preventDefault();
+					navigateToFile();
+				}}
+				novalidate
+			>
+				<div class="grid gap-1.5">
+					<Label for="dataset">Dataset</Label>
+					<NativeSelect.Root
 						id="dataset"
-						value={selectedDataset}
-						onchange={(event) => {
-							selectedDatasetOverride = event.currentTarget.value;
-						}}
-						class="border-input bg-background text-foreground focus-visible:ring-ring w-full rounded border px-3 py-2 focus-visible:ring-2 focus-visible:outline-none"
+						class="w-full"
+						value={data.selectedDataset}
+						onchange={(event) => selectDataset(event.currentTarget.value)}
 					>
-						{#if !selectedDataset}
-							<option value="">Select a dataset</option>
+						{#if !data.selectedDataset}
+							<NativeSelect.Option value="">Select a dataset</NativeSelect.Option>
 						{/if}
 						{#each data.datasets as dataset (dataset.datasetId)}
-							<option value={dataset.datasetId}>{dataset.label}</option>
+							<NativeSelect.Option value={dataset.datasetId}>{dataset.label}</NativeSelect.Option>
 						{/each}
-					</select>
+					</NativeSelect.Root>
 				</div>
-				<div class="min-w-0">
-					<label for="timestamp" class="text-foreground mb-1 block text-sm font-medium">
-						File Timestamp (YYYYMMDDHHmm)
-					</label>
-					<input
+				<div class="grid min-w-0 gap-1.5">
+					<Label for="timestamp">File Timestamp (YYYYMMDDHHmm)</Label>
+					<Input
 						id="timestamp"
-						type="text"
 						bind:value={timestamp}
-						onkeydown={handleKeydown}
 						placeholder="202601011200"
-						class="border-input bg-background text-foreground placeholder:text-muted-foreground focus-visible:ring-ring w-full rounded border px-3 py-2 focus-visible:ring-2 focus-visible:outline-none"
-						maxlength="12"
+						inputmode="numeric"
+						autocomplete="off"
+						class="font-mono"
+						maxlength={12}
+						aria-invalid={error ? true : undefined}
+						aria-describedby="timestamp-error"
 					/>
-					<div
-						class={`mt-1 min-h-6 text-sm ${error ? 'text-destructive' : 'text-transparent'}`}
-						aria-live="polite"
-					>
-						{error || ' '}
-					</div>
+					<p id="timestamp-error" class="text-destructive min-h-5 text-xs" aria-live="polite">
+						{error}
+					</p>
 				</div>
-				<div class="flex items-start sm:col-span-2">
-					<Button onclick={navigateToFile} class="w-full px-4 sm:w-auto">Go to File</Button>
-				</div>
-			</div>
-			<p class="text-muted-foreground mt-2 text-sm">
-				Choose a dataset, then enter the exact 12-digit timestamp from NetFlow filenames (e.g.,
-				`nfcapd.202601011200`).
-			</p>
-		</CardContent>
-	</Card>
-</AnalysisLayout>
+				<Button type="submit" class="sm:mt-[1.375rem]">Go to File</Button>
+			</form>
+		</Card.Content>
+	</Card.Root>
+</div>

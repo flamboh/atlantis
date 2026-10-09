@@ -31,10 +31,12 @@
 	</div>
 {:else if slot.loading && slot.data === null}
 	<div class="flex items-center justify-center py-6">
-		<div class="text-muted-foreground">{loadingLabel}</div>
+		<div class="text-muted-foreground text-sm">{loadingLabel}</div>
 	</div>
 {:else if slot.error && slot.data === null}
-	<div class="border-destructive/20 bg-destructive/5 text-destructive rounded border p-4">
+	<div
+		class="border-destructive/30 bg-destructive/5 text-destructive rounded-md border p-4 text-sm"
+	>
 		<p>{errorLabel} {slot.error}</p>
 		<Button variant="destructive" size="sm" class="mt-2" onclick={slot.refresh}>Retry</Button>
 	</div>
@@ -48,7 +50,7 @@
 		{/if}
 		{#if slot.error}
 			<div
-				class="border-destructive/20 bg-destructive/5 text-destructive rounded border p-3 text-sm"
+				class="border-destructive/30 bg-destructive/5 text-destructive rounded-md border p-3 text-sm"
 			>
 				<p>{errorLabel} {slot.error}</p>
 				<Button variant="destructive" size="sm" class="mt-2" onclick={slot.refresh}>Retry</Button>
@@ -63,6 +65,6 @@
 {:else}
 	<div class="space-y-3">
 		<div class="text-muted-foreground text-sm">{emptyLabel}</div>
-		<Button size="sm" onclick={slot.refresh}>Reload</Button>
+		<Button size="sm" variant="outline" onclick={slot.refresh}>Reload</Button>
 	</div>
 {/if}

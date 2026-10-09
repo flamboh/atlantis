@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openMaadOptions, setMaadFamily, setMaadMeasure } from './toolbar-helpers';
 
 const DASHBOARD = '/datasets/playwright?startDate=2025-03-01&endDate=2025-03-01&groupBy=5min';
 
@@ -27,10 +28,9 @@ function waitForDimensions(page: Page, measure: string, ipVersion = '4') {
 
 test('switches dashboard MAAD views between addresses, packets and bytes', async ({ page }) => {
 	await page.goto(DASHBOARD);
-	await expect(measureControl(page).getByRole('button', { name: 'Addresses' })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
+	await expect(
+		page.getByRole('button', { name: 'MAAD: IPv4, Addresses', exact: true })
+	).toBeVisible();
 
 	const addressesRequest = waitForDimensions(page, 'addresses');
 	await activateCard(page, 'dimensions');
@@ -47,17 +47,17 @@ test('switches dashboard MAAD views between addresses, packets and bytes', async
 		['Bytes', 'bytes']
 	] as const) {
 		const request = waitForDimensions(page, measure);
-		await measureControl(page).getByRole('button', { name: label }).click();
+		await setMaadMeasure(page, label);
 		await request;
 		await expect.poll(() => new URL(page.url()).searchParams.get('measure')).toBe(measure);
 		await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 		await expect(spectrum.getByTestId('chart-unavailable')).toContainText(
 			'only computed for the Addresses measure'
 		);
-		await expect(spectrum.getByRole('group', { name: 'Spectrum source' })).not.toBeAttached();
+		await expect(spectrum.getByRole('button', { name: /^Source:/ })).not.toBeAttached();
 	}
 
-	await measureControl(page).getByRole('button', { name: 'Addresses' }).click();
+	await setMaadMeasure(page, 'Addresses');
 	await expect.poll(() => new URL(page.url()).searchParams.has('measure')).toBe(false);
 	await expect(spectrum.getByTestId('chart-unavailable')).not.toBeAttached();
 	await expect(spectrum.getByLabel('Spectrum chart')).toBeVisible();
@@ -67,8 +67,10 @@ test('shares one MAAD address family control across both MAAD cards', async ({ p
 	await page.goto(DASHBOARD);
 	await activateCard(page, 'dimensions');
 	await activateCard(page, 'spectrum');
-	const familyControl = page.getByRole('group', { name: 'MAAD address family' });
-	await expect(familyControl).toHaveCount(1);
+	const dialog = await openMaadOptions(page);
+	await expect(page.getByRole('group', { name: 'MAAD address family' })).toHaveCount(1);
+	await page.keyboard.press('Escape');
+	await expect(dialog).not.toBeAttached();
 
 	const dimensionsRequest = waitForDimensions(page, 'addresses', '6');
 	const spectrumRequest = page.waitForRequest((request) => {
@@ -77,7 +79,7 @@ test('shares one MAAD address family control across both MAAD cards', async ({ p
 			url.pathname === '/api/netflow/spectrum-stats' && url.searchParams.get('ipVersion') === '6'
 		);
 	});
-	await familyControl.getByRole('button', { name: 'IPv6 (/23–/64)' }).click();
+	await setMaadFamily(page, 'IPv6 (/23–/64)');
 	await dimensionsRequest;
 	await spectrumRequest;
 });
@@ -88,20 +90,17 @@ test('charts one MAAD dimension and address side at a time', async ({ page }) =>
 	const dimensions = page.locator('[data-chart-id="dimensions"]');
 	const side = dimensions.getByRole('group', { name: 'MAAD address side' });
 	const order = dimensions.getByRole('group', { name: 'MAAD dimension' });
-	await expect(side.getByRole('button', { name: 'Source' })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
-	await expect(order.getByRole('button', { name: 'D1' })).toHaveAttribute('aria-pressed', 'true');
+	await expect(side.getByRole('radio', { name: 'Source' })).toHaveAttribute('aria-checked', 'true');
+	await expect(order.getByRole('radio', { name: 'D1' })).toHaveAttribute('aria-checked', 'true');
 
-	await side.getByRole('button', { name: 'Destination' }).click();
-	await order.getByRole('button', { name: 'D2' }).click();
-	await expect(side.getByRole('button', { name: 'Destination' })).toHaveAttribute(
-		'aria-pressed',
+	await side.getByRole('radio', { name: 'Destination' }).click();
+	await order.getByRole('radio', { name: 'D2' }).click();
+	await expect(side.getByRole('radio', { name: 'Destination' })).toHaveAttribute(
+		'aria-checked',
 		'true'
 	);
-	await expect(order.getByRole('button', { name: 'D2' })).toHaveAttribute('aria-pressed', 'true');
-	await expect(order.getByRole('button', { name: 'D1' })).toHaveAttribute('aria-pressed', 'false');
+	await expect(order.getByRole('radio', { name: 'D2' })).toHaveAttribute('aria-checked', 'true');
+	await expect(order.getByRole('radio', { name: 'D1' })).toHaveAttribute('aria-checked', 'false');
 	await expect(dimensions.getByLabel('MAAD dimensions chart')).toBeVisible();
 });
 
@@ -115,10 +114,9 @@ test('rejects an unknown measure param in favor of addresses', async ({ page }) 
 	});
 
 	await page.goto(`${DASHBOARD}&measure=flows`);
-	await expect(measureControl(page).getByRole('button', { name: 'Addresses' })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
+	await expect(
+		page.getByRole('button', { name: 'MAAD: IPv4, Addresses', exact: true })
+	).toBeVisible();
 	await activateCard(page, 'dimensions');
 	await expect.poll(() => requestedMeasures).toEqual(['addresses']);
 });
@@ -139,8 +137,8 @@ test('keeps the weighted measure when drilling down to a file', async ({ page })
 	expect(url.searchParams.get('dataset')).toBe('playwright');
 	expect(url.searchParams.get('measure')).toBe('bytes');
 	expect(new URL((await detailsRequest).url()).searchParams.get('measure')).toBe('bytes');
-	await expect(measureControl(page).getByRole('button', { name: 'Bytes' })).toHaveAttribute(
-		'aria-pressed',
+	await expect(measureControl(page).getByRole('radio', { name: 'Bytes' })).toHaveAttribute(
+		'aria-checked',
 		'true'
 	);
 
@@ -151,7 +149,7 @@ test('keeps the weighted measure when drilling down to a file', async ({ page })
 			requestUrl.searchParams.get('measure') === 'packets'
 		);
 	});
-	await measureControl(page).getByRole('button', { name: 'Packets' }).click();
+	await measureControl(page).getByRole('radio', { name: 'Packets' }).click();
 	await expect.poll(() => new URL(page.url()).searchParams.get('measure')).toBe('packets');
 	await packetsRequest;
 });

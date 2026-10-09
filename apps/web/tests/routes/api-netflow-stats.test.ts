@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GET } from '../../src/routes/api/netflow/stats/+server';
+import { sumNetflowWindow } from '../../src/lib/components/netflow/netflow-window-totals';
+import type { NetflowStatsResponse } from '../../src/lib/types/types';
 import {
 	getRequestedDataset,
 	listDatasetSourceDefinitions,
@@ -23,6 +25,68 @@ function mockDatasetSession(db: object): void {
 }
 
 describe('/api/netflow/stats GET', () => {
+	it('window totals preserve half-open bounds, complete zeroes and unknown coverage', async () => {
+		const all = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{ bucketStart: 100, flows: 10, flowsTcp: 6, packets: 100, bytes: 1000 },
+				{ bucketStart: 1000, flows: 99999 }
+			])
+			.mockResolvedValueOnce([
+				{
+					sourceId: 'r1',
+					bucketStart: 100,
+					bucketEnd: 400,
+					coverageState: 'partial',
+					observedUnits: 1,
+					expectedUnits: 2,
+					rejectedUnits: 0
+				},
+				{
+					sourceId: 'r1',
+					bucketStart: 400,
+					bucketEnd: 700,
+					coverageState: 'complete',
+					observedUnits: 1,
+					expectedUnits: 1,
+					rejectedUnits: 0
+				}
+			]);
+		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
+		vi.mocked(listDatasetSourceDefinitions).mockResolvedValue([
+			{ sourceId: 'r1', members: ['r1'] }
+		]);
+		mockDatasetSession({ all });
+		const response = await GET({
+			url: new URL(
+				'http://localhost/api/netflow/stats?routers=r1&startDate=100&endDate=1000&groupBy=5min'
+			)
+		} as never);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as NetflowStatsResponse;
+		expect(body.result.map(({ bucketStart }) => bucketStart)).toEqual([100, 400, 700]);
+		expect(body.result[1].data).toMatchObject({ flows: 0, packets: 0, bytes: 0 });
+		expect(body.result[2].data).toBeNull();
+		expect(sumNetflowWindow(body.result)).toEqual({
+			flows: 10,
+			flowsTcp: 6,
+			packets: 100,
+			bytes: 1000,
+			buckets: 3,
+			completeBuckets: 1,
+			partialBuckets: 1,
+			unknownBuckets: 1
+		});
+		expect(all).toHaveBeenCalledWith(expect.stringContaining('AND bucket_start < ?'), [
+			'r1',
+			'5m',
+			'all',
+			'all',
+			100,
+			1000
+		]);
+	});
+
 	it('returns 400 when no routers are selected', async () => {
 		vi.mocked(getRequestedDataset).mockResolvedValue('alpha');
 

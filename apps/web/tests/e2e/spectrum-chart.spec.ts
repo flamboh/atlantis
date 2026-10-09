@@ -1,6 +1,16 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { rendered, chartTarget, hoverChart } from './chart-helpers';
+import {
+	chooseSegment,
+	resetFilters,
+	setDateRange,
+	setDirection,
+	setInterval,
+	setMaadFamily,
+	setMaadMeasure,
+	setSource
+} from './toolbar-helpers';
 
 const DASHBOARD = '/datasets/playwright?startDate=2025-03-01&endDate=2025-03-01&groupBy=5min';
 
@@ -19,31 +29,24 @@ test('renders a singleton bucket and recovers from cached empty, unavailable and
 	const errors: string[] = [];
 	page.on('pageerror', (error) => errors.push(error.message));
 	const { card, surface } = await openSpectrum(page);
-	const family = page.getByRole('group', { name: 'MAAD address family' });
 	for (let attempt = 0; attempt < 2; attempt += 1) {
-		await family.getByRole('button', { name: 'IPv6 (/23–/64)' }).click();
+		await setMaadFamily(page, 'IPv6 (/23–/64)');
 		await expect(card).toContainText('No source spectrum data');
-		await family.getByRole('button', { name: 'IPv4 (/8–/24)' }).click();
+		await setMaadFamily(page, 'IPv4 (/8–/24)');
 		await rendered(surface);
 		await hoverChart(page, surface);
 		await expect(card.getByRole('tooltip')).toContainText('2025-03-01 02:00');
 	}
 	for (const measure of ['Packets', 'Bytes']) {
-		await page
-			.getByRole('group', { name: 'MAAD measure' })
-			.getByRole('button', { name: measure })
-			.click();
+		await setMaadMeasure(page, measure);
 		await expect(card.getByTestId('chart-unavailable')).toBeVisible();
 		await expect(card.getByRole('tooltip')).not.toBeAttached();
-		await page
-			.getByRole('group', { name: 'MAAD measure' })
-			.getByRole('button', { name: 'Addresses' })
-			.click();
+		await setMaadMeasure(page, 'Addresses');
 		await rendered(surface);
 	}
-	await page.getByRole('checkbox', { name: 'fixture-router', exact: true }).uncheck();
+	await setSource(page, 'fixture-router', false);
 	await expect(card).toContainText('Select at least one source');
-	await page.getByRole('checkbox', { name: 'fixture-router', exact: true }).check();
+	await setSource(page, 'fixture-router', true);
 	await rendered(surface);
 	await hoverChart(page, surface);
 	await expect(card.getByRole('tooltip')).toBeVisible();
@@ -55,30 +58,24 @@ test('keeps rendered points and hover across granularity, direction, side, date 
 }) => {
 	const { card, surface } = await openSpectrum(page);
 	for (const granularity of ['Day', 'Hour', '30 min', '10 min', '5 min']) {
-		await page.getByRole('button', { name: granularity, exact: true }).click();
+		await setInterval(page, granularity);
 		await rendered(surface);
 		await hoverChart(page, surface);
 		await expect(card.getByRole('tooltip')).toContainText('2025-03-01');
 	}
 	for (const direction of ['Ingress', 'Egress', 'Lateral', 'Transit', 'All']) {
-		await page
-			.getByRole('group', { name: 'Traffic direction' })
-			.getByRole('button', { name: direction, exact: true })
-			.click();
+		await setDirection(page, direction);
 		await rendered(surface);
 	}
-	await card.getByRole('button', { name: 'Destination', exact: true }).click();
+	await chooseSegment(card, 'Spectrum address side', 'Destination');
 	await rendered(surface);
-	await page.getByLabel('End Date', { exact: true }).fill('2025-03-02');
-	await page.getByLabel('End Date', { exact: true }).press('Tab');
+	await setDateRange(page, { endDate: '2025-03-02' });
 	await rendered(surface);
-	await page.getByLabel('Start Date', { exact: true }).fill('2025-03-02');
-	await page.getByLabel('Start Date', { exact: true }).press('Tab');
+	await setDateRange(page, { startDate: '2025-03-02' });
 	await expect(card).toContainText('No destination spectrum data');
-	await page.getByLabel('Start Date', { exact: true }).fill('2025-03-01');
-	await page.getByLabel('Start Date', { exact: true }).press('Tab');
+	await setDateRange(page, { startDate: '2025-03-01' });
 	await rendered(surface);
-	await page.getByRole('button', { name: 'Reset View' }).click();
+	await resetFilters(page);
 	await rendered(surface);
 	await hoverChart(page, surface);
 	await expect(card.getByRole('tooltip')).toBeVisible();
@@ -99,12 +96,12 @@ test('aborts an older request when a newer filter is selected', async ({ page })
 			request.url().includes('/spectrum-stats?') &&
 			new URL(request.url()).searchParams.get('granularity') === '1h'
 	);
-	await page.getByRole('button', { name: 'Hour', exact: true }).click();
+	await setInterval(page, 'Hour');
 	const pending = await oldRequest;
 	const aborted = page.waitForEvent('requestfailed', {
 		predicate: (request) => request === pending
 	});
-	await page.getByRole('button', { name: '10 min', exact: true }).click();
+	await setInterval(page, '10 min');
 	await rendered(surface);
 	const state = surface.locator('..').getByTestId('chart-render-state');
 	const snapshot = () =>
@@ -174,13 +171,13 @@ test('file spectrum hover describes only a spectrum point after measure and fami
 	await page.goto('/netflow/files/202503010200?dataset=playwright');
 	const surface = page.getByLabel('Multifractal spectrum chart').first();
 	await rendered(surface);
-	await page.getByRole('button', { name: 'Packets', exact: true }).click();
+	await page.getByRole('radio', { name: 'Packets', exact: true }).click();
 	await expect(surface).not.toBeAttached();
-	await page.getByRole('button', { name: 'Addresses', exact: true }).click();
+	await page.getByRole('radio', { name: 'Addresses', exact: true }).click();
 	await rendered(surface);
-	await page.getByRole('button', { name: 'IPv6 (/23–/64)' }).click();
+	await page.getByRole('radio', { name: 'IPv6 (/23–/64)' }).click();
 	await expect(surface).not.toBeAttached();
-	await page.getByRole('button', { name: 'IPv4 (/8–/24)' }).click();
+	await page.getByRole('radio', { name: 'IPv4 (/8–/24)' }).click();
 	await rendered(surface);
 	await surface.scrollIntoViewIfNeeded();
 	await hoverChart(page, surface);

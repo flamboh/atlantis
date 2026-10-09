@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openSources, setDateRange, setInterval, setSource, sourceOption } from './toolbar-helpers';
 import { chartTarget, rendered } from './chart-helpers';
 
 const DASHBOARD = '/datasets/playwright?startDate=2025-03-01&endDate=2025-03-01&groupBy=5min';
@@ -23,19 +24,18 @@ test('range updates change values, empty bounds recover, and source defaults rec
 	await page.goto(DASHBOARD);
 	const card = page.locator('[data-chart-id="dashboard"]');
 	await rendered(card.getByTestId('chart-surface'));
-	await page.getByRole('button', { name: 'Day', exact: true }).click();
+	await setInterval(page, 'Day');
 	const tcp = card.getByTestId('chart-series').filter({ hasText: /^Flows TCP$/ });
 	await expect(tcp).toHaveAttribute('data-total', '100');
-	await page.getByLabel('End Date', { exact: true }).fill('2025-03-03');
-	await page.getByLabel('End Date', { exact: true }).press('Tab');
+	await setDateRange(page, { endDate: '2025-03-03' });
 	await expect(tcp).toHaveAttribute('data-total', '300');
-	await page.getByLabel('Start Date', { exact: true }).fill('2025-03-03');
-	await page.getByLabel('Start Date', { exact: true }).press('Tab');
+	await setDateRange(page, { startDate: '2025-03-03' });
 	await expect(tcp).toHaveAttribute('data-total', '200');
-	await page.getByRole('checkbox', { name: 'fixture-router', exact: true }).uncheck();
+	await setSource(page, 'fixture-router', false);
 	await page.reload();
-	await expect(page.getByRole('checkbox', { name: 'fixture-router', exact: true })).toBeChecked();
-	await page.getByRole('checkbox', { name: 'fixture-router', exact: true }).check();
+	const sources = await openSources(page);
+	await expect(sourceOption(sources, 'fixture-router')).toHaveAttribute('aria-checked', 'true');
+	await page.keyboard.press('Escape');
 	await expect(tcp).toHaveAttribute('data-total', '200');
 	await page.goto('/datasets/playwright?startDate=2020-01-01&endDate=2020-01-02');
 	await expect(card.getByTestId('chart-render-state')).toHaveAttribute('data-state', 'empty');
