@@ -63,7 +63,7 @@
 			detail:
 				[
 					totals.partialBuckets && `${totals.partialBuckets.toLocaleString()} partial`,
-					totals.unknownBuckets && `${totals.unknownBuckets.toLocaleString()} missing`
+					totals.unknownBuckets && `${totals.unknownBuckets.toLocaleString()} unknown`
 				]
 					.filter(Boolean)
 					.join(' · ') || 'Full source coverage'

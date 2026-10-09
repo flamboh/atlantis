@@ -7,12 +7,7 @@ import type {
 	NetflowStatsResult,
 	TimeBucket
 } from '#lib/types/types.ts';
-import {
-	ensureCachedWindow,
-	getMissingWindowRanges,
-	readCachedWindow,
-	type TimeRange
-} from '#lib/utils/window-cache.ts';
+import { ensureCachedWindow, readCachedWindow, type TimeRange } from '#lib/utils/window-cache.ts';
 import { createRequestGate } from '#lib/components/charts/flow-characteristics.ts';
 
 export type NetflowStatsFilters = {
@@ -41,7 +36,6 @@ type StatsRequest =
 			key: string;
 			requestedRange: TimeRange;
 			baseParams: Record<string, string>;
-			missing: boolean;
 	  };
 
 type FetchRequest = Extract<StatsRequest, { kind: 'fetch' }>;
@@ -82,6 +76,12 @@ function describeRequest(filtersKey: string): StatsRequest {
 		start: dateStringToEpochPST(filters.startDate),
 		end: dateStringToEpochPST(filters.endDate, true)
 	};
+	if (!Number.isFinite(requestedRange.start) || !Number.isFinite(requestedRange.end)) {
+		return { kind: 'invalid', error: 'Invalid start or end date' };
+	}
+	if (requestedRange.start >= requestedRange.end) {
+		return { kind: 'invalid', error: 'Start Date must be on or before End Date.' };
+	}
 	return {
 		kind: 'fetch',
 		id: filtersKey,
@@ -92,8 +92,7 @@ function describeRequest(filtersKey: string): StatsRequest {
 			routers: routers.join(','),
 			groupBy: filters.groupBy,
 			direction: filters.direction
-		},
-		missing: getMissingWindowRanges(key, requestedRange).length > 0
+		}
 	};
 }
 
@@ -168,16 +167,18 @@ export function createNetflowStatsData(getFilters: () => NetflowStatsFilters): N
 
 	return {
 		get results() {
-			return request.kind === 'fetch' ? (settled?.results ?? []) : [];
+			return request.kind === 'fetch' && settled?.id === request.id ? settled.results : [];
 		},
 		get availableIpFamilies() {
 			return request.kind === 'fetch'
-				? (settled?.availableIpFamilies ?? ALL_FAMILIES)
+				? settled?.id === request.id
+					? settled.availableIpFamilies
+					: (ipFamilyCache[request.key] ?? ALL_FAMILIES)
 				: ALL_FAMILIES;
 		},
 		get loading() {
 			if (request.kind === 'waiting') return true;
-			return request.kind === 'fetch' && settled?.id !== request.id && request.missing;
+			return request.kind === 'fetch' && settled?.id !== request.id;
 		},
 		get error() {
 			if (request.kind === 'invalid') return request.error;
