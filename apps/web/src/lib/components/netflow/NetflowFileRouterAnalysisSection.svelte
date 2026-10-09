@@ -21,10 +21,10 @@
 </script>
 
 <div class="space-y-3">
-	<h6 class="text-md text-foreground font-medium">{title}</h6>
+	<h6 class="text-muted-foreground text-xs font-medium tracking-wide uppercase">{title}</h6>
 	<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
 		<div class="min-w-0">
-			<h5 class="text-muted-foreground mb-2 text-sm font-medium">Source · {title}</h5>
+			<h5 class="text-foreground mb-2 text-sm font-medium">Source · {title}</h5>
 			<NetflowFileAnalysisPane
 				{kind}
 				sideLabel="source"
@@ -33,7 +33,7 @@
 			/>
 		</div>
 		<div class="min-w-0">
-			<h5 class="text-muted-foreground mb-2 text-sm font-medium">Destination · {title}</h5>
+			<h5 class="text-foreground mb-2 text-sm font-medium">Destination · {title}</h5>
 			<NetflowFileAnalysisPane
 				{kind}
 				sideLabel="destination"

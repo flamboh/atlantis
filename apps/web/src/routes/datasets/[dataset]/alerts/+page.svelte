@@ -2,11 +2,13 @@
 	import { afterNavigate } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import type { PageProps } from './$types';
-	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
-	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
-	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
+	import { BellOff, Copy, Check } from '@lucide/svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
+	import PageHeader from '#lib/components/shell/PageHeader.svelte';
+	import { Badge } from '#lib/components/ui/badge/index.ts';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import * as Empty from '#lib/components/ui/empty/index.ts';
 	import {
 		Table,
 		TableBody,
@@ -76,6 +78,13 @@
 	const canShowMore = $derived(
 		feedResponse.addresses.length < feedResponse.totalAddresses && limit < MAX_LIMIT
 	);
+	const feedState = $derived.by(() => {
+		if (!feedResponse.feed.present) return 'off';
+		const windowEnd = feedResponse.feed.latestWindowEnd;
+		if (windowEnd === null) return 'idle';
+		const windowAge = now - windowEnd * 1000;
+		return windowAge >= 0 && windowAge < LIVE_WINDOW_AGE_MS ? 'live' : 'idle';
+	});
 	const statusText = $derived.by(() => {
 		if (!feedResponse.feed.present) {
 			return 'Feed not running';
@@ -317,113 +326,108 @@
 	/>
 </svelte:head>
 
-<AnalysisLayout title="Singularity alerts" eyebrow={selectedDatasetLabel} railLabel="Alert filters">
-	{#snippet navigation()}<DatasetTabs datasetId={data.selectedDataset} active="alerts" />{/snippet}
-	{#snippet toolbar()}<p class="text-muted-foreground text-sm" aria-live="polite">
-			{statusText}
-		</p>{/snippet}
-	{#snippet rail()}
-		<h2 class="rail-heading">Alert feed</h2>
-		<p class="text-muted-foreground mb-4 text-xs leading-5">
-			Find addresses in sparse regions or dense clusters of address space.
-		</p>
+<div class="shell page flex flex-col gap-4">
+	<PageHeader title="Singularity alerts">
+		{#snippet description()}
+			<span class="flex flex-wrap items-center gap-2">
+				<span>{selectedDatasetLabel}</span>
+				<Badge
+					variant="outline"
+					class={feedState === 'live'
+						? 'bg-selection text-selection-foreground border-transparent'
+						: 'text-muted-foreground'}
+					>{feedState === 'live' ? 'Live' : feedState === 'idle' ? 'Idle' : 'Not running'}</Badge
+				>
+				<span aria-live="polite">{statusText}</span>
+			</span>
+		{/snippet}
+	</PageHeader>
 
-		{#if feedResponse.feed.present}
-			<div class="flex flex-col gap-4">
-				<div class="flex flex-col gap-4">
-					<div class="flex flex-col gap-1">
-						<span class="text-muted-foreground text-xs font-medium">Alpha</span>
-						<SegmentedControl
-							options={TAIL_OPTIONS}
-							value={selectedTail}
-							onValueChange={selectTail}
-							class="grid-cols-2"
-							ariaLabel="Filter alerts by alpha tail"
-						/>
-					</div>
-
-					<div class="flex flex-col gap-1">
-						<span class="text-muted-foreground text-xs font-medium">Horizon</span>
-						<SegmentedControl
-							options={HORIZON_OPTIONS}
-							value={selectedHorizon}
-							onValueChange={selectHorizon}
-							class="grid-cols-4"
-							ariaLabel="Select alert horizon"
-						/>
-					</div>
-
-					<div class="flex flex-col gap-1">
-						<span class="text-muted-foreground text-xs font-medium">Sort</span>
-						<SegmentedControl
-							options={SORT_OPTIONS}
-							value={selectedSort}
-							onValueChange={selectSort}
-							class="grid-cols-2"
-							ariaLabel="Sort alert addresses"
-						/>
-					</div>
-
-					{#if feedResponse.feed.present && feedResponse.feed.thresholds}
-						<div class="flex flex-col gap-1">
-							<span class="text-muted-foreground text-xs font-medium">Thresholds</span>
-							<p
-								class="text-muted-foreground flex min-h-7 items-center pb-1 text-sm tabular-nums"
-								title="The feed records an address when its alpha crosses either calibrated bound"
-							>
-								α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds.low}
-							</p>
-						</div>
-					{/if}
-				</div>
-			</div>
-		{/if}
-	{/snippet}
+	{#if feedResponse.feed.present}
+		<div class="flex flex-wrap items-center gap-2" role="group" aria-label="Alert filters">
+			<SegmentedToggle
+				options={TAIL_OPTIONS}
+				value={selectedTail}
+				onValueChange={selectTail}
+				ariaLabel="Filter alerts by alpha tail"
+			/>
+			<SegmentedToggle
+				options={HORIZON_OPTIONS}
+				value={selectedHorizon}
+				onValueChange={selectHorizon}
+				ariaLabel="Select alert horizon"
+			/>
+			<SegmentedToggle
+				options={SORT_OPTIONS}
+				value={selectedSort}
+				onValueChange={selectSort}
+				ariaLabel="Sort alert addresses"
+			/>
+			{#if feedResponse.feed.thresholds}
+				<p
+					class="text-muted-foreground ml-auto text-xs tabular-nums"
+					title="The feed records an address when its alpha crosses either calibrated bound"
+				>
+					Thresholds α ≥ {feedResponse.feed.thresholds.high} · α ≤ {feedResponse.feed.thresholds
+						.low}
+				</p>
+			{/if}
+		</div>
+	{/if}
 
 	{#if fetchError}
-		<Card
-			class="border-destructive bg-destructive/10 text-destructive gap-0 py-4 ring-0"
+		<div
+			class="border-destructive/40 bg-destructive/10 text-destructive rounded-lg border px-4 py-2.5 text-sm"
 			role="alert"
 		>
-			<CardContent>{fetchError}</CardContent>
-		</Card>
+			{fetchError}
+		</div>
 	{/if}
 
 	{#if !feedResponse.feed.present}
-		<Card class="text-muted-foreground gap-3 rounded-lg border py-4 shadow-sm ring-0">
-			<CardHeader class="px-4">
-				<CardTitle class="text-foreground font-medium">The alert feed is not running</CardTitle>
-				<p class="text-sm">Start it for this dataset with:</p>
-			</CardHeader>
-			<CardContent class="px-4">
-				<div
-					class="bg-muted flex flex-col gap-2 rounded-md p-3 sm:flex-row sm:items-center sm:justify-between"
-				>
-					<code class="text-foreground overflow-x-auto font-mono text-sm">{feedCommand}</code>
-					<Button onclick={copyCommand} size="sm" class="h-7 shrink-0 px-3">
-						{copied ? 'Copied' : 'Copy'}
-					</Button>
-				</div>
-				{#if copyError}
-					<p class="text-destructive mt-2 text-sm" role="alert">{copyError}</p>
-				{/if}
-			</CardContent>
-		</Card>
+		<Card.Root class="py-0">
+			<Empty.Root class="py-12">
+				<Empty.Header>
+					<Empty.Media variant="icon"><BellOff /></Empty.Media>
+					<Empty.Title>The alert feed is not running</Empty.Title>
+					<Empty.Description>Start it for this dataset with:</Empty.Description>
+				</Empty.Header>
+				<Empty.Content class="max-w-md">
+					<div
+						class="bg-muted flex w-full items-center justify-between gap-2 rounded-md py-1.5 pr-1.5 pl-3"
+					>
+						<code class="text-foreground overflow-x-auto font-mono text-sm">{feedCommand}</code>
+						<Button onclick={copyCommand} size="sm" variant="outline" class="h-7 shrink-0">
+							{#if copied}<Check />{:else}<Copy />{/if}
+							{copied ? 'Copied' : 'Copy'}
+						</Button>
+					</div>
+					{#if copyError}
+						<p class="text-destructive text-sm" role="alert">{copyError}</p>
+					{/if}
+				</Empty.Content>
+			</Empty.Root>
+		</Card.Root>
 	{:else}
 		{#if feedResponse.addresses.length === 0}
-			<Card class="text-muted-foreground gap-0 rounded-lg border py-3 text-sm shadow-sm ring-0">
-				<CardContent class="px-4">
-					No anomalous addresses in the last {selectedHorizon}.
-				</CardContent>
-			</Card>
+			<Card.Root class="py-0">
+				<Empty.Root class="py-10">
+					<Empty.Header>
+						<Empty.Title class="text-base"
+							>No anomalous addresses in the last {selectedHorizon}.</Empty.Title
+						>
+						<Empty.Description>Try a longer horizon or the other alpha tail.</Empty.Description>
+					</Empty.Header>
+				</Empty.Root>
+			</Card.Root>
 		{:else}
 			<section
-				class={`border-border bg-card text-card-foreground overflow-x-auto rounded-lg border shadow-sm transition-opacity ${loading ? 'opacity-60' : ''}`}
+				class={`bg-card text-card-foreground overflow-x-auto rounded-lg border shadow-(--shadow-card) transition-opacity ${loading ? 'opacity-60' : ''}`}
 				aria-label="Anomalous addresses"
 				aria-busy={loading}
 			>
 				<Table class="w-full text-sm">
-					<TableHeader>
+					<TableHeader class="bg-muted/50">
 						<TableRow class="text-muted-foreground text-xs font-medium hover:bg-transparent">
 							<TableHead class="h-auto w-full px-4 py-2 text-left font-medium">Address</TableHead>
 							<TableHead
@@ -453,24 +457,22 @@
 					</TableHeader>
 					<TableBody>
 						{#each feedResponse.addresses as alert (alert.address)}
-							<TableRow class="hover:bg-transparent">
-								<TableCell class="px-4 py-3">
+							<TableRow>
+								<TableCell class="px-4 py-2.5">
 									<div class="flex min-w-0 items-center gap-2">
 										<span class="text-foreground truncate font-mono">
 											{alert.address}
 										</span>
 										{#if isNewAddress(alert.firstSeen)}
-											<span
+											<Badge
 												title={`First flagged ${formatRelativeTime(alert.firstSeen)} — never seen in the retained history before that`}
-												class="bg-accent text-accent-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
+												class="bg-selection text-selection-foreground">new</Badge
 											>
-												new
-											</span>
 										{/if}
 									</div>
 								</TableCell>
 								<TableCell
-									class={`px-4 py-3 text-right tabular-nums ${
+									class={`px-4 py-2.5 text-right tabular-nums ${
 										selectedSort === 'extreme'
 											? 'text-foreground font-medium'
 											: 'text-muted-foreground/70'
@@ -479,7 +481,7 @@
 									{alert.peakAlpha.toFixed(3)}
 								</TableCell>
 								<TableCell
-									class={`px-4 py-3 text-right tabular-nums ${
+									class={`px-4 py-2.5 text-right tabular-nums ${
 										selectedSort === 'recent'
 											? 'text-foreground font-medium'
 											: 'text-muted-foreground/70'
@@ -489,23 +491,23 @@
 								</TableCell>
 								<TableCell
 									title={dateTimeFormatter.format(new Date(alert.firstSeen * 1000))}
-									class="text-muted-foreground px-4 py-3 text-right whitespace-nowrap tabular-nums"
+									class="text-muted-foreground px-4 py-2.5 text-right whitespace-nowrap tabular-nums"
 								>
 									{formatRelativeTime(alert.firstSeen)}
 								</TableCell>
 								<TableCell
 									title={dateTimeFormatter.format(new Date(alert.lastSeen * 1000))}
-									class="text-muted-foreground px-4 py-3 text-right whitespace-nowrap tabular-nums"
+									class="text-muted-foreground px-4 py-2.5 text-right whitespace-nowrap tabular-nums"
 								>
 									{formatRelativeTime(alert.lastSeen)}
 								</TableCell>
 								<TableCell
 									title={`flagged in ${countFormatter.format(alert.timesFlagged)} windows in this horizon`}
-									class="text-foreground px-4 py-3 text-right tabular-nums"
+									class="text-foreground px-4 py-2.5 text-right tabular-nums"
 								>
 									{countFormatter.format(alert.timesFlagged)}×
 								</TableCell>
-								<TableCell class="text-muted-foreground px-4 py-3 text-right tabular-nums">
+								<TableCell class="text-muted-foreground px-4 py-2.5 text-right tabular-nums">
 									{alert.peakR2.toFixed(2)}
 								</TableCell>
 							</TableRow>
@@ -515,14 +517,9 @@
 			</section>
 		{/if}
 
-		<div class="flex flex-col items-center gap-2 pt-1">
+		<div class="flex flex-col items-center gap-2">
 			{#if canShowMore}
-				<Button
-					variant="outline"
-					onclick={showMore}
-					disabled={loadingMore}
-					class="px-4 disabled:cursor-not-allowed disabled:opacity-60"
-				>
+				<Button variant="outline" size="sm" onclick={showMore} disabled={loadingMore}>
 					{loadingMore ? 'Loading…' : 'Show more'}
 				</Button>
 			{/if}
@@ -533,4 +530,4 @@
 			</p>
 		</div>
 	{/if}
-</AnalysisLayout>
+</div>

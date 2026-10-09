@@ -1,17 +1,14 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { Button } from '#lib/components/ui/button/index.ts';
-	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
-	import { ArrowUpRight } from '@lucide/svelte';
-	import { Card, CardContent, CardHeader, CardTitle } from '#lib/components/ui/card/index.ts';
+	import { ArrowRight, Database } from '@lucide/svelte';
+	import PageHeader from '#lib/components/shell/PageHeader.svelte';
+	import { Badge } from '#lib/components/ui/badge/index.ts';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import * as Empty from '#lib/components/ui/empty/index.ts';
+	import * as Table from '#lib/components/ui/table/index.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-
-	function openDataset(datasetId: string) {
-		goto(resolve('/datasets/[dataset]', { dataset: datasetId }));
-	}
 </script>
 
 <svelte:head>
@@ -19,68 +16,73 @@
 	<meta name="description" content="Select an ATLANTIS dataset dashboard" />
 </svelte:head>
 
-<AnalysisLayout
-	title="Datasets"
-	eyebrow="ATLANTIS / Network analysis"
-	railLabel="Dataset directory"
->
-	{#snippet toolbar()}<p class="text-muted-foreground text-sm">
-			{data.datasets.length}
-			{data.datasets.length === 1 ? 'dataset' : 'datasets'} available
-		</p>{/snippet}
-	{#snippet rail()}<h2 class="rail-heading">Network analysis</h2>
-		<p class="text-muted-foreground text-sm leading-6">
-			Select a dataset to explore its traffic and analysis.
-		</p>
-		<div class="rail-section">
-			<h2 class="rail-heading">Dashboard</h2>
-			<p class="text-muted-foreground text-xs leading-5">
-				Traffic, flow characteristics, address counts, MAAD and source coverage.
-			</p>
-		</div>
-		<div class="rail-section">
-			<h2 class="rail-heading">Files</h2>
-			<p class="text-muted-foreground text-xs leading-5">
-				Open a five-minute capture by its filename timestamp.
-			</p>
-		</div>{/snippet}
+<div class="shell page flex flex-col gap-4">
+	<PageHeader title="Datasets">
+		{#snippet description()}
+			Choose a dataset to explore its traffic, flow characteristics, address counts, MAAD and
+			coverage.
+		{/snippet}
+	</PageHeader>
 
 	{#if data.datasets.length === 0}
-		<Card class="gap-0 rounded-lg border py-6 shadow-sm ring-0">
-			<CardHeader class="px-6">
-				<CardTitle><h1 class="text-xl font-semibold">No datasets found</h1></CardTitle>
-			</CardHeader>
-			<CardContent class="px-6">
-				<p class="text-muted-foreground text-sm">
-					The dashboard reads SQLite databases at
-					<code class="font-mono">data/&lt;dataset-id&gt;/netflow.sqlite</code>. Build one from your
-					NetFlow data with the pipeline, then reload this page.
-				</p>
-				<p class="text-muted-foreground text-sm">
-					See <code class="font-mono">docs/user/README.md</code> in the repository for the setup procedure.
-				</p>
-			</CardContent>
-		</Card>
-	{:else}<div class="catalog">
-			<div class="catalog-row catalog-header" aria-hidden="true">
-				<span>Dataset</span><span>Discovery</span><span>Open</span>
-			</div>
-			{#each data.datasets as dataset (dataset.datasetId)}
-				<Button
-					variant="ghost"
-					class="catalog-row h-auto w-full rounded-none text-left whitespace-normal"
-					onclick={() => openDataset(dataset.datasetId)}
-				>
-					<span class="min-w-0"
-						><span class="block font-semibold break-words">{dataset.label}</span><span
-							class="text-muted-foreground mt-1 block font-mono text-xs break-all"
-							>{dataset.datasetId}</span
-						></span
-					>
-					<span class="catalog-mode text-muted-foreground text-xs">{dataset.discoveryMode}</span
-					><ArrowUpRight size={16} aria-hidden="true" />
-				</Button>
-			{/each}
-		</div>
+		<Card.Root class="py-0">
+			<Empty.Root class="py-12">
+				<Empty.Header>
+					<Empty.Media variant="icon"><Database /></Empty.Media>
+					<Empty.Title><h2>No datasets found</h2></Empty.Title>
+					<Empty.Description>
+						The dashboard reads SQLite databases at
+						<code class="font-mono">data/&lt;dataset-id&gt;/netflow.sqlite</code>. Build one from
+						your NetFlow data with the pipeline, then reload this page. See
+						<code class="font-mono">docs/user/README.md</code> for the setup procedure.
+					</Empty.Description>
+				</Empty.Header>
+			</Empty.Root>
+		</Card.Root>
+	{:else}
+		<Card.Root class="overflow-hidden py-0">
+			<Table.Root>
+				<Table.Header class="bg-muted/50">
+					<Table.Row class="hover:bg-transparent">
+						<Table.Head class="text-muted-foreground h-9 px-4 text-xs">Dataset</Table.Head>
+						<Table.Head class="text-muted-foreground hidden h-9 px-4 text-xs sm:table-cell"
+							>Data from</Table.Head
+						>
+						<Table.Head class="text-muted-foreground h-9 px-4 text-xs">Discovery</Table.Head>
+						<Table.Head class="h-9 w-10 px-4"><span class="sr-only">Open</span></Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
+					{#each data.datasets as dataset (dataset.datasetId)}
+						<Table.Row class="group relative">
+							<Table.Cell class="px-4 py-3">
+								<a
+									href={resolve('/datasets/[dataset]', { dataset: dataset.datasetId })}
+									class="font-medium after:absolute after:inset-0 after:content-['']"
+									>{dataset.label}</a
+								>
+								<span class="text-muted-foreground block font-mono text-xs break-all"
+									>{dataset.datasetId}</span
+								>
+							</Table.Cell>
+							<Table.Cell class="text-muted-foreground hidden px-4 py-3 tabular-nums sm:table-cell"
+								>{dataset.defaultStartDate}</Table.Cell
+							>
+							<Table.Cell class="px-4 py-3">
+								<Badge variant="outline" class="text-muted-foreground font-normal"
+									>{dataset.discoveryMode}</Badge
+								>
+								{#if dataset.isDefault}<Badge
+										class="bg-selection text-selection-foreground ml-1 font-normal">default</Badge
+									>{/if}
+							</Table.Cell>
+							<Table.Cell class="text-muted-foreground group-hover:text-foreground px-4 py-3">
+								<ArrowRight class="size-4" aria-hidden="true" />
+							</Table.Cell>
+						</Table.Row>
+					{/each}
+				</Table.Body>
+			</Table.Root>
+		</Card.Root>
 	{/if}
-</AnalysisLayout>
+</div>

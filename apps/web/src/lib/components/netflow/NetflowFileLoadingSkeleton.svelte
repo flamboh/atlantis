@@ -9,29 +9,29 @@
 <div class="space-y-2">
 	{#each skeletons as skeletonId (`summary-skeleton-${skeletonId}`)}
 		<Card.Root size="sm" class="gap-0 py-0">
-			<Card.Header class="bg-primary py-4">
-				<Skeleton class="bg-primary-foreground/70 mb-2 h-7 w-56" />
-				<Skeleton class="bg-primary-foreground/60 mb-4 h-5 w-[34rem] max-w-full" />
+			<Card.Header class="py-4">
+				<Skeleton class="mb-2 h-7 w-56" />
+				<Skeleton class="mb-4 h-5 w-[34rem] max-w-full" />
 				<div class="grid grid-cols-1 gap-2 text-sm md:grid-cols-2">
 					<div>
-						<Skeleton class="bg-primary-foreground/60 mb-2 h-5 w-40" />
-						<Skeleton class="bg-primary-foreground/60 mb-1 h-4 w-20" />
-						<Skeleton class="bg-primary-foreground/60 h-4 w-20" />
+						<Skeleton class="mb-2 h-5 w-40" />
+						<Skeleton class="mb-1 h-4 w-20" />
+						<Skeleton class="h-4 w-20" />
 					</div>
 					<div>
-						<Skeleton class="bg-primary-foreground/60 mb-2 h-5 w-44" />
-						<Skeleton class="bg-primary-foreground/60 mb-1 h-4 w-20" />
-						<Skeleton class="bg-primary-foreground/60 h-4 w-20" />
+						<Skeleton class="mb-2 h-5 w-44" />
+						<Skeleton class="mb-1 h-4 w-20" />
+						<Skeleton class="h-4 w-20" />
 					</div>
 				</div>
 				<div class="mt-4 grid grid-cols-4 gap-4 text-sm">
 					{#each [0, 1, 2, 3] as columnIndex (`summary-column-${skeletonId}-${columnIndex}`)}
 						<div>
-							<Skeleton class="bg-primary-foreground/60 mb-2 h-5 w-28" />
-							<Skeleton class="bg-primary-foreground/60 mb-1 h-4 w-24" />
-							<Skeleton class="bg-primary-foreground/60 mb-1 h-4 w-20" />
-							<Skeleton class="bg-primary-foreground/60 mb-1 h-4 w-24" />
-							<Skeleton class="bg-primary-foreground/60 h-4 w-20" />
+							<Skeleton class="mb-2 h-5 w-28" />
+							<Skeleton class="mb-1 h-4 w-24" />
+							<Skeleton class="mb-1 h-4 w-20" />
+							<Skeleton class="mb-1 h-4 w-24" />
+							<Skeleton class="h-4 w-20" />
 						</div>
 					{/each}
 				</div>

@@ -33,6 +33,7 @@
 
 	onMount(() => {
 		theme.syncFromDom();
+		if (!datasets) requestDatasets();
 	});
 </script>
 

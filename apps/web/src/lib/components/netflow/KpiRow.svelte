@@ -60,9 +60,12 @@
 			value: `${totals.completeBuckets.toLocaleString()} / ${totals.buckets.toLocaleString()}`,
 			exact: totals.completeBuckets,
 			detail:
-				totals.partialBuckets || totals.unknownBuckets
-					? `${totals.partialBuckets.toLocaleString()} partial · ${totals.unknownBuckets.toLocaleString()} no coverage`
-					: 'Full source coverage'
+				[
+					totals.partialBuckets && `${totals.partialBuckets.toLocaleString()} partial`,
+					totals.unknownBuckets && `${totals.unknownBuckets.toLocaleString()} missing`
+				]
+					.filter(Boolean)
+					.join(' · ') || 'Full source coverage'
 		}
 	]);
 </script>
