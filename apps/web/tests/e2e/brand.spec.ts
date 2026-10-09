@@ -6,8 +6,10 @@ for (const colorScheme of ['light', 'dark'] as const) {
 		await page.setViewportSize({ width: 320, height: 800 });
 		await page.goto('/netflow/files');
 		if (colorScheme === 'dark') {
-			await page.getByRole('button', { name: 'Switch to dark mode' }).click();
-			await expect(page.locator('html')).toHaveClass(/(?:^|\s)dark(?:\s|$)/);
+			await expect(async () => {
+				await page.getByRole('button', { name: 'Switch to dark mode' }).click();
+				await expect(page.locator('html')).toHaveClass(/(?:^|\s)dark(?:\s|$)/, { timeout: 1000 });
+			}).toPass();
 		} else {
 			await expect(page.locator('html')).not.toHaveClass(/(?:^|\s)dark(?:\s|$)/);
 		}

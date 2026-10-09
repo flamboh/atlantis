@@ -1,14 +1,14 @@
-import { parseDate } from '@internationalized/date';
-
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
 
 export function isIsoDate(value: string): boolean {
 	if (!ISO_DATE.test(value)) return false;
-	try {
-		return parseDate(value).toString() === value;
-	} catch {
-		return false;
-	}
+	const date = utc(value);
+	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function addDays(date: string, days: number): string {
+	return new Date(utc(date).getTime() + days * DAY_MS).toISOString().slice(0, 10);
 }
 
 const dayFormat = new Intl.DateTimeFormat('en-US', {
@@ -43,7 +43,7 @@ export function dateRangePresets(
 	datasetStartDate: string,
 	today: string
 ): DateRangePreset[] {
-	const anchor = isIsoDate(endDate) ? parseDate(endDate) : parseDate(today);
+	const anchor = isIsoDate(endDate) ? endDate : today;
 	const windows = [
 		{ id: '1d', label: 'Last day', days: 1 },
 		{ id: '7d', label: 'Last 7 days', days: 7 },
@@ -53,8 +53,8 @@ export function dateRangePresets(
 		...windows.map(({ id, label, days }) => ({
 			id,
 			label,
-			startDate: anchor.subtract({ days: days - 1 }).toString(),
-			endDate: anchor.toString()
+			startDate: addDays(anchor, 1 - days),
+			endDate: anchor
 		})),
 		{ id: 'all', label: 'All available', startDate: datasetStartDate, endDate: today }
 	];

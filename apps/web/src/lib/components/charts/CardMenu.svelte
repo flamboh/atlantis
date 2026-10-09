@@ -30,7 +30,8 @@
 		class="w-44"
 		onCloseAutoFocus={(event) => {
 			event.preventDefault();
-			// Moving a card re-inserts its DOM node, so restore focus once the list has settled.
+			// Moves re-insert the card, so wait for the list to settle; the card slot also refocuses
+			// after moves in case this menu unmounted with a placeholder header.
 			void tick().then(() => trigger?.focus());
 		}}
 	>

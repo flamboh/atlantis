@@ -1,12 +1,8 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { Search } from '@lucide/svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import * as Command from '#lib/components/ui/command/index.ts';
 	import { Kbd } from '#lib/components/ui/kbd/index.ts';
 	import type { DatasetSummary } from '#lib/datasets.ts';
-	import { theme } from '#lib/stores/theme.svelte.ts';
-	import { sectionHref, sectionsFor, type AppSection } from './app-context.ts';
 
 	let {
 		datasets,
@@ -19,19 +15,13 @@
 	} = $props();
 
 	let open = $state(false);
+	let palette = $state<Promise<typeof import('./CommandPalette.svelte')> | null>(null);
 
 	function setOpen(next: boolean) {
 		open = next;
-		if (next && !datasets) onRequestDatasets();
-	}
-
-	function run(action: () => void) {
-		open = false;
-		action();
-	}
-
-	function go(section: AppSection, id: string | null) {
-		run(() => void goto(sectionHref(section, id)));
+		if (!next) return;
+		palette ??= import('./CommandPalette.svelte');
+		if (!datasets) onRequestDatasets();
 	}
 </script>
 
@@ -57,39 +47,8 @@
 	<Kbd class="hidden md:inline-flex">⌘K</Kbd>
 </Button>
 
-<Command.Dialog
-	bind:open
-	title="Command menu"
-	description="Jump to a page or dataset, or switch the theme."
->
-	<Command.Input placeholder="Type a command or search…" aria-label="Search commands" />
-	<Command.List>
-		<Command.Empty>No results.</Command.Empty>
-		<Command.Group heading="Pages">
-			{#each sectionsFor(datasetId) as item (item.section)}
-				<Command.Item value={`page ${item.label}`} onSelect={() => go(item.section, datasetId)}
-					>{item.label}</Command.Item
-				>
-			{/each}
-		</Command.Group>
-		{#if datasets && datasets.length > 0}
-			<Command.Group heading="Datasets">
-				{#each datasets as dataset (dataset.datasetId)}
-					<Command.Item
-						value={`dataset ${dataset.label} ${dataset.datasetId}`}
-						data-checked={dataset.datasetId === datasetId}
-						onSelect={() => go('dashboard', dataset.datasetId)}
-						>{dataset.label}
-						<span class="text-muted-foreground font-mono text-xs">{dataset.datasetId}</span
-						></Command.Item
-					>
-				{/each}
-			</Command.Group>
-		{/if}
-		<Command.Group heading="Preferences">
-			<Command.Item value="theme toggle dark light" onSelect={() => run(() => theme.toggle())}
-				>Switch to {theme.dark ? 'light' : 'dark'} theme</Command.Item
-			>
-		</Command.Group>
-	</Command.List>
-</Command.Dialog>
+{#if palette}
+	{#await palette then { default: CommandPalette }}
+		<CommandPalette bind:open {datasets} {datasetId} />
+	{/await}
+{/if}

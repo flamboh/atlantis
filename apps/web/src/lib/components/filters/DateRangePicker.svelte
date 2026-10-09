@@ -1,14 +1,11 @@
 <script lang="ts">
-	import { parseDate, type DateValue } from '@internationalized/date';
 	import { CalendarDays } from '@lucide/svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import ToolbarPopover from '#lib/components/common/ToolbarPopover.svelte';
 	import { Input } from '#lib/components/ui/input/index.ts';
 	import { Label } from '#lib/components/ui/label/index.ts';
-	import { RangeCalendar } from '#lib/components/ui/range-calendar/index.ts';
+	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
 	import { dateRangePresets, formatDateRange, isIsoDate } from './date-range.ts';
-
-	type Range = { start: DateValue | undefined; end: DateValue | undefined };
 
 	let {
 		startDate,
@@ -27,19 +24,10 @@
 	const id = $props.id();
 	const wide = new MediaQuery('(min-width: 640px)', true);
 	let open = $state(false);
-	let draft = $state<Range>({ start: undefined, end: undefined });
-	let placeholder = $state<DateValue | undefined>(undefined);
+	let invalid = $state({ startDate: false, endDate: false });
+	let calendar = $state<Promise<typeof import('./DateRangeCalendar.svelte')> | null>(null);
 	const label = $derived(formatDateRange(startDate, endDate));
 	const presets = $derived(dateRangePresets(endDate, datasetStartDate, today));
-
-	function syncDraft() {
-		const start = isIsoDate(startDate) ? parseDate(startDate) : undefined;
-		const end = isIsoDate(endDate) ? parseDate(endDate) : undefined;
-		const [low, high] = start && end && start.compare(end) > 0 ? [end, start] : [start, end];
-		draft = { start: low, end: high };
-		const focus = high ?? low ?? parseDate(today);
-		placeholder = wide.current ? focus.subtract({ months: 1 }) : focus;
-	}
 
 	function apply(next: { startDate: string; endDate: string }) {
 		onChange(next);
@@ -47,14 +35,17 @@
 	}
 
 	function commitField(side: 'startDate' | 'endDate', value: string) {
-		if (isIsoDate(value)) onChange({ [side]: value });
+		invalid[side] = !isIsoDate(value);
+		if (!invalid[side]) onChange({ [side]: value });
 	}
 </script>
 
 <ToolbarPopover
 	bind:open
 	onOpenChange={(next) => {
-		if (next) syncDraft();
+		if (!next) return;
+		invalid = { startDate: false, endDate: false };
+		calendar ??= import('./DateRangeCalendar.svelte');
 	}}
 	{label}
 	ariaLabel={`Date range: ${label}`}
@@ -80,16 +71,19 @@
 			</p>
 		</div>
 		<div class="flex flex-col">
-			<RangeCalendar
-				bind:value={draft}
-				bind:placeholder
-				numberOfMonths={wide.current ? 2 : 1}
-				weekStartsOn={0}
-				onValueChange={(next) => {
-					if (next.start && next.end)
-						apply({ startDate: next.start.toString(), endDate: next.end.toString() });
-				}}
-			/>
+			{#if calendar}
+				{#await calendar}
+					<Skeleton class="m-3 h-72 w-64 sm:w-[34rem]" />
+				{:then { default: DateRangeCalendar }}
+					<DateRangeCalendar
+						{startDate}
+						{endDate}
+						{today}
+						months={wide.current ? 2 : 1}
+						onApply={apply}
+					/>
+				{/await}
+			{/if}
 			<div class="grid grid-cols-2 gap-3 border-t p-3">
 				<div class="grid gap-1.5">
 					<Label for={`${id}-start`} class="text-muted-foreground text-xs font-normal"
@@ -102,7 +96,7 @@
 						inputmode="numeric"
 						autocomplete="off"
 						class="h-8 font-mono text-xs"
-						aria-invalid={!isIsoDate(startDate) || undefined}
+						aria-invalid={invalid.startDate || undefined}
 						onchange={(event) => commitField('startDate', event.currentTarget.value.trim())}
 					/>
 				</div>
@@ -116,7 +110,7 @@
 						inputmode="numeric"
 						autocomplete="off"
 						class="h-8 font-mono text-xs"
-						aria-invalid={!isIsoDate(endDate) || undefined}
+						aria-invalid={invalid.endDate || undefined}
 						onchange={(event) => commitField('endDate', event.currentTarget.value.trim())}
 					/>
 				</div>

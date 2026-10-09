@@ -30,10 +30,12 @@
 
 <ToggleGroup.Root
 	type="single"
-	value={value ?? ''}
-	onValueChange={(next) => {
-		if (next && next !== value) onValueChange?.(next as T);
-	}}
+	bind:value={
+		() => value ?? '',
+		(next: string) => {
+			if (next && next !== value) onValueChange?.(next as T);
+		}
+	}
 	spacing={1}
 	aria-label={ariaLabel}
 	class={cn('segmented bg-muted gap-0.5 rounded-md p-0.5', className)}

@@ -294,6 +294,9 @@
 	function moveCardBy(chartId: ChartCardId, offset: number) {
 		const target = chartOrder[chartOrder.indexOf(chartId) + offset];
 		if (!target) return;
+		// A moved card stays in view for the user, so mount it now rather than swapping its header
+		// out from under the restored focus when it intersects later.
+		activateChart(chartId);
 		moveChartCard(chartId, target);
 		persistChartOrder();
 	}
@@ -467,13 +470,13 @@
 	<div role="list" aria-label="Reorderable charts" class="chart-panels flex flex-col gap-3">
 		{#each chartOrder as chartId, index (chartId)}
 			<DashboardCardSlot
+				id={chartId}
 				title={CHART_CARD_DETAILS[chartId].title}
 				first={index === 0}
 				last={index === chartOrder.length - 1}
 				resizable={activatedCharts[chartId] && chartId !== 'coverage'}
 				onMove={(offset) => moveCardBy(chartId, offset)}
 				onResize={(offset) => resizeCard(chartId, offset)}
-				data-chart-id={chartId}
 				data-chart-activated={activatedCharts[chartId]}
 				class={`relative rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
 				style={`${activatedCharts[chartId] ? '' : `min-height:${getCardMinimumHeight(chartId)}px;`}${chartHeights[chartId] ? `--chart-user-height:${chartHeights[chartId]}px` : ''}`}

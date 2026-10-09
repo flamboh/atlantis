@@ -1,6 +1,7 @@
 import { createContext } from 'svelte';
 
 export type CardFrame = {
+	readonly id: string;
 	readonly title: string;
 	readonly first: boolean;
 	readonly last: boolean;

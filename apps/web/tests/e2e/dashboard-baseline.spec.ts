@@ -13,6 +13,7 @@ import {
 	chooseSegment,
 	directionSelect,
 	intervalSelect,
+	openWith,
 	openSources,
 	resetFilters,
 	setDirection,
@@ -179,15 +180,13 @@ test('all granularities render and long windows guard expensive groupings', asyn
 	}
 	await setDates(page, '2025-01-01', '2025-12-31');
 	await expect(intervalSelect(page)).toHaveAccessibleName('Interval: Day');
-	await intervalSelect(page).click();
+	await openWith(intervalSelect(page), page.getByRole('listbox'));
 	for (const label of ['5 min', '10 min', '30 min'])
 		await expect(page.getByRole('option', { name: new RegExp(`^${label}`) })).toHaveAttribute(
-			'aria-disabled',
-			'true'
+			'data-disabled'
 		);
 	await expect(page.getByRole('option', { name: 'Day', exact: true })).not.toHaveAttribute(
-		'aria-disabled',
-		'true'
+		'data-disabled'
 	);
 	await page.keyboard.press('Escape');
 });

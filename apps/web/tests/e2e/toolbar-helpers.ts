@@ -4,6 +4,14 @@ function escape(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Click a trigger until its popup appears; the first click can land before hydration. */
+export async function openWith(trigger: Locator, popup: Locator): Promise<void> {
+	await expect(async () => {
+		if (!(await popup.isVisible())) await trigger.click();
+		await expect(popup).toBeVisible({ timeout: 1000 });
+	}).toPass({ timeout: 10_000 });
+}
+
 /** Open a toolbar popover by its trigger's accessible-name prefix and return the dialog. */
 export async function openToolbarPopover(
 	page: Page,
@@ -11,8 +19,7 @@ export async function openToolbarPopover(
 	dialogName: string
 ): Promise<Locator> {
 	const dialog = page.getByRole('dialog', { name: dialogName, exact: true });
-	if (!(await dialog.isVisible())) await page.getByRole('button', { name: trigger }).click();
-	await expect(dialog).toBeVisible();
+	await openWith(page.getByRole('button', { name: trigger }), dialog);
 	return dialog;
 }
 
@@ -22,13 +29,16 @@ export async function closePopover(page: Page, dialog: Locator): Promise<void> {
 }
 
 async function chooseSelectOption(page: Page, label: string, option: string) {
-	await page.getByRole('combobox', { name: new RegExp(`^${escape(label)}:`) }).click();
+	await openWith(
+		page.getByRole('button', { name: new RegExp(`^${escape(label)}:`) }),
+		page.getByRole('listbox')
+	);
 	await page.getByRole('option', { name: new RegExp(`^${escape(option)}(\\s|$)`) }).click();
 	await expect(page.getByRole('listbox')).not.toBeAttached();
 }
 
 export function intervalSelect(page: Page): Locator {
-	return page.getByRole('combobox', { name: /^Interval:/ });
+	return page.getByRole('button', { name: /^Interval:/ });
 }
 
 export async function setInterval(page: Page, option: string): Promise<void> {
@@ -37,7 +47,7 @@ export async function setInterval(page: Page, option: string): Promise<void> {
 }
 
 export function directionSelect(page: Page): Locator {
-	return page.getByRole('combobox', { name: /^Direction:/ });
+	return page.getByRole('button', { name: /^Direction:/ });
 }
 
 export async function setDirection(page: Page, option: string): Promise<void> {
@@ -118,7 +128,7 @@ export function cardMenuTrigger(page: Page, title: string): Locator {
 }
 
 export async function chooseCardAction(page: Page, title: string, action: string): Promise<void> {
-	await cardMenuTrigger(page, title).click();
+	await openWith(cardMenuTrigger(page, title), page.getByRole('menu'));
 	await page.getByRole('menuitem', { name: action, exact: true }).click();
 	await expect(page.getByRole('menu')).not.toBeAttached();
 }

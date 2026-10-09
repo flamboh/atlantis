@@ -54,7 +54,7 @@ test('switches dashboard MAAD views between addresses, packets and bytes', async
 		await expect(spectrum.getByTestId('chart-unavailable')).toContainText(
 			'only computed for the Addresses measure'
 		);
-		await expect(spectrum.getByRole('combobox', { name: /^Source:/ })).not.toBeAttached();
+		await expect(spectrum.getByRole('button', { name: /^Source:/ })).not.toBeAttached();
 	}
 
 	await setMaadMeasure(page, 'Addresses');

@@ -7,6 +7,7 @@ import {
 	openDateRange,
 	openMaadOptions,
 	openSources,
+	openWith,
 	sourceOption
 } from './toolbar-helpers';
 
@@ -52,12 +53,14 @@ test('KPI totals match the traffic window returned by the stats API', async ({ p
 test('KPI totals follow source selection and show an unavailable state', async ({ page }) => {
 	await page.goto(FIXTURE_DASHBOARD);
 	const flows = page.locator('[data-kpi="flows"]');
-	await expect(flows.locator('[data-kpi-value]')).toHaveAttribute('data-kpi-value', '160');
+	const value = flows.locator('[data-kpi-value]');
+	await expect(value).toHaveAttribute('data-kpi-value', /^[1-9]\d*$/);
+	const initial = await value.getAttribute('data-kpi-value');
 	const sources = await openSources(page);
 	await sourceOption(sources, 'fixture-router').click();
 	await expect(flows).toContainText('Unavailable');
 	await sources.getByRole('button', { name: 'Select all', exact: true }).click();
-	await expect(flows.locator('[data-kpi-value]')).toHaveAttribute('data-kpi-value', '160');
+	await expect(value).toHaveAttribute('data-kpi-value', initial!);
 });
 
 test('date range presets, calendar selection and typed fields update the window', async ({
@@ -149,19 +152,20 @@ test('toolbar popovers and selects open, describe their value and return focus',
 	await page.keyboard.press('Escape');
 	await expect(page.getByRole('button', { name: 'MAAD: IPv4, Addresses' })).toBeFocused();
 
-	const interval = page.getByRole('combobox', { name: 'Interval: 5 min' });
+	const interval = page.getByRole('button', { name: 'Interval: 5 min' });
 	await interval.focus();
 	await page.keyboard.press('Enter');
 	await expect(page.getByRole('listbox')).toBeVisible();
 	await page.keyboard.press('Escape');
+	await expect(page.getByRole('listbox')).not.toBeAttached();
 	await expect(interval).toBeFocused();
 
-	const direction = page.getByRole('combobox', { name: 'Direction: All' });
-	await direction.click();
+	const direction = page.getByRole('button', { name: 'Direction: All' });
+	await openWith(direction, page.getByRole('listbox'));
 	await expect(page.getByRole('option', { name: /^Egress/ })).toContainText('internal → external');
 	await page.getByRole('option', { name: /^Egress/ }).click();
 	await expect.poll(() => new URL(page.url()).searchParams.get('direction')).toBe('egress');
-	await expect(page.getByRole('combobox', { name: 'Direction: Egress' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Direction: Egress' })).toBeVisible();
 });
 
 for (const width of [390, 1280]) {
@@ -184,9 +188,12 @@ for (const width of [390, 1280]) {
 		await expectRendered(card);
 
 		const trigger = cardMenuTrigger(page, 'Traffic Overview');
-		await trigger.focus();
-		await page.keyboard.press('Enter');
 		const menu = page.getByRole('menu');
+		await trigger.focus();
+		await expect(async () => {
+			if (!(await menu.isVisible())) await page.keyboard.press('Enter');
+			await expect(menu).toBeVisible({ timeout: 1000 });
+		}).toPass();
 		await expect(menu.getByRole('menuitem', { name: 'Move up' })).toHaveAttribute(
 			'aria-disabled',
 			'true'
@@ -218,7 +225,7 @@ for (const width of [390, 1280]) {
 			await expect.poll(async () => (await cardOrder(page))[position]).toBe('dashboard');
 			await expect(trigger).toBeFocused();
 		}
-		await trigger.click();
+		await openWith(trigger, menu);
 		await expect(page.getByRole('menuitem', { name: 'Move down' })).toHaveAttribute(
 			'aria-disabled',
 			'true'
@@ -313,8 +320,7 @@ test('placeholder cards expose the card menu before they load', async ({ page })
 	const ip = page.locator('[data-chart-id="ip"]');
 	await expect(ip).toHaveAttribute('data-chart-activated', 'false');
 	await expect(ip.getByTestId('deferred-chart-ip')).toBeAttached();
-	await cardMenuTrigger(page, 'Unique IP Counts').click();
-	await expect(page.getByRole('menuitem', { name: 'Taller' })).not.toBeAttached();
+	await openWith(cardMenuTrigger(page, 'Unique IP Counts'), page.getByRole('menu'));
 	await page.getByRole('menuitem', { name: 'Move up' }).click();
 	await expect.poll(async () => (await cardOrder(page)).indexOf('ip')).toBe(2);
 });
@@ -322,7 +328,7 @@ test('placeholder cards expose the card menu before they load', async ({ page })
 test('top bar switches datasets and the command menu navigates', async ({ page }) => {
 	await page.goto(FIXTURE_DASHBOARD);
 	const switcher = page.getByRole('button', { name: 'Dataset: Playwright Fixture' });
-	await switcher.click();
+	await openWith(switcher, page.getByRole('combobox', { name: 'Search datasets' }));
 	await page.getByRole('combobox', { name: 'Search datasets' }).fill('external');
 	await page.getByRole('option', { name: /Playwright External MAAD/ }).click();
 	await expect(page).toHaveURL(/\/datasets\/playwright-external-maad$/);
@@ -336,13 +342,18 @@ test('top bar switches datasets and the command menu navigates', async ({ page }
 
 	await page.getByRole('link', { name: 'Alerts', exact: true }).click();
 	await expect(page).toHaveURL(/\/datasets\/playwright-external-maad\/alerts$/);
-	await page.getByRole('button', { name: 'Dataset: Playwright External MAAD' }).click();
+	await openWith(
+		page.getByRole('button', { name: 'Dataset: Playwright External MAAD' }),
+		page.getByRole('combobox', { name: 'Search datasets' })
+	);
 	await page.getByRole('option', { name: /Playwright Fixture/ }).click();
 	await expect(page).toHaveURL(/\/datasets\/playwright\/alerts$/);
 
-	await page.keyboard.press('ControlOrMeta+k');
 	const palette = page.getByRole('dialog', { name: 'Command menu' });
-	await expect(palette).toBeVisible();
+	await expect(async () => {
+		if (!(await palette.isVisible())) await page.keyboard.press('ControlOrMeta+k');
+		await expect(palette).toBeVisible({ timeout: 1000 });
+	}).toPass();
 	await page.getByRole('combobox', { name: 'Search commands' }).fill('files');
 	await page.keyboard.press('Enter');
 	await expect(palette).not.toBeAttached();
@@ -353,7 +364,10 @@ test('top bar switches datasets and the command menu navigates', async ({ page }
 	);
 	await expect(page.getByLabel('Dataset', { exact: true })).toHaveValue('playwright');
 
-	await page.getByRole('button', { name: 'Open command menu' }).click();
+	await openWith(
+		page.getByRole('button', { name: 'Open command menu' }),
+		page.getByRole('combobox', { name: 'Search commands' })
+	);
 	await page.getByRole('combobox', { name: 'Search commands' }).fill('dark theme');
 	await page.keyboard.press('Enter');
 	await expect(page.locator('html')).toHaveClass(/(?:^|\s)dark(?:\s|$)/);

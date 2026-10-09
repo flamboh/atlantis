@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { ChevronsUpDown } from '@lucide/svelte';
-	import * as Command from '#lib/components/ui/command/index.ts';
 	import * as Popover from '#lib/components/ui/popover/index.ts';
 	import { Button } from '#lib/components/ui/button/index.ts';
 	import type { DatasetSummary } from '#lib/datasets.ts';
@@ -20,6 +19,7 @@
 	} = $props();
 
 	let open = $state(false);
+	let list = $state<Promise<typeof import('./DatasetList.svelte')> | null>(null);
 	const current = $derived(datasets?.find((dataset) => dataset.datasetId === datasetId));
 	const label = $derived(current?.label ?? datasetId ?? 'Select dataset');
 
@@ -33,7 +33,9 @@
 <Popover.Root
 	bind:open
 	onOpenChange={(next) => {
-		if (next && !datasets) onRequestDatasets();
+		if (!next) return;
+		list ??= import('./DatasetList.svelte');
+		if (!datasets) onRequestDatasets();
 	}}
 >
 	<Popover.Trigger>
@@ -42,7 +44,7 @@
 				{...props}
 				variant="ghost"
 				size="sm"
-				class="max-w-[min(18rem,45vw)] gap-1.5 px-2 font-medium"
+				class="max-w-[min(18rem,calc(100vw-13.5rem))] gap-1.5 px-2 font-medium"
 				aria-label={`Dataset: ${label}`}
 			>
 				<span class="truncate">{label}</span>
@@ -51,29 +53,10 @@
 		{/snippet}
 	</Popover.Trigger>
 	<Popover.Content align="start" class="w-72 gap-0 p-0">
-		<Command.Root>
-			<Command.Input placeholder="Search datasets…" aria-label="Search datasets" />
-			<Command.List class="max-h-72">
-				<Command.Empty>{datasets ? 'No datasets found.' : 'Loading datasets…'}</Command.Empty>
-				{#if datasets}
-					<Command.Group heading="Datasets">
-						{#each datasets as dataset (dataset.datasetId)}
-							<Command.Item
-								value={`${dataset.label} ${dataset.datasetId}`}
-								data-checked={dataset.datasetId === datasetId}
-								onSelect={() => choose(dataset.datasetId)}
-							>
-								<span class="flex min-w-0 flex-col">
-									<span class="truncate">{dataset.label}</span>
-									<span class="text-muted-foreground truncate font-mono text-xs"
-										>{dataset.datasetId}</span
-									>
-								</span>
-							</Command.Item>
-						{/each}
-					</Command.Group>
-				{/if}
-			</Command.List>
-		</Command.Root>
+		{#if list}
+			{#await list then { default: DatasetList }}
+				<DatasetList {datasets} {datasetId} onChoose={choose} />
+			{/await}
+		{/if}
 	</Popover.Content>
 </Popover.Root>
