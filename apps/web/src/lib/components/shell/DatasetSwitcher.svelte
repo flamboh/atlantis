@@ -19,6 +19,7 @@
 	} = $props();
 
 	let open = $state(false);
+	let content = $state<HTMLElement | null>(null);
 	let list = $state<Promise<typeof import('./DatasetList.svelte')> | null>(null);
 	const current = $derived(datasets?.find((dataset) => dataset.datasetId === datasetId));
 	const label = $derived(current?.label ?? datasetId ?? 'Select dataset');
@@ -52,9 +53,23 @@
 			</Button>
 		{/snippet}
 	</Popover.Trigger>
-	<Popover.Content align="start" class="w-72 gap-0 p-0">
+	<Popover.Content
+		bind:ref={content}
+		align="start"
+		class="w-72 gap-0 p-0"
+		role="dialog"
+		aria-label="Choose dataset"
+		onOpenAutoFocus={(event) => {
+			event.preventDefault();
+			content?.focus();
+		}}
+	>
 		{#if list}
-			{#await list then { default: DatasetList }}
+			{#await list}
+				<div class="text-muted-foreground px-3 py-6 text-center text-sm" role="status">
+					Loading datasets…
+				</div>
+			{:then { default: DatasetList }}
 				<DatasetList {datasets} {datasetId} onChoose={choose} />
 			{/await}
 		{/if}

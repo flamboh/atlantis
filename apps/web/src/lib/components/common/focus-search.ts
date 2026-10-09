@@ -1,6 +1,11 @@
 import type { Attachment } from 'svelte/attachments';
 
-/** Lazily loaded popover lists mount after the popover has placed focus, so move it to the search. */
 export const focusSearch: Attachment<HTMLElement> = (node) => {
-	node.querySelector<HTMLInputElement>('input')?.focus();
+	const frame = requestAnimationFrame(() => {
+		const content = node.closest<HTMLElement>('[data-slot="popover-content"]');
+		if (content && content === node.ownerDocument.activeElement) {
+			node.querySelector<HTMLInputElement>('input')?.focus();
+		}
+	});
+	return () => cancelAnimationFrame(frame);
 };

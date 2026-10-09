@@ -14,6 +14,7 @@
 		align = 'start',
 		open = $bindable(false),
 		onOpenChange,
+		focusContentOnOpen = false,
 		icon,
 		class: className,
 		contentClass,
@@ -27,11 +28,13 @@
 		align?: 'start' | 'center' | 'end';
 		open?: boolean;
 		onOpenChange?: (open: boolean) => void;
+		focusContentOnOpen?: boolean;
 		icon?: Snippet;
 		class?: string;
 		contentClass?: string;
 		children: Snippet;
 	} = $props();
+	let content = $state<HTMLElement | null>(null);
 </script>
 
 <Popover.Root bind:open {onOpenChange}>
@@ -52,10 +55,16 @@
 		{/snippet}
 	</Popover.Trigger>
 	<Popover.Content
+		bind:ref={content}
 		{align}
 		sideOffset={6}
 		role="dialog"
 		aria-label={dialogLabel}
+		onOpenAutoFocus={(event) => {
+			if (!focusContentOnOpen) return;
+			event.preventDefault();
+			content?.focus();
+		}}
 		class={cn(
 			'max-h-[calc(100dvh-6rem)] w-auto max-w-[calc(100vw-1.5rem)] gap-0 overflow-y-auto p-0',
 			contentClass

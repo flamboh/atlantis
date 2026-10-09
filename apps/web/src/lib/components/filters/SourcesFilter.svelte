@@ -23,13 +23,16 @@
 	ariaLabel={`Sources: ${selectedCount} of ${names.length} selected`}
 	dialogLabel="Sources"
 	contentClass="w-64"
+	focusContentOnOpen
 	onOpenChange={(next) => {
 		if (next) list ??= import('./SourcesList.svelte');
 	}}
 >
 	{#if list}
 		{#await list}
-			<div class="text-muted-foreground px-3 py-6 text-center text-sm">Loading sources…</div>
+			<div class="text-muted-foreground px-3 py-6 text-center text-sm" role="status">
+				Loading sources…
+			</div>
 		{:then { default: SourcesList }}
 			<SourcesList {routers} {onRoutersChange} />
 		{/await}

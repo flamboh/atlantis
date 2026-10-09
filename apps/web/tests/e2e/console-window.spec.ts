@@ -25,7 +25,9 @@ test('cached windows never display totals from a different selected window', asy
 	await expect(value).toHaveAttribute('data-kpi-value', '162');
 	await setDateRange(page, { startDate: '2025-03-02', endDate: '2025-03-02' });
 	await expect(value).toHaveAttribute('data-kpi-value', '0');
-	await expectRendered(page.locator('[data-chart-id="dashboard"]'));
+	await expect(
+		page.locator('[data-chart-id="dashboard"]').getByTestId('chart-render-state')
+	).toHaveAttribute('data-state', 'empty');
 	await page.evaluate(() => {
 		const failures: string[] = [];
 		Object.assign(window, { staleKpiValues: failures });

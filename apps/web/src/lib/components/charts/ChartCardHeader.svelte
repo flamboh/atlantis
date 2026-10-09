@@ -31,13 +31,16 @@
 			{#if subtitle}<span class="text-muted-foreground ml-1.5 truncate text-xs">{subtitle}</span
 				>{/if}
 		</div>
-		{#if controls}
+		{#if controls || frame}
 			<div
-				class="order-2 flex basis-full flex-wrap items-center gap-1.5 @2xl:order-none @2xl:ml-auto @2xl:basis-auto @2xl:justify-end"
+				class={[
+					'flex flex-wrap items-center gap-1.5',
+					controls && 'basis-full @2xl:ml-auto @2xl:basis-auto @2xl:justify-end'
+				]}
 			>
-				{@render controls()}
+				{@render controls?.()}
+				{#if frame}<div class="ml-auto"><CardMenu {frame} /></div>{/if}
 			</div>
 		{/if}
-		{#if frame}<div class="order-1 @2xl:order-none"><CardMenu {frame} /></div>{/if}
 	</div>
 </div>
