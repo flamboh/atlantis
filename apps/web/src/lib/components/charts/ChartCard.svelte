@@ -1,6 +1,6 @@
 <script lang="ts">
 	import ChartLoading from '#lib/components/charts/ChartLoading.svelte';
-	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import ChartCardHeader from './ChartCardHeader.svelte';
 	import * as Card from '#lib/components/ui/card/index.ts';
 	import type { Snippet } from 'svelte';
 
@@ -53,42 +53,28 @@
 						? 'empty'
 						: 'ready'}
 >
-	<Card.Header
-		class="border-border relative cursor-grab border-b py-4 select-none active:cursor-grabbing"
-		draggable="true"
-		data-drag-handle
-	>
-		<Card.Title class="flex items-baseline gap-3 text-lg font-semibold">
-			<h2>{title}</h2>
-			{#if subtitle}
-				<span class="text-muted-foreground text-sm font-normal">{subtitle}</span>
-			{/if}
-		</Card.Title>
-		<DragGrip />
-	</Card.Header>
+	<ChartCardHeader {title} {subtitle} controls={unavailableCopy ? undefined : controls} />
 
-	<Card.Content class="space-y-4 py-4">
+	<Card.Content class="p-0">
 		{#if unavailableCopy}
 			<div
-				class="border-border bg-background/60 text-muted-foreground flex min-h-32 items-center justify-center rounded-md border px-6 py-8 text-center"
+				class="text-muted-foreground flex min-h-40 items-center justify-center px-6 py-8 text-center text-sm"
 				data-testid="chart-unavailable"
 			>
 				{unavailableCopy}
 			</div>
 		{:else}
-			{@render controls?.()}
-
 			<div
 				class={size === 'spectrum'
-					? 'chart-frame relative h-[400px] min-h-[300px] resize-y overflow-hidden rounded-md border [--chart-height:400px]'
+					? 'chart-frame relative h-[400px] min-h-[300px] resize-y overflow-hidden p-3 [--chart-height:400px]'
 					: size === 'split'
-						? 'chart-frame relative h-[640px] min-h-[520px] resize-y overflow-hidden rounded-md border [--chart-height:640px] xl:h-[320px] xl:min-h-[240px] xl:[--chart-height:320px]'
-						: 'chart-frame relative h-[320px] min-h-[240px] resize-y overflow-hidden rounded-md border'}
+						? 'chart-frame relative h-[640px] min-h-[520px] resize-y overflow-hidden p-3 [--chart-height:640px] xl:h-[320px] xl:min-h-[240px] xl:[--chart-height:320px]'
+						: 'chart-frame relative h-[320px] min-h-[240px] resize-y overflow-hidden p-3'}
 				role="presentation"
 			>
 				{#if selectionUnavailableCopy}
 					<div
-						class="text-muted-foreground flex h-full items-center justify-center px-6 text-center"
+						class="text-muted-foreground flex h-full items-center justify-center px-6 text-center text-sm"
 						data-testid="chart-selection-unavailable"
 					>
 						{selectionUnavailableCopy}
@@ -96,13 +82,15 @@
 				{:else if loading}
 					<ChartLoading label={loadingCopy} />
 				{:else if error}
-					<div class="text-destructive flex h-full items-center justify-center">{error}</div>
+					<div class="text-destructive flex h-full items-center justify-center text-sm">
+						{error}
+					</div>
 				{:else if noMetrics}
-					<div class="text-muted-foreground flex h-full items-center justify-center">
+					<div class="text-muted-foreground flex h-full items-center justify-center text-sm">
 						{noMetricsCopy}
 					</div>
 				{:else if empty}
-					<div class="text-muted-foreground flex h-full items-center justify-center">
+					<div class="text-muted-foreground flex h-full items-center justify-center text-sm">
 						{emptyCopy}
 					</div>
 				{:else}

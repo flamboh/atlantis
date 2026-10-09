@@ -2,19 +2,19 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
-	import DatasetTabs from '#lib/components/datasets/DatasetTabs.svelte';
-	import AnalysisLayout from '#lib/components/common/AnalysisLayout.svelte';
-	import DateRangeFilter from '#lib/components/filters/DateRangeFilter.svelte';
+	import DashboardToolbar from '#lib/components/filters/DashboardToolbar.svelte';
+	import ChartCardHeader from '#lib/components/charts/ChartCardHeader.svelte';
 	import { Button } from '#lib/components/ui/button/index.ts';
-	import PrimaryFilters from '#lib/components/filters/PrimaryFilters.svelte';
+	import * as Card from '#lib/components/ui/card/index.ts';
+	import DashboardCardSlot from '#lib/components/netflow/DashboardCardSlot.svelte';
+	import KpiRow from '#lib/components/netflow/KpiRow.svelte';
+	import { createNetflowStatsData } from '#lib/components/netflow/netflow-stats-data.svelte.ts';
 	import NetflowDashboard from '#lib/components/netflow/NetflowDashboard.svelte';
 	import BreakdownChart from '#lib/components/charts/BreakdownChart.svelte';
 	import FlowCharacteristicsChart from '#lib/components/charts/FlowCharacteristicsChart.svelte';
 	import PortCardinalityChart from '#lib/components/charts/PortCardinalityChart.svelte';
 	import CoverageStrip from '#lib/components/charts/CoverageStrip.svelte';
 	import { createFlowCharacteristicsData } from '#lib/components/charts/flow-characteristics-data.svelte.ts';
-	import CardLayoutControls from '#lib/components/common/CardLayoutControls.svelte';
-	import DragGrip from '#lib/components/common/DragGrip.svelte';
 	import { DEFAULT_DATA_OPTIONS } from '#lib/components/netflow/constants.ts';
 	import { createNearViewportAttachment } from '#lib/components/netflow/near-viewport.ts';
 	import type { DataOption, GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
@@ -206,7 +206,7 @@
 		maadUnavailableCopy ??
 			(maadMeasureHasSpectrum(measure)
 				? null
-				: 'The spectrum is only computed for the Addresses measure. Switch MAAD to Addresses in Controls to see it.')
+				: 'The spectrum is only computed for the Addresses measure. Set MAAD to Addresses in the toolbar to see it.')
 	);
 	const routers = $derived(Array.isArray(props.routers) ? props.routers : []);
 	const routerStateKey = $derived(`${props.dataset}:${routers.join('\0')}`);
@@ -221,6 +221,16 @@
 			: (availableSpectrumRouters[0] ?? '')
 	);
 	const routersLoaded = $derived(Array.isArray(props.routers));
+	const today = new Date().toJSON().slice(0, 10);
+	const netflowStats = createNetflowStatsData(() => ({
+		dataset: props.dataset,
+		startDate,
+		endDate,
+		groupBy: selectedGroupBy,
+		routers: selectedRouters,
+		routersLoaded,
+		direction
+	}));
 	const flowCharacteristics = createFlowCharacteristicsData(() => ({
 		enabled: activatedCharts.characteristics || activatedCharts.ports,
 		dataset: props.dataset,
@@ -393,18 +403,6 @@
 		activateChart(chartOrder[0] ?? 'dashboard');
 	});
 
-	function handleStartDateChange(payload: { startDate: string }) {
-		updateSearch({ startDate: payload.startDate });
-	}
-
-	function handleEndDateChange(payload: { endDate: string }) {
-		updateSearch({ endDate: payload.endDate });
-	}
-
-	function handleGroupByChange(payload: { groupBy: GroupByOption }) {
-		updateSearch({ groupBy: payload.groupBy });
-	}
-
 	function handleDrillDown(payload: {
 		groupBy: GroupByOption;
 		startDate: string;
@@ -421,11 +419,6 @@
 		void navigateToNetflowFile(goto, slug, props.dataset, direction, ipVersion, measure);
 	}
 
-	function handleRoutersChange(payload: { routers: RouterConfig }) {
-		const nextRouters = payload.routers;
-		selectedRouters = nextRouters;
-	}
-
 	function handleDataOptionsChange(payload: { options: DataOption[] }) {
 		dataOptions = payload.options;
 	}
@@ -434,23 +427,8 @@
 		ipMetrics = payload.metrics;
 	}
 
-	function handleDirectionChange(payload: { direction: FlowDirection }) {
-		updateSearch({ direction: payload.direction });
-	}
-
-	function handleIpVersionChange(payload: { ipVersion: MaadIpVersion }) {
-		updateSearch({ ipVersion: payload.ipVersion });
-	}
-
-	function handleMeasureChange(payload: { measure: MaadMeasure }) {
-		updateSearch({ measure: payload.measure });
-	}
-
 	function handleResetView() {
-		updateSearch({
-			...dateRangeSearch.defaults,
-			endDate: new Date().toJSON().slice(0, 10)
-		});
+		updateSearch({ ...dateRangeSearch.defaults, endDate: today });
 	}
 </script>
 
@@ -459,51 +437,42 @@
 	<meta name="description" content="NetFlow analysis and visualization tool" />
 </svelte:head>
 
-<AnalysisLayout title={props.title ?? props.dataset} eyebrow="Dataset / Network analysis">
-	{#snippet navigation()}<DatasetTabs datasetId={props.dataset} active="dashboard" />{/snippet}
-	{#snippet toolbar()}
-		<DateRangeFilter
-			{startDate}
-			{endDate}
-			onStartDateChange={(date) => handleStartDateChange({ startDate: date })}
-			onEndDateChange={(date) => handleEndDateChange({ endDate: date })}
-		/>
-		<p class="filter-summary" aria-label="Selected filters">
-			<span>{availableSpectrumRouters.length}/{routers.length} sources</span><span
-				>{direction === 'all' ? 'All directions' : direction}</span
-			><span>{selectedGroupBy === 'date' ? 'Daily' : selectedGroupBy}</span>{#if maadComputed}<span
-					>MAAD IPv{ipVersion} · {measure}</span
-				>{/if}
+<div class="shell page flex flex-col gap-4">
+	<div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+		<h1 class="text-xl font-semibold tracking-tight">{props.title ?? props.dataset}</h1>
+		<p class="text-muted-foreground text-xs">
+			Click a chart to drill down · drag across a chart to select a range
 		</p>
-		<Button onclick={handleResetView} size="sm" variant="outline" class="reset-view ml-auto"
-			>Reset View</Button
-		>
-		{#if startDate > endDate}<p class="text-destructive w-full text-sm" role="alert">
-				Start Date must be on or before End Date.
-			</p>{/if}
-	{/snippet}
-	{#snippet rail()}
-		<PrimaryFilters
-			{startDate}
-			{endDate}
-			groupBy={selectedGroupBy}
-			routers={selectedRouters}
-			{direction}
-			showDirection={hasLocality}
-			measure={maadComputed ? measure : undefined}
-			maadIpVersion={ipVersion}
-			onGroupByChange={handleGroupByChange}
-			onRoutersChange={handleRoutersChange}
-			onDirectionChange={handleDirectionChange}
-			onMeasureChange={handleMeasureChange}
-			onMaadIpVersionChange={handleIpVersionChange}
-		/>
-	{/snippet}
-	<div role="list" aria-label="Reorderable charts" class="chart-panels flex flex-col gap-4">
+	</div>
+	<DashboardToolbar
+		{startDate}
+		{endDate}
+		datasetStartDate={props.defaultStartDate}
+		{today}
+		groupBy={selectedGroupBy}
+		routers={selectedRouters}
+		{direction}
+		showDirection={hasLocality}
+		measure={maadComputed ? measure : null}
+		{ipVersion}
+		onDatesChange={(patch) => updateSearch(patch)}
+		onGroupByChange={(groupBy) => updateSearch({ groupBy })}
+		onRoutersChange={(routers) => (selectedRouters = routers)}
+		onDirectionChange={(next) => updateSearch({ direction: next })}
+		onMeasureChange={(next) => updateSearch({ measure: next })}
+		onIpVersionChange={(next) => updateSearch({ ipVersion: next })}
+		onReset={handleResetView}
+	/>
+	<KpiRow stats={netflowStats} />
+	<div role="list" aria-label="Reorderable charts" class="chart-panels flex flex-col gap-3">
 		{#each chartOrder as chartId, index (chartId)}
-			<section
-				role="listitem"
-				data-chart-card
+			<DashboardCardSlot
+				title={CHART_CARD_DETAILS[chartId].title}
+				first={index === 0}
+				last={index === chartOrder.length - 1}
+				resizable={activatedCharts[chartId] && chartId !== 'coverage'}
+				onMove={(offset) => moveCardBy(chartId, offset)}
+				onResize={(offset) => resizeCard(chartId, offset)}
 				data-chart-id={chartId}
 				data-chart-activated={activatedCharts[chartId]}
 				class={`relative rounded-lg ${dropTargetChartId === chartId && draggedChartId && draggedChartId !== chartId ? 'ring-primary ring-offset-background ring-2 ring-offset-2' : ''}`}
@@ -522,30 +491,14 @@
 					handleChartDrop(event, chartId);
 				}}
 			>
-				<CardLayoutControls
-					title={CHART_CARD_DETAILS[chartId].title}
-					first={index === 0}
-					last={index === chartOrder.length - 1}
-					resizable={activatedCharts[chartId] && chartId !== 'coverage'}
-					onMove={(offset) => moveCardBy(chartId, offset)}
-					onResize={(offset) => {
-						resizeCard(chartId, offset);
-					}}
-				/>
 				{#if !activatedCharts[chartId]}
-					<div
-						class="border-border bg-card text-card-foreground relative flex h-full flex-col rounded-lg border shadow-sm"
+					<Card.Root
+						size="sm"
+						class="h-full gap-0 py-0"
 						style={`min-height:${getCardMinimumHeight(chartId)}px`}
 						data-testid={`deferred-chart-${chartId}`}
 					>
-						<div
-							class="border-border relative cursor-grab border-b p-4 select-none active:cursor-grabbing"
-							draggable="true"
-							data-drag-handle
-						>
-							<h2 class="text-lg font-semibold">{CHART_CARD_DETAILS[chartId].title}</h2>
-							<DragGrip />
-						</div>
+						<ChartCardHeader title={CHART_CARD_DETAILS[chartId].title} />
 						<div
 							{@attach chartVisibilityAttachments[chartId]}
 							class="pointer-events-none h-px w-full"
@@ -556,23 +509,16 @@
 							class="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-4 text-sm"
 						>
 							<p>This chart will load as it approaches the viewport.</p>
-							<button
-								type="button"
-								class="border-input bg-background hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring rounded-md border px-3 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
-								onclick={() => activateChart(chartId)}
-							>
+							<Button variant="outline" size="sm" onclick={() => activateChart(chartId)}>
 								Load {CHART_CARD_DETAILS[chartId].title} chart
-							</button>
+							</Button>
 						</div>
-					</div>
+					</Card.Root>
 				{:else if chartId === 'dashboard'}
 					<NetflowDashboard
 						dataset={props.dataset}
-						{startDate}
-						{endDate}
+						stats={netflowStats}
 						groupBy={selectedGroupBy}
-						routers={selectedRouters}
-						{routersLoaded}
 						{dataOptions}
 						{direction}
 						{ipVersion}
@@ -680,7 +626,7 @@
 						{routersLoaded}
 					/>
 				{/if}
-			</section>
+			</DashboardCardSlot>
 		{/each}
 	</div>
-</AnalysisLayout>
+</div>

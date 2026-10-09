@@ -8,8 +8,28 @@
 	import * as Tooltip from '#lib/components/ui/tooltip/index.ts';
 	import { theme } from '#lib/stores/theme.svelte.ts';
 	import Logo from '#lib/components/Logo.svelte';
+	import AppNav from '#lib/components/shell/AppNav.svelte';
+	import CommandMenu from '#lib/components/shell/CommandMenu.svelte';
+	import DatasetSwitcher from '#lib/components/shell/DatasetSwitcher.svelte';
+	import { pageDatasetId, pageDatasets, pageSection } from '#lib/components/shell/app-context.ts';
+	import {
+		getCachedDatasetSummaries,
+		loadDatasetSummaries,
+		type DatasetSummary
+	} from '#lib/datasets.ts';
 
 	let { children } = $props();
+	let fetchedDatasets = $state.raw<DatasetSummary[] | null>(null);
+	const datasets = $derived(pageDatasets(page) ?? fetchedDatasets ?? getCachedDatasetSummaries());
+	const datasetId = $derived(pageDatasetId(page));
+	const section = $derived(pageSection(page.url.pathname));
+
+	function requestDatasets() {
+		void loadDatasetSummaries().then(
+			(loaded) => (fetchedDatasets = loaded),
+			() => {}
+		);
+	}
 
 	onMount(() => {
 		theme.syncFromDom();
@@ -18,64 +38,54 @@
 
 <!-- Single app-wide provider required by every Tooltip.Root (bits-ui) -->
 <Tooltip.Provider>
-	<div class="font-body bg-background text-foreground flex h-dvh flex-col overflow-hidden">
+	<div class="bg-background text-foreground flex h-dvh flex-col overflow-hidden font-sans">
 		<header class="app-topbar border-border bg-card shrink-0 border-b">
-			<div class="shell-width">
-				<div class="flex items-center justify-between gap-3 py-2">
-					<div>
-						<h1 class="text-foreground text-base font-semibold tracking-tight">
-							<a href={resolve('/')}><Logo /></a>
-						</h1>
-					</div>
-					<nav aria-label="Main navigation" class="flex items-center gap-3 text-sm sm:gap-6">
-						<a
-							href={resolve('/')}
-							aria-current={page.url.pathname === '/' ? 'page' : undefined}
-							class="text-muted-foreground hover:text-foreground aria-[current=page]:text-accent-foreground"
-							>Home</a
-						>
-						<a
-							href={resolve('/netflow/files')}
-							aria-current={page.url.pathname.startsWith('/netflow/files') ? 'page' : undefined}
-							class="text-muted-foreground hover:text-foreground aria-[current=page]:text-accent-foreground"
-							>Files</a
-						>
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							onclick={() => theme.toggle()}
-							class="text-muted-foreground hover:text-foreground"
-							aria-label={theme.dark ? 'Switch to light mode' : 'Switch to dark mode'}
-						>
-							{#if theme.dark}
-								<Sun size={20} />
-							{:else}
-								<Moon size={20} />
-							{/if}
-						</Button>
-					</nav>
+			<div class="shell flex h-12 items-center gap-1.5">
+				<a
+					href={resolve('/')}
+					class="text-foreground -ml-1 rounded-md px-1 py-1 text-[0.9375rem] font-semibold tracking-tight"
+					><Logo /></a
+				>
+				<span class="text-border text-xl font-light select-none" aria-hidden="true">/</span>
+				<DatasetSwitcher {datasets} {datasetId} {section} onRequestDatasets={requestDatasets} />
+				<div class="ml-auto flex items-center gap-1">
+					<CommandMenu {datasets} {datasetId} onRequestDatasets={requestDatasets} />
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						onclick={() => theme.toggle()}
+						class="text-muted-foreground hover:text-foreground"
+						aria-label={theme.dark ? 'Switch to light mode' : 'Switch to dark mode'}
+					>
+						{#if theme.dark}
+							<Sun class="size-4" />
+						{:else}
+							<Moon class="size-4" />
+						{/if}
+					</Button>
 				</div>
 			</div>
 		</header>
+		<AppNav {datasetId} active={section} />
 
 		<main class="app-shell__main min-h-0 flex-1 overflow-y-auto">
 			{@render children()}
 			<footer
-				class="text-muted-foreground flex flex-col items-center justify-center gap-1 py-8 text-[10px]"
+				class="text-muted-foreground border-border flex flex-col items-center justify-center gap-1 border-t py-6 text-xs"
 			>
-				<div class="flex flex-wrap items-center justify-center gap-x-2 text-[14px]">
+				<div class="flex flex-wrap items-center justify-center gap-x-2">
 					<a
 						href="https://onrg.gitlab.io"
-						class="hover:underline"
+						class="hover:text-foreground"
 						target="_blank"
 						rel="noopener noreferrer"
 					>
 						ONRG
 					</a>
-					<span>&middot;</span>
+					<span aria-hidden="true">&middot;</span>
 					<a
 						href="https://github.com/flamboh/atlantis"
-						class="hover:underline"
+						class="hover:text-foreground"
 						target="_blank"
 						rel="noopener noreferrer"
 					>

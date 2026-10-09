@@ -33,7 +33,7 @@
 </script>
 
 <script lang="ts">
-	import DragGrip from '#lib/components/common/DragGrip.svelte';
+	import ChartCardHeader from './ChartCardHeader.svelte';
 	import type { BucketCoverage, CoverageState } from '#lib/types/types.ts';
 	import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
 	import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
@@ -262,7 +262,7 @@
 </script>
 
 <div
-	class="bg-card rounded-lg border shadow-sm"
+	class="bg-card text-card-foreground rounded-lg border shadow-(--shadow-card)"
 	data-testid="coverage-strip-card"
 	data-state={loading
 		? 'loading'
@@ -272,20 +272,13 @@
 				? 'empty'
 				: 'ready'}
 >
-	<div
-		class="relative cursor-grab border-b p-3 select-none active:cursor-grabbing"
-		draggable="true"
-		data-drag-handle
-	>
-		<h2 class="text-foreground text-sm font-semibold">Coverage</h2>
-		<DragGrip />
-	</div>
+	<ChartCardHeader title="Coverage" />
 
 	<div class="px-3 py-2">
 		{#if loading}
 			<div class="text-muted-foreground py-1 text-xs">Loading coverage...</div>
 		{:else if error}
-			<div class="py-1 text-xs text-red-500">{error}</div>
+			<div class="text-destructive py-1 text-xs">{error}</div>
 		{:else if visibleTimelines.length === 0}
 			<div class="text-muted-foreground py-1 text-xs">No coverage available</div>
 		{:else}

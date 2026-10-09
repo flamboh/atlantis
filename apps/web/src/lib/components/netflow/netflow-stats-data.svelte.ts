@@ -1,0 +1,223 @@
+import { dateStringToEpochPST } from '#lib/utils/timezone.ts';
+import type { GroupByOption, RouterConfig } from '#lib/components/netflow/types.ts';
+import type {
+	FlowDirection,
+	NetflowIpFamily,
+	NetflowStatsResponse,
+	NetflowStatsResult,
+	TimeBucket
+} from '#lib/types/types.ts';
+import {
+	ensureCachedWindow,
+	getMissingWindowRanges,
+	readCachedWindow,
+	type TimeRange
+} from '#lib/utils/window-cache.ts';
+import { createRequestGate } from '#lib/components/charts/flow-characteristics.ts';
+
+export type NetflowStatsFilters = {
+	dataset: string;
+	startDate: string;
+	endDate: string;
+	groupBy: GroupByOption;
+	routers: RouterConfig;
+	routersLoaded: boolean;
+	direction: FlowDirection;
+};
+
+export type NetflowStatsData = {
+	readonly results: TimeBucket<NetflowStatsResult>[];
+	readonly availableIpFamilies: NetflowIpFamily[];
+	readonly loading: boolean;
+	readonly error: string | null;
+};
+
+export type NetflowWindowTotals = {
+	flows: number;
+	flowsTcp: number;
+	packets: number;
+	bytes: number;
+	buckets: number;
+	completeBuckets: number;
+	partialBuckets: number;
+	unknownBuckets: number;
+};
+
+type StatsRequest =
+	| { kind: 'waiting' }
+	| { kind: 'invalid'; error: string }
+	| {
+			kind: 'fetch';
+			id: string;
+			key: string;
+			requestedRange: TimeRange;
+			baseParams: Record<string, string>;
+			missing: boolean;
+	  };
+
+type FetchRequest = Extract<StatsRequest, { kind: 'fetch' }>;
+
+type SettledRequest = {
+	id: string;
+	results: TimeBucket<NetflowStatsResult>[];
+	availableIpFamilies: NetflowIpFamily[];
+	error: string | null;
+};
+
+const ipFamilyCache: Record<string, NetflowIpFamily[]> = {};
+const ALL_FAMILIES: NetflowIpFamily[] = ['all'];
+
+function selectedRouters(routers: RouterConfig): string[] {
+	return Object.entries(routers)
+		.filter(([, enabled]) => enabled)
+		.map(([router]) => router.trim())
+		.filter((router) => router.length > 0)
+		.sort();
+}
+
+function describeRequest(filtersKey: string): StatsRequest {
+	const filters = JSON.parse(filtersKey) as NetflowStatsFilters;
+	if (!filters.routersLoaded) return { kind: 'waiting' };
+	const routers = selectedRouters(filters.routers);
+	if (routers.length === 0) {
+		return { kind: 'invalid', error: 'Select at least one source to view NetFlow statistics' };
+	}
+	const key = JSON.stringify({
+		chart: 'netflow',
+		dataset: filters.dataset,
+		groupBy: filters.groupBy,
+		routers,
+		direction: filters.direction
+	});
+	const requestedRange = {
+		start: dateStringToEpochPST(filters.startDate),
+		end: dateStringToEpochPST(filters.endDate, true)
+	};
+	return {
+		kind: 'fetch',
+		id: filtersKey,
+		key,
+		requestedRange,
+		baseParams: {
+			dataset: filters.dataset,
+			routers: routers.join(','),
+			groupBy: filters.groupBy,
+			direction: filters.direction
+		},
+		missing: getMissingWindowRanges(key, requestedRange).length > 0
+	};
+}
+
+async function fetchStats(
+	request: FetchRequest,
+	signal: AbortSignal
+): Promise<Omit<SettledRequest, 'id' | 'error'>> {
+	await ensureCachedWindow<TimeBucket<NetflowStatsResult>>({
+		key: request.key,
+		requestedRange: request.requestedRange,
+		signal,
+		fetchRange: async (range, signal) => {
+			const params = new URLSearchParams({
+				...request.baseParams,
+				startDate: range.start.toString(),
+				endDate: range.end.toString()
+			});
+			const response = await fetch(`/api/netflow/stats?${params}`, { signal });
+			if (!response.ok) {
+				const message = await response.text();
+				throw new Error(message || `Failed to load data: ${response.statusText}`);
+			}
+			const json = (await response.json()) as NetflowStatsResponse;
+			ipFamilyCache[request.key] = json.availableIpFamilies;
+			return json.result;
+		},
+		getRecordKey: (record) => `${record.bucketStart}`,
+		compareRecords: (left, right) => left.bucketStart - right.bucketStart
+	});
+	return {
+		results: readCachedWindow<TimeBucket<NetflowStatsResult>>(
+			request.key,
+			request.requestedRange,
+			(record, range) => record.bucketStart >= range.start && record.bucketStart < range.end
+		),
+		availableIpFamilies: ipFamilyCache[request.key] ?? ALL_FAMILIES
+	};
+}
+
+/** Share one cached /api/netflow/stats window between the KPI row and the traffic card. */
+export function createNetflowStatsData(getFilters: () => NetflowStatsFilters): NetflowStatsData {
+	const filtersKey = $derived(JSON.stringify(getFilters()));
+	const request = $derived(describeRequest(filtersKey));
+	let settled = $state.raw<SettledRequest | null>(null);
+	const requestGate = createRequestGate();
+
+	$effect(() => {
+		if (request.kind !== 'fetch') return;
+		const current = request;
+		const token = requestGate.begin();
+		const controller = new AbortController();
+		fetchStats(current, controller.signal).then(
+			(data) => {
+				if (requestGate.isCurrent(token)) settled = { id: current.id, ...data, error: null };
+			},
+			(reason: unknown) => {
+				if (!requestGate.isCurrent(token)) return;
+				if (reason instanceof DOMException && reason.name === 'AbortError') return;
+				settled = {
+					id: current.id,
+					results: [],
+					availableIpFamilies: ALL_FAMILIES,
+					error: `Failed to load data: ${reason instanceof Error ? reason.message : 'Unknown error'}`
+				};
+			}
+		);
+		return () => {
+			requestGate.begin();
+			controller.abort();
+		};
+	});
+
+	return {
+		get results() {
+			return request.kind === 'fetch' ? (settled?.results ?? []) : [];
+		},
+		get availableIpFamilies() {
+			return request.kind === 'fetch'
+				? (settled?.availableIpFamilies ?? ALL_FAMILIES)
+				: ALL_FAMILIES;
+		},
+		get loading() {
+			if (request.kind === 'waiting') return true;
+			return request.kind === 'fetch' && settled?.id !== request.id && request.missing;
+		},
+		get error() {
+			if (request.kind === 'invalid') return request.error;
+			return request.kind === 'fetch' && settled?.id === request.id ? settled.error : null;
+		}
+	};
+}
+
+/** Sum the additive totals of every observed bucket; buckets without data contribute nothing. */
+export function sumNetflowWindow(results: readonly TimeBucket<NetflowStatsResult>[]) {
+	const totals: NetflowWindowTotals = {
+		flows: 0,
+		flowsTcp: 0,
+		packets: 0,
+		bytes: 0,
+		buckets: results.length,
+		completeBuckets: 0,
+		partialBuckets: 0,
+		unknownBuckets: 0
+	};
+	for (const bucket of results) {
+		if (bucket.coverage.state === 'complete') totals.completeBuckets += 1;
+		else if (bucket.coverage.state === 'partial') totals.partialBuckets += 1;
+		else totals.unknownBuckets += 1;
+		if (!bucket.data) continue;
+		totals.flows += bucket.data.flows;
+		totals.flowsTcp += bucket.data.flowsTcp;
+		totals.packets += bucket.data.packets;
+		totals.bytes += bucket.data.bytes;
+	}
+	return totals;
+}

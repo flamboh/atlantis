@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ChartCard from './ChartCard.svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
 	import MetricLinePanel, { type MetricLineSeries } from './MetricLinePanel.svelte';
 	import { indexObservationBuckets, type IndexedObservationBucket } from './flow-characteristics';
 	import type { GroupByOption } from '#lib/components/netflow/types.ts';
@@ -108,20 +109,12 @@
 	emptyCopy="No flow characteristics for the selected filters"
 >
 	{#snippet controls()}
-		<div class="flex flex-wrap items-center gap-4" role="group" aria-label="IP family">
-			{#each IP_FAMILY_OPTIONS as option (option.value)}
-				<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-					<input
-						type="radio"
-						name="flow-characteristics-ip-family"
-						checked={observationFamily === option.value}
-						onchange={() => (observationFamily = option.value)}
-						class="border-input accent-primary focus-visible:ring-ring size-4 focus-visible:ring-2"
-					/>
-					<span>{option.label}</span>
-				</label>
-			{/each}
-		</div>
+		<SegmentedToggle
+			options={IP_FAMILY_OPTIONS}
+			value={observationFamily}
+			onValueChange={(family) => (observationFamily = family)}
+			ariaLabel="IP family"
+		/>
 	{/snippet}
 
 	<div class="grid h-full gap-4 xl:grid-cols-2">

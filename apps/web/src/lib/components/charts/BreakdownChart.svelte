@@ -19,9 +19,10 @@
 	import { navigateToNetflowFile } from '#lib/utils/netflow-file-navigation.ts';
 	import { dateStringToEpochPST, formatDateAsPSTDateString } from '#lib/utils/timezone.ts';
 	import { ensureCachedWindow, readCachedWindow, type TimeRange } from '#lib/utils/window-cache.ts';
-	import { Checkbox } from '#lib/components/ui/checkbox/index.ts';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.ts';
-	import SegmentedControl from '#lib/components/common/SegmentedControl.svelte';
+	import ChecklistPopover from '#lib/components/common/ChecklistPopover.svelte';
+	import SegmentedToggle from '#lib/components/common/SegmentedToggle.svelte';
+	import ToolbarSelect from '#lib/components/common/ToolbarSelect.svelte';
 	import ChartCard from './ChartCard.svelte';
 	import { getSourceLineDash } from './flow-characteristics';
 	import { sourceSeriesColor, categoricalSeriesColor } from './chart-colors';
@@ -209,6 +210,10 @@
 			: [...activeMetrics, metric];
 		activeMetrics = next;
 		props.onMetricsChange?.({ metrics: next as MetricsForKind<Kind> });
+	}
+	function handleSetAllMetrics(checked: boolean) {
+		activeMetrics = checked ? config.metrics.map((metric) => metric.key) : [];
+		props.onMetricsChange?.({ metrics: activeMetrics as MetricsForKind<Kind> });
 	}
 	function handleRouterChange(router: string) {
 		props.onRouterChange?.({ router });
@@ -440,65 +445,53 @@
 >
 	{#snippet controls()}
 		{#if props.kind === 'spectrum'}
-			<div class="flex flex-wrap items-center gap-3">
-				{#if (props.availableRouters ?? []).length === 0}
-					<Skeleton class="h-9 w-48" aria-hidden="true" />
-				{:else}
-					<SegmentedControl
-						options={(props.availableRouters ?? []).map((routerName: string) => ({
-							value: routerName,
-							label: routerName
-						}))}
-						value={props.router ?? null}
-						onValueChange={handleRouterChange}
-						ariaLabel="Spectrum source"
-						class="flex flex-wrap"
-						buttonClass="w-auto sm:min-w-20"
-					/>
-				{/if}
-				<SegmentedControl
-					options={DIMENSION_SIDE_OPTIONS}
-					value={addressType}
-					onValueChange={handleAddressTypeChange}
-					ariaLabel="Spectrum address side"
-					class="grid-cols-2"
-					buttonClass="sm:min-w-20"
+			{#if (props.availableRouters ?? []).length === 0}
+				<Skeleton class="h-8 w-32" aria-hidden="true" />
+			{:else}
+				<ToolbarSelect
+					label="Source"
+					variant="ghost"
+					value={props.router ?? ''}
+					options={(props.availableRouters ?? []).map((routerName: string) => ({
+						value: routerName,
+						label: routerName
+					}))}
+					onValueChange={handleRouterChange}
 				/>
-			</div>
+			{/if}
+			<SegmentedToggle
+				options={DIMENSION_SIDE_OPTIONS}
+				value={addressType}
+				onValueChange={handleAddressTypeChange}
+				ariaLabel="Spectrum address side"
+			/>
 		{:else if config.seriesByRouter}
 			{@const selected = splitDimensionMetricKey(
 				(activeMetrics[0] ?? config.defaultMetrics[0]) as DimensionMetricKey
 			)}
-			<div class="flex flex-wrap items-center gap-3">
-				<SegmentedControl
-					options={DIMENSION_SIDE_OPTIONS}
-					value={selected.side}
-					onValueChange={(side) => handleDimensionChange(side, selected.order)}
-					ariaLabel="MAAD address side"
-					class="grid-cols-2"
-					buttonClass="sm:min-w-20"
-				/>
-				<SegmentedControl
-					options={DIMENSION_ORDER_OPTIONS}
-					value={selected.order}
-					onValueChange={(order) => handleDimensionChange(selected.side, order)}
-					ariaLabel="MAAD dimension"
-					class="grid-cols-3"
-					buttonClass="sm:min-w-12"
-				/>
-			</div>
+			<SegmentedToggle
+				options={DIMENSION_SIDE_OPTIONS}
+				value={selected.side}
+				onValueChange={(side) => handleDimensionChange(side, selected.order)}
+				ariaLabel="MAAD address side"
+			/>
+			<SegmentedToggle
+				options={DIMENSION_ORDER_OPTIONS}
+				value={selected.order}
+				onValueChange={(order) => handleDimensionChange(selected.side, order)}
+				ariaLabel="MAAD dimension"
+			/>
 		{:else}
-			<div class="flex flex-wrap items-center gap-4">
-				{#each config.metrics as metric (metric.key)}
-					<label class="text-foreground flex cursor-pointer items-center gap-2 text-sm">
-						<Checkbox
-							checked={activeMetrics.includes(metric.key)}
-							onCheckedChange={() => handleMetricToggle(metric.key)}
-						/>
-						<span>{metric.label}</span>
-					</label>
-				{/each}
-			</div>
+			<ChecklistPopover
+				dialogLabel={`${config.title} metrics`}
+				items={config.metrics.map((metric) => ({
+					key: metric.key,
+					label: metric.label,
+					checked: activeMetrics.includes(metric.key)
+				}))}
+				onToggle={handleMetricToggle}
+				onSetAll={handleSetAllMetrics}
+			/>
 		{/if}
 	{/snippet}
 
